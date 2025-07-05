@@ -1,0 +1,84 @@
+#include "ublkpp/lib/ublk_disk.hpp"
+
+#include <ublksrv.h>
+
+#include "logging.hpp"
+
+/*
+ * Our convention is to use this macro instead of raw `co_await` to make it
+ * easy to log `tag` when debugging coroutine issues.
+ */
+#define co_await__suspend_always(tag)                                                                                  \
+    {                                                                                                                  \
+        static_assert(std::is_same< decltype(tag), int >::value, "tag not int");                                       \
+        co_await std::suspend_always();                                                                                \
+    }
+
+namespace ublkpp {
+
+UblkDisk::UblkDisk() :
+        _params{
+            .len = 0,
+            .types = UBLK_PARAM_TYPE_BASIC | UBLK_PARAM_TYPE_DMA_ALIGN,
+            .basic =
+                {
+                    .attrs = UBLK_ATTR_VOLATILE_CACHE | UBLK_ATTR_FUA,
+                    .logical_bs_shift = DEFAULT_BS_SHIFT, // 4KiB by default (derived can override)
+                    .physical_bs_shift = DEFAULT_BS_SHIFT,
+                    .io_opt_shift = DEFAULT_BS_SHIFT,
+                    .io_min_shift = DEFAULT_BS_SHIFT,
+                    .max_sectors = DEF_BUF_SIZE >> SECTOR_SHIFT,
+                    .chunk_sectors = 0,
+                    .dev_sectors = UINT64_MAX,
+                    .virt_boundary_mask = 0,
+                },
+
+            .discard =
+                {
+                    .discard_alignment = 0,
+                    .discard_granularity = 0,
+                    .max_discard_sectors = UINT_MAX >> SECTOR_SHIFT,
+                    .max_write_zeroes_sectors = 0,
+                    .max_discard_segments = 1,
+                    .reserved0 = 0,
+                },
+            .devt = {0, 0, 0, 0},
+            .zoned = {0, 0, 0, {0}},
+            .dma =
+                {
+                    .alignment = 511,
+                    .pad = {0},
+                },
+        } {}
+
+io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
+                              uint32_t const len, uint64_t const addr) {
+    TLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")
+    auto iov = iovec{.iov_base = buf, .iov_len = len};
+    return async_iov(q, data, sub_cmd, &iov, 1, addr);
+}
+
+io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) {
+    TLOGW("Use of deprecated ::sync_io(...)! Please convert to using ::sync_iov(...)")
+    auto iov = iovec{.iov_base = buf, .iov_len = len};
+    return sync_iov(op, &iov, 1, addr);
+}
+
+io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    ublksrv_io_desc const* iod = data->iod;
+    switch (ublksrv_get_op(iod)) {
+    case UBLK_IO_OP_FLUSH:
+        return handle_flush(q, data, sub_cmd);
+    case UBLK_IO_OP_WRITE_ZEROES:
+    case UBLK_IO_OP_DISCARD:
+        return handle_discard(q, data, sub_cmd, iod->nr_sectors << SECTOR_SHIFT, iod->start_sector << SECTOR_SHIFT);
+    case UBLK_IO_OP_READ:
+    case UBLK_IO_OP_WRITE: {
+        auto iov = iovec{.iov_base = (void*)iod->addr, .iov_len = (iod->nr_sectors << SECTOR_SHIFT)};
+        return async_iov(q, data, sub_cmd, &iov, 1, (iod->start_sector << SECTOR_SHIFT));
+    }
+    default:
+        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
+}
+} // namespace ublkpp

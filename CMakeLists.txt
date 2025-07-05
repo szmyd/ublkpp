@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 2.15)
+project(ublkpp CXX)
+enable_testing()
+
+set(CMAKE_CXX_STANDARD 20)
+
+if ((DEFINED BUILD_COVERAGE) AND (${BUILD_COVERAGE}))
+  enable_testing()
+  include (cmake/coverage.cmake)
+  APPEND_COVERAGE_COMPILER_FLAGS()
+  SETUP_TARGET_FOR_COVERAGE_GCOVR_XML(NAME coverage EXECUTABLE ctest DEPENDENCIES )
+elseif ((DEFINED MEMORY_SANITIZER_ON) AND (${MEMORY_SANITIZER_ON}))
+  include (cmake/sanitize.cmake)
+endif()
+
+find_program(CCACHE_FOUND ccache)
+if (CCACHE_FOUND)
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
+endif ()
+
+add_subdirectory (src)

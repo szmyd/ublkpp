@@ -1,0 +1,419 @@
+#include "ublkpp/ublkpp.hpp"
+
+#include <coroutine>
+#include <cstring>
+#include <thread>
+
+#include <boost/uuid/uuid_io.hpp>
+#include <sisl/logging/logging.h>
+#include <sisl/options/options.h>
+#include <sisl/utility/thread_factory.hpp>
+#include <ublksrv_utils.h>
+#include <ublksrv.h>
+
+#include "ublkpp/lib/ublk_disk.hpp"
+#include "lib/logging.hpp"
+
+SISL_OPTION_GROUP(ublkpp_tgt,
+                  (max_io_size, "", "max_io_size", "Maximum I/O size before split",
+                   cxxopts::value< std::uint32_t >()->default_value("524288"), "<io_size>"),
+                  (nr_hw_queues, "", "nr_hw_queues", "Number of Hardware Queues (threads) per target",
+                   cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
+                  (qdepth, "", "qdepth", "I/O Queue Depth per target",
+                   cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"))
+
+using namespace std::chrono_literals;
+
+namespace ublkpp {
+
+static std::mutex _map_lock;
+static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt > > _init_map;
+
+constexpr auto k_max_time = 1s;
+
+static void check_dev(ublksrv_ctrl_dev_info const* info) {
+    static auto const sys_path = std::filesystem::path{"/"} / "dev";
+    auto const str_path = (sys_path / fmt::format("ublkc{}", info->dev_id)).native();
+
+    auto wait = 0ms;
+    while (wait < k_max_time) {
+        if (int fd = open(str_path.c_str(), O_RDWR); fd > 0) {
+            close(fd);
+            break;
+        }
+        std::this_thread::sleep_for(100ms);
+        wait += 100ms;
+    }
+}
+
+static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
+    cpu_set_t set;
+
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == -1) {
+        TLOGE("sched_getaffinity, {}", strerror(errno))
+        return;
+    }
+
+    srand(ublksrv_gettid());
+    auto idx = rand() % CPU_COUNT(&set);
+
+    int32_t j = 0;
+    for (auto i = 0; i < CPU_SETSIZE; ++i) {
+        if (CPU_ISSET(i, &set)) {
+            if (j++ == idx) continue;
+            CPU_CLR(i, &set);
+        }
+    }
+
+    sched_setaffinity(0, sizeof(set), &set);
+}
+
+static void* ublksrv_queue_handler(ublksrv_dev const* dev, int q_id, sem_t* queue_sem) {
+    auto cdev = ublksrv_get_ctrl_dev(dev);
+
+    ublk_json_write_queue_info(cdev, q_id, ublksrv_gettid());
+
+    ublksrv_queue const* q;
+    auto dev_id = ublksrv_ctrl_get_dev_info(cdev)->dev_id;
+    if (q = ublksrv_queue_init_flags(
+            dev, q_id, NULL, IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+        !q) {
+        ublk_err("ublk dev %d queue %d init queue failed", dev_id, q_id);
+        sem_post(queue_sem);
+        return NULL;
+    }
+
+    /* override the queue affinity by just selecting one cpu */
+    set_queue_thread_affinity(cdev);
+    sem_post(queue_sem);
+
+    TLOGD("tid {}: ublk dev {} queue {} started", ublksrv_gettid(), dev_id, q->q_id)
+    do {
+        if (ublksrv_process_io(q) < 0) break;
+    } while (1);
+
+    TLOGD("ublk dev {} queue {} exited", dev_id, q->q_id)
+    ublksrv_queue_deinit(q);
+    return NULL;
+}
+
+static run_result_t start(std::shared_ptr< ublkpp_tgt > tgt) {
+    TLOGD("Initializing Ctrl Device")
+    if (tgt->ctrl_dev = ublksrv_ctrl_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
+        TLOGE("Cannot init disk {}", tgt->device)
+        return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    }
+
+    if (auto ret = ublksrv_ctrl_add_dev(tgt->ctrl_dev); 0 > ret) {
+        TLOGE("Cannot add disk {}: {}", tgt->device, ret)
+        return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    }
+    tgt->device_added = true;
+    {
+        auto info = ublksrv_ctrl_get_dev_info(tgt->ctrl_dev);
+        tgt->dev_data->dev_id = info->dev_id;
+    }
+    // Let go of our shared_ptr to the target
+    auto ctrl_dev = tgt->ctrl_dev;
+    auto dev_ptr = tgt->device.get();
+
+    auto const dinfo = ublksrv_ctrl_get_dev_info(ctrl_dev);
+    auto const dev_id = dinfo->dev_id;
+    if (0 < dev_id) {
+        TLOGE("Cannot get ctrl info {}", tgt->device)
+        return folly::makeUnexpected(std::make_error_condition(std::errc::no_such_device));
+    }
+
+    // Wait for Ctrl device to appear
+    check_dev(dinfo);
+
+    if (auto ret = ublksrv_ctrl_get_affinity(ctrl_dev); 0 > ret) {
+        TLOGE("dev {} get affinity failed {}", dev_id, ret)
+        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
+
+    TLOGD("Start ublksrv io daemon {}-{}", "ublkpp", dev_id)
+
+    // Target is about to initialize! Insert into our map
+    {
+        auto lk = std::scoped_lock< std::mutex >(_map_lock);
+        _init_map.emplace(std::make_pair(ctrl_dev, tgt));
+    }
+
+    tgt->ublk_dev = ublksrv_dev_init(ctrl_dev);
+
+    {
+        auto lk = std::scoped_lock< std::mutex >(_map_lock);
+        _init_map.erase(ctrl_dev);
+    }
+    if (!tgt->ublk_dev) {
+        TLOGE("dev-{} start ubsrv failed", dev_id)
+        return folly::makeUnexpected(std::make_error_condition(std::errc::no_such_device));
+    }
+
+    // Unprivileged device support
+    if (!(dinfo->flags & UBLK_F_UNPRIVILEGED_DEV)) ublksrv_apply_oom_protection();
+
+    // Setup Queues
+    sem_t queue_sem;
+    sem_init(&queue_sem, 0, 0);
+    for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
+        sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt->ublk_dev, i, &queue_sem)
+            .detach();
+    }
+
+    // Wait for Queues to start
+    for (auto i = 0; i < dinfo->nr_hw_queues; ++i)
+        sem_wait(&queue_sem);
+
+    // Start processing I/Os
+    if (auto err = ublksrv_ctrl_set_params(ctrl_dev, dev_ptr->params()); err)
+        return folly::makeUnexpected(std::error_condition(err, std::system_category()));
+    if (auto err = ublksrv_ctrl_start_dev(ctrl_dev, getpid()); 0 > err)
+        return folly::makeUnexpected(std::error_condition(err, std::system_category()));
+
+    static auto const sys_path = std::filesystem::path{"/"} / "dev";
+    return sys_path / fmt::format("ublkb{}", dev_id);
+}
+
+using co_handle_type = std::coroutine_handle<>;
+struct co_io_job {
+    struct promise_type {
+        co_io_job get_return_object() { return {std::coroutine_handle< promise_type >::from_promise(*this)}; }
+        std::suspend_never initial_suspend() { return {}; }
+        std::suspend_never final_suspend() noexcept { return {}; }
+        void return_void() {}
+        [[noreturn]] void unhandled_exception() const { throw std::current_exception(); }
+    };
+
+    co_handle_type coro;
+
+    co_io_job(co_handle_type h) : coro(h) {}
+
+    operator co_handle_type() const { return coro; }
+};
+
+struct ublkpp_io {
+    co_handle_type co;
+    io_uring_cqe const* tgt_io_cqe;
+};
+
+// Process the result codes from the CQE
+static inline int ublksrv_tgt_process_cqe(ublk_io_data const* data) {
+    auto io = reinterpret_cast< ublkpp_io* >(data->private_data);
+    auto cqe = io->tgt_io_cqe;
+
+    RELEASE_ASSERT_NOTNULL(cqe, "CQE Null!")
+    auto res = cqe->res;
+
+    // TODO FIXME : hack not to return size bigger than expected due to replication
+    if ((0 < res) && test_flags(user_data_to_tgt_data(cqe->user_data), sub_cmd_flags::REPLICATED)) return 0;
+    return res;
+}
+
+// Just a cast helper for for pri
+static inline uint8_t ublk_io_to_sub_cmd(ublk_io_data const* data) {
+    return user_data_to_tgt_data(reinterpret_cast< ublkpp_io* >(data->private_data)->tgt_io_cqe->user_data);
+}
+
+// Extract the user_data with the private_data from the CQE and test the flags
+static inline bool is_retriable(ublk_io_data const* data) {
+    auto io = reinterpret_cast< ublkpp_io* >(data->private_data);
+    auto cqe = io->tgt_io_cqe;
+
+    RELEASE_ASSERT_NOTNULL(cqe, "CQE Null!")
+    return !is_retry(user_data_to_tgt_data(cqe->user_data));
+}
+
+static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
+    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    RELEASE_ASSERT_NOTNULL(device, "UblkDisk null!")
+
+    // First we submit the IO to the UblkDisk device. It in turn will return the number
+    // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
+    // cause this amplification of operations.
+    auto io_res = device->queue_tgt_io(q, data, 0);
+    if (!io_res) {
+        TLOGE("IO Failed Immediately to queue io [tag:{}], err: [{}]", data->tag, io_res.error().message())
+        ublksrv_complete_io(q, data->tag, -EIO);
+        co_return;
+    }
+    auto io_cnt = io_res.value();
+    TLOGT("I/O [tag:{}] [sub_ios:{}]", data->tag, io_cnt)
+
+    auto ret_val = 0;
+    // For each sub_cmd enqueued, we expect a response to be processed.
+    while (0 < io_cnt--) {
+        // Wait to resume via the tgt_io_done callback from ublksrv's io_uring processing
+        { co_await std::suspend_always(); }
+
+        // Error should be returned regardless of other responses
+        if (0 > ret_val) continue;
+
+        // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
+        if (auto const sub_cmd_res = ublksrv_tgt_process_cqe(data); 0 <= sub_cmd_res) {
+            ret_val += sub_cmd_res;
+        }
+        // If error we should retry it if possible before returning an I/O error
+        else if (0 > sub_cmd_res) {
+            // Only EAGAIN or replicated sub_cmds are retriable, see if it's neither.
+            if (((-EAGAIN != sub_cmd_res) && (-EIO != sub_cmd_res)) || !is_retriable(data)) {
+                ret_val = sub_cmd_res;
+                continue;
+            }
+
+            // If retriable, pass the original sub_cmd the sub_cmd took in addition to re-queuing the original
+            // operation. This provides the context to the RAID layers to make intelligent decisions for a retried
+            // sub_cmd.
+            auto const sub_cmd = set_flags(ublk_io_to_sub_cmd(data), sub_cmd_flags::RETRIED);
+            TLOGD("Retrying portion of I/O [res:{}] [tag:{}] [sub_cmd:{:b}]", sub_cmd_res, data->tag, sub_cmd)
+            if (io_res = device->queue_tgt_io(q, data, sub_cmd); io_res) {
+                // New sub_cmds to wait for in the co-routine
+                io_cnt += io_res.value();
+                continue;
+            } else
+                TLOGE("Retry Failed Immediately on I/O [tag:{}] [sub_cmd:{:b}] [err:{}]", data->tag, sub_cmd,
+                      io_res.error().message())
+            ret_val = sub_cmd_res;
+        }
+    }
+
+    if (0 > ret_val) [[unlikely]] {
+        TLOGE("Returning error for [tag:{}] [res:{}]", data->tag, ret_val)
+    } else
+        TLOGT("I/O complete [tag:{}] [res:{}]", data->tag, ret_val)
+    // Operation is complete, result is in io_res
+    ublksrv_complete_io(q, data->tag, ret_val);
+}
+
+// I/O Handler, first entry-point to us for all I/O
+static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
+    // Construct a co-routine and set it to the private data, we call resume in `tgt_io_done` once complete
+    reinterpret_cast< ublkpp_io* >(data->private_data)->co = __handle_io_async(q, data);
+    return 0;
+}
+
+// Called when the I/O we have scheduled on the ublksrv uring (e.g. FSDisk) have completed
+static void tgt_io_done(ublksrv_queue const* q, ublk_io_data const* data, io_uring_cqe const* cqe) {
+    auto tag = static_cast< int32_t >(user_data_to_tag(cqe->user_data));
+    auto io = reinterpret_cast< ublkpp_io* >(data->private_data);
+
+    RELEASE_ASSERT_EQ(data->tag, tag, "Tag mismatch!")
+    io->tgt_io_cqe = cqe;
+    try {
+        io->co.resume();
+    } catch (std::exception const& e) {
+        TLOGE("I/O threw exception: [{}]", e.what())
+        ublksrv_complete_io(q, data->tag, -EIO);
+    }
+}
+
+// Called in the context of start by ublksrv_dev_init()
+static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
+    // Find the registered disk in the disk map and set the tgt_data
+    // to its RAW pointer. This will be handed to handle_io_async for each I/O
+    // so we have the context of which disk is receiving I/O.
+    auto tgt = std::shared_ptr< ublkpp_tgt >();
+    auto cdev = ublksrv_get_ctrl_dev(dev);
+    {
+        auto lk = std::scoped_lock< std::mutex >(_map_lock);
+        if (auto it = _init_map.find(cdev); _init_map.end() != it) { tgt = it->second; }
+    }
+    if (!tgt) {
+        TLOGE("Disk not found in map!")
+        return -2;
+    }
+    auto ublk_disk = tgt->device;
+    dev->tgt.tgt_data = ublk_disk.get();
+
+    // Configure the ublksrv JSON bits
+    if (!ublksrv_is_recovering(cdev)) {
+        auto tgt_json = ublksrv_tgt_base_json{
+            .name = "",
+            .type = 0,
+            .pad = 0,
+            .dev_size = 0,
+            .reserved = {0},
+        };
+
+        auto str_id = to_string(tgt->volume_uuid);
+        std::erase(str_id, '-');
+        RELEASE_ASSERT_EQ(str_id.size(), UBLKSRV_TGT_NAME_MAX_LEN, "Bad UUID length!")
+        strncpy(tgt_json.name, str_id.c_str(), UBLKSRV_TGT_NAME_MAX_LEN - 1);
+        tgt_json.dev_size = ublk_disk->params()->basic.dev_sectors << SECTOR_SHIFT;
+        ublk_json_write_dev_info(cdev);
+        ublk_json_write_target_base(cdev, &tgt_json);
+        ublk_json_write_params(cdev, ublk_disk->params());
+    }
+
+    auto ublksrv_tgt = &dev->tgt;
+    ublksrv_tgt->io_data_size = sizeof(struct ublkpp_io);
+    ublksrv_tgt->dev_size = ublk_disk->params()->basic.dev_sectors << SECTOR_SHIFT;
+    ublksrv_tgt->tgt_ring_depth = ublksrv_ctrl_get_dev_info(ublksrv_get_ctrl_dev(dev))->queue_depth;
+
+    // iouring FD 0 is reserved for the ublkc device, so start gathering from there
+    ublksrv_tgt->nr_fds = 1;
+    for (auto const fd : ublk_disk->open_for_uring(ublksrv_tgt->nr_fds)) {
+        ublksrv_tgt->fds[ublksrv_tgt->nr_fds++] = fd;
+    }
+    return 0;
+}
+
+// Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
+run_result_t run(std::shared_ptr< ublkpp_tgt > tgt) {
+    tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
+        .handle_io_async = handle_io_async,
+        .tgt_io_done = tgt_io_done,
+        .handle_event = nullptr,         // Not Implemented
+        .handle_io_background = nullptr, // Not Implemented
+        .usage_for_add = nullptr,        // Not Implemented
+        .init_tgt = init_tgt,
+        .deinit_tgt = nullptr,   // Not Implemented
+        .alloc_io_buf = nullptr, // Not Implemented
+        .free_io_buf = nullptr,  // Not Implemented
+        .idle_fn = nullptr,      // Not Implemented
+        .type = 0,               // Deprecated
+        .ublk_flags = 0,         // Currently Clear
+        .ublksrv_flags = 0,      // Currently Clear
+        .pad = 0,                // Currently Clear
+        .name = "ublkpp",
+        .recovery_tgt = nullptr,    // Deprecated
+        .init_queue = nullptr,      // Not Implemented
+        .deinit_queue = nullptr,    // Not Implemented
+        .reserved = {0, 0, 0, 0, 0} // Reserved
+    });
+
+    TLOGI("Starting {}", static_pointer_cast< UblkDisk >(tgt->device))
+    tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
+        .dev_id = -1,
+        .max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >(),
+        .nr_hw_queues = SISL_OPTIONS["nr_hw_queues"].as< uint16_t >(),
+        .queue_depth = SISL_OPTIONS["qdepth"].as< uint16_t >(),
+        .tgt_type = "ublkpp",
+        .tgt_ops = tgt->tgt_type.get(),
+        .tgt_argc = 0,
+        .tgt_argv = nullptr,
+        .run_dir = nullptr,
+        .flags = 0,
+        .ublksrv_flags = 0,
+        .reserved = {0, 0, 0, 0, 0, 0, 0},
+    });
+    return start(std::move(tgt));
+}
+
+ublkpp_tgt::ublkpp_tgt(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk >&& d) :
+        volume_uuid(vol_id), device(std::move(d)) {}
+
+ublkpp_tgt::~ublkpp_tgt() {
+    TLOGI("Stopping {}", device)
+    if (ublk_dev) {
+        ublksrv_ctrl_stop_dev(ctrl_dev);
+        ublksrv_dev_deinit(ublk_dev);
+    }
+    if (device_added) ublksrv_ctrl_del_dev(ctrl_dev);
+    if (ctrl_dev) ublksrv_ctrl_deinit(ctrl_dev);
+    TLOGD("Stopped {}", device)
+}
+
+} // namespace ublkpp

@@ -1,0 +1,16 @@
+sources:
+  "nbi.1.5.0":
+    url: "https://github.com/ublk-org/ublksrv/archive/7fc74012e5ee8ab6d3ebda12cfeaf75d7b1b135a.tar.gz"
+    sha256: "fae78a6c49eae98941aa3682bb966fc760ab6c9d3db6d06c34173897fff0906f"
+  "nbi.1.4.1":
+    url: "https://github.com/ublk-org/ublksrv/archive/0099e223b75f9bf5415444eac151ab65f60ba230.tar.gz"
+    sha256: "784114812f9bb7ba0ac193d5fa412ab13a10a553276c51f7d188804261cf9363"
+patches:
+  "nbi.1.5.0":
+    - patch_file: "patches/logging_1_5_0.patch"
+      patch_description: "log to SISL"
+      patch_type: "portability"
+  "nbi.1.4.1":
+    - patch_file: "patches/logging.patch"
+      patch_description: "log to SISL"
+      patch_type: "portability"

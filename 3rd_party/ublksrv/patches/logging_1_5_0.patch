@@ -1,0 +1,185 @@
+diff --git a/Makefile.am b/Makefile.am
+index c900dd5..abcbf68 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -7,71 +7,10 @@ EXTRA_DIST = \
+ 	.gitignore \
+ 	LICENSE
+ 
+-SUBDIRS = doc include lib tests
++SUBDIRS = doc include lib
+ 
+ AM_CXXFLAGS = -std=c++20 -Wunused
+ 
+-TGT_DIR = targets
+-TGT_INC = $(top_srcdir)/$(TGT_DIR)/include
+-
+-sbin_PROGRAMS = ublk ublk.null ublk.loop ublk.nbd ublk_user_id
+-noinst_PROGRAMS = demo_null demo_event
+-dist_sbin_SCRIPTS = utils/ublk_chown.sh utils/ublk_chown_docker.sh
+-
+-if HAVE_LIBNFS
+-sbin_PROGRAMS += ublk.nfs
+-endif
+-
+-if HAVE_LIBISCSI
+-sbin_PROGRAMS += ublk.iscsi
+-endif
+-
+-ublk_SOURCES = $(TGT_DIR)/ublk.cpp $(TGT_DIR)/ublksrv_tgt.cpp
+-
+-ublk_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-ublk_CPPFLAGS = $(ublk_CFLAGS) -I$(top_srcdir)/include -I$(TGT_INC)
+-ublk_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS)
+-
+-ublk_null_SOURCES = $(TGT_DIR)/ublk.null.cpp $(TGT_DIR)/ublksrv_tgt.cpp
+-ublk_null_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-ublk_null_CPPFLAGS = $(ublk_null_CFLAGS) -I$(top_srcdir)/include -I$(TGT_INC)
+-ublk_null_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS)
+-
+-ublk_iscsi_SOURCES = $(TGT_DIR)/ublk.iscsi.cpp $(TGT_DIR)/ublksrv_tgt.cpp
+-ublk_iscsi_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-ublk_iscsi_CPPFLAGS = $(ublk_iscsi_CFLAGS) -I$(top_srcdir)/include -I$(TGT_INC)
+-ublk_iscsi_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS) -liscsi
+-
+-ublk_loop_SOURCES = $(TGT_DIR)/ublk.loop.cpp $(TGT_DIR)/ublksrv_tgt.cpp
+-ublk_loop_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-ublk_loop_CPPFLAGS = $(ublk_loop_CFLAGS) -I$(top_srcdir)/include -I$(TGT_INC)
+-ublk_loop_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS)
+-
+-ublk_nbd_SOURCES = $(TGT_DIR)/nbd/ublk.nbd.cpp $(TGT_DIR)/nbd/cliserv.c $(TGT_DIR)/nbd/nbd-client.c $(TGT_DIR)/ublksrv_tgt.cpp
+-ublk_nbd_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-ublk_nbd_CPPFLAGS = $(ublk_nbd_CFLAGS) -I$(top_srcdir)/include -I$(TGT_INC)
+-ublk_nbd_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS)
+-
+-ublk_nfs_SOURCES = $(TGT_DIR)/ublk.nfs.cpp $(TGT_DIR)/ublksrv_tgt.cpp
+-ublk_nfs_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-ublk_nfs_CPPFLAGS = $(ublk_nfs_CFLAGS) -I$(top_srcdir)/include -I$(TGT_INC)
+-ublk_nfs_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS) -lnfs
+-
+-demo_null_SOURCES = demo_null.c
+-demo_null_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-demo_null_CPPFLAGS = $(demo_null_CFLAGS) -I$(top_srcdir)/include
+-demo_null_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS)
+-
+-demo_event_SOURCES = demo_event.c
+-demo_event_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-demo_event_CPPFLAGS = $(demo_event_CFLAGS) -I$(top_srcdir)/include
+-demo_event_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS)
+-
+-ublk_user_id_SOURCES = utils/ublk_user_id.c
+-ublk_user_id_CFLAGS = $(WARNINGS_CFLAGS) $(LIBURING_CFLAGS) $(PTHREAD_CFLAGS)
+-ublk_user_id_CPPFLAGS = $(ublk_user_id_CFLAGS) -I$(top_srcdir)/include
+-ublk_user_id_LDADD = lib/libublksrv.la $(LIBURING_LIBS) $(PTHREAD_LIBS)
+-
+ pkgconfigdir = $(libdir)/pkgconfig
+ pkgconfig_DATA = ublksrv.pc
+ 
+diff --git a/include/ublksrv_utils.h b/include/ublksrv_utils.h
+index d9efe87..c78607c 100644
+--- a/include/ublksrv_utils.h
++++ b/include/ublksrv_utils.h
+@@ -25,27 +25,6 @@ static inline void ublksrv_log(int priority, const char *fmt, ...)
+ static inline void ublksrv_printf(FILE *stream, const char *fmt, ...)
+ 	__attribute__ ((format (printf, 2, 3)));
+ 
+-#ifdef DEBUG
+-static inline void ublksrv_log(int priority, const char *fmt, ...)
+-{
+-    va_list ap;
+-
+-    va_start(ap, fmt);
+-    vsyslog(priority, fmt, ap);
+-}
+-
+-static inline void ublksrv_printf(FILE *stream, const char *fmt, ...)
+-{
+-    va_list ap;
+-
+-    va_start(ap, fmt);
+-    vfprintf(stream, fmt, ap);
+-}
+-#else
+-static inline void ublksrv_log(int priority, const char *fmt, ...) { }
+-static inline void ublksrv_printf(FILE *stream, const char *fmt, ...) {}
+-#endif
+-
+ /* 32bit debug mask, high 16 bits are for target code, and low 16 bits for lib */
+ #define	UBLK_DBG_DEV		(1U << 0)
+ #define	UBLK_DBG_QUEUE		(1U << 1)
+@@ -53,19 +32,12 @@ static inline void ublksrv_printf(FILE *stream, const char *fmt, ...) {}
+ #define	UBLK_DBG_IO		(1U << 3)
+ #define	UBLK_DBG_CTRL_CMD	(1U << 4)
+ 
+-#ifdef DEBUG
+ extern void ublk_dbg(int level, const char *fmt, ...)
+ 	__attribute__ ((format (printf, 2, 3)));
+ extern void ublk_ctrl_dbg(int level, const char *fmt, ...)
+ 	__attribute__ ((format (printf, 2, 3)));
+ extern void ublk_set_debug_mask(unsigned mask);
+ extern unsigned ublk_get_debug_mask(unsigned mask);
+-#else
+-static inline void ublk_dbg(int level, const char *fmt, ...) { }
+-static inline void ublk_ctrl_dbg(int level, const char *fmt, ...) { }
+-static inline void ublk_set_debug_mask(unsigned mask) {}
+-static inline unsigned ublk_get_debug_mask(unsigned mask) { return 0;}
+-#endif
+ 
+ extern void ublk_log(const char *fmt, ...)
+ 	__attribute__ ((format (printf, 1, 2)));
+diff --git a/lib/utils.c b/lib/utils.c
+index 6289b30..95eb23c 100644
+--- a/lib/utils.c
++++ b/lib/utils.c
+@@ -48,43 +48,7 @@ int create_pid_file(const char *pid_file, int *pid_fd)
+ 	return ret;
+ }
+ 
+-void ublk_err(const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	va_start(ap, fmt);
+-	vsyslog(LOG_ERR, fmt, ap);
+-}
+-
+-void ublk_log(const char *fmt, ...)
+-{
+-	va_list ap;
+-
+-	va_start(ap, fmt);
+-	vsyslog(LOG_INFO, fmt, ap);
+-}
+-
+-#ifdef DEBUG
+ static unsigned int ublk_debug_mask;
+-void ublk_dbg(int level, const char *fmt, ...)
+-{
+-	if (level & ublk_debug_mask) {
+-		va_list ap;
+-
+-		va_start(ap, fmt);
+-		vsyslog(LOG_ERR, fmt, ap);
+-	}
+-}
+-
+-void ublk_ctrl_dbg(int level, const char *fmt, ...)
+-{
+-	if (level & ublk_debug_mask) {
+-		va_list ap;
+-
+-		va_start(ap, fmt);
+-		vfprintf(stdout, fmt, ap);
+-	}
+-}
+ 
+ void ublk_set_debug_mask(unsigned mask)
+ {
+@@ -95,7 +59,6 @@ unsigned ublk_get_debug_mask(unsigned mask)
+ {
+ 	return ublk_debug_mask;
+ }
+-#endif
+ 
+ cpu_set_t *ublk_make_cpuset(int num_sets, const char *cpuset)
+ {

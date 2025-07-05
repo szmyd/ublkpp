@@ -1,0 +1,19 @@
+*.pyc
+.idea/**
+.cache
+.clangd
+
+# Settings generated files and build files
+build/*
+test_package/build*
+
+# vscode
+.vscode/**
+
+# Visual Studio
+CMakeUserPresets.json
+CMakeSettings.json
+.vs/**
+
+#
+logs/*
