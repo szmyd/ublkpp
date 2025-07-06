@@ -13,5 +13,6 @@ target_sources(test_fsdisk PRIVATE
 target_link_libraries (test_fsdisk
   GTest::gmock
   sisl::sisl
+  ublksrv::ublksrv
 )
 add_test(NAME FSDiskTest COMMAND test_fsdisk -cv 2)

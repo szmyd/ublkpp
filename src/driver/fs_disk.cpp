@@ -14,68 +14,10 @@ extern "C" {
 #include <ublksrv_utils.h>
 #include <ublksrv.h>
 
+#include "fs_disk_impl.hpp"
 #include "lib/logging.hpp"
 
 namespace ublkpp {
-
-static bool backing_supports_discard(std::filesystem::path const& name) {
-    static auto const sys_path = std::filesystem::path{"/"} / "sys" / "block";
-    static auto const discard_path = std::filesystem::path{"queue"} / "discard_max_hw_bytes";
-
-    auto const str_path = (sys_path / name.filename() / discard_path).native();
-    DLOGD("Opening {}", str_path)
-
-    std::ifstream discard_max(str_path, std::ios::in);
-    if (discard_max.is_open()) {
-        std::string line;
-        if (std::getline(discard_max, line)) {
-            std::istringstream iss(line);
-            if (uint64_t max_discard{0}; iss >> max_discard) { return 0 < max_discard; }
-        }
-    }
-    return false;
-}
-
-inline int fallocate_mode(ublksrv_io_desc const* iod) {
-    auto ublk_op = ublksrv_get_op(iod);
-    auto flags = ublksrv_get_flags(iod);
-    int mode = FALLOC_FL_KEEP_SIZE;
-
-    /* follow logic of linux kernel loop */
-    if (ublk_op == UBLK_IO_OP_DISCARD) {
-        mode |= FALLOC_FL_PUNCH_HOLE;
-    } else if (ublk_op == UBLK_IO_OP_WRITE_ZEROES) {
-        if (flags & UBLK_IO_F_NOUNMAP)
-            mode |= FALLOC_FL_ZERO_RANGE;
-        else
-            mode |= FALLOC_FL_PUNCH_HOLE;
-    } else {
-        mode |= FALLOC_FL_ZERO_RANGE;
-    }
-
-    return mode;
-}
-
-inline enum io_uring_op to_uring_op(uint8_t const op, bool const zc) {
-    switch (op) {
-    case UBLK_IO_OP_READ:
-        return zc ? IORING_OP_READ_FIXED : IORING_OP_READ;
-    case UBLK_IO_OP_WRITE:
-        return zc ? IORING_OP_WRITE_FIXED : IORING_OP_WRITE;
-    default:
-        RELEASE_ASSERT(false, "Unknown UBLK IO OP: {}", op)
-    }
-}
-
-static inline auto alloc_ublk_sqe(ublksrv_queue const* q) {
-    auto r = q->ring_ptr;
-    if (0 == io_uring_sq_space_left(r)) [[unlikely]]
-        io_uring_submit(r);
-    auto sqe = io_uring_get_sqe(r);
-    if (sqe) [[likely]]
-        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
-    return sqe;
-}
 
 FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
     auto const str_path = _path.native();
@@ -100,7 +42,7 @@ FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
         if (ioctl(_fd, BLKGETSIZE64, &bytes) != 0 || ioctl(_fd, BLKSSZGET, &lbs) != 0 ||
             ioctl(_fd, BLKPBSZGET, &pbs) != 0)
             throw std::runtime_error("ioctl Failed!");
-        if (backing_supports_discard(_path))
+        if (block_has_unmap(_path))
             our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         else
             DLOGW("Block Device does not support DISCARD! Will fall back to fallocate() calls.")
@@ -148,11 +90,21 @@ std::list< int > FSDisk::open_for_uring(int const iouring_device_start) {
     return {dup(_fd)};
 }
 
+static inline auto next_sqe(ublksrv_queue const* q) {
+    auto r = q->ring_ptr;
+    if (0 == io_uring_sq_space_left(r)) [[unlikely]]
+        io_uring_submit(r);
+    auto sqe = io_uring_get_sqe(r);
+    if (sqe) [[likely]]
+        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+    return sqe;
+}
+
 io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
     DLOGT("Flush {} : [tag:{}] ublk io [sub_cmd:{:b}]", data->tag, _path.native(), sub_cmd)
     if (direct_io) return 0;
-    auto sqe = alloc_ublk_sqe(q);
+    auto sqe = next_sqe(q);
     io_uring_prep_fsync(sqe, _uring_device, IORING_FSYNC_DATASYNC);
 
     sqe->user_data = build_tgt_sqe_data(data->tag, ublksrv_get_op(data->iod), sub_cmd);
@@ -164,8 +116,8 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
     DLOGD("DISCARD {}: [tag:{}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", _path.native(), data->tag,
           addr >> SECTOR_SHIFT, len, sub_cmd)
     if (!_block_device) {
-        auto sqe = alloc_ublk_sqe(q);
-        io_uring_prep_fallocate(sqe, _uring_device, fallocate_mode(data->iod), addr, len);
+        auto sqe = next_sqe(q);
+        io_uring_prep_fallocate(sqe, _uring_device, discard_to_fallocate(data->iod), addr, len);
 
         sqe->user_data = build_tgt_sqe_data(data->tag, ublksrv_get_op(data->iod), sub_cmd);
         return 1;
@@ -192,7 +144,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     auto const op = ublksrv_get_op(data->iod);
     DLOGT("{} {} : [tag:{}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), data->tag, addr >> SECTOR_SHIFT, __iovec_len(iovecs, iovecs + nr_vecs), sub_cmd)
-    auto sqe = alloc_ublk_sqe(q);
+    auto sqe = next_sqe(q);
 
     switch (op) {
     case UBLK_IO_OP_READ: {

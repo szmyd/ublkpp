@@ -34,7 +34,7 @@ using ::ublkpp::raid1::reserved_size;
         .WillRepeatedly([op = (OP), f = (fail), s = (sz), o = (off)](uint8_t, iovec* iovecs, uint32_t nr_vecs,         \
                                                                      off_t addr) -> io_result {                        \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
-            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                          \
+            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
@@ -47,7 +47,7 @@ using ::ublkpp::raid1::reserved_size;
         .WillOnce([op = (OP), f = (fail), s = (sz), o = (off)](uint8_t, iovec* iovecs, uint32_t nr_vecs,               \
                                                                off_t addr) -> io_result {                              \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
-            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                          \
+            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
@@ -62,7 +62,7 @@ using ::ublkpp::raid1::reserved_size;
 
 #define CREATE_DISK_F(params, no_read, fail_read, no_write, fail_write)                                                \
     [] {                                                                                                               \
-        auto device = std::make_shared< ublkpp::TestDisk >((params));                                             \
+        auto device = std::make_shared< ublkpp::TestDisk >((params));                                                  \
         /* Expect to load and write clean_unmount bit */                                                               \
         if (!no_read) { EXPECT_TO_READ_SB_F(device, fail_read) }                                                       \
         if (!no_write && !fail_read) { EXPECT_TO_WRITE_SB_F(device, fail_write) }                                      \
@@ -285,8 +285,8 @@ TEST(Raid1, ReadRetryA) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xcafedead);
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b11);
             // It should also have the RETRIED bit set
@@ -307,8 +307,8 @@ TEST(Raid1, ReadRetryA) {
     // Now test the normal path
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xdeadcafe);
             // The route has changed to point to device_b
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -340,8 +340,8 @@ TEST(Raid1, ReadRetryB) {
 
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xcafedead);
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
             // It should also have the RETRIED bit set
@@ -372,8 +372,8 @@ TEST(Raid1, SimpleWrite) {
 
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device A
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
@@ -385,8 +385,8 @@ TEST(Raid1, SimpleWrite) {
         });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -469,8 +469,8 @@ TEST(Raid1, WriteRetryA) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xcafedeae);
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
             EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
@@ -499,9 +499,8 @@ TEST(Raid1, WriteRetryB) {
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
-        auto sub_cmd =
-            ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                   ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -515,9 +514,8 @@ TEST(Raid1, WriteRetryB) {
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(0xcafedeaa, UBLK_IO_OP_WRITE);
-        auto sub_cmd =
-            ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                   ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -540,9 +538,8 @@ TEST(Raid1, WriteDoubleFailure) {
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
-        auto sub_cmd =
-            ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                   ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -577,8 +574,9 @@ TEST(Raid1, WriteFailImmediate) {
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
             .Times(1)
             .WillOnce(
-                [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                   uint64_t const) { return folly::makeUnexpected(std::make_error_condition(std::errc::io_error)); });
+                [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
+                    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                });
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
@@ -604,8 +602,8 @@ TEST(Raid1, WriteFailImmediate) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xcafedeae);
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
             EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
@@ -630,26 +628,26 @@ TEST(Raid1, Discard) {
 
     EXPECT_CALL(*device_a, handle_discard(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t len,
-                     uint64_t addr) {
-            EXPECT_EQ(data->tag, 0xcafedeae);
-            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
-            EXPECT_EQ(len, 4 * Ki);
-            EXPECT_EQ(addr, (8 * Ki) + reserved_size);
-            return 1;
-        });
+        .WillOnce(
+            [](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t len, uint64_t addr) {
+                EXPECT_EQ(data->tag, 0xcafedeae);
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
+                EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+                EXPECT_EQ(len, 4 * Ki);
+                EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+                return 1;
+            });
     EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t len,
-                     uint64_t addr) {
-            EXPECT_EQ(data->tag, 0xcafedeae);
-            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-            EXPECT_TRUE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
-            EXPECT_EQ(len, 4 * Ki);
-            EXPECT_EQ(addr, (8 * Ki) + reserved_size);
-            return 1;
-        });
+        .WillOnce(
+            [](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t len, uint64_t addr) {
+                EXPECT_EQ(data->tag, 0xcafedeae);
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+                EXPECT_TRUE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+                EXPECT_EQ(len, 4 * Ki);
+                EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+                return 1;
+            });
 
     auto ublk_data = make_io_data(0xcafedeae, UBLK_IO_OP_DISCARD, 4 * Ki, 8 * Ki);
     auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
@@ -672,9 +670,8 @@ TEST(Raid1, DiscardRetry) {
         EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
-        auto sub_cmd =
-            ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                   ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
         auto res = raid_device.handle_discard(nullptr, &ublk_data, sub_cmd, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -686,8 +683,8 @@ TEST(Raid1, DiscardRetry) {
     auto ublk_data = make_io_data(0xcafedeae, UBLK_IO_OP_READ);
     EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t, uint64_t addr) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
             EXPECT_EQ(data->tag, 0xcafedeae);
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
             EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
@@ -817,7 +814,6 @@ TEST(Raid1, SyncIoWriteFailB) {
     // No need to re-write on A side
     EXPECT_EQ(test_sz, res.value());
 
-
     // expect unmount_clean on Device A
     EXPECT_TO_WRITE_SB(device_a);
 }
@@ -891,7 +887,6 @@ TEST(Raid1, SyncIoReadDevAFail) {
     auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
     ASSERT_TRUE(res);
     EXPECT_EQ(test_sz, res.value());
-
 
     // expect unmount_clean on both (READ fails do not dirty bitmap)
     EXPECT_TO_WRITE_SB(device_a);
