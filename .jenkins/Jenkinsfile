@@ -3,9 +3,8 @@ pipeline {
 
     environment {
         PROJECT = 'ublkpp'
-        ORG = 'oss'
+        CONAN_USER = 'oss'
         ARTIFACTORY_PASS = credentials('ARTIFACTORY_PASS')
-        HUB_URL = 'hub.tess.io'
         DEV_BRANCH = 'main'
         STABLE_BRANCH = 'stable/*'
         REL_TARGET = '1.0'
@@ -17,8 +16,9 @@ pipeline {
                 script {
                     COMMIT_SHA = sh(script: "echo ${GIT_COMMIT} | cut -c1-7 | tr -d '\n' | tr -d '\"'", returnStdout: true)
                     VER = sh(script: "grep -m 1 ' version =' conanfile.py | awk '{print \$3}' | tr -d '\n' | tr -d '\"'", returnStdout: true)
-                    TAG = sh(script: "echo ${VER}-rc${env.BUILD_NUMBER} | tr -d '\n'", returnStdout: true)
-                    HUB_PATH = "${HUB_URL}/${ORG}/${PROJECT}"
+                    CONAN_CHANNEL = sh(script: "echo ${BRANCH_NAME} | sed -E 's,(\\w+-?\\d*)/.*,\\1,' | sed -E 's,-,_,' | tr -d '\n'", returnStdout: true)
+                    TAG = "${VER}@${CONAN_USER}/${CONAN_CHANNEL}"
+                    CONAN_FLAGS="--name ${PROJECT} --user ${CONAN_USER} --channel ${CONAN_CHANNEL}"
                 }
             }
         }
@@ -72,7 +72,7 @@ pipeline {
                         steps {
                             script {
                                 def BUILD_OPTIONS = "-o ${PROJECT}/*:sanitize=${SANITIZE} -o sisl/*:prerelease=False -s:h build_type=${BUILD_TYPE}"
-                                sh "conan create -c tools.build:skip_test=True --build missing ${BUILD_OPTIONS} ."
+                                sh "conan create -c tools.build:skip_test=True --build missing ${BUILD_OPTIONS} ${CONAN_FLAGS} ."
                             }
                         }
                     }
