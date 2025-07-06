@@ -102,7 +102,7 @@ jobs:
       uses: eBay/sisl/.github/actions/load_conan@master
       with:
         testing: ${{ inputs.testing }}
-        key_prefix: UblkPP-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}-${{ inputs.prerelease }}
+        key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}-${{ inputs.prerelease }}
 
     - name: Retrieve Dependencies
       uses: actions/checkout@main
