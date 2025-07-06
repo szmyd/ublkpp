@@ -3,7 +3,7 @@ cmake_minimum_required (VERSION 3.11)
 enable_testing()
 find_package(GTest QUIET REQUIRED)
 
-add_compile_options(-Wno-unused-result)
+add_compile_options(-Wno-unused-result -Wno-maybe-uninitialized)
 
 add_executable(test_raid0)
 target_sources(test_raid0 PRIVATE
