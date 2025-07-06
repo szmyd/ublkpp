@@ -118,12 +118,11 @@ class UBlkPPConan(ConanFile):
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 
     def package_info(self):
-        for component in self.cpp_info.components.values():
-            if self.options.get_safe("sanitize"):
-                component.sharedlinkflags.append("-fsanitize=address")
-                component.exelinkflags.append("-fsanitize=address")
-                component.sharedlinkflags.append("-fsanitize=undefined")
-                component.exelinkflags.append("-fsanitize=undefined")
+        if self.options.get_safe("sanitize"):
+            self.cpp_info.sharedlinkflags.append("-fsanitize=address")
+            self.cpp_info.exelinkflags.append("-fsanitize=address")
+            self.cpp_info.sharedlinkflags.append("-fsanitize=undefined")
+            self.cpp_info.exelinkflags.append("-fsanitize=undefined")
 
         self.cpp_info.set_property("cmake_file_name", "UblkPP")
         self.cpp_info.set_property("cmake_target_name", "UblkPP::UblkPP")

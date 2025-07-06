@@ -27,7 +27,7 @@ using ::ublkpp::UblkDisk;
         .WillOnce([op = (OP), f = (fail), s = (sz), o = (off)](uint8_t, iovec* iovecs, uint32_t nr_vecs,               \
                                                                off_t addr) -> io_result {                              \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
-            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                          \
+            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
@@ -38,7 +38,7 @@ using ::ublkpp::UblkDisk;
 
 #define CREATE_DISK_F(params, no_read, fail_read, no_write, fail_write)                                                \
     [] {                                                                                                               \
-        auto device = std::make_shared< ublkpp::TestDisk >((params));                                             \
+        auto device = std::make_shared< ublkpp::TestDisk >((params));                                                  \
         if (!no_read) { EXPECT_SB_OP(UBLK_IO_OP_READ, device, fail_read) }                                             \
         if (!no_write && !fail_read) { EXPECT_SB_OP(UBLK_IO_OP_WRITE, device, fail_write) }                            \
         return device;                                                                                                 \
@@ -53,7 +53,7 @@ TEST(Raid0, FailedReadSB) {
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, false, false);
         EXPECT_THROW(auto raid_device =
                          ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                                std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b}),
+                                           std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b}),
                      std::runtime_error);
     }
     {
@@ -61,7 +61,7 @@ TEST(Raid0, FailedReadSB) {
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, true, false, false);
         EXPECT_THROW(auto raid_device =
                          ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                                std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b}),
+                                           std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b}),
                      std::runtime_error);
     }
 }
@@ -77,7 +77,7 @@ TEST(Raid0, IdenticalDeviceProbing) {
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
     EXPECT_EQ(raid_device.capacity(), (3 * Gi) - (32 * 3 * Ki));
     EXPECT_STREQ(raid_device.type().c_str(), "Raid0");
 
@@ -97,7 +97,7 @@ TEST(Raid0, DiffereingDeviceProbing) {
         CREATE_DISK((TestParams{.capacity = 3 * Gi, .l_size = 4 * Ki, .p_size = 4 * Ki, .can_discard = false}));
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
     // Smallest disk was 3GiB, so 2 * 3GiB
     EXPECT_EQ(raid_device.capacity(), (6 * Gi) - (32 * 2 * Ki));
 
@@ -134,7 +134,7 @@ TEST(Raid0, OpenDevices) {
     });
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
     auto fd_list = raid_device.open_for_uring(2);
     EXPECT_EQ(3, fd_list.size());
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 3)));
@@ -167,7 +167,7 @@ TEST(Raid0, SimpleRead) {
     EXPECT_CALL(*device_c, async_iov(_, _, _, _, _, _)).Times(0);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_READ);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
@@ -197,7 +197,7 @@ TEST(Raid0, SimpleWrite) {
         });
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
@@ -215,7 +215,7 @@ TEST(Raid0, SplitWrite) {
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
     void* fake_buffer;
-    (void)posix_memalign(&fake_buffer, device_a->block_size(), 96 * Ki);
+    ASSERT_EQ(0, posix_memalign(&fake_buffer, device_a->block_size(), 96 * Ki));
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
         .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd,
@@ -266,7 +266,7 @@ TEST(Raid0, SplitWrite) {
         });
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
 
@@ -301,11 +301,10 @@ TEST(Raid0, RetrySplitWritePortion) {
     EXPECT_CALL(*device_c, async_iov(_, _, _, _, _, _)).Times(0);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
-    auto const retried_route =
-        ublkpp::set_flags(ublkpp::sub_cmd_t{0b100001}, ublkpp::sub_cmd_flags::RETRIED);
+    auto const retried_route = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100001}, ublkpp::sub_cmd_flags::RETRIED);
 
     // Set the address to within the second stripe (32KiB stripes)
     auto res = raid_device.handle_rw(nullptr, &ublk_data, retried_route, nullptr, 44 * Ki, 36 * Ki);
@@ -332,7 +331,7 @@ TEST(Raid0, SimpleDiscard) {
         });
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_DISCARD);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
@@ -391,7 +390,7 @@ TEST(Raid0, MergedDiscard) {
         });
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_DISCARD);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
@@ -426,11 +425,10 @@ TEST(Raid0, MergedDiscardRetry) {
     EXPECT_CALL(*device_c, handle_discard(_, _, _, _, _)).Times(0);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_DISCARD);
-    auto const retried_route =
-        ublkpp::set_flags(ublkpp::sub_cmd_t{0b100000}, ublkpp::sub_cmd_flags::RETRIED);
+    auto const retried_route = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100000}, ublkpp::sub_cmd_flags::RETRIED);
 
     // Set the address to within the second stripe (32KiB stripes)
     auto res = raid_device.handle_discard(nullptr, &ublk_data, retried_route, 100 * Ki, 36 * Ki);
@@ -477,7 +475,7 @@ TEST(Raid0, SimpleFlush) {
         });
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_FLUSH);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
@@ -493,7 +491,7 @@ TEST(Raid0, SyncIoSuccess) {
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                              std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     auto test_op = UBLK_IO_OP_WRITE;
     auto test_off = 8 * Ki;
@@ -511,7 +509,7 @@ TEST(Raid0, SyncIoSuccess) {
 #define TEST_ACCESS(NR, SS, ADDR, LEN, DOFF, LOFF, SZ)                                                                 \
     {                                                                                                                  \
         auto const ss = (SS);                                                                                          \
-        auto [d_off, l_off, sz] = ublkpp::raid0::next_subcmd(ss * (NR), ss, (ADDR), (LEN));                       \
+        auto [d_off, l_off, sz] = ublkpp::raid0::next_subcmd(ss * (NR), ss, (ADDR), (LEN));                            \
         EXPECT_EQ((DOFF), d_off);                                                                                      \
         EXPECT_EQ((LOFF), l_off);                                                                                      \
         EXPECT_EQ((SZ), sz);                                                                                           \
