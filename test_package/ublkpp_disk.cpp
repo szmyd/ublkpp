@@ -36,27 +36,28 @@ static std::promise< int > s_stop_code;
 static void handle(int signal);
 ///
 
-using Result = folly::Expected< std::string, std::error_condition >;
+using Result = folly::Expected< std::filesystem::path, std::error_condition >;
 
 template < typename D >
-Result _run_target(boost::uuids::uuid const& vol_id, std::shared_ptr< D >&& dev) {
-    static auto target = std::make_shared< ublkpp::ublkpp_tgt >(vol_id, std::move(dev));
+Result _run_target(boost::uuids::uuid const& vol_id, std::unique_ptr< D >&& dev) {
+    static auto target = std::shared_ptr< ublkpp::ublkpp_tgt >();
 
     // Wait for initialization to complete
-    auto e = ublkpp::run(target);
-    if (!e) { return folly::makeUnexpected(e.error()); }
-    return e.value();
+    auto res = ublkpp::run(vol_id, std::move(dev));
+    if (!res) { return folly::makeUnexpected(res.error()); }
+    target = res.value();
+    return target->device_path();
 }
 
 Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
-    auto dev = std::shared_ptr< ublkpp::Raid0Disk >();
+    auto dev = std::unique_ptr< ublkpp::Raid0Disk >();
     try {
         auto devices = std::vector< std::shared_ptr< ublkpp::UblkDisk > >();
         for (auto const& disk : layout) {
             devices.push_back(std::make_shared< ublkpp::FSDisk >(disk));
         }
         if (0 < devices.size())
-            dev = std::make_shared< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(),
+            dev = std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(),
                                                         std::move(devices));
     } catch (std::runtime_error const& e) {}
     if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
@@ -64,9 +65,9 @@ Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > con
 }
 
 Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
-    auto dev = std::shared_ptr< ublkpp::Raid1Disk >();
+    auto dev = std::unique_ptr< ublkpp::Raid1Disk >();
     try {
-        dev = std::make_shared< ublkpp::Raid1Disk >(id, std::make_shared< ublkpp::FSDisk >(*layout.begin()),
+        dev = std::make_unique< ublkpp::Raid1Disk >(id, std::make_shared< ublkpp::FSDisk >(*layout.begin()),
                                                     std::make_shared< ublkpp::FSDisk >(*(layout.begin() + 1)));
     } catch (std::runtime_error const& e) {}
     if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
@@ -79,7 +80,7 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
 
-    auto dev = std::shared_ptr< ublkpp::Raid0Disk >();
+    auto dev = std::unique_ptr< ublkpp::Raid0Disk >();
     try {
         auto cnt{0U};
         auto devices = std::vector< std::shared_ptr< ublkpp::UblkDisk > >();
@@ -92,7 +93,7 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
                 devices.push_back(std::make_shared< ublkpp::Raid1Disk >(id, dev_a, new_dev));
         }
         dev =
-            std::make_shared< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(devices));
+            std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(devices));
     } catch (std::runtime_error const& e) {}
     if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
