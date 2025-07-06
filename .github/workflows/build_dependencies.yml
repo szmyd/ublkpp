@@ -189,5 +189,5 @@ jobs:
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        slug: szmyd/ublkpp
+        verbose: true
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
