@@ -92,7 +92,7 @@ pipeline {
                                 slackSend color: '#F3AD03', channel: '#sds-ci', message: "*${PROJECT}:${TAG}-${BUILD_TYPE}* is being deployed to Tess.IO"
                                 sh "conan remote login -p ${ARTIFACTORY_PASS} ebay-local _service_sds"
                                 sh "conan graph info ./ | grep 'ref: ' | awk '{print \$2}'  | sort | uniq | grep -v ${PROJECT} | grep -v '#' | while read pkg; do conan upload -r ebay-local -c \"\${pkg}\"; done"
-                                sh "conan upload ${PROJECT}/${VER} -c -r ebay-local"
+                                sh "conan upload ${PROJECT}/${TAG} -c -r ebay-local"
                             }
                         }
                     }
