@@ -1,6 +1,6 @@
 # ublkpp
 [![Conan Build](https://github.com/szmyd/ublkpp/actions/workflows/merge_build.yml/badge.svg?branch=main)](https://github.com/szmyd/ublkpp/actions/workflows/merge_build.yml)
-[![CodeCov](https://codecov.io/gh/szmyd/ublkpp/branch/main/graph/badge.svg)](https://codecov.io/gh/szmyd/ublkpp)
+[![CodeCov](https://codecov.io/gh/szmyd/ublksrv/graph/badge.svg?token=ESJJX5R3MF)](https://codecov.io/gh/szmyd/ublksrv)
 
 ## Intro
 
