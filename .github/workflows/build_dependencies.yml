@@ -190,5 +190,4 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: szmyd/ublkpp
-        gcov: true
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
