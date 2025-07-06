@@ -23,5 +23,3 @@ SISL_LOGGING_DECL(ublk_drivers)
 #define DLOGI(...) LOGINFOMOD(ublk_drivers, ##__VA_ARGS__)
 #define DLOGW(...) LOGWARNMOD(ublk_drivers, ##__VA_ARGS__)
 #define DLOGE(...) LOGERRORMOD(ublk_drivers, ##__VA_ARGS__)
-
-#define UBLK_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers

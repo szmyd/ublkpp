@@ -5,6 +5,8 @@
 #include <boost/uuid/uuid.hpp>
 #include <folly/Expected.h>
 
+#define UBLK_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers
+
 struct ublksrv_ctrl_dev;
 struct ublksrv_dev;
 struct ublksrv_dev_data;

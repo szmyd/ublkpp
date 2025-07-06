@@ -78,6 +78,15 @@ class UBlkPPConan(ConanFile):
             self.folders.build = join("build", str(self.settings.build_type))
         self.folders.generators = join(self.folders.build, "generators")
 
+        self.cpp.source.includedirs = ["src/include"]
+
+        self.cpp.build.libdirs = ["src"]
+        self.cpp.build.includedirs = ["src/include"]
+
+        self.cpp.package.libs = ["ublkpp"]
+        self.cpp.package.includedirs = ["include"] # includedirs is already set to 'include' by
+        self.cpp.package.libdirs = ["lib"]
+
     def generate(self):
         # This generates "conan_toolchain.cmake" in self.generators_folder
         tc = CMakeToolchain(self)
@@ -104,16 +113,19 @@ class UBlkPPConan(ConanFile):
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)
-        copy(self, "*.h*", join(self.source_folder, "src", "include"), join(self.package_folder, "include", "ublkpp"), keep_path=True)
+        copy(self, "*.h*", join(self.source_folder, "src", "include"), join(self.package_folder, "include"), keep_path=True)
         copy(self, "*.a", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 
     def package_info(self):
-        if self.settings.build_type == "Debug":
-            if self.options.sanitize:
-                self.cpp_info.sharedlinkflags.append("-fsanitize=address")
-                self.cpp_info.exelinkflags.append("-fsanitize=address")
-                self.cpp_info.sharedlinkflags.append("-fsanitize=undefined")
-                self.cpp_info.exelinkflags.append("-fsanitize=undefined")
-            elif self.options.coverage == 'True':
-                self.cpp_info.system_libs.append('gcov')
+        for component in self.cpp_info.components.values():
+            if self.options.get_safe("sanitize"):
+                component.sharedlinkflags.append("-fsanitize=address")
+                component.exelinkflags.append("-fsanitize=address")
+                component.sharedlinkflags.append("-fsanitize=undefined")
+                component.exelinkflags.append("-fsanitize=undefined")
+
+        self.cpp_info.set_property("cmake_file_name", "UblkPP")
+        self.cpp_info.set_property("cmake_target_name", "UblkPP::UblkPP")
+        self.cpp_info.names["cmake_find_package"] = "UblkPP"
+        self.cpp_info.names["cmake_find_package_multi"] = "UblkPP"

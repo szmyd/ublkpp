@@ -174,7 +174,9 @@ static run_result_t start(std::shared_ptr< ublkpp_tgt > tgt) {
         return folly::makeUnexpected(std::error_condition(err, std::system_category()));
 
     static auto const sys_path = std::filesystem::path{"/"} / "dev";
-    return sys_path / fmt::format("ublkb{}", dev_id);
+    auto const res = sys_path / fmt::format("ublkb{}", dev_id);
+    TLOGI("Device exposed as UBD device: [{}]", res.native());
+    return res;
 }
 
 using co_handle_type = std::coroutine_handle<>;
@@ -384,7 +386,7 @@ run_result_t run(std::shared_ptr< ublkpp_tgt > tgt) {
         .reserved = {0, 0, 0, 0, 0} // Reserved
     });
 
-    TLOGI("Starting {}", static_pointer_cast< UblkDisk >(tgt->device))
+    TLOGD("Starting {}", static_pointer_cast< UblkDisk >(tgt->device))
     tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
         .dev_id = -1,
         .max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >(),
