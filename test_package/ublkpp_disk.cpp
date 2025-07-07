@@ -37,16 +37,16 @@ static void handle(int signal);
 ///
 
 using Result = folly::Expected< std::filesystem::path, std::error_condition >;
+static auto k_target = std::unique_ptr< ublkpp::ublkpp_tgt >();
 
 template < typename D >
 Result _run_target(boost::uuids::uuid const& vol_id, std::unique_ptr< D >&& dev) {
-    static auto target = std::shared_ptr< ublkpp::ublkpp_tgt >();
 
     // Wait for initialization to complete
-    auto res = ublkpp::run(vol_id, std::move(dev));
+    auto res = ublkpp::ublkpp_tgt::run(vol_id, std::move(dev));
     if (!res) { return folly::makeUnexpected(res.error()); }
-    target = res.value();
-    return target->device_path();
+    k_target = std::move(res.value());
+    return k_target->device_path();
 }
 
 Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
@@ -126,6 +126,7 @@ int main(int argc, char* argv[]) {
     if (!res) return -1;
 
     exit_future.wait();
+    k_target.reset();
     return exit_future.get();
 }
 
