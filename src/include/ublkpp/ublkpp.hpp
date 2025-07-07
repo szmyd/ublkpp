@@ -13,17 +13,16 @@ class UblkDisk;
 struct ublkpp_tgt_impl;
 
 struct ublkpp_tgt {
-    ublkpp_tgt(std::shared_ptr<ublkpp_tgt_impl> p);
+    using run_result_t = folly::Expected< std::unique_ptr< ublkpp_tgt >, std::error_condition >;
+
     ~ublkpp_tgt();
 
+    static run_result_t run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > device);
     std::filesystem::path device_path() const;
 
 private:
+    explicit ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p);
     std::shared_ptr< ublkpp_tgt_impl > _p;
 };
-
-using run_result_t = folly::Expected< std::shared_ptr< ublkpp_tgt >, std::error_condition >;
-
-extern run_result_t run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > device);
 
 } // namespace ublkpp

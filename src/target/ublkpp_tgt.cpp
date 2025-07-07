@@ -384,7 +384,7 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 }
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
-run_result_t run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > device) {
+ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > device) {
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, std::move(device));
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
@@ -427,7 +427,8 @@ run_result_t run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > d
     if (!res) return folly::makeUnexpected(res.error());
     tgt->device_path = res.value();
 
-    return std::make_shared< ublkpp_tgt >(tgt);
+    auto new_tgt = new ublkpp_tgt(tgt);
+    return std::unique_ptr< ublkpp_tgt >(new_tgt);
 }
 
 ublkpp_tgt::ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p) : _p(p) {}
