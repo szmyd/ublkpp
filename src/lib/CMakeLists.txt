@@ -16,3 +16,5 @@ target_link_libraries(ublk_disk
     sisl::sisl
     ublksrv::ublksrv
 )
+
+add_subdirectory (tests)

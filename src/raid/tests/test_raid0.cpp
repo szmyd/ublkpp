@@ -7,8 +7,8 @@
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid0.hpp"
-#include "raid0_impl.hpp"
-#include "superblock.hpp"
+#include "raid/raid0_impl.hpp"
+#include "raid/superblock.hpp"
 #include "test_disk.hpp"
 
 SISL_LOGGING_INIT(ublk_raid)
