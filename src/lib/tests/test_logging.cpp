@@ -6,6 +6,7 @@
 #include <ublksrv_utils.h>
 
 #include "lib/logging.hpp"
+#include "tests/test_disk.hpp"
 
 SISL_LOGGING_INIT(ublksrv)
 
@@ -16,6 +17,12 @@ TEST(Logging, FlagSetting) {
     ublk_ctrl_dbg(0, "Test Ctrl Debug Log %s", "string_param");
     ublk_err("Test Debug Log %p", nullptr);
     ublk_log("Test ::ublk_log %f", 1.1);
+}
+
+TEST(UblkDisk, ToString) {
+    auto test_disk = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = ublkpp::Gi});
+    LOGINFO("Test disk: {}", test_disk);
+    EXPECT_STREQ("TestDisk", test_disk->type().c_str());
 }
 
 int main(int argc, char* argv[]) {

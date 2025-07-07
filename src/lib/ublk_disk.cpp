@@ -5,16 +5,6 @@
 
 #include "logging.hpp"
 
-/*
- * Our convention is to use this macro instead of raw `co_await` to make it
- * easy to log `tag` when debugging coroutine issues.
- */
-#define co_await__suspend_always(tag)                                                                                  \
-    {                                                                                                                  \
-        static_assert(std::is_same< decltype(tag), int >::value, "tag not int");                                       \
-        co_await std::suspend_always();                                                                                \
-    }
-
 namespace ublkpp {
 
 UblkDisk::UblkDisk() :
