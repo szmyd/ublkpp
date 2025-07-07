@@ -9,6 +9,7 @@ add_executable(test_logging)
 target_sources(test_logging PRIVATE
    test_logging.cpp
   $<TARGET_OBJECTS:logging>
+  $<TARGET_OBJECTS:ublk_disk>
 )
 target_link_libraries (test_logging
   GTest::gmock

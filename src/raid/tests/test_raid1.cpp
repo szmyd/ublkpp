@@ -9,7 +9,7 @@
 #include "ublkpp/raid/raid1.hpp"
 #include "raid/raid1_impl.hpp"
 #include "raid/superblock.hpp"
-#include "test_disk.hpp"
+#include "tests/test_disk.hpp"
 
 #define ENABLED_OPTIONS logging, raid1
 

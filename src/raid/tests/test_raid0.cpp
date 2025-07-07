@@ -9,7 +9,7 @@
 #include "ublkpp/raid/raid0.hpp"
 #include "raid/raid0_impl.hpp"
 #include "raid/superblock.hpp"
-#include "test_disk.hpp"
+#include "tests/test_disk.hpp"
 
 SISL_LOGGING_INIT(ublk_raid)
 

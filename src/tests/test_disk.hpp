@@ -2,6 +2,8 @@
 
 #include "ublkpp/lib/ublk_disk.hpp"
 
+#include <ublksrv.h>
+
 using ::ublkpp::ilog2;
 using ::ublkpp::Ki;
 
