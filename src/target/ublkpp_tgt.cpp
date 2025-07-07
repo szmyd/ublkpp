@@ -26,8 +26,29 @@ using namespace std::chrono_literals;
 
 namespace ublkpp {
 
+struct ublkpp_tgt_impl {
+    bool device_added{false};
+    boost::uuids::uuid volume_uuid;
+    std::filesystem::path device_path;
+    // Owned by us
+    std::shared_ptr< UblkDisk > device;
+    std::unique_ptr< ublksrv_tgt_type const > tgt_type;
+
+    // Owned by libublksrv
+    ublksrv_ctrl_dev* ctrl_dev{nullptr};
+    ublksrv_dev const* ublk_dev{nullptr};
+
+    // Owned by us
+    std::unique_ptr< ublksrv_dev_data > dev_data;
+
+    ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d) :
+            volume_uuid(vol_id), device(std::move(d)) {}
+
+    ~ublkpp_tgt_impl();
+};
+
 static std::mutex _map_lock;
-static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt > > _init_map;
+static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt_impl > > _init_map;
 
 constexpr auto k_max_time = 1s;
 
@@ -98,7 +119,7 @@ static void* ublksrv_queue_handler(ublksrv_dev const* dev, int q_id, sem_t* queu
     return NULL;
 }
 
-static run_result_t start(std::shared_ptr< ublkpp_tgt > tgt) {
+static folly::Expected< std::filesystem::path, std::error_condition > start(std::shared_ptr< ublkpp_tgt_impl > tgt) {
     TLOGD("Initializing Ctrl Device")
     if (tgt->ctrl_dev = ublksrv_ctrl_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
         TLOGE("Cannot init disk {}", tgt->device)
@@ -316,7 +337,7 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     // Find the registered disk in the disk map and set the tgt_data
     // to its RAW pointer. This will be handed to handle_io_async for each I/O
     // so we have the context of which disk is receiving I/O.
-    auto tgt = std::shared_ptr< ublkpp_tgt >();
+    auto tgt = std::shared_ptr< ublkpp_tgt_impl >();
     auto cdev = ublksrv_get_ctrl_dev(dev);
     {
         auto lk = std::scoped_lock< std::mutex >(_map_lock);
@@ -363,7 +384,8 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 }
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
-run_result_t run(std::shared_ptr< ublkpp_tgt > tgt) {
+run_result_t run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > device) {
+    auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, std::move(device));
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
         .tgt_io_done = tgt_io_done,
@@ -401,13 +423,20 @@ run_result_t run(std::shared_ptr< ublkpp_tgt > tgt) {
         .ublksrv_flags = 0,
         .reserved = {0, 0, 0, 0, 0, 0, 0},
     });
-    return start(std::move(tgt));
+    auto res = start(tgt);
+    if (!res) return folly::makeUnexpected(res.error());
+    tgt->device_path = res.value();
+
+    return std::make_shared< ublkpp_tgt >(tgt);
 }
 
-ublkpp_tgt::ublkpp_tgt(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk >&& d) :
-        volume_uuid(vol_id), device(std::move(d)) {}
+ublkpp_tgt::ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p) : _p(p) {}
 
-ublkpp_tgt::~ublkpp_tgt() {
+ublkpp_tgt::~ublkpp_tgt() = default;
+
+std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; }
+
+ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     TLOGI("Stopping {}", device)
     if (ublk_dev) {
         ublksrv_ctrl_stop_dev(ctrl_dev);
