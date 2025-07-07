@@ -7,8 +7,8 @@
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid1.hpp"
-#include "raid1_impl.hpp"
-#include "superblock.hpp"
+#include "raid/raid1_impl.hpp"
+#include "raid/superblock.hpp"
 #include "test_disk.hpp"
 
 #define ENABLED_OPTIONS logging, raid1

@@ -18,5 +18,4 @@ target_link_libraries(raid1
     ublksrv::ublksrv
 )
 
-include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory (tests)
