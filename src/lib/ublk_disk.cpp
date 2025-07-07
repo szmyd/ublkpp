@@ -1,6 +1,7 @@
 #include "ublkpp/lib/ublk_disk.hpp"
 
 #include <ublksrv.h>
+#include <ublk_cmd.h>
 
 #include "logging.hpp"
 
@@ -17,7 +18,7 @@
 namespace ublkpp {
 
 UblkDisk::UblkDisk() :
-        _params{
+        _params(std::make_unique< ublk_params >(ublk_params{
             .len = 0,
             .types = UBLK_PARAM_TYPE_BASIC | UBLK_PARAM_TYPE_DMA_ALIGN,
             .basic =
@@ -49,7 +50,9 @@ UblkDisk::UblkDisk() :
                     .alignment = 511,
                     .pad = {0},
                 },
-        } {}
+        })) {}
+
+UblkDisk::~UblkDisk() = default;
 
 io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
                               uint32_t const len, uint64_t const addr) {
@@ -81,4 +84,13 @@ io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* dat
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
 }
+
+std::string UblkDisk::to_string() const {
+    return fmt::format("{}: params:[cap={},lbs={},pbs={},discard={},direct={}]", type(), capacity(), block_size(),
+                       1 << params()->basic.physical_bs_shift, can_discard(), direct_io);
+}
+uint32_t UblkDisk::block_size() const { return 1 << _params->basic.logical_bs_shift; }
+bool UblkDisk::can_discard() const { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
+uint64_t UblkDisk::capacity() const { return _params->basic.dev_sectors << SECTOR_SHIFT; }
+
 } // namespace ublkpp

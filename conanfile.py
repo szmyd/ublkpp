@@ -10,7 +10,7 @@ required_conan_version = ">=1.60.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.2.0"
+    version = "0.2.1"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -66,7 +66,7 @@ class UBlkPPConan(ConanFile):
 
     def requirements(self):
         self.requires("sisl/[^12.3]@oss/master", transitive_headers=True)
-        self.requires("ublksrv/nbi.1.5.0", transitive_headers=True)
+        self.requires("ublksrv/nbi.1.5.0")
 
     def layout(self):
         self.folders.source = "."

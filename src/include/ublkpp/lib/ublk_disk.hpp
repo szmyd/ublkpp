@@ -5,7 +5,6 @@
 #include <string>
 
 #include <folly/Expected.h>
-#include <ublk_cmd.h>
 
 #include "common.hpp"
 #include "sub_cmd.hpp"
@@ -13,26 +12,29 @@
 struct iovec;
 struct ublk_io_data;
 struct ublksrv_queue;
+struct ublk_params;
 
 namespace ublkpp {
 
 using io_result = folly::Expected< size_t, std::error_condition >;
 class UblkDisk : public std::enable_shared_from_this< UblkDisk > {
-    ublk_params _params;
+    std::unique_ptr< ublk_params > _params;
 
 public:
     bool direct_io{false};
 
     explicit UblkDisk();
-    virtual ~UblkDisk() = default;
+    virtual ~UblkDisk();
 
     // Constant parameters for device
-    uint32_t block_size() const { return 1 << _params.basic.logical_bs_shift; }
-    bool can_discard() const { return _params.types & UBLK_PARAM_TYPE_DISCARD; }
+    uint32_t block_size() const;
+    bool can_discard() const;
+    uint64_t capacity() const;
 
-    ublk_params* params() { return &_params; }
-    ublk_params const* params() const { return &_params; }
-    uint64_t capacity() const { return _params.basic.dev_sectors << SECTOR_SHIFT; }
+    ublk_params* params() { return _params.get(); }
+    ublk_params const* params() const { return _params.get(); }
+
+    std::string to_string() const;
 
     // Target entry-point for I/O
     io_result queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
@@ -62,34 +64,7 @@ public:
     ///
 };
 
+inline auto format_as(UblkDisk const& device) { return fmt::format("{}", device.to_string()); }
+inline auto format_as(std::shared_ptr< UblkDisk > const& p) { return fmt::format("{}", *p); }
+
 } // namespace ublkpp
-
-namespace fmt {
-template <>
-struct formatter< ublkpp::UblkDisk > {
-    template < typename ParseContext >
-    constexpr auto parse(ParseContext& ctx) {
-        return ctx.begin();
-    }
-
-    template < typename FormatContext >
-    auto format(ublkpp::UblkDisk const& device, FormatContext& ctx) {
-        return fmt::format_to(ctx.out(), "{}: params:[cap={},lbs={},pbs={},discard={},direct={}]", device.type(),
-                              device.capacity(), device.block_size(), 1 << device.params()->basic.physical_bs_shift,
-                              device.can_discard(), device.direct_io);
-    }
-};
-
-template <>
-struct formatter< std::shared_ptr< ublkpp::UblkDisk > > {
-    template < typename ParseContext >
-    constexpr auto parse(ParseContext& ctx) {
-        return ctx.begin();
-    }
-
-    template < typename FormatContext >
-    auto format(std::shared_ptr< ublkpp::UblkDisk > const& device_ptr, FormatContext& ctx) {
-        return fmt::format_to(ctx.out(), "{}", *device_ptr);
-    }
-};
-} // namespace fmt
