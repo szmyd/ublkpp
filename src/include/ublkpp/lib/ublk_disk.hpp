@@ -23,13 +23,18 @@ class UblkDisk : public std::enable_shared_from_this< UblkDisk > {
 public:
     bool direct_io{false};
 
+    // If this is `true` the tgt will expect the Device to call `ublksrv_complete_io`
+    bool uses_ublk_iouring{true};
+
     explicit UblkDisk();
     virtual ~UblkDisk();
 
     // Constant parameters for device
+    // ================
     uint32_t block_size() const;
     bool can_discard() const;
     uint64_t capacity() const;
+    // ================
 
     ublk_params* params() { return _params.get(); }
     ublk_params const* params() const { return _params.get(); }
@@ -46,6 +51,8 @@ public:
 
     // Number of bits for sub_cmd routing in the sqe user_data
     virtual uint8_t route_size() const { return 0; }
+
+    virtual void handle_event(ublksrv_queue const*) {}
 
     virtual io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) = 0;
 

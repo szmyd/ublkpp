@@ -90,15 +90,16 @@ static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
     sched_setaffinity(0, sizeof(set), &set);
 }
 
-static void* ublksrv_queue_handler(ublksrv_dev const* dev, int q_id, sem_t* queue_sem) {
-    auto cdev = ublksrv_get_ctrl_dev(dev);
+static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
+    auto cdev = ublksrv_get_ctrl_dev(target->ublk_dev);
 
     ublk_json_write_queue_info(cdev, q_id, ublksrv_gettid());
 
     ublksrv_queue const* q;
     auto dev_id = ublksrv_ctrl_get_dev_info(cdev)->dev_id;
-    if (q = ublksrv_queue_init_flags(
-            dev, q_id, NULL, IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+    if (q = ublksrv_queue_init_flags(target->ublk_dev, q_id, target.get(),
+                                     IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER |
+                                         IORING_SETUP_DEFER_TASKRUN);
         !q) {
         ublk_err("ublk dev %d queue %d init queue failed", dev_id, q_id);
         sem_post(queue_sem);
@@ -180,8 +181,7 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
     sem_t queue_sem;
     sem_init(&queue_sem, 0, 0);
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
-        sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt->ublk_dev, i, &queue_sem)
-            .detach();
+        sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt, i, &queue_sem).detach();
     }
 
     // Wait for Queues to start
@@ -258,8 +258,12 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     // cause this amplification of operations.
     auto io_res = device->queue_tgt_io(q, data, 0);
     if (!io_res) {
-        TLOGE("IO Failed Immediately to queue io [tag:{}], err: [{}]", data->tag, io_res.error().message())
-        ublksrv_complete_io(q, data->tag, -EIO);
+        // This is a *Special* err that indicates the lower-layer will call ublksrv_complete_io as it was not
+        // enqueued to the ublksrv io_uring device.
+        if (std::errc::operation_in_progress != io_res.error()) {
+            TLOGE("IO Failed Immediately to queue io [tag:{}], err: [{}]", data->tag, io_res.error().message())
+            ublksrv_complete_io(q, data->tag, -EIO);
+        }
         co_return;
     }
     auto io_cnt = io_res.value();
@@ -383,24 +387,31 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     return 0;
 }
 
+static void handle_event(ublksrv_queue const* q) {
+    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
+    tgt->device->handle_event(q);
+}
+
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
 ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > device) {
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, std::move(device));
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
         .tgt_io_done = tgt_io_done,
-        .handle_event = nullptr,         // Not Implemented
+        .handle_event = tgt->device->uses_ublk_iouring
+            ? nullptr
+            : handle_event, // Device specific, determines *if* ublksrv_complete_io() will be called by device
         .handle_io_background = nullptr, // Not Implemented
         .usage_for_add = nullptr,        // Not Implemented
         .init_tgt = init_tgt,
-        .deinit_tgt = nullptr,   // Not Implemented
-        .alloc_io_buf = nullptr, // Not Implemented
-        .free_io_buf = nullptr,  // Not Implemented
-        .idle_fn = nullptr,      // Not Implemented
-        .type = 0,               // Deprecated
-        .ublk_flags = 0,         // Currently Clear
-        .ublksrv_flags = 0,      // Currently Clear
-        .pad = 0,                // Currently Clear
+        .deinit_tgt = nullptr,                                                                     // Not Implemented
+        .alloc_io_buf = nullptr,                                                                   // Not Implemented
+        .free_io_buf = nullptr,                                                                    // Not Implemented
+        .idle_fn = nullptr,                                                                        // Not Implemented
+        .type = 0,                                                                                 // Deprecated
+        .ublk_flags = 0,                                                                           // Currently Clear
+        .ublksrv_flags = (tgt->device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
+        .pad = 0,                                                                                  // Currently Clear
         .name = "ublkpp",
         .recovery_tgt = nullptr,    // Deprecated
         .init_queue = nullptr,      // Not Implemented
@@ -419,8 +430,8 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .tgt_argc = 0,
         .tgt_argv = nullptr,
         .run_dir = nullptr,
-        .flags = 0,
-        .ublksrv_flags = 0,
+        .flags = tgt->tgt_type->ublk_flags,
+        .ublksrv_flags = tgt->tgt_type->ublksrv_flags,
         .reserved = {0, 0, 0, 0, 0, 0, 0},
     });
     auto res = start(tgt);
