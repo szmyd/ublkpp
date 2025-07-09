@@ -35,6 +35,7 @@ public:
     std::string type() const override { return std::string("TestDisk"); }
 
     MOCK_METHOD(std::list< int >, open_for_uring, (int const), (override));
+    MOCK_METHOD(void, handle_event, (ublksrv_queue const*), (override));
     MOCK_METHOD(io_result, handle_flush, (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t), (override));
     MOCK_METHOD(io_result, handle_discard, (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, uint32_t, uint64_t),
                 (override));

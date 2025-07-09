@@ -76,6 +76,12 @@ std::list< int > Raid0Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
+void Raid0Disk::handle_event(ublksrv_queue const* q) {
+    for (auto const& stripe : _stripe_array) {
+        stripe->dev->handle_event(q);
+    }
+}
+
 io_result Raid0Disk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());

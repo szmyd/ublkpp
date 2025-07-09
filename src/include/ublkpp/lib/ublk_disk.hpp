@@ -52,7 +52,7 @@ public:
     // Number of bits for sub_cmd routing in the sqe user_data
     virtual uint8_t route_size() const { return 0; }
 
-    virtual void handle_event(ublksrv_queue const*) {}
+    virtual void handle_event(ublksrv_queue const*) = 0;
 
     virtual io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) = 0;
 

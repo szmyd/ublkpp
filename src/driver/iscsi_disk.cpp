@@ -6,6 +6,7 @@
 extern "C" {
 #include <iscsi/iscsi.h>
 #include <iscsi/scsi-lowlevel.h>
+#include <poll.h>
 }
 
 #include "lib/logging.hpp"
@@ -47,14 +48,14 @@ static std::unique_ptr< iscsi_session > iscsi_connect(std::string const& url) {
     auto session = std::make_unique< iscsi_session >();
     DEBUG_ASSERT(session, "Failed to allocate iSCSI session!");
 
-    if (session->ctx = iscsi_create_context("iqn.2002-10.com.ronnie:client"); !session->ctx) {
+    if (session->ctx = iscsi_create_context("iqn.2002-10.com.ublkpp:client"); !session->ctx) {
         DLOGE("failed to init context")
         return nullptr;
     }
     iscsi_set_log_level(session->ctx, (spdlog::level::level_enum::critical - module_level_ublk_drivers) * 2);
     iscsi_set_log_fn(session->ctx, iscsi_log);
 
-    if (iscsi_set_alias(session->ctx, "ronnie")) return nullptr;
+    if (iscsi_set_alias(session->ctx, "ublkpp")) return nullptr;
 
     // Attempt to parse the URL
     session->url = iscsi_parse_full_url(session->ctx, url.data());
@@ -148,6 +149,27 @@ iSCSIDisk::iSCSIDisk(std::string const& url) {
 
 iSCSIDisk::~iSCSIDisk() = default;
 
+// Initialize our event loop before we start getting I/O
+std::list< int > iSCSIDisk::open_for_uring(int const) {
+    std::thread([ctx = _session->ctx] {
+        auto pfd = pollfd{.fd = iscsi_get_fd(ctx), .events = 0, .revents = 0};
+        while (true) {
+            pfd.events = iscsi_which_events(ctx);
+            DLOGT("polling...")
+            if (poll(&pfd, 1, -1) < 0) {
+                DLOGE("Poll failed: {}", strerror(errno))
+                break;
+            }
+            DLOGT("poll awoke")
+            if (iscsi_service(ctx, pfd.revents) < 0) {
+                DLOGE("iSCSI failed: {}", iscsi_get_error(ctx))
+                break;
+            }
+        }
+    }).detach();
+    return {};
+}
+
 void iSCSIDisk::handle_event(ublksrv_queue const* q) {
     decltype(pending_results) completed_results;
     {
@@ -156,7 +178,7 @@ void iSCSIDisk::handle_event(ublksrv_queue const* q) {
     }
     ublksrv_queue_handled_event(q);
     for (auto& i : completed_results) {
-        DLOGT("Completing [tag:{}|result:{}]", i.tag, i.result);
+        DLOGT("Completing [tag:{}|result:{}]", i.tag, i.result)
         ublksrv_complete_io(q, i.tag, i.result);
     }
 }
@@ -191,6 +213,7 @@ void iSCSIDisk::__rw_async_cb(ublksrv_queue const* q, int tag, int status, int r
 
 void iscsi_rw_cb(iscsi_context*, int status, void* data, void* private_data) {
     auto cb_data = reinterpret_cast< iscsi_cb_data* >(private_data);
+    DLOGD("Got iSCSI completion: [tag:{}], status: {}", cb_data->tag, status)
     cb_data->device->__rw_async_cb(cb_data->queue, cb_data->tag, status, cb_data->len);
     scsi_free_scsi_task(reinterpret_cast< scsi_task* >(data));
 }
@@ -207,28 +230,24 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
           lba, len, sub_cmd)
 
     auto cb_data = new iscsi_cb_data(data->tag, dynamic_pointer_cast< iSCSIDisk >(shared_from_this()), q, len);
+    scsi_task* task{nullptr};
     switch (op) {
     case UBLK_IO_OP_READ: {
-        if (auto task =
-                iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
-                                       iscsi_rw_cb, cb_data, reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
-            !task) {
-            DLOGE("Failed to read16 to iSCSI LUN. {}", iscsi_get_error(_session->ctx));
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-        }
+        task = iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
+                                      iscsi_rw_cb, cb_data, reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
     } break;
     case UBLK_IO_OP_WRITE: {
-        if (auto task =
-                iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
-                                       iscsi_rw_cb, cb_data, reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
-            !task) {
-            DLOGE("Failed to write16 to iSCSI LUN. {}", iscsi_get_error(_session->ctx));
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-        }
+        task = iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
+                                      iscsi_rw_cb, cb_data, reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
     } break;
     default: {
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
+    }
+
+    if (!task) {
+        DLOGE("Failed {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE", iscsi_get_error(_session->ctx))
+        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
     return folly::makeUnexpected(std::make_error_condition(std::errc::operation_in_progress));
 }

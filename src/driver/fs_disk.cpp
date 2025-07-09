@@ -100,6 +100,8 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     return sqe;
 }
 
+void FSDisk::handle_event(ublksrv_queue const*) {}
+
 io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
     DLOGT("Flush {} : [tag:{}] ublk io [sub_cmd:{:b}]", data->tag, _path.native(), sub_cmd)
