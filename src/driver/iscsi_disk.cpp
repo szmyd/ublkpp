@@ -10,6 +10,8 @@ extern "C" {
 
 #include "lib/logging.hpp"
 
+SISL_LOGGING_DEF(libiscsi)
+
 namespace ublkpp {
 
 /// TODO Should be discoverable from Inquiry Pages
@@ -31,13 +33,13 @@ struct iscsi_session {
 
 static void iscsi_log(int level, const char* message) {
     if (1 >= level) {
-        DLOGE("{}", message);
+        LOGERRORMOD(libiscsi, "{}", message);
     } else if (2 == level) {
-        DLOGI("{}", message);
+        LOGINFOMOD(libiscsi, "{}", message);
     } else if (3 == level) {
-        DLOGD("{}", message);
+        LOGDEBUGMOD(libiscsi, "{}", message);
     } else {
-        DLOGT("{}", message);
+        LOGTRACEMOD(libiscsi, "{}", message);
     }
 }
 
@@ -255,9 +257,10 @@ io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     }
     }
     if (!task || task->status != SCSI_STATUS_GOOD) {
-        DLOGE("Failed to write16 to iSCSI LUN. {}", iscsi_get_error(_session->ctx));
+        DLOGE("Failed to {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+              iscsi_get_error(_session->ctx));
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
-    return 0;
+    return len;
 }
 } // namespace ublkpp
