@@ -44,12 +44,14 @@ static std::unique_ptr< iscsi_session > iscsi_init(std::string const& url) {
     auto session = std::make_unique< iscsi_session >();
     DEBUG_ASSERT(session, "Failed to allocate iSCSI session!");
 
-    if (session->ctx = iscsi_create_context("ublk_nublox"); !session->ctx) {
+    if (session->ctx = iscsi_create_context("iqn.2012-05.com.ebay.corp:ublk_client"); !session->ctx) {
         DLOGE("failed to init context")
         return nullptr;
     }
     iscsi_set_log_level(session->ctx, (spdlog::level::level_enum::critical - module_level_ublk_drivers) * 2);
     iscsi_set_log_fn(session->ctx, iscsi_log);
+
+    if (iscsi_set_alias(session->ctx, "ublk_client")) return nullptr;
 
     // Attempt to parse the URL
     session->url = iscsi_parse_full_url(session->ctx, url.data());
@@ -59,7 +61,7 @@ static std::unique_ptr< iscsi_session > iscsi_init(std::string const& url) {
     }
 
     iscsi_set_session_type(session->ctx, ISCSI_SESSION_NORMAL);
-    iscsi_set_header_digest(session->ctx, ISCSI_HEADER_DIGEST_NONE_CRC32C);
+    iscsi_set_header_digest(session->ctx, ISCSI_HEADER_DIGEST_NONE);
     iscsi_set_targetname(session->ctx, session->url->target);
 
     if (session->logged_in = (0 == iscsi_full_connect_sync(session->ctx, session->url->portal, session->url->lun));
