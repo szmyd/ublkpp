@@ -5,7 +5,7 @@
 #include <boost/uuid/uuid.hpp>
 #include <folly/Expected.h>
 
-#define UBLK_LOG_MODS ublksrv, ublk_tgt, ublk_raid, ublk_drivers
+#define UBLK_LOG_MODS ublksrv, ublk_tgt, ublk_raid, ublk_drivers, libiscsi
 
 namespace ublkpp {
 
