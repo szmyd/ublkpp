@@ -12,19 +12,20 @@ extern "C" {
 
 namespace ublkpp {
 
-/// TODO These should be discoverable from Inquiry Pages
-constexpr auto k_logical_block_size = 4 * Ki;
-constexpr auto k_physical_block_size = k_logical_block_size;
+/// TODO Should be discoverable from Inquiry Pages
+constexpr auto k_physical_block_size = 4 * Ki;
 
 struct iscsi_session {
     ~iscsi_session() {
         if (logged_in) iscsi_logout_sync(ctx);
+        if (logged_in || attached) iscsi_disconnect(ctx);
         if (url) iscsi_destroy_url(url);
         if (ctx) iscsi_destroy_context(ctx);
     }
 
     iscsi_context* ctx{nullptr};
     iscsi_url* url{nullptr};
+    bool attached{false};
     bool logged_in{false};
 };
 
@@ -40,18 +41,18 @@ static void iscsi_log(int level, const char* message) {
     }
 }
 
-static std::unique_ptr< iscsi_session > iscsi_init(std::string const& url) {
+static std::unique_ptr< iscsi_session > iscsi_connect(std::string const& url) {
     auto session = std::make_unique< iscsi_session >();
     DEBUG_ASSERT(session, "Failed to allocate iSCSI session!");
 
-    if (session->ctx = iscsi_create_context("iqn.2012-05.com.ebay.corp:ublk_client"); !session->ctx) {
+    if (session->ctx = iscsi_create_context("iqn.2002-10.com.ronnie:client"); !session->ctx) {
         DLOGE("failed to init context")
         return nullptr;
     }
     iscsi_set_log_level(session->ctx, (spdlog::level::level_enum::critical - module_level_ublk_drivers) * 2);
     iscsi_set_log_fn(session->ctx, iscsi_log);
 
-    if (iscsi_set_alias(session->ctx, "ublk_client")) return nullptr;
+    if (iscsi_set_alias(session->ctx, "ronnie")) return nullptr;
 
     // Attempt to parse the URL
     session->url = iscsi_parse_full_url(session->ctx, url.data());
@@ -60,20 +61,44 @@ static std::unique_ptr< iscsi_session > iscsi_init(std::string const& url) {
         return nullptr;
     }
 
+    if (session->attached = (0 == iscsi_connect_sync(session->ctx, session->url->portal)); !session->attached) {
+        return nullptr;
+    }
+
+    iscsi_set_session_type(session->ctx, ISCSI_SESSION_DISCOVERY);
+    if (session->logged_in = (0 == iscsi_login_sync(session->ctx)); !session->logged_in) {
+        DLOGE("{}", iscsi_get_error(session->ctx))
+        return nullptr;
+    }
+
+    auto discovery_addr = iscsi_discovery_sync(session->ctx);
+    if (!discovery_addr) {
+        DLOGE("{}", iscsi_get_error(session->ctx))
+        return nullptr;
+    }
+    session->logged_in = !(0 == iscsi_logout_sync(session->ctx));
+    session->attached = !(0 == iscsi_disconnect(session->ctx));
+
+    strcpy(session->url->portal, discovery_addr->portals->portal);
+    if (0 != strcmp(session->url->target, discovery_addr->target_name)) {
+        DLOGE("Discovered a different target than expected: [{}] discovered: [{}]", session->url->target,
+              discovery_addr->target_name);
+        return nullptr;
+    }
+    return session;
+}
+
+static bool iscsi_login(std::unique_ptr< iscsi_session >& session) {
     iscsi_set_session_type(session->ctx, ISCSI_SESSION_NORMAL);
     iscsi_set_header_digest(session->ctx, ISCSI_HEADER_DIGEST_NONE);
     iscsi_set_targetname(session->ctx, session->url->target);
 
     if (session->logged_in = (0 == iscsi_full_connect_sync(session->ctx, session->url->portal, session->url->lun));
         !session->logged_in) {
-        return nullptr;
-    }
-
-    if (iscsi_mt_service_thread_start(session->ctx)) {
         DLOGE("{}", iscsi_get_error(session->ctx))
-        return nullptr;
+        return false;
     }
-    return session;
+    return session->logged_in;
 }
 
 static std::pair< uint64_t, uint32_t > probe_topology(std::unique_ptr< iscsi_session >& session) {
@@ -89,9 +114,9 @@ static std::pair< uint64_t, uint32_t > probe_topology(std::unique_ptr< iscsi_ses
     if (auto rc16 = static_cast< scsi_readcapacity16* >(scsi_datain_unmarshall(task)); rc16) {
         capacity = rc16->block_length * (rc16->returned_lba + 1);
         block_size = rc16->block_length;
-        DLOGD("Discovered LUN with [sz:{}|bs:{}]", capacity, block_size)
+        DLOGD("Logged into LUN with [sz:{}|bs:{}]", capacity, block_size)
     } else
-        DLOGE("failed to unmarshall readcapacity16 data")
+        DLOGE("Failed to unmarshall ReadCapacity16 data")
     scsi_free_scsi_task(task);
     return std::make_pair(capacity, block_size);
 }
@@ -100,13 +125,14 @@ iSCSIDisk::iSCSIDisk(std::string const& url) {
     direct_io = true;
     uses_ublk_iouring = false;
 
-    // Try to do iSCSI Login
-    if (_session = iscsi_init(url); !_session)
+    // Establish iSCSI login
+    if (_session = iscsi_connect(url); !_session)
         throw std::runtime_error(fmt::format("Failed to attach iSCSI target: {}", url));
+    if (!iscsi_login(_session)) throw std::runtime_error("Could not login to target");
 
-    auto const [capacity, block_size] = probe_topology(_session);
+    auto const [capacity, lba_size] = probe_topology(_session);
     if (0 == capacity) throw std::runtime_error("Could not probe LUN to discover capacity");
-    auto const block_shift = ilog2(block_size);
+    auto const block_shift = ilog2(lba_size);
 
     auto& our_params = *params();
     our_params.basic.logical_bs_shift = static_cast< uint8_t >(block_shift);
@@ -115,7 +141,7 @@ iSCSIDisk::iSCSIDisk(std::string const& url) {
 
     // TODO Implement discard
     our_params.types |= ~UBLK_PARAM_TYPE_DISCARD;
-    DLOGD("iSCSI device [{}:{}:{}]!", _session->url->target, k_logical_block_size, k_physical_block_size)
+    DLOGD("iSCSI device [{}:{}:{}]!", _session->url->target, lba_size, k_physical_block_size)
 }
 
 iSCSIDisk::~iSCSIDisk() = default;
