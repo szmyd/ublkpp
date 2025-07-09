@@ -169,8 +169,32 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     return folly::makeUnexpected(std::make_error_condition(std::errc::operation_in_progress));
 }
 
-io_result iSCSIDisk::sync_iov(uint8_t, iovec*, uint32_t, off_t) noexcept {
-    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-}
+io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
+    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
 
+    DLOGT("{} : [INTERNAL] ublk io [sector:{}|len:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", addr >> SECTOR_SHIFT,
+          len)
+
+    scsi_task* task{nullptr};
+    switch (op) {
+    case UBLK_IO_OP_READ: {
+        task = iscsi_read16_iov_sync(_session->ctx, _url.lun, addr >> ilog2(block_size()), len, _session->block_size, 0,
+                                     0, 0, 0, 0, reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
+    } break;
+    case UBLK_IO_OP_WRITE: {
+        task = iscsi_write16_iov_sync(_session->ctx, _url.lun, addr >> ilog2(block_size()), NULL, len,
+                                      _session->block_size, 0, 0, 0, 0, 0, reinterpret_cast< scsi_iovec* >(iovecs),
+                                      nr_vecs);
+    } break;
+    default: {
+        DLOGE("Unknown SYNC operation: [op:{}]", op);
+        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    }
+    }
+    if (!task || task->status != SCSI_STATUS_GOOD) {
+        DLOGE("Failed to write16 to iSCSI LUN. {}", iscsi_get_error(_session->ctx));
+        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    }
+    return 0;
+}
 } // namespace ublkpp
