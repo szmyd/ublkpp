@@ -67,6 +67,7 @@ class UBlkPPConan(ConanFile):
     def requirements(self):
         self.requires("sisl/[^12.3]@oss/master", transitive_headers=True)
         self.requires("ublksrv/nbi.1.5.0")
+        self.requires("libiscsi/1.20.2")
 
     def layout(self):
         self.folders.source = "."
