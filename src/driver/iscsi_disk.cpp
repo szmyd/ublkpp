@@ -28,6 +28,18 @@ struct iscsi_session {
     bool logged_in{false};
 };
 
+static void iscsi_log(int level, const char* message) {
+    if (1 >= level) {
+        DLOGE("{}", message);
+    } else if (2 == level) {
+        DLOGI("{}", message);
+    } else if (3 == level) {
+        DLOGD("{}", message);
+    } else {
+        DLOGT("{}", message);
+    }
+}
+
 static std::unique_ptr< iscsi_session > iscsi_init(std::string const& url) {
     auto session = std::make_unique< iscsi_session >();
     DEBUG_ASSERT(session, "Failed to allocate iSCSI session!");
@@ -36,28 +48,27 @@ static std::unique_ptr< iscsi_session > iscsi_init(std::string const& url) {
         DLOGE("failed to init context")
         return nullptr;
     }
+    iscsi_set_log_level(session->ctx, (spdlog::level::level_enum::critical - module_level_ublk_drivers) * 2);
+    iscsi_set_log_fn(session->ctx, iscsi_log);
 
     // Attempt to parse the URL
     session->url = iscsi_parse_full_url(session->ctx, url.data());
     if (!session->url) {
-        DLOGE("Could not parse [{}] as an iSCSI URL! Expected format: "
-              "iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>",
-              url)
-        return nullptr;
-    }
-    DLOGI("logging in to: [ip:{}|target:{}|lun:{}]", session->url->portal, session->url->target, session->url->lun);
-
-    iscsi_set_session_type(session->ctx, ISCSI_SESSION_NORMAL);
-    iscsi_set_header_digest(session->ctx, ISCSI_HEADER_DIGEST_NONE_CRC32C);
-
-    if (session->logged_in = (0 == iscsi_full_connect_sync(session->ctx, session->url->portal, session->url->lun));
-        !session->logged_in) {
         DLOGE("{}", iscsi_get_error(session->ctx))
         return nullptr;
     }
 
+    iscsi_set_session_type(session->ctx, ISCSI_SESSION_NORMAL);
+    iscsi_set_header_digest(session->ctx, ISCSI_HEADER_DIGEST_NONE_CRC32C);
+    iscsi_set_targetname(session->ctx, session->url->target);
+
+    if (session->logged_in = (0 == iscsi_full_connect_sync(session->ctx, session->url->portal, session->url->lun));
+        !session->logged_in) {
+        return nullptr;
+    }
+
     if (iscsi_mt_service_thread_start(session->ctx)) {
-        DLOGE("failed to start service thread");
+        DLOGE("{}", iscsi_get_error(session->ctx))
         return nullptr;
     }
     return session;
@@ -121,7 +132,6 @@ void iSCSIDisk::handle_event(ublksrv_queue const* q) {
 }
 
 io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-
     DLOGT("Flush : [tag:{}] ublk io [sub_cmd:{:b}]", data->tag, sub_cmd)
     if (direct_io) return 0;
     return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
