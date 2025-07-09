@@ -22,6 +22,9 @@ class LibIScsiConan(ConanFile):
         "fPIC":True,
     }
 
+    def requirements(self):
+        self.requires("gnutls/3.8.7")
+
     def configure(self):
         del self.settings.compiler.libcxx
 
@@ -35,6 +38,8 @@ class LibIScsiConan(ConanFile):
         tc = AutotoolsToolchain(self)
         e = tc.environment()
         e.append("CFLAGS", "-Wno-unused-but-set-variable")
+        e.append("LIBGNUTLS_LIBS", "-luring".format(self.dependencies['gnutls'].package_folder))
+        e.append("LIBGNUTlS_CFLAGS", "-I{}/include".format(self.dependencies['gnutls'].package_folder))
 
         if self.settings.build_type == "Debug":
             tc.configure_args.append("--enable-debug")
