@@ -1,5 +1,5 @@
+#include <filesystem>
 #include <future>
-
 #include <ostream>
 #include <system_error>
 
@@ -11,6 +11,7 @@
 
 #include <ublkpp/ublkpp.hpp>
 #include <ublkpp/drivers/fs_disk.hpp>
+#include <ublkpp/drivers/iscsi_disk.hpp>
 #include <ublkpp/raid/raid0.hpp>
 #include <ublkpp/raid/raid1.hpp>
 
@@ -49,12 +50,21 @@ Result _run_target(boost::uuids::uuid const& vol_id, std::unique_ptr< D >&& dev)
     return k_target->device_path();
 }
 
+// Return a device based on the format of the input
+// From libiscsi.h iSCSI URLs are in the form:
+//   iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>
+static std::shared_ptr< ublkpp::UblkDisk > get_driver(std::string const& resource) {
+    if (auto path = std::filesystem::path(resource); std::filesystem::exists(path))
+        return std::make_shared< ublkpp::FSDisk >(path);
+    return std::make_shared< ublkpp::iSCSIDisk >(resource);
+}
+
 Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
     auto dev = std::unique_ptr< ublkpp::Raid0Disk >();
     try {
         auto devices = std::vector< std::shared_ptr< ublkpp::UblkDisk > >();
         for (auto const& disk : layout) {
-            devices.push_back(std::make_shared< ublkpp::FSDisk >(disk));
+            devices.push_back(get_driver(disk));
         }
         if (0 < devices.size())
             dev = std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(),
@@ -67,8 +77,7 @@ Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > con
 Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
     auto dev = std::unique_ptr< ublkpp::Raid1Disk >();
     try {
-        dev = std::make_unique< ublkpp::Raid1Disk >(id, std::make_shared< ublkpp::FSDisk >(*layout.begin()),
-                                                    std::make_shared< ublkpp::FSDisk >(*(layout.begin() + 1)));
+        dev = std::make_unique< ublkpp::Raid1Disk >(id, get_driver(*layout.begin()), get_driver(*(layout.begin() + 1)));
     } catch (std::runtime_error const& e) {}
     if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
@@ -84,9 +93,9 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
     try {
         auto cnt{0U};
         auto devices = std::vector< std::shared_ptr< ublkpp::UblkDisk > >();
-        auto dev_a = std::shared_ptr< ublkpp::FSDisk >();
+        auto dev_a = std::shared_ptr< ublkpp::UblkDisk >();
         for (auto const& mirror : layout) {
-            auto new_dev = std::make_shared< ublkpp::FSDisk >(mirror);
+            auto new_dev = get_driver(mirror);
             if (0 == cnt++ % 2)
                 dev_a = new_dev;
             else

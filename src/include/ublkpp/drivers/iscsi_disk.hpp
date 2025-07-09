@@ -1,9 +1,5 @@
 #pragma once
 
-extern "C" {
-#include <iscsi/iscsi.h>
-}
-
 #include <deque>
 #include <mutex>
 
@@ -13,7 +9,6 @@ namespace ublkpp {
 
 struct iscsi_session;
 class iSCSIDisk : public UblkDisk {
-    iscsi_url _url;
     std::unique_ptr< iscsi_session > _session;
 
     struct req_result {
@@ -25,7 +20,7 @@ class iSCSIDisk : public UblkDisk {
     std::deque< req_result > pending_results;
 
 public:
-    iSCSIDisk(iscsi_url const& url);
+    explicit iSCSIDisk(std::string const& url);
     ~iSCSIDisk() override;
 
     std::string type() const override { return "iSCSIDisk"; }
