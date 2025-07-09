@@ -155,12 +155,10 @@ std::list< int > iSCSIDisk::open_for_uring(int const) {
         auto pfd = pollfd{.fd = iscsi_get_fd(ctx), .events = 0, .revents = 0};
         while (true) {
             pfd.events = iscsi_which_events(ctx);
-            DLOGT("polling...")
             if (poll(&pfd, 1, -1) < 0) {
                 DLOGE("Poll failed: {}", strerror(errno))
                 break;
             }
-            DLOGT("poll awoke")
             if (iscsi_service(ctx, pfd.revents) < 0) {
                 DLOGE("iSCSI failed: {}", iscsi_get_error(ctx))
                 break;
