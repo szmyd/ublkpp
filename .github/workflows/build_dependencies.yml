@@ -168,8 +168,8 @@ jobs:
         conan create \
             -o sisl:prerelease=${{ inputs.prerelease }} \
             -o sisl:malloc_impl=${{ inputs.malloc-impl }} \
-            -o homeblocks=False \
-            -o sanitize=${sanitize} \
+            -o ublkpp:homeblocks=False \
+            -o ublkpp:sanitize=${sanitize} \
             -s build_type=${{ inputs.build-type }} \
             --build missing \
             .

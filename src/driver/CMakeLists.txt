@@ -21,8 +21,6 @@ target_link_libraries(iscsi_disk
     libiscsi::libiscsi
 )
 
-find_package(homeblocks QUIET)
-
 if (${homeblocks_FOUND})
   add_library(homeblk_disk OBJECT)
   target_sources(homeblk_disk PRIVATE
