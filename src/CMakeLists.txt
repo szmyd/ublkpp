@@ -18,6 +18,7 @@ target_sources(ublkpp PRIVATE
   $<TARGET_OBJECTS:raid1>
   $<TARGET_OBJECTS:fs_disk>
   $<TARGET_OBJECTS:iscsi_disk>
+  $<TARGET_OBJECTS:homeblk_disk>
   $<TARGET_OBJECTS:ublkpp_tgt>
   $<TARGET_OBJECTS:ublk_disk>
   $<TARGET_OBJECTS:logging>
