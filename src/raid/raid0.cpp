@@ -38,6 +38,7 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
     our_params.basic.dev_sectors = UINT64_MAX;
     direct_io = true;
+
     for (auto&& device : disks) {
         auto const& dev_params = *device->params();
         // We'll use dev_sectors to track the smallest array device we have
@@ -50,6 +51,8 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
                                                 static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
+        if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
+
         direct_io = direct_io ? device->direct_io : false;
         auto sb = load_superblock(*device, uuid, _stripe_size, _stripe_array.size());
         if (!sb) throw std::runtime_error(fmt::format("Could not read superblock! {}", sb.error().message()));
@@ -74,6 +77,12 @@ std::list< int > Raid0Disk::open_for_uring(int const iouring_device_start) {
         fds.splice(fds.end(), stripe->dev->open_for_uring(iouring_device_start + fds.size()));
     }
     return fds;
+}
+
+void Raid0Disk::handle_event(ublksrv_queue const* q) {
+    for (auto const& stripe : _stripe_array) {
+        stripe->dev->handle_event(q);
+    }
 }
 
 io_result Raid0Disk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {

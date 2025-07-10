@@ -43,6 +43,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
             std::max(our_params.basic.physical_bs_shift, device->params()->basic.physical_bs_shift);
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
+        if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
     }
     // Reserve space for the superblock/bitmap
     our_params.basic.dev_sectors -= raid1::reserved_sectors;
@@ -186,6 +187,11 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func) {
         return func(*CLEAN_DEVICE, CLEAN_SUBCMD);
     }
     return res;
+}
+
+void Raid1Disk::handle_event(ublksrv_queue const* q) {
+    _device_a->handle_event(q);
+    _device_b->handle_event(q);
 }
 
 io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,

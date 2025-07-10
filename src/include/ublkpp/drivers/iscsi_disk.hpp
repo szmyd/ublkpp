@@ -24,7 +24,7 @@ public:
     ~iSCSIDisk() override;
 
     std::string type() const override { return "iSCSIDisk"; }
-    std::list< int > open_for_uring(int const) override { return {}; }
+    std::list< int > open_for_uring(int const) override;
 
     void handle_event(ublksrv_queue const* q) override;
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;

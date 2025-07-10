@@ -31,6 +31,7 @@ public:
 
     uint8_t route_size() const override { return 1; }
 
+    void handle_event(ublksrv_queue const*) override;
     // RAID-1 Devices can not sit on-top of non-O_DIRECT devices, so there's nothing to flush
     io_result handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) override { return 0; }
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,

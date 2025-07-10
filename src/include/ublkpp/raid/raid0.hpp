@@ -31,6 +31,7 @@ public:
 
     uint8_t route_size() const override { return ilog2(_max_stripe_cnt); }
 
+    void handle_event(ublksrv_queue const*) override;
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                              uint64_t addr) override;
