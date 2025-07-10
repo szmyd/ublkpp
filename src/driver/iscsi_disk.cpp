@@ -185,6 +185,7 @@ struct iscsi_cb_data {
     std::shared_ptr< iSCSIDisk > device;
     ublksrv_queue const* queue;
     uint64_t len;
+    scsi_iovec io_vec[16]{{0, 0}};
 };
 
 void iSCSIDisk::handle_event(ublksrv_queue const* q) {
@@ -214,6 +215,7 @@ void iscsi_rw_cb(iscsi_context*, int status, void* data, void* private_data) {
     DLOGT("Got iSCSI completion: [tag:{}], status: {}", cb_data->tag, status);
     cb_data->device->__rw_async_cb(cb_data->queue, cb_data->tag, status, cb_data->len);
     scsi_free_scsi_task(reinterpret_cast< scsi_task* >(data));
+    delete cb_data;
 }
 
 io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
@@ -227,16 +229,23 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     DLOGT("{} : [tag:{}] ublk io [lba:{}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
           lba, len, sub_cmd)
 
+    // We copy the iovec here since libiscsi does not make it stable
     auto cb_data = new iscsi_cb_data(data->tag, dynamic_pointer_cast< iSCSIDisk >(shared_from_this()), q, len);
+    if (!cb_data) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    for (auto i = 0U; nr_vecs > i; ++i) {
+        cb_data->io_vec[i].iov_base = iovecs[i].iov_base;
+        cb_data->io_vec[i].iov_len = iovecs[i].iov_len;
+    }
+
     scsi_task* task{nullptr};
     switch (op) {
     case UBLK_IO_OP_READ: {
-        task = iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
-                                      iscsi_rw_cb, cb_data, reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
+        task = iscsi_read16_iov_task(_session->ctx, _session->url->lun, lba, len, block_size(), 0, 0, 0, 0, 0,
+                                     iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
     } break;
     case UBLK_IO_OP_WRITE: {
         task = iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
-                                      iscsi_rw_cb, cb_data, reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
+                                      iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
     } break;
     default: {
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
