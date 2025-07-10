@@ -79,9 +79,9 @@ std::list< int > Raid0Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
-void Raid0Disk::handle_event(ublksrv_queue const* q) {
+void Raid0Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     for (auto const& stripe : _stripe_array) {
-        stripe->dev->handle_event(q);
+        if (!stripe->dev->uses_ublk_iouring) stripe->dev->collect_async(q, results);
     }
 }
 

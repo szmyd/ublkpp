@@ -168,69 +168,66 @@ std::list< int > iSCSIDisk::open_for_uring(int const) {
     return {};
 }
 
-io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    DLOGT("Flush : [tag:{}] ublk io [sub_cmd:{:b}]", data->tag, sub_cmd)
+void iSCSIDisk::collect_async(ublksrv_queue const*, std::list< async_result >& completed) {
+    auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
+    completed.splice(completed.end(), std::move(pending_results));
+}
+
+void iSCSIDisk::async_complete(ublksrv_queue const* q, async_result const& result) {
+    {
+        auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
+        pending_results.emplace_back(result);
+    }
+    ublksrv_queue_send_event(q);
+}
+
+io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd) {
+    DLOGT("Flush : [tag:{}] ublk io [sub_cmd:{:b}]", ublk_io->tag, sub_cmd)
     if (direct_io) return 0;
     return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 }
 
-io_result iSCSIDisk::handle_discard(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
+io_result iSCSIDisk::handle_discard(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd, uint32_t len,
                                     uint64_t addr) {
-    DLOGD("DISCARD : [tag:{}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", data->tag, addr >> SECTOR_SHIFT, len, sub_cmd)
+    DLOGD("DISCARD : [tag:{}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", ublk_io->tag, addr >> SECTOR_SHIFT, len,
+          sub_cmd)
     return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 }
 
 struct iscsi_cb_data {
+    ublk_io_data const* io;
     int tag;
+    sub_cmd_t sub_cmd;
     std::shared_ptr< iSCSIDisk > device;
     ublksrv_queue const* queue;
-    uint64_t len;
+    int len;
     scsi_iovec io_vec[16]{{0, 0}};
 };
 
-void iSCSIDisk::handle_event(ublksrv_queue const* q) {
-    decltype(pending_results) completed_results;
-    {
-        auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
-        completed_results.swap(pending_results);
-    }
-    ublksrv_queue_handled_event(q);
-    for (auto& i : completed_results) {
-        DLOGT("Completing [tag:{}|result:{}]", i.tag, i.result)
-        ublksrv_complete_io(q, i.tag, i.result);
-    }
-}
-
-void iSCSIDisk::__rw_async_cb(ublksrv_queue const* q, int tag, int status, int res) {
-    {
-        auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
-        pending_results.emplace_back(req_result{tag, (SCSI_STATUS_GOOD != status) ? -EIO : res});
-    }
-    DLOGT("Waking up ublksrv")
-    ublksrv_queue_send_event(q);
-}
-
-void iscsi_rw_cb(iscsi_context*, int status, void* data, void* private_data) {
+void iSCSIDisk::__iscsi_rw_cb(iscsi_context*, int status, void* data, void* private_data) {
     auto cb_data = reinterpret_cast< iscsi_cb_data* >(private_data);
     DLOGT("Got iSCSI completion: [tag:{}], status: {}", cb_data->tag, status);
-    cb_data->device->__rw_async_cb(cb_data->queue, cb_data->tag, status, cb_data->len);
+    cb_data->device->async_complete(
+        cb_data->queue,
+        async_result{cb_data->io, cb_data->sub_cmd, (SCSI_STATUS_GOOD != status) ? -EIO : cb_data->len});
     scsi_free_scsi_task(reinterpret_cast< scsi_task* >(data));
     delete cb_data;
 }
 
-io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
+io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd, iovec* iovecs,
                                uint32_t nr_vecs, uint64_t addr) {
-    auto const op = ublksrv_get_op(data->iod);
-    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
+    auto const op = ublksrv_get_op(ublk_io->iod);
+    int const len = __iovec_len(iovecs, iovecs + nr_vecs);
 
     // Convert the absolute address to an LBA offset
     auto const lba = addr >> params()->basic.logical_bs_shift;
 
-    DLOGT("{} : [tag:{}] ublk io [lba:{}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
+    DLOGT("{} : [tag:{}] ublk io [lba:{}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", ublk_io->tag,
           lba, len, sub_cmd)
 
     // We copy the iovec here since libiscsi does not make it stable
-    auto cb_data = new iscsi_cb_data(data->tag, dynamic_pointer_cast< iSCSIDisk >(shared_from_this()), q, len);
+    auto cb_data = new iscsi_cb_data(ublk_io, ublk_io->tag, sub_cmd,
+                                     dynamic_pointer_cast< iSCSIDisk >(shared_from_this()), q, len);
     if (!cb_data) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     for (auto i = 0U; nr_vecs > i; ++i) {
         cb_data->io_vec[i].iov_base = iovecs[i].iov_base;
@@ -241,11 +238,11 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     switch (op) {
     case UBLK_IO_OP_READ: {
         task = iscsi_read16_iov_task(_session->ctx, _session->url->lun, lba, len, block_size(), 0, 0, 0, 0, 0,
-                                     iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
+                                     __iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
     } break;
     case UBLK_IO_OP_WRITE: {
         task = iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
-                                      iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
+                                      __iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
     } break;
     default: {
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
@@ -256,7 +253,7 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         DLOGE("Failed {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE", iscsi_get_error(_session->ctx));
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
-    return folly::makeUnexpected(std::make_error_condition(std::errc::operation_in_progress));
+    return 1;
 }
 
 io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
