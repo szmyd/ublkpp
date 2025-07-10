@@ -189,9 +189,9 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func) {
     return res;
 }
 
-void Raid1Disk::handle_event(ublksrv_queue const* q) {
-    _device_a->handle_event(q);
-    _device_b->handle_event(q);
+void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
+    if (!_device_a->uses_ublk_iouring) _device_a->collect_async(q, results);
+    if (!_device_b->uses_ublk_iouring) _device_b->collect_async(q, results);
 }
 
 io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,

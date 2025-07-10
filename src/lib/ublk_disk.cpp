@@ -58,6 +58,7 @@ io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) {
 }
 
 io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    DLOGT("Queue I/O [tag:{}] [sub_cmd:{:b}]", data->tag, sub_cmd)
     ublksrv_io_desc const* iod = data->iod;
     switch (ublksrv_get_op(iod)) {
     case UBLK_IO_OP_FLUSH:
