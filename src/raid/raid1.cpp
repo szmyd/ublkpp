@@ -43,6 +43,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
             std::max(our_params.basic.physical_bs_shift, device->params()->basic.physical_bs_shift);
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
+        if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
     }
     // Reserve space for the superblock/bitmap
     our_params.basic.dev_sectors -= raid1::reserved_sectors;

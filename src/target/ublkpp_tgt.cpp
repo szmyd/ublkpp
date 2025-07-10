@@ -419,7 +419,8 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .reserved = {0, 0, 0, 0, 0} // Reserved
     });
 
-    TLOGD("Starting {}", static_pointer_cast< UblkDisk >(tgt->device))
+    TLOGD("Starting {} {} evfd", static_pointer_cast< UblkDisk >(tgt->device),
+          (nullptr == tgt->tgt_type->handle_event) ? "WITHOUT" : "WITH")
     tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
         .dev_id = -1,
         .max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >(),

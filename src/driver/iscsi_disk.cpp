@@ -168,19 +168,6 @@ std::list< int > iSCSIDisk::open_for_uring(int const) {
     return {};
 }
 
-void iSCSIDisk::handle_event(ublksrv_queue const* q) {
-    decltype(pending_results) completed_results;
-    {
-        auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
-        completed_results.swap(pending_results);
-    }
-    ublksrv_queue_handled_event(q);
-    for (auto& i : completed_results) {
-        DLOGT("Completing [tag:{}|result:{}]", i.tag, i.result)
-        ublksrv_complete_io(q, i.tag, i.result);
-    }
-}
-
 io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd) {
     DLOGT("Flush : [tag:{}] ublk io [sub_cmd:{:b}]", data->tag, sub_cmd)
     if (direct_io) return 0;
@@ -200,18 +187,31 @@ struct iscsi_cb_data {
     uint64_t len;
 };
 
+void iSCSIDisk::handle_event(ublksrv_queue const* q) {
+    decltype(pending_results) completed_results;
+    {
+        auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
+        completed_results.swap(pending_results);
+    }
+    ublksrv_queue_handled_event(q);
+    for (auto& i : completed_results) {
+        DLOGT("Completing [tag:{}|result:{}]", i.tag, i.result)
+        ublksrv_complete_io(q, i.tag, i.result);
+    }
+}
+
 void iSCSIDisk::__rw_async_cb(ublksrv_queue const* q, int tag, int status, int res) {
     {
         auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
         pending_results.emplace_back(req_result{tag, (SCSI_STATUS_GOOD != status) ? -EIO : res});
     }
-
+    DLOGT("Waking up ublksrv")
     ublksrv_queue_send_event(q);
 }
 
 void iscsi_rw_cb(iscsi_context*, int status, void* data, void* private_data) {
     auto cb_data = reinterpret_cast< iscsi_cb_data* >(private_data);
-    DLOGD("Got iSCSI completion: [tag:{}], status: {}", cb_data->tag, status)
+    DLOGT("Got iSCSI completion: [tag:{}], status: {}", cb_data->tag, status);
     cb_data->device->__rw_async_cb(cb_data->queue, cb_data->tag, status, cb_data->len);
     scsi_free_scsi_task(reinterpret_cast< scsi_task* >(data));
 }
@@ -244,7 +244,7 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     }
 
     if (!task) {
-        DLOGE("Failed {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE", iscsi_get_error(_session->ctx))
+        DLOGE("Failed {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE", iscsi_get_error(_session->ctx));
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
     return folly::makeUnexpected(std::make_error_condition(std::errc::operation_in_progress));
