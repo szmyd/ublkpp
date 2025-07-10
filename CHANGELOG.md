@@ -4,20 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.4.4
-- iscsi_disk : working async handler
+## 0.5.0
+- homeblk_disk : introduced
 
-## 0.4.1
-- iscsi_disk : Perform Discovery sequence prior to login
-
-## 0.4.0
-- Enable UblkDisks to use Event mode and call `ublksrv_complete_io` themselves
+## 0.4.x
+- iscsi_disk : introduced
 
 ## 0.3.x
-- Make ublkpp_tgt unique
+- ublkpp_tgt : improvments
 
 ## 0.2.x
-- Hide ublkpp_tgt behind PiMPL
+- ublkpp_tgt : API changes
 
 ## 0.1.x
-- Initial release
+- fs_disk : introduced
+- raid0/1 : introduced

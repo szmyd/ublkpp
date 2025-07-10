@@ -21,5 +21,19 @@ target_link_libraries(iscsi_disk
     libiscsi::libiscsi
 )
 
+find_package(homeblocks QUIET)
+
+if (${homeblocks_FOUND})
+  add_library(homeblk_disk OBJECT)
+  target_sources(homeblk_disk PRIVATE
+      homeblk_disk.cpp
+  )
+  target_link_libraries(homeblk_disk
+      sisl::sisl
+      ublksrv::ublksrv
+      homeblocks::homestore
+  )
+endif()
+
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory (tests)
