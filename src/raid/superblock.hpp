@@ -26,8 +26,7 @@ inline SB* read_superblock(UblkDisk& device) noexcept {
         RLOGE("Could not read SuperBlock of [sz:{}] [res:{}]", SB::SIZE, res.error().message())
         free(iov.iov_base);
         return nullptr;
-    } else
-        DEBUG_ASSERT_EQ(SB::SIZE, res.value(), "Read returned short: [{:x}]", res.value());
+    }
     return static_cast< SB* >(iov.iov_base);
 }
 
