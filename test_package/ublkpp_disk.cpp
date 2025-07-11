@@ -15,7 +15,7 @@
 #include <ublkpp/raid/raid0.hpp>
 #include <ublkpp/raid/raid1.hpp>
 
-#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, example_app
+#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, iscsi, example_app
 
 SISL_OPTION_GROUP(example_app,
                   (uuid, "", "vol_id", "Volume UUID to use (else random)", ::cxxopts::value< std::string >(), ""),

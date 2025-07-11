@@ -1,6 +1,7 @@
 #include "ublkpp/drivers/iscsi_disk.hpp"
 
 #include <sisl/logging/logging.h>
+#include <sisl/options/options.h>
 #include <ublksrv.h>
 
 extern "C" {
@@ -11,6 +12,10 @@ extern "C" {
 }
 
 #include "lib/logging.hpp"
+
+SISL_OPTION_GROUP(iscsi,
+                  (connect_any, "", "connect_any", "Login to the first target found", cxxopts::value< bool >(), "")
+)
 
 SISL_LOGGING_DEF(libiscsi)
 
@@ -84,7 +89,11 @@ static std::unique_ptr< iscsi_session > iscsi_connect(std::string const& url) {
     session->attached = !(0 == iscsi_disconnect(session->ctx));
 
     strcpy(session->url->portal, discovery_addr->portals->portal);
-    if (0 != strcmp(session->url->target, discovery_addr->target_name)) {
+    if (0 != SISL_OPTIONS["connect_any"].count()) {
+        strcpy(session->url->target, discovery_addr->target_name);
+        DLOGI("Discovered target: []", discovery_addr->target_name);
+    } else
+        if (0 != strcmp(session->url->target, discovery_addr->target_name)) {
         DLOGE("Discovered a different target than expected: [{}] discovered: [{}]", session->url->target,
               discovery_addr->target_name);
         return nullptr;
@@ -194,10 +203,10 @@ void iSCSIDisk::collect_async(ublksrv_queue const*, std::list< async_result >& c
     completed.splice(completed.end(), std::move(pending_results));
 }
 
-void iSCSIDisk::async_complete(ublksrv_queue const* q, async_result const& result) {
+void iSCSIDisk::async_complete(ublksrv_queue const* q, async_result&& result) {
     {
         auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
-        pending_results.emplace_back(result);
+        pending_results.emplace_back(std::move(result));
     }
     ublksrv_queue_send_event(q);
 }
@@ -205,14 +214,14 @@ void iSCSIDisk::async_complete(ublksrv_queue const* q, async_result const& resul
 io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd) {
     DLOGT("Flush : [tag:{}] ublk io [sub_cmd:{:b}]", ublk_io->tag, sub_cmd)
     if (direct_io) return 0;
-    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    return folly::makeUnexpected(std::make_error_condition(std::errc::not_supported));
 }
 
 io_result iSCSIDisk::handle_discard(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd, uint32_t len,
                                     uint64_t addr) {
-    DLOGD("DISCARD : [tag:{}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", ublk_io->tag, addr >> SECTOR_SHIFT, len,
-          sub_cmd)
-    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    auto const lba = addr >> params()->basic.logical_bs_shift;
+    DLOGD("DISCARD : [tag:{}] ublk io [lba:{:x}|len:{:x}|sub_cmd:{:b}]", ublk_io->tag, lba, len, sub_cmd)
+    return folly::makeUnexpected(std::make_error_condition(std::errc::not_supported));
 }
 
 struct iscsi_cb_data {
@@ -225,12 +234,21 @@ struct iscsi_cb_data {
     scsi_iovec io_vec[16]{{0, 0}};
 };
 
-void iSCSIDisk::__iscsi_rw_cb(iscsi_context*, int status, void* data, void* private_data) {
+void iSCSIDisk::__iscsi_rw_cb(iscsi_context* ctx, int status, void* data, void* private_data) {
     auto cb_data = reinterpret_cast< iscsi_cb_data* >(private_data);
-    DLOGT("Got iSCSI completion: [tag:{}], status: {}", cb_data->tag, status);
-    cb_data->device->async_complete(
-        cb_data->queue,
-        async_result{cb_data->io, cb_data->sub_cmd, (SCSI_STATUS_GOOD != status) ? -EIO : cb_data->len});
+    int result = cb_data->len;
+    if (SCSI_STATUS_GOOD != status) [[unlikely]] {
+        result = -EIO;
+        auto task = reinterpret_cast< scsi_task* >(data);
+        DLOGW("iSCSI cmd returned error: [tag:{}], [status:{}|key:{:x}|ascq:{:x}] iscsi_err: {}", cb_data->tag, status,
+              (uint8_t)task->sense.key, task->sense.ascq, iscsi_get_error(ctx));
+        if (SCSI_SENSE_ILLEGAL_REQUEST == task->sense.key) {
+            // The LUN is offline but the target still exists, drive reset?
+            if (SCSI_SENSE_ASCQ_LOGICAL_UNIT_NOT_SUPPORTED == task->sense.ascq) { result = -EAGAIN; }
+        }
+    } else
+        DLOGT("Got iSCSI completion: [tag:{}], status: {}", cb_data->tag, status);
+    cb_data->device->async_complete(cb_data->queue, async_result{cb_data->io, cb_data->sub_cmd, result});
     scsi_free_scsi_task(reinterpret_cast< scsi_task* >(data));
     delete cb_data;
 }
@@ -243,13 +261,13 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_
     // Convert the absolute address to an LBA offset
     auto const lba = addr >> params()->basic.logical_bs_shift;
 
-    DLOGT("{} : [tag:{}] ublk io [lba:{}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", ublk_io->tag,
-          lba, len, sub_cmd)
+    DLOGT("{} : [tag:{}] ublk io [lba:{:x}|len:{:x}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+          ublk_io->tag, lba, len, sub_cmd)
 
     // We copy the iovec here since libiscsi does not make it stable
     auto cb_data = new iscsi_cb_data(ublk_io, ublk_io->tag, sub_cmd,
                                      dynamic_pointer_cast< iSCSIDisk >(shared_from_this()), q, len);
-    if (!cb_data) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    if (!cb_data) return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
     for (auto i = 0U; nr_vecs > i; ++i) {
         cb_data->io_vec[i].iov_base = iovecs[i].iov_base;
         cb_data->io_vec[i].iov_len = iovecs[i].iov_len;
@@ -272,7 +290,7 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_
 
     if (!task) {
         DLOGE("Failed {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE", iscsi_get_error(_session->ctx));
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
     }
 
     uint64_t data = 1;
@@ -289,7 +307,7 @@ io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     // Convert the absolute address to an LBA offset
     auto const lba = addr >> params()->basic.logical_bs_shift;
 
-    DLOGT("{} : [INTERNAL] ublk io [lba:{}|len:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len)
+    DLOGT("{} : [INTERNAL] ublk io [lba:{:x}|len:{:x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len)
 
     scsi_task* task{nullptr};
     switch (op) {
@@ -306,9 +324,15 @@ io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
     }
-    if (!task || task->status != SCSI_STATUS_GOOD) {
-        DLOGE("Failed to {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
-              iscsi_get_error(_session->ctx));
+    if (!task) return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
+    if (SCSI_STATUS_GOOD != task->status) {
+        DLOGW("iSCSI cmd returned error: [status:{}] iscsi_err: ", task->status, iscsi_get_error(_session->ctx));
+        if (SCSI_SENSE_ILLEGAL_REQUEST == task->sense.key) {
+            // The LUN is offline but the target still exists, drive reset?
+            if (SCSI_SENSE_ASCQ_LOGICAL_UNIT_NOT_SUPPORTED == task->sense.ascq) {
+                return folly::makeUnexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
+            }
+        }
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
     return len;
