@@ -278,7 +278,7 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
         auto const sub_cmd = set_flags(old_cmd, sub_cmd_flags::RETRIED);
         TLOGD("Retrying portion of I/O [res:{}] [tag:{}] [sub_cmd:{:b}]", sub_cmd_res, data->tag, sub_cmd)
         auto io_res = device->queue_tgt_io(q, data, sub_cmd);
-        if (io_res) {
+        if (!io_res) {
             TLOGE("Retry Failed Immediately on I/O [tag:{}] [sub_cmd:{:b}] [err:{}]", data->tag, sub_cmd,
                   io_res.error().message())
             ublkpp_io->ret_val = sub_cmd_res;
