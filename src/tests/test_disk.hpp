@@ -31,6 +31,7 @@ public:
         else
             our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         direct_io = test_params.direct_io;
+        uses_ublk_iouring = false;
     }
     std::string type() const override { return std::string("TestDisk"); }
 

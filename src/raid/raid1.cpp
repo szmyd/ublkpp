@@ -23,6 +23,9 @@ namespace ublkpp {
 #define CLEAN_SUBCMD (_route_to_b ? (sub_cmd | 0b1) : (sub_cmd & ((1U << sqe_tgt_data_width) - 2)))
 #define DIRTY_SUBCMD (_route_to_b ? (sub_cmd & ((1U << sqe_tgt_data_width) - 2)) : (sub_cmd | 0b1))
 
+#define IS_DEGRADED (0 < _degraded_ops)
+#define NOT_DEGRADED (0 == _degraded_ops)
+
 static folly::Expected< raid1::SuperBlock*, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
 
@@ -81,14 +84,15 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
 
-    _degraded_mode = _sb->fields.bitmap.dirty;
+    // Start the degraded ops counter at 1
+    _degraded_ops = (_sb->fields.bitmap.dirty ? 1 : 0);
 
     sub_cmd_t const sub_cmd = _route_to_b ? 1U << _device_b->route_size() : 0U;
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to DIRTY
     if (!write_superblock(*CLEAN_DEVICE, _sb)) {
         RLOGD("Failed writing SuperBlock to: [{}] becoming degraded.", *CLEAN_DEVICE)
         // If already degraded this is Fatal
-        if (_degraded_mode) {
+        if (IS_DEGRADED) {
             free(_sb);
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
@@ -99,7 +103,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         }
     }
     // Write to DIRTY only if not degraded.
-    if (_degraded_mode) return;
+    if (IS_DEGRADED) return;
     if (write_superblock(*DIRTY_DEVICE, _sb)) return;
     RLOGD("Failed writing SuperBlock to: [{}] becoming degraded.", *DIRTY_DEVICE)
     if (!__dirty_bitmap(DIRTY_SUBCMD)) {
@@ -127,14 +131,14 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
 #define SWITCH_CLEAN(s_cmd) _route_to_b = (0 == (0b1 & ((s_cmd) >> _device_b->route_size())));
 
 bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd) {
-    DEBUG_ASSERT(!_degraded_mode, "DIRTY_BITMAP on degraded device!")
+    DEBUG_ASSERT(NOT_DEGRADED, "DIRTY_BITMAP on degraded device!")
     ++_sb->fields.bitmap.age;
     _sb->fields.bitmap.dirty = 1;
     // Rotate Clean Device
     SWITCH_CLEAN(sub_cmd)
     // Must update superblock!
-    _degraded_mode = write_superblock(*CLEAN_DEVICE, _sb);
-    return _degraded_mode;
+    _degraded_ops = (write_superblock(*CLEAN_DEVICE, _sb) ? 1 : 0);
+    return IS_DEGRADED;
 }
 
 /// This is the primary I/O handler call for RAID1
@@ -144,10 +148,10 @@ bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd) {
 io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func) {
     if (is_retry(sub_cmd)) {
         // If we're already degraded and failure was on current disk then treat this as a failure!
-        if (_degraded_mode && (sub_cmd == CLEAN_SUBCMD))
+        if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         // If sub_cmd requires retry, and we're not degraded we always DIRTY the Bitmap
-        if (!_degraded_mode && !__dirty_bitmap(sub_cmd))
+        if (NOT_DEGRADED && !__dirty_bitmap(sub_cmd))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         // FIXME: We should be able to return 0 regardless of which device caused a retry
         if (test_flags(sub_cmd, sub_cmd_flags::REPLICATED)) return 0;
@@ -156,8 +160,11 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func) {
         sub_cmd = shift_route(sub_cmd, route_size());
 
     auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD);
-    // For degraded states we attempt on only the working side
-    if (_degraded_mode) return res;
+
+    // If we are degraded we can just return here with the result of the CLEAN device. We will
+    // attempt to come out of degraded mode after some period of _degraded_ops have passed which
+    // is configurable
+    if (IS_DEGRADED && ++_degraded_ops) return res;
 
     // If not-degraded and first sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
@@ -177,16 +184,23 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func) {
 }
 
 io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func) {
-    if (!is_retry(sub_cmd))
+    auto const retry = is_retry(sub_cmd);
+    if (!retry)
         sub_cmd = shift_route(sub_cmd, route_size());
-    else
+    else // If Retry then rotate the devices
         SWITCH_CLEAN(sub_cmd)
-    auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD);
-    if (!res && !_degraded_mode) {
-        SWITCH_CLEAN(CLEAN_SUBCMD);
-        return func(*CLEAN_DEVICE, CLEAN_SUBCMD);
+
+    // Attempt read on clean device,
+    // If it: A. Succeeds B. We are degraded or C. This WAS the retry; return the result
+    if (auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); res || IS_DEGRADED || retry) {
+        if (!retry && IS_DEGRADED) ++_degraded_ops;
+        return res;
     }
-    return res;
+
+    // Otherwise fail over the device and attempt the READ again marking this a retry
+    SWITCH_CLEAN(CLEAN_SUBCMD);
+    sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
+    return func(*CLEAN_DEVICE, CLEAN_SUBCMD);
 }
 
 void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {

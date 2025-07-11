@@ -16,7 +16,7 @@ class Raid1Disk : public UblkDisk {
 
     // Initially we issue OPs to DevA first, this flag switchs the order
     bool _route_to_b{false};
-    bool _degraded_mode{false};
+    uint64_t _degraded_ops{0UL};
 
     bool __dirty_bitmap(sub_cmd_t sub_cmd);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func);
