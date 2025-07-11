@@ -217,6 +217,26 @@ TEST(Raid1, OpenDevices) {
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 2)));
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 1)));
 
+    EXPECT_CALL(*device_a, collect_async(_, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, std::list< ublkpp::async_result >& compls) {
+            compls.push_back(ublkpp::async_result{nullptr, 0, 5});
+        });
+    EXPECT_CALL(*device_b, collect_async(_, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, std::list< ublkpp::async_result >& compls) {
+            compls.push_back(ublkpp::async_result{nullptr, 1, 10});
+        });
+
+    std::list< ublkpp::async_result > result_list;
+    raid_device.collect_async(nullptr, result_list);
+
+    ASSERT_EQ(2, result_list.size());
+    EXPECT_EQ(0, result_list.begin()->sub_cmd);
+    EXPECT_EQ(5, result_list.begin()->result);
+    EXPECT_EQ(1, (++result_list.begin())->sub_cmd);
+    EXPECT_EQ(10, (++result_list.begin())->result);
+
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
@@ -273,6 +293,47 @@ TEST(Raid1, SimpleRead) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
+// Brief: Test retrying a READ within the RAID1 Device, if the CLEAN device fails immediately
+TEST(Raid1, FailoverRead) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
+            EXPECT_EQ(data->tag, 0xcafedead);
+            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
+            // It should also have the RETRIED bit set
+            EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
+            EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+            EXPECT_EQ(addr, (12 * Ki) + reserved_size);
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
+            EXPECT_EQ(data->tag, 0xcafedead);
+            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+            // It should also have the RETRIED bit set
+            EXPECT_TRUE(ublkpp::is_retry(sub_cmd));
+            EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+            EXPECT_EQ(addr, (12 * Ki) + reserved_size);
+            return 1;
+        });
+
+    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
+    auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+    remove_io_data(ublk_data);
+    ASSERT_TRUE(res);
+    EXPECT_EQ(1, res.value());
+
+    // expect unmount_clean update
+    EXPECT_TO_WRITE_SB(device_a);
+    EXPECT_TO_WRITE_SB(device_b);
+}
 // Brief: Test retrying a READ through the RAID1 Device, and subsequent READs now go to B
 //
 // Assuming some I/O READ failed the Target will reissue with the original `route`. Ensure that
