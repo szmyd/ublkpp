@@ -17,20 +17,17 @@ inline SB* read_superblock(UblkDisk& device) noexcept {
                     device, SB::SIZE)
     auto iov = iovec{.iov_base = nullptr, .iov_len = SB::SIZE};
     if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), SB::SIZE); 0 != err || nullptr == iov.iov_base)
-        [[unlikely]] {
+        [[unlikely]] { // GCOVR_EXCL_START
         if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
         RLOGE("Out of Memory while reading superblock!")
         return nullptr;
-    }
-    if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 0UL); !res || SB::SIZE != res.value()) [[unlikely]] {
-        if (!res) {
-            RLOGE("Could not read SuperBlock of [sz:{}] [res:{}]", SB::SIZE, res.error().message())
-        } else {
-            RLOGE("Could not read ALL of SuperBlock of [sz:{}] [res:{}]", SB::SIZE, res.value())
-        }
+    } // GCOVR_EXCL_STOP
+    if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 0UL); !res) {
+        RLOGE("Could not read SuperBlock of [sz:{}] [res:{}]", SB::SIZE, res.error().message())
         free(iov.iov_base);
         return nullptr;
-    }
+    } else
+        DEBUG_ASSERT_EQ(SB::SIZE, res.value(), "Read returned short: [{:x}]", res.value());
     return static_cast< SB* >(iov.iov_base);
 }
 
