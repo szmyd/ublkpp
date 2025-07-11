@@ -244,7 +244,7 @@ static inline int retrieve_result(async_io* io) {
 }
 
 // Just a cast helper for for pri
-static inline uint8_t ublk_io_to_sub_cmd(async_io* io) {
+static inline sub_cmd_t ublk_io_to_sub_cmd(async_io* io) {
     if (io->tgt_io_cqe) return user_data_to_tgt_data(io->tgt_io_cqe->user_data);
     return io->async_completion->sub_cmd;
 }
