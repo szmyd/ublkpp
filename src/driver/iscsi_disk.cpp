@@ -91,7 +91,7 @@ static std::unique_ptr< iscsi_session > iscsi_connect(std::string const& url) {
     strcpy(session->url->portal, discovery_addr->portals->portal);
     if (0 != SISL_OPTIONS["connect_any"].count()) {
         strcpy(session->url->target, discovery_addr->target_name);
-        DLOGI("Discovered target: []", discovery_addr->target_name);
+        DLOGI("Discovered target: [{}]", discovery_addr->target_name);
     } else
         if (0 != strcmp(session->url->target, discovery_addr->target_name)) {
         DLOGE("Discovered a different target than expected: [{}] discovered: [{}]", session->url->target,
@@ -174,7 +174,6 @@ std::list< int > iSCSIDisk::open_for_uring(int const) {
             ev_pfd[1].fd = iscsi_get_fd(ctx);
             ev_pfd[1].events = iscsi_which_events(ctx);
             if (0 == ev_pfd[1].events) {
-                DLOGI("No events")
                 std::this_thread::sleep_for(100ms);
                 continue;
             }
