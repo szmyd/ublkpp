@@ -244,12 +244,9 @@ static inline int retrieve_result(async_io* io) {
 }
 
 // Just a cast helper for for pri
-static inline uint8_t ublk_io_to_sub_cmd(async_io* io) { return user_data_to_tgt_data(io->tgt_io_cqe->user_data); }
-
-// Test if async completion is retriable
-static inline bool is_retriable(async_io* io) {
-    if (io->tgt_io_cqe) return !is_retry(user_data_to_tgt_data(io->tgt_io_cqe->user_data));
-    return !is_retry(io->async_completion->sub_cmd);
+static inline uint8_t ublk_io_to_sub_cmd(async_io* io) {
+    if (io->tgt_io_cqe) return user_data_to_tgt_data(io->tgt_io_cqe->user_data);
+    return io->async_completion->sub_cmd;
 }
 
 static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
@@ -262,31 +259,33 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
         if (0 > ublkpp_io->ret_val) continue;
 
         // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
-        if (auto const sub_cmd_res = retrieve_result(ublkpp_io); 0 <= sub_cmd_res) {
+        auto const sub_cmd_res = retrieve_result(ublkpp_io);
+        if (0 <= sub_cmd_res) {
             ublkpp_io->ret_val += sub_cmd_res;
+            continue;
         }
-        // If error we should retry it if possible before returning an I/O error
-        else if (0 > sub_cmd_res) {
-            // Only EAGAIN or replicated sub_cmds are retriable, see if it's neither.
-            if (((-EAGAIN != sub_cmd_res) && (-EIO != sub_cmd_res)) || !is_retriable(ublkpp_io)) {
-                ublkpp_io->ret_val = sub_cmd_res;
-                continue;
-            }
+        auto const old_cmd = ublk_io_to_sub_cmd(ublkpp_io);
 
-            // If retriable, pass the original sub_cmd the sub_cmd took in addition to re-queuing the original
-            // operation. This provides the context to the RAID layers to make intelligent decisions for a retried
-            // sub_cmd.
-            auto const sub_cmd = set_flags(ublk_io_to_sub_cmd(ublkpp_io), sub_cmd_flags::RETRIED);
-            TLOGD("Retrying portion of I/O [res:{}] [tag:{}] [sub_cmd:{:b}]", sub_cmd_res, data->tag, sub_cmd)
-            if (auto io_res = device->queue_tgt_io(q, data, sub_cmd); io_res) {
-                // New sub_cmds to wait for in the co-routine
-                ublkpp_io->sub_cmds += io_res.value();
-                continue;
-            } else
-                TLOGE("Retry Failed Immediately on I/O [tag:{}] [sub_cmd:{:b}] [err:{}]", data->tag, sub_cmd,
-                      io_res.error().message())
+        // If error we should retry it if possible before returning an I/O error
+        if ((-EIO == sub_cmd_res) && is_retry(old_cmd)) {
             ublkpp_io->ret_val = sub_cmd_res;
+            continue;
         }
+
+        // If retriable, pass the original sub_cmd the sub_cmd took in addition to re-queuing the original
+        // operation. This provides the context to the RAID layers to make intelligent decisions for a retried
+        // sub_cmd.
+        auto const sub_cmd = set_flags(old_cmd, sub_cmd_flags::RETRIED);
+        TLOGD("Retrying portion of I/O [res:{}] [tag:{}] [sub_cmd:{:b}]", sub_cmd_res, data->tag, sub_cmd)
+        auto io_res = device->queue_tgt_io(q, data, sub_cmd);
+        if (io_res) {
+            TLOGE("Retry Failed Immediately on I/O [tag:{}] [sub_cmd:{:b}] [err:{}]", data->tag, sub_cmd,
+                  io_res.error().message())
+            ublkpp_io->ret_val = sub_cmd_res;
+            continue;
+        }
+        // New sub_cmds to wait for in the co-routine
+        ublkpp_io->sub_cmds += io_res.value();
     } while (false);
 
     if (0 < ublkpp_io->sub_cmds) return;
