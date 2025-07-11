@@ -266,8 +266,8 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
         }
         auto const old_cmd = ublk_io_to_sub_cmd(ublkpp_io);
 
-        // If error we should retry it if possible before returning an I/O error
-        if ((-EIO == sub_cmd_res) && is_retry(old_cmd)) {
+        // Do not retry a already Retried command
+        if (is_retry(old_cmd)) {
             ublkpp_io->ret_val = sub_cmd_res;
             continue;
         }

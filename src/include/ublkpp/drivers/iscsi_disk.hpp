@@ -17,7 +17,7 @@ class iSCSIDisk : public UblkDisk {
     std::mutex pending_results_lck;
     std::list< async_result > pending_results;
 
-    void async_complete(ublksrv_queue const* q, async_result const& result);
+    void async_complete(ublksrv_queue const* q, async_result&& result);
 
 public:
     explicit iSCSIDisk(std::string const& url);
