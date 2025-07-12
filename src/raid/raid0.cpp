@@ -132,6 +132,7 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd) const {
+    // Each thread has a 2-dimensional block of iovecs that we can split into
     thread_local auto sub_cmds =
         std::array< std::tuple< uint64_t, uint32_t, std::array< iovec, 16 > >, _max_stripe_cnt >();
 
