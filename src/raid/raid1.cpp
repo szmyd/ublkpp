@@ -18,17 +18,20 @@ SISL_OPTION_GROUP(raid1,
 
 namespace ublkpp {
 
-#define CLEAN_DEVICE (read_route::DEVB == _read_route ? _device_b : _device_a)
-#define DIRTY_DEVICE (read_route::DEVB == _read_route ? _device_a : _device_b)
-
 // SubCmd decoders
 #define SEND_TO_A (sub_cmd & ((1U << sqe_tgt_data_width) - 2))
 #define SEND_TO_B (sub_cmd | 0b1)
+
+// Route routines
+#define IS_DEGRADED (0 < _degraded_ops)
+#define CLEAN_DEVICE (read_route::DEVB == _read_route ? _device_b : _device_a)
+#define DIRTY_DEVICE (read_route::DEVB == _read_route ? _device_a : _device_b)
 #define CLEAN_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_B : SEND_TO_A)
 #define DIRTY_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_A : SEND_TO_B)
 
-#define IS_DEGRADED (0 < _degraded_ops)
-#define NOT_DEGRADED (0 == _degraded_ops)
+// If sub_cmd was for DevA switch Clean to B and vice-versa
+#define SWITCH_CLEAN(s_cmd)                                                                                            \
+    _read_route = (0b1 & ((s_cmd) >> _device_b->route_size())) ? read_route::DEVA : read_route::DEVB;
 
 static folly::Expected< raid1::SuperBlock*, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
@@ -139,12 +142,8 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
-// If sub_cmd was for DevA switch Clean to B and vice-versa
-#define SWITCH_CLEAN(s_cmd)                                                                                            \
-    _read_route = (0b1 & ((s_cmd) >> _device_b->route_size())) ? read_route::DEVA : read_route::DEVB;
-
 bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd) {
-    DEBUG_ASSERT(NOT_DEGRADED, "DIRTY_BITMAP on degraded device!")
+    DEBUG_ASSERT(!IS_DEGRADED, "DIRTY_BITMAP on degraded device!")
     ++_sb->fields.bitmap.age;
     _sb->fields.bitmap.dirty = 1;
     // Rotate Clean Device
@@ -164,7 +163,7 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func) {
         if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         // If sub_cmd requires retry, and we're not degraded we always DIRTY the Bitmap
-        if (NOT_DEGRADED && !__dirty_bitmap(sub_cmd))
+        if (!IS_DEGRADED && !__dirty_bitmap(sub_cmd))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         // FIXME: We should be able to return 0 regardless of which device caused a retry
         if (test_flags(sub_cmd, sub_cmd_flags::REPLICATED)) return 0;
