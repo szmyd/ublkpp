@@ -787,6 +787,49 @@ TEST(Raid1, WriteFailImmediateDevB) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
+// Brief: Degrade the array and then fail read; it should not attempt failover read
+TEST(Raid1, DoNotFailoverReadFromDegraded) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+
+    // First send a retry write to degrade the array on side A
+    {
+        EXPECT_TO_WRITE_SB(device_b);
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return 1;
+            });
+
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(1, res.value());
+    }
+
+    // Now send retry reads; they should fail immediately
+    {
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 32 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+    {
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 32 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+
+    // expect unmount_clean update
+    EXPECT_TO_WRITE_SB(device_b);
+}
+
 // Immediate Write Fail
 TEST(Raid1, WriteFailImmediateFailFailSBUpdate) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
