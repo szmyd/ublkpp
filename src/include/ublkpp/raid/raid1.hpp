@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boost/uuid/uuid.hpp>
+#include <sisl/utility/enum.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
 namespace ublkpp {
@@ -9,15 +10,27 @@ namespace raid1 {
 struct SuperBlock;
 }
 
+ENUM(read_route, int8_t, EITHER = -1, DEVA = 0, DEVB = 1);
 class Raid1Disk : public UblkDisk {
+
     std::shared_ptr< UblkDisk > _device_a;
     std::shared_ptr< UblkDisk > _device_b;
+
+    // Persistent state
     raid1::SuperBlock* _sb;
 
-    // Initially we issue OPs to DevA first, this flag switchs the order
-    bool _route_to_b{false};
+    /// Some runtime parameters
+    //  =======================
+    bool const _read_from_dirty{false}; // Read from a device we *know* is dirty
+    //  =======================
+
+    // The current route to read consistently
+    read_route _read_route{read_route::EITHER};
+
+    // Counter for testing availability changes
     uint64_t _degraded_ops{0UL};
 
+    // Internal routines
     bool __dirty_bitmap(sub_cmd_t sub_cmd);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func);
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func);

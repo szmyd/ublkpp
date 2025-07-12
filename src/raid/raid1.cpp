@@ -12,16 +12,20 @@
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
-                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"))
+                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
+                  (read_from_dirty, "", "read_from_dirty", "Allow reads from a Dirty device", cxxopts::value< bool >(),
+                   ""))
 
 namespace ublkpp {
 
-#define CLEAN_DEVICE (!_route_to_b ? _device_a : _device_b)
-#define DIRTY_DEVICE (_route_to_b ? _device_a : _device_b)
+#define CLEAN_DEVICE (read_route::DEVB == _read_route ? _device_b : _device_a)
+#define DIRTY_DEVICE (read_route::DEVB == _read_route ? _device_a : _device_b)
 
-// Adjust the current sub_cmd to point to the current CLEAN/DIRTY device
-#define CLEAN_SUBCMD (_route_to_b ? (sub_cmd | 0b1) : (sub_cmd & ((1U << sqe_tgt_data_width) - 2)))
-#define DIRTY_SUBCMD (_route_to_b ? (sub_cmd & ((1U << sqe_tgt_data_width) - 2)) : (sub_cmd | 0b1))
+// SubCmd decoders
+#define SEND_TO_A (sub_cmd & ((1U << sqe_tgt_data_width) - 2))
+#define SEND_TO_B (sub_cmd | 0b1)
+#define CLEAN_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_B : SEND_TO_A)
+#define DIRTY_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_A : SEND_TO_B)
 
 #define IS_DEGRADED (0 < _degraded_ops)
 #define NOT_DEGRADED (0 == _degraded_ops)
@@ -31,7 +35,10 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
 
 Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                      std::shared_ptr< UblkDisk > dev_b) :
-        UblkDisk(), _device_a(std::move(dev_a)), _device_b(std::move(dev_b)) {
+        UblkDisk(),
+        _device_a(std::move(dev_a)),
+        _device_b(std::move(dev_b)),
+        _read_from_dirty(0 < SISL_OPTIONS["read_from_dirty"].count()) {
     direct_io = true;
     // Discover overall Device parameters
     auto& our_params = *params();
@@ -67,12 +74,17 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         free(sb_a.value());
         _sb = sb_b.value();
         _sb->fields.bitmap.dirty = 1;
-        _route_to_b = true;
+        _read_route = read_route::DEVB;
     } else if ((a_fields.bitmap.age == b_fields.bitmap.age) && (!a_fields.clean_unmount && b_fields.clean_unmount)) {
         free(sb_a.value());
         _sb = sb_b.value();
-        _route_to_b = true;
+        _read_route = read_route::DEVB;
+    } else if ((a_fields.bitmap.age > b_fields.bitmap.age) || (a_fields.clean_unmount && !b_fields.clean_unmount)) {
+        free(sb_b.value());
+        _sb = sb_a.value();
+        _read_route = read_route::DEVA;
     } else {
+        // Otherwise this is a clean device, we can read from either side
         free(sb_b.value());
         _sb = sb_a.value();
         if (0 == _sb->fields.bitmap.age) {
@@ -87,8 +99,8 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     // Start the degraded ops counter at 1
     _degraded_ops = (_sb->fields.bitmap.dirty ? 1 : 0);
 
-    sub_cmd_t const sub_cmd = _route_to_b ? 1U << _device_b->route_size() : 0U;
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to DIRTY
+    sub_cmd_t const sub_cmd = 0U;
     if (!write_superblock(*CLEAN_DEVICE, _sb)) {
         RLOGD("Failed writing SuperBlock to: [{}] becoming degraded.", *CLEAN_DEVICE)
         // If already degraded this is Fatal
@@ -97,7 +109,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
         // This will write the SB to DIRTY so we can skip this down below
-        if (!__dirty_bitmap(sub_cmd)) {
+        if (!__dirty_bitmap(CLEAN_SUBCMD)) {
             free(_sb);
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
@@ -128,7 +140,8 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
 }
 
 // If sub_cmd was for DevA switch Clean to B and vice-versa
-#define SWITCH_CLEAN(s_cmd) _route_to_b = (0 == (0b1 & ((s_cmd) >> _device_b->route_size())));
+#define SWITCH_CLEAN(s_cmd)                                                                                            \
+    _read_route = (0b1 & ((s_cmd) >> _device_b->route_size())) ? read_route::DEVA : read_route::DEVB;
 
 bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd) {
     DEBUG_ASSERT(NOT_DEGRADED, "DIRTY_BITMAP on degraded device!")
@@ -187,12 +200,16 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func) {
     auto const retry = is_retry(sub_cmd);
     if (!retry)
         sub_cmd = shift_route(sub_cmd, route_size());
-    else // If Retry then rotate the devices
+    else if (IS_DEGRADED && !_read_from_dirty)
+        // If we are already degraded return error
+        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    else {
+        // If Retry then rotate the devices
         SWITCH_CLEAN(sub_cmd)
+    }
 
-    // Attempt read on clean device,
-    // If it: A. Succeeds B. We are degraded or C. This WAS the retry; return the result
-    if (auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); res || IS_DEGRADED || retry) {
+    // Attempt read on device; if it succeeds or we are degraded return the result
+    if (auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); res || (IS_DEGRADED && !_read_from_dirty) || retry) {
         if (!retry && IS_DEGRADED) ++_degraded_ops;
         return res;
     }
