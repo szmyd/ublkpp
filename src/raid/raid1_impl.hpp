@@ -3,6 +3,7 @@
 extern "C" {
 #include <endian.h>
 }
+#include <tuple>
 
 namespace ublkpp {
 
@@ -32,6 +33,8 @@ static_assert(SuperBlock::SIZE == sizeof(SuperBlock), "Size of raid1::SuperBlock
 #else
 #error "Big Endian not supported!"
 #endif
+
+extern std::pair< SuperBlock*, read_route > pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
 
 } // namespace raid1
 

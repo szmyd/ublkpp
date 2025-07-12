@@ -17,6 +17,7 @@ SISL_OPTION_GROUP(raid1,
                    ""))
 
 namespace ublkpp {
+using raid1::read_route;
 
 // SubCmd decoders
 #define SEND_TO_A (sub_cmd & ((1U << sqe_tgt_data_width) - 2))
@@ -72,30 +73,13 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     }
 
     // We only keep the latest or if match and A unclean take B
-    auto const a_fields = sb_a.value()->fields;
-    if (auto const b_fields = sb_a.value()->fields; b_fields.bitmap.age > a_fields.bitmap.age) {
-        free(sb_a.value());
-        _sb = sb_b.value();
-        _sb->fields.bitmap.dirty = 1;
-        _read_route = read_route::DEVB;
-    } else if ((a_fields.bitmap.age == b_fields.bitmap.age) && (!a_fields.clean_unmount && b_fields.clean_unmount)) {
-        free(sb_a.value());
-        _sb = sb_b.value();
-        _read_route = read_route::DEVB;
-    } else if ((a_fields.bitmap.age > b_fields.bitmap.age) || (a_fields.clean_unmount && !b_fields.clean_unmount)) {
-        free(sb_b.value());
-        _sb = sb_a.value();
-        _read_route = read_route::DEVA;
-    } else {
-        // Otherwise this is a clean device, we can read from either side
-        free(sb_b.value());
-        _sb = sb_a.value();
-        if (0 == _sb->fields.bitmap.age) {
-            // This is a new Device!
-            // Start age at 1 for brand new Device
-            _sb->fields.bitmap.age = 1;
-        }
-    }
+    if (auto res_pair = pick_superblock(sb_a.value(), sb_b.value()); res_pair.first) {
+        _sb = res_pair.first;
+        free(_sb == sb_a.value() ? sb_b.value() : sb_a.value());
+        _read_route = res_pair.second;
+    } else
+        throw std::runtime_error("Could not find reasonable superblock!");
+
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
 
@@ -322,5 +306,24 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
     if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
     return sb;
 }
+
+namespace raid1 {
+std::pair< raid1::SuperBlock*, read_route > pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
+    auto a_fields = dev_a->fields;
+    if (auto b_fields = dev_b->fields; a_fields.bitmap.age < b_fields.bitmap.age) {
+        b_fields.bitmap.dirty = 1;
+        return std::make_pair(dev_b, read_route::DEVB);
+    } else if (a_fields.bitmap.age > b_fields.bitmap.age) {
+        a_fields.bitmap.dirty = 1;
+        return std::make_pair(dev_a, read_route::DEVA);
+    } else if (a_fields.clean_unmount != b_fields.clean_unmount)
+        return std::make_pair(a_fields.clean_unmount ? dev_a : dev_b, read_route::EITHER);
+
+    // Otherwise this is a clean device, we can read from either side
+    // Start new devices at 1
+    a_fields.bitmap.age = std::max(a_fields.bitmap.age, 1UL);
+    return std::make_pair(dev_a, read_route::EITHER);
+}
+} // namespace raid1
 
 } // namespace ublkpp

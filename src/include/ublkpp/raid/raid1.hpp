@@ -8,9 +8,9 @@ namespace ublkpp {
 
 namespace raid1 {
 struct SuperBlock;
-}
-
 ENUM(read_route, int8_t, EITHER = -1, DEVA = 0, DEVB = 1);
+} // namespace raid1
+
 class Raid1Disk : public UblkDisk {
 
     std::shared_ptr< UblkDisk > _device_a;
@@ -25,7 +25,7 @@ class Raid1Disk : public UblkDisk {
     //  =======================
 
     // The current route to read consistently
-    read_route _read_route{read_route::EITHER};
+    raid1::read_route _read_route{raid1::read_route::EITHER};
 
     // Counter for testing availability changes
     uint64_t _degraded_ops{0UL};
