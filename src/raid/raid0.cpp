@@ -131,8 +131,8 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 //  RAID0 is primary responsible for splitting an I/O request across several stripes. These operations can cross
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
-io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd,
-                                  io_uring* ring_ptr) const {
+io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd) const {
+    // Each thread has a 2-dimensional block of iovecs that we can split into
     thread_local auto sub_cmds =
         std::array< std::tuple< uint64_t, uint32_t, std::array< iovec, 16 > >, _max_stripe_cnt >();
 
@@ -176,19 +176,10 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
             auto res = func(stripe_off, new_sub_cmd, io_array.data(), alive_cmds, (uint32_t)io_addr);
             // Set this back to zero so the next command can reuse
             alive_cmds = 0;
-            if (!res) {
-                // If we put a bunch of iovecs on the uring queue, we need to submit them here to
-                // avoid them going out of scope and the kernel dereferencing them
-                if (ring_ptr) io_uring_submit(ring_ptr);
-                return res;
-            }
+            if (!res) return res;
             cnt += res.value();
         }
     }
-
-    // We have to submit these iovecs *now* as they are on the stack!
-    if (need_to_submit && ring_ptr) [[unlikely]]
-        io_uring_submit(ring_ptr);
     return cnt;
 }
 
@@ -216,7 +207,7 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
                   logical_off >> SECTOR_SHIFT, __iovec_len(iov, iov + nr_iovs), new_sub_cmd)
             return _stripe_array[stripe_off]->dev->async_iov(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
         },
-        retry, sub_cmd, (q ? q->ring_ptr : nullptr));
+        retry, sub_cmd);
 }
 
 io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {

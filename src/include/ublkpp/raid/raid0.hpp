@@ -17,8 +17,7 @@ class Raid0Disk : public UblkDisk {
     uint32_t const _stripe_size{0};
     uint32_t const _stride_width{0};
 
-    io_result __distribute(iovec* iov, uint64_t addr, auto&& func, bool retry = false, sub_cmd_t sub_cmd = 0,
-                           io_uring* ring_ptr = nullptr) const;
+    io_result __distribute(iovec* iov, uint64_t addr, auto&& func, bool retry = false, sub_cmd_t sub_cmd = 0) const;
 
 public:
     Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,

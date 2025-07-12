@@ -278,6 +278,10 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
         auto const sub_cmd = set_flags(old_cmd, sub_cmd_flags::RETRIED);
         TLOGD("Retrying portion of I/O [res:{}] [tag:{}] [sub_cmd:{:b}]", sub_cmd_res, data->tag, sub_cmd)
         auto io_res = device->queue_tgt_io(q, data, sub_cmd);
+
+        // Submit to io_uring before yielding to make iovecs that are thread_local stable
+        io_uring_submit(q->ring_ptr);
+
         if (!io_res) {
             TLOGE("Retry Failed Immediately on I/O [tag:{}] [sub_cmd:{:b}] [err:{}]", data->tag, sub_cmd,
                   io_res.error().message())
@@ -306,6 +310,10 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
     // cause this amplification of operations.
     auto io_res = device->queue_tgt_io(q, data, 0);
+
+    // Submit to io_uring before yielding to make iovecs that are thread_local stable
+    io_uring_submit(q->ring_ptr);
+
     if (!io_res) {
         TLOGE("IO Failed Immediately to queue io [tag:{}], err: [{}]", data->tag, io_res.error().message())
         ublksrv_complete_io(q, data->tag, -EIO);
