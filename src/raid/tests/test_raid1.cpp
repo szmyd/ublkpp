@@ -556,6 +556,55 @@ TEST(Raid1, WriteRetryA) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
+// Retry write that failed on DeviceA and check that a failure to update the SB is terminal
+TEST(Raid1, WriteRetryAFailure) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+
+    {
+        EXPECT_TO_WRITE_SB_F(device_b, true);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
+
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+
+    // Queued Retries should attempt to update the SB as well
+    {
+        EXPECT_TO_WRITE_SB_F(device_b, true);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
+
+        auto ublk_data = make_io_data(0xcafedeaa, UBLK_IO_OP_WRITE);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+
+    // Subsequent writes should attempt to go to side B first
+    auto ublk_data = make_io_data(0xcafedeae, UBLK_IO_OP_WRITE);
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
+    // The primary device has been rotated to B from the retries above, expect attempts to write a dirty bitmap
+    // to Dev A since we have not successfully become degraded yet
+    EXPECT_TO_WRITE_SB_F(device_a, true);
+    auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+    remove_io_data(ublk_data);
+    ASSERT_FALSE(res);
+
+    // expect unmount_clean attempt on Device B
+    EXPECT_TO_WRITE_SB_F(device_a, true);
+}
+
 // Retry write that failed on DeviceB
 TEST(Raid1, WriteRetryB) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
@@ -633,7 +682,7 @@ TEST(Raid1, WriteDoubleFailure) {
 }
 
 // Immediate Write Fail
-TEST(Raid1, WriteFailImmediate) {
+TEST(Raid1, WriteFailImmediateDevA) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
@@ -669,6 +718,146 @@ TEST(Raid1, WriteFailImmediate) {
     // Subsequent writes should not go to device A
     auto ublk_data = make_io_data(0xcafedeae, UBLK_IO_OP_WRITE);
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                     uint64_t addr) {
+            EXPECT_EQ(data->tag, 0xcafedeae);
+            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+            EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+            return 1;
+        });
+    auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+    remove_io_data(ublk_data);
+    ASSERT_TRUE(res);
+    EXPECT_EQ(1, res.value());
+
+    // expect unmount_clean on Device B
+    EXPECT_TO_WRITE_SB(device_b);
+}
+
+// Immediate Write Fail
+TEST(Raid1, WriteFailImmediateDevB) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+
+    {
+        EXPECT_TO_WRITE_SB_F(device_a, true);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+                         uint32_t, uint64_t addr) {
+                EXPECT_EQ(data->tag, 0xcafedead);
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
+                // SubCommand has the replicated bit set now
+                EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce(
+                [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
+                    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                });
+
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+
+    // Subsequent writes should go to both devices
+    auto ublk_data = make_io_data(0xcafedeae, UBLK_IO_OP_WRITE);
+    EXPECT_TO_WRITE_SB_F(device_b, true);
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
+    auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+    remove_io_data(ublk_data);
+    ASSERT_FALSE(res);
+
+    // expect unmount_clean on Device B
+    EXPECT_TO_WRITE_SB(device_b);
+}
+
+// Brief: Degrade the array and then fail read; it should not attempt failover read
+TEST(Raid1, DoNotFailoverReadFromDegraded) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+
+    // First send a retry write to degrade the array on side A
+    {
+        EXPECT_TO_WRITE_SB(device_b);
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return 1;
+            });
+
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(1, res.value());
+    }
+
+    // Now send retry reads; they should fail immediately
+    {
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 32 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+    {
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 32 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+
+    // expect unmount_clean update
+    EXPECT_TO_WRITE_SB(device_b);
+}
+
+// Immediate Write Fail
+TEST(Raid1, WriteFailImmediateFailFailSBUpdate) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+
+    {
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce(
+                [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
+                    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                });
+        EXPECT_TO_WRITE_SB_F(device_b, true); // Fail the attempt to dirty the SB
+
+        auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+
+    // Subsequent writes should continue to try device A this time succeeding dirty
+    auto ublk_data = make_io_data(0xcafedeae, UBLK_IO_OP_WRITE);
+    EXPECT_TO_WRITE_SB(device_b);
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
