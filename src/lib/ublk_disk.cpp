@@ -58,6 +58,8 @@ io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) {
 }
 
 io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    thread_local auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
+
     DLOGT("Queue I/O [tag:{}] [sub_cmd:{:b}]", data->tag, sub_cmd)
     ublksrv_io_desc const* iod = data->iod;
     switch (ublksrv_get_op(iod)) {
@@ -68,7 +70,8 @@ io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* dat
         return handle_discard(q, data, sub_cmd, iod->nr_sectors << SECTOR_SHIFT, iod->start_sector << SECTOR_SHIFT);
     case UBLK_IO_OP_READ:
     case UBLK_IO_OP_WRITE: {
-        auto iov = iovec{.iov_base = (void*)iod->addr, .iov_len = (iod->nr_sectors << SECTOR_SHIFT)};
+        iov.iov_base = (void*)iod->addr;
+        iov.iov_len = (iod->nr_sectors << SECTOR_SHIFT);
         return async_iov(q, data, sub_cmd, &iov, 1, (iod->start_sector << SECTOR_SHIFT));
     }
     default:
