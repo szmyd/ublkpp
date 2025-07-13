@@ -14,8 +14,7 @@ extern "C" {
 #include "lib/logging.hpp"
 
 SISL_OPTION_GROUP(iscsi,
-                  (connect_any, "", "connect_any", "Login to the first target found", cxxopts::value< bool >(), "")
-)
+                  (connect_any, "", "connect_any", "Login to the first target found", cxxopts::value< bool >(), ""))
 
 SISL_LOGGING_DEF(libiscsi)
 
@@ -92,8 +91,7 @@ static std::unique_ptr< iscsi_session > iscsi_connect(std::string const& url) {
     if (0 != SISL_OPTIONS["connect_any"].count()) {
         strcpy(session->url->target, discovery_addr->target_name);
         DLOGI("Discovered target: [{}]", discovery_addr->target_name);
-    } else
-        if (0 != strcmp(session->url->target, discovery_addr->target_name)) {
+    } else if (0 != strcmp(session->url->target, discovery_addr->target_name)) {
         DLOGE("Discovered a different target than expected: [{}] discovered: [{}]", session->url->target,
               discovery_addr->target_name);
         return nullptr;
