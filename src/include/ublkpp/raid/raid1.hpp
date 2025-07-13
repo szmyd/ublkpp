@@ -1,7 +1,5 @@
 #pragma once
 
-#include <mutex>
-
 #include <boost/uuid/uuid.hpp>
 #include <sisl/utility/enum.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
