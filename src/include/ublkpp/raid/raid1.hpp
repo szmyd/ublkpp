@@ -34,9 +34,9 @@ class Raid1Disk : public UblkDisk {
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
 
     // Internal routines
-    bool __dirty_bitmap(sub_cmd_t sub_cmd);
+    bool __dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func);
-    io_result __replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_reply);
+    io_result __replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_reply, uint64_t addr, uint32_t len);
 
 public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);

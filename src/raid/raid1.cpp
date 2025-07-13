@@ -96,7 +96,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
         // This will write the SB to DIRTY so we can skip this down below
-        if (!__dirty_bitmap(CLEAN_SUBCMD)) {
+        if (!__dirty_bitmap(CLEAN_SUBCMD, 0, 0)) {
             free(_sb);
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
@@ -105,7 +105,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     if (IS_DEGRADED) return;
     if (write_superblock(*DIRTY_DEVICE, _sb)) return;
     RLOGD("Failed writing SuperBlock to: [{}] becoming degraded.", *DIRTY_DEVICE)
-    if (!__dirty_bitmap(DIRTY_SUBCMD)) {
+    if (!__dirty_bitmap(DIRTY_SUBCMD, 0, 0)) {
         free(_sb);
         throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
     }
@@ -126,7 +126,7 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
-bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd) {
+bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t, uint32_t) {
     DEBUG_ASSERT(!IS_DEGRADED, "DIRTY_BITMAP on degraded device!")
     ++_sb->fields.bitmap.age;
     _sb->fields.bitmap.dirty = 1;
@@ -141,17 +141,17 @@ bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd) {
 //
 //  RAID1 is primary responsible for replicating mutations (e.g. Writes/Discards) to a pair of compatible devices.
 //  READ operations need only go to one side. So they are handled separately.
-io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_reply) {
+io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_reply, uint64_t addr, uint32_t len) {
     if (is_retry(sub_cmd)) {
         // If we're already degraded and failure was on current disk then treat this as a failure!
         if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         // If sub_cmd requires retry, and we're not degraded we always DIRTY the Bitmap
-        if (!IS_DEGRADED && !__dirty_bitmap(sub_cmd))
+        if (!IS_DEGRADED && !__dirty_bitmap(sub_cmd, addr, len))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
         // Bitmap is marked dirty, queue an asynchronous "reply"
-        return noop_reply(CLEAN_SUBCMD);
+        return noop_reply(CLEAN_SUBCMD, len);
     } else [[likely]]
         // Apply our shift to the sub_cmd if it's not a retry
         sub_cmd = shift_route(sub_cmd, route_size());
@@ -165,7 +165,8 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_rep
 
     // If not-degraded and first sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
-        if (!__dirty_bitmap(CLEAN_SUBCMD)) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        if (!__dirty_bitmap(CLEAN_SUBCMD, addr, len))
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         return func(*CLEAN_DEVICE, CLEAN_SUBCMD);
     }
     // Otherwise tag the replica sub_cmd so we don't include its value in the target result
@@ -173,7 +174,8 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_rep
     auto a_v = res.value();
     if (res = func(*DIRTY_DEVICE, DIRTY_SUBCMD); !res) {
         // If the replica sub_cmd fails immediately we can dirty the bitmap here and return result from firsub_cmd
-        if (!__dirty_bitmap(DIRTY_SUBCMD)) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        if (!__dirty_bitmap(DIRTY_SUBCMD, addr, len))
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     } else
         a_v += res.value();
     // Assuming all was successful, return the aggregate of the results
@@ -215,25 +217,25 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
     RLOGT("Received DISCARD: [tag:{}] ublk io [sector:{}|len:{}]", data->tag, addr >> SECTOR_SHIFT, len)
 
     // Adjust for reserved area
+    addr += raid1::reserved_size;
     return __replicate(
         sub_cmd,
-        [q, data, len, adj_addr = (addr + raid1::reserved_size)](UblkDisk& d, sub_cmd_t scmd) {
-            return d.handle_discard(q, data, scmd, len, adj_addr);
-        },
-        [q, data, len, this](sub_cmd_t sub_cmd) {
+        [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) { return d.handle_discard(q, data, scmd, len, addr); },
+        [q, data, this](sub_cmd_t sub_cmd, uint32_t len) {
             _pending_results[q].emplace_back(async_result{data, sub_cmd, (int)len});
             if (q) [[likely]]
                 ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
             return 1;
-        });
+        },
+        addr, len);
 }
 
 io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                uint32_t nr_vecs, uint64_t addr) {
-    // Only replicate non-READs
+    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     RLOGT("Received {}: [tag:{}] ublk io [sector:{}|len:{}] [sub_cmd:{:b}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> SECTOR_SHIFT,
-          __iovec_len(iovecs, iovecs + nr_vecs), sub_cmd)
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> SECTOR_SHIFT, len,
+          sub_cmd)
     // Adjust for reserved area
     addr += raid1::reserved_size;
 
@@ -247,13 +249,13 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
             return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr);
         },
-        [q, data, iovecs, nr_vecs, this](sub_cmd_t sub_cmd) {
-            _pending_results[q].emplace_back(async_result{data, sub_cmd, (int)__iovec_len(iovecs, iovecs + nr_vecs)});
+        [q, data, this](sub_cmd_t sub_cmd, uint32_t len) {
+            _pending_results[q].emplace_back(async_result{data, sub_cmd, (int)len});
             if (q) [[likely]]
                 ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
-
             return 1;
-        });
+        },
+        addr, len);
     return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 }
 
@@ -276,7 +278,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                 if (p_res && !test_flags(s, sub_cmd_flags::REPLICATED)) res += p_res.value();
                 return p_res;
             },
-            [](sub_cmd_t) {return 0;}); // LCOV_EXCL_LINE
+            [](sub_cmd_t, uint32_t) { return 0; }, addr, __iovec_len(iovecs, iovecs + nr_vecs)); // LCOV_EXCL_LINE
         !io_res)
         return io_res;
     return res;
