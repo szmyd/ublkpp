@@ -41,7 +41,7 @@ inline io_result write_superblock(UblkDisk& device, SB* sb) noexcept {
     return res;
 }
 
-template < typename SB >
+template < typename SB > // LCOV_EXCL_START
 inline io_result write_superblock_async(UblkDisk& device, SB* sb, ublksrv_queue const* q, ublk_io_data const* data,
                                         sub_cmd_t sub_cmd) noexcept {
     RLOGT("Writing Superblock to: [{}]", device)
@@ -50,8 +50,9 @@ inline io_result write_superblock_async(UblkDisk& device, SB* sb, ublksrv_queue 
     auto iov = iovec{.iov_base = sb, .iov_len = SB::SIZE};
     auto res = device.async_iov(q, data, sub_cmd, &iov, 1, 0UL);
     // MUST Submit here since iov is on the stack!
-    if (q) io_uring_submit(q->ring_ptr); // LCOV_EXCL_LINE
+    if (q) io_uring_submit(q->ring_ptr);
     return res;
 }
+// LCOV_EXCL_STOP
 
 } // namespace ublkpp
