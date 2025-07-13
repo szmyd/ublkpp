@@ -153,20 +153,24 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t, uint32_t, ublk_
 //  READ operations need only go to one side. So they are handled separately.
 io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                  ublk_io_data const* async_data) {
+    // Failed Async WRITEs all end up here
     if (is_retry(sub_cmd)) {
-        // If we're already degraded and failure was on current disk then treat this as a failure!
+        // No Synchronous operations retry
+        DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
+
+        // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
         if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-        // If sub_cmd requires retry, and we're not degraded we always DIRTY the Bitmap
-        if (!IS_DEGRADED && !__dirty_bitmap(sub_cmd, addr, len, async_data))
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
-        // Synchronous operations do not have RETRIES!
-        DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
+        // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
+        auto dirty_res = __dirty_bitmap(sub_cmd, addr, len, async_data);
+        if (!dirty_res) return dirty_res;
+
         // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
         _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
+
         if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
-        return 1;
+        return dirty_res.value() + 1;
     } else [[likely]]
         // Apply our shift to the sub_cmd if it's not a retry
         sub_cmd = shift_route(sub_cmd, route_size());
