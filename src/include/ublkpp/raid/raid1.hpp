@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mutex>
+
 #include <boost/uuid/uuid.hpp>
 #include <sisl/utility/enum.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
@@ -30,10 +32,13 @@ class Raid1Disk : public UblkDisk {
     // Counter for testing availability changes
     uint64_t _degraded_ops{0UL};
 
+    // Asynchronous replies that did not go through io_uring
+    std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
+
     // Internal routines
     bool __dirty_bitmap(sub_cmd_t sub_cmd);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func);
-    io_result __replicate(sub_cmd_t sub_cmd, auto&& func);
+    io_result __replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_reply);
 
 public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);

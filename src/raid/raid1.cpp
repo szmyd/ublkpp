@@ -141,7 +141,7 @@ bool Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd) {
 //
 //  RAID1 is primary responsible for replicating mutations (e.g. Writes/Discards) to a pair of compatible devices.
 //  READ operations need only go to one side. So they are handled separately.
-io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func) {
+io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, auto&& noop_reply) {
     if (is_retry(sub_cmd)) {
         // If we're already degraded and failure was on current disk then treat this as a failure!
         if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
@@ -149,8 +149,9 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func) {
         // If sub_cmd requires retry, and we're not degraded we always DIRTY the Bitmap
         if (!IS_DEGRADED && !__dirty_bitmap(sub_cmd))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-        // FIXME: We should be able to return 0 regardless of which device caused a retry
-        if (test_flags(sub_cmd, sub_cmd_flags::REPLICATED)) return 0;
+
+        // Bitmap is marked dirty, queue an asynchronous "reply"
+        return noop_reply(CLEAN_SUBCMD);
     } else [[likely]]
         // Apply our shift to the sub_cmd if it's not a retry
         sub_cmd = shift_route(sub_cmd, route_size());
@@ -204,6 +205,7 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func) {
 }
 
 void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
+    results.splice(results.end(), std::move(_pending_results[q]));
     if (!_device_a->uses_ublk_iouring) _device_a->collect_async(q, results);
     if (!_device_b->uses_ublk_iouring) _device_b->collect_async(q, results);
 }
@@ -213,9 +215,17 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
     RLOGT("Received DISCARD: [tag:{}] ublk io [sector:{}|len:{}]", data->tag, addr >> SECTOR_SHIFT, len)
 
     // Adjust for reserved area
-    return __replicate(sub_cmd, [q, data, len, adj_addr = (addr + raid1::reserved_size)](UblkDisk& d, sub_cmd_t scmd) {
-        return d.handle_discard(q, data, scmd, len, adj_addr);
-    });
+    return __replicate(
+        sub_cmd,
+        [q, data, len, adj_addr = (addr + raid1::reserved_size)](UblkDisk& d, sub_cmd_t scmd) {
+            return d.handle_discard(q, data, scmd, len, adj_addr);
+        },
+        [q, data, len, this](sub_cmd_t sub_cmd) {
+            _pending_results[q].emplace_back(async_result{data, sub_cmd, (int)len});
+            if (q) [[likely]]
+                ublksrv_queue_send_event(q);
+            return 1;
+        });
 }
 
 io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
@@ -232,33 +242,42 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         return __failover_read(sub_cmd, [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
             return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr);
         });
-    return __replicate(sub_cmd, [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-        return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr);
-    });
+    return __replicate(
+        sub_cmd,
+        [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
+            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr);
+        },
+        [q, data, iovecs, nr_vecs, this](sub_cmd_t sub_cmd) {
+            _pending_results[q].emplace_back(async_result{data, sub_cmd, (int)__iovec_len(iovecs, iovecs + nr_vecs)});
+            if (q) [[likely]]
+                ublksrv_queue_send_event(q);
+            return 1;
+        });
     return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 }
 
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
-    // This allows us to use the DIRTY_BITMAP and SWITCH_CLEAN macros below
-    sub_cmd_t sub_cmd = 0U;
-
     // Adjust for reserved area
     addr += raid1::reserved_size;
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
-        return __failover_read(sub_cmd, [iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t) {
+        return __failover_read(0U, [iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t) {
             return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr);
         });
 
-    // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
     size_t res{0};
-    if (auto io_res = __replicate(sub_cmd,
-                                  [&res, op, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t s) {
-                                      auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr);
-                                      if (p_res && !test_flags(s, sub_cmd_flags::REPLICATED)) res += p_res.value();
-                                      return p_res;
-                                  });
+    if (auto io_res = __replicate(
+            0U,
+            [&res, op, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t s) {
+                auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr);
+                // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
+                if (p_res && !test_flags(s, sub_cmd_flags::REPLICATED)) res += p_res.value();
+                return p_res;
+            },
+            [&res, op, iovecs, nr_vecs, addr, this](sub_cmd_t) {
+                return CLEAN_DEVICE->sync_iov(op, iovecs, nr_vecs, addr);
+            });
         !io_res)
         return io_res;
     return res;
