@@ -161,8 +161,8 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
         if (!IS_DEGRADED && !__dirty_bitmap(sub_cmd, addr, len, async_data))
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
-        // Synchronous operations just directly return the length of the operation, not count of results
-        if (!async_data) return len;
+        // Synchronous operations do not have RETRIES!
+        DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
         // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
         _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
         if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
