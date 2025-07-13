@@ -2,6 +2,14 @@ codecov:
   notify:
     require_ci_to_pass: no
 
+parsers:
+  gcov:
+    branch_detection:
+      conditional: yes
+      loop: yes
+      method: no
+      macro: no
+
 ignore:
   - "**/tests/*"
   - "**/test_package/*"
