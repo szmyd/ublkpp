@@ -147,29 +147,41 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t, uint32_t, ublk_
     return 0;
 }
 
+// Failed Async WRITEs all end up here and have the side-effect of dirtying the BITMAP
+// on the working device. This blocks the final result going back from the original operation
+// as we chain additional sub_cmds by returning a value > 0 including a new "result" for the
+// original sub_cmd
+io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                          ublk_io_data const* async_data) {
+    // No Synchronous operations retry
+    DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
+
+    // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
+    if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
+        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+
+    // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
+    auto dirty_res = __dirty_bitmap(sub_cmd, addr, len, async_data);
+    if (!dirty_res) return dirty_res;
+
+    // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
+    _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
+
+    if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
+    return dirty_res.value() + 1;
+}
+
 /// This is the primary I/O handler call for RAID1
 //
 //  RAID1 is primary responsible for replicating mutations (e.g. Writes/Discards) to a pair of compatible devices.
 //  READ operations need only go to one side. So they are handled separately.
 io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                  ublk_io_data const* async_data) {
-    if (is_retry(sub_cmd)) {
-        // If we're already degraded and failure was on current disk then treat this as a failure!
-        if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-        // If sub_cmd requires retry, and we're not degraded we always DIRTY the Bitmap
-        if (!IS_DEGRADED && !__dirty_bitmap(sub_cmd, addr, len, async_data))
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    if (is_retry(sub_cmd)) [[unlikely]]
+        return __handle_async_retry(sub_cmd, addr, len, q, async_data);
 
-        // Synchronous operations do not have RETRIES!
-        DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
-        // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
-        _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
-        if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
-        return 1;
-    } else [[likely]]
-        // Apply our shift to the sub_cmd if it's not a retry
-        sub_cmd = shift_route(sub_cmd, route_size());
+    // Apply our shift to the sub_cmd if it's not a retry
+    sub_cmd = shift_route(sub_cmd, route_size());
 
     auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD);
 
@@ -180,17 +192,19 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
 
     // If not-degraded and first sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
-        if (!__dirty_bitmap(CLEAN_SUBCMD, addr, len, async_data))
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-        return func(*CLEAN_DEVICE, CLEAN_SUBCMD);
+        auto dirty_res = __dirty_bitmap(CLEAN_SUBCMD, addr, len, async_data);
+        if (!dirty_res) return dirty_res;
+        if (res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); !res) return res;
+        return res.value() + dirty_res.value();
     }
     // Otherwise tag the replica sub_cmd so we don't include its value in the target result
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::REPLICATED);
     auto a_v = res.value();
     if (res = func(*DIRTY_DEVICE, DIRTY_SUBCMD); !res) {
         // If the replica sub_cmd fails immediately we can dirty the bitmap here and return result from firsub_cmd
-        if (!__dirty_bitmap(DIRTY_SUBCMD, addr, len, async_data))
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        auto dirty_res = __dirty_bitmap(DIRTY_SUBCMD, addr, len, async_data);
+        if (!dirty_res) return dirty_res;
+        a_v += dirty_res.value();
     } else
         a_v += res.value();
     // Assuming all was successful, return the aggregate of the results
