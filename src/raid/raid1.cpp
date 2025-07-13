@@ -126,16 +126,15 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
-io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t, uint32_t, ublk_io_data const*) {
-    SWITCH_TARGET(sub_cmd)
-
-    // We only update the AGE if we're not degraded already
+io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t, uint32_t, ublksrv_queue const*, ublk_io_data const*) {
+    io_result dirty_result{0};
     if (!IS_DEGRADED) {
+        // We only update the AGE if we're not degraded already
+        SWITCH_TARGET(sub_cmd)
         ++_sb->fields.bitmap.age;
         _sb->fields.bitmap.dirty = 1;
-        // Must update age first; we do this synchronously
-        if (!write_superblock(*CLEAN_DEVICE, _sb))
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        // Must update age first; we do this synchronously to gate pending retry results
+        if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb); !sync_res) return sync_res;
         _degraded_ops = 1;
     }
 
@@ -144,7 +143,7 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t, uint32_t, ublk_
     // data to copy to the DIRTY device when available once again and write it to
     // the corresponding area of the CLEAN device.
 
-    return 0;
+    return dirty_result;
 }
 
 // Failed Async WRITEs all end up here and have the side-effect of dirtying the BITMAP
@@ -161,7 +160,7 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
     // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
-    auto dirty_res = __dirty_bitmap(sub_cmd, addr, len, async_data);
+    auto dirty_res = __dirty_bitmap(sub_cmd, addr, len, q, async_data);
     if (!dirty_res) return dirty_res;
 
     // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
@@ -192,7 +191,7 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
 
     // If not-degraded and first sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
-        auto dirty_res = __dirty_bitmap(CLEAN_SUBCMD, addr, len, async_data);
+        auto dirty_res = __dirty_bitmap(CLEAN_SUBCMD, addr, len, q, async_data);
         if (!dirty_res) return dirty_res;
         if (res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); !res) return res;
         return res.value() + dirty_res.value();
@@ -202,7 +201,7 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
     auto a_v = res.value();
     if (res = func(*DIRTY_DEVICE, DIRTY_SUBCMD); !res) {
         // If the replica sub_cmd fails immediately we can dirty the bitmap here and return result from firsub_cmd
-        auto dirty_res = __dirty_bitmap(DIRTY_SUBCMD, addr, len, async_data);
+        auto dirty_res = __dirty_bitmap(DIRTY_SUBCMD, addr, len, q, async_data);
         if (!dirty_res) return dirty_res;
         a_v += dirty_res.value();
     } else

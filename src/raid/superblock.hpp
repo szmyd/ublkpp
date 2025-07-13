@@ -31,13 +31,27 @@ inline SB* read_superblock(UblkDisk& device) noexcept {
 }
 
 template < typename SB >
-inline bool write_superblock(UblkDisk& device, SB* sb) noexcept {
+inline io_result write_superblock(UblkDisk& device, SB* sb) noexcept {
     RLOGT("Writing Superblock to: [{}]", device)
     DEBUG_ASSERT_EQ(0, SB::SIZE % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
                     device, SB::SIZE)
     auto iov = iovec{.iov_base = sb, .iov_len = SB::SIZE};
     auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
-    return !res ? false : (res.value() == SB::SIZE);
+    if (!res) RLOGE("Error writing Superblock to: [{}]!", device, res.error().message())
+    return res;
+}
+
+template < typename SB >
+inline io_result write_superblock_async(UblkDisk& device, SB* sb, ublksrv_queue const* q, ublk_io_data const* data,
+                                        sub_cmd_t sub_cmd) noexcept {
+    RLOGT("Writing Superblock to: [{}]", device)
+    DEBUG_ASSERT_EQ(0, SB::SIZE % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
+                    device, SB::SIZE)
+    auto iov = iovec{.iov_base = sb, .iov_len = SB::SIZE};
+    auto res = device.async_iov(q, data, sub_cmd, &iov, 1, 0UL);
+    // MUST Submit here since iov is on the stack!
+    if (q) io_uring_submit(q->ring_ptr); // LCOV_EXCL_LINE
+    return res;
 }
 
 } // namespace ublkpp

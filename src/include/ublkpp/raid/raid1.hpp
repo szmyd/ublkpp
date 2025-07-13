@@ -34,7 +34,8 @@ class Raid1Disk : public UblkDisk {
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
 
     // Internal routines
-    io_result __dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublk_io_data const* async_data = nullptr);
+    io_result __dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
+                             ublk_io_data const* async_data = nullptr);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func);
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* async_data);
