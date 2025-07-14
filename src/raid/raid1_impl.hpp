@@ -5,11 +5,26 @@ extern "C" {
 }
 #include <tuple>
 
+#include <sisl/logging/logging.h>
+
 namespace ublkpp {
 
 namespace raid1 {
 constexpr uint64_t reserved_size = 128 * Mi;
 constexpr uint64_t reserved_sectors = reserved_size >> SECTOR_SHIFT;
+
+static inline auto calc_bitmap_region(uint64_t addr, uint32_t len, uint32_t block_size, uint32_t chunk_size) {
+    auto const page_size_bits = chunk_size * block_size * 8;
+    auto const page = addr / page_size_bits;
+    DEBUG_ASSERT_LT(page, UINT32_MAX, "Page too big: {}", page) // LCOV_EXCL_LINE
+    auto const page_offset = addr % page_size_bits;
+    DEBUG_ASSERT_LT(page_offset, UINT32_MAX, "Pageoffset too big: {}", page_offset) // LCOV_EXCL_LINE
+    uint32_t const chunk_offset = page_offset / (chunk_size * 8);
+    auto const word_offset = chunk_offset % (sizeof(uint64_t) * 8);
+    auto const shift_offset = (sizeof(uint64_t) * 8) - word_offset;
+    auto const sz = std::min(len, ((uint32_t)(page_size_bits - page_offset)) * chunk_size);
+    return std::make_tuple(page, word_offset, shift_offset - 1, sz);
+}
 
 #ifdef __LITTLE_ENDIAN
 struct __attribute__((__packed__)) SuperBlock {

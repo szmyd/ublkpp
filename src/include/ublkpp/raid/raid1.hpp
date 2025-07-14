@@ -18,8 +18,8 @@ class Raid1Disk : public UblkDisk {
     std::shared_ptr< UblkDisk > _device_b;
 
     // Persistent state
-    raid1::SuperBlock* _sb;
-    std::map< uint32_t, uint64_t* > _dirty_pages;
+    std::shared_ptr< raid1::SuperBlock > _sb;
+    std::map< uint32_t, std::shared_ptr< uint64_t > > _dirty_pages;
 
     /// Some runtime parameters
     //  =======================
