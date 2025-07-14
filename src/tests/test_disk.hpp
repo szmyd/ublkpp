@@ -50,9 +50,10 @@ public:
 
 }; // namespace ublkpp
 
-inline ublk_io_data make_io_data(int tag, uint32_t op_flags, uint32_t len = 0, uint64_t start = 0) {
+inline ublk_io_data make_io_data(uint32_t op_flags, uint32_t len = 0, uint64_t start = 0) {
+    static int rolling_tag = 0;
     return ublk_io_data{
-        .tag = tag,
+        .tag = ++rolling_tag,
         .pad = 0,
         .iod =
             new ublksrv_io_desc{

@@ -14,7 +14,7 @@ constexpr auto sqe_reserved_width = 64U - (sqe_tag_width + sqe_op_width + sqe_tg
 // Device Specific Flags
 constexpr auto _flag_width = 8U;
 constexpr auto _route_width = sqe_tgt_data_width - _flag_width;
-ENUM(sub_cmd_flags, sub_cmd_t, NONE = 0, REPLICATED = 1, RETRIED = 2);
+ENUM(sub_cmd_flags, sub_cmd_t, NONE = 0, REPLICATED = 1, RETRIED = 2, INTERNAL = 4);
 
 inline sub_cmd_t set_flags(sub_cmd_t sub_cmd, sub_cmd_flags const flags) {
     return sub_cmd | (static_cast< sub_cmd_t >(flags) << _route_width);
