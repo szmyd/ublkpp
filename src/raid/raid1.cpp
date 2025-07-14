@@ -2,7 +2,6 @@
 
 #include <set>
 
-#include <boost/uuid/string_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
@@ -126,8 +125,6 @@ Raid1Disk::~Raid1Disk() {
     free(_sb);
 }
 
-boost::uuids::uuid Raid1Disk::uuid() const { return boost::uuids::string_generator()(_str_uuid); }
-
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
     auto fds = (_device_a->open_for_uring(iouring_device_start));
     fds.splice(fds.end(), _device_b->open_for_uring(iouring_device_start + fds.size()));
@@ -182,7 +179,7 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t l
         uint64_t* cur_page;
         if (auto [it, happened] = _dirty_pages.emplace(std::make_pair(page_offset, nullptr)); happened) {
             if (auto err = ::posix_memalign((void**)&it->second, block_size(), block_size()); err)
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error)); // LCOV_EXCL_LINE
             cur_page = it->second;
         } else
             cur_page = it->second;

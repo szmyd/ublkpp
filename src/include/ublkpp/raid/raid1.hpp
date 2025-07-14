@@ -48,10 +48,6 @@ public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);
     ~Raid1Disk() override;
 
-    /// Raid1 API
-    boost::uuids::uuid uuid() const;
-    ///
-
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string type() const override { return "Raid1"; }
