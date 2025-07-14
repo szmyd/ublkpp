@@ -178,9 +178,8 @@ TEST(Raid0, SimpleRead) {
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
     EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                      uint32_t nr_vecs, uint64_t addr) -> io_result {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // The route should shift up by 4
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             // It should also not have the REPLICATED bit set
@@ -197,7 +196,7 @@ TEST(Raid0, SimpleRead) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_READ);
+    auto ublk_data = make_io_data(UBLK_IO_OP_READ);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
     auto res = raid_device.handle_rw(nullptr, &ublk_data, current_route, nullptr, 4 * Ki, 8 * Ki);
     ASSERT_TRUE(res);
@@ -210,9 +209,8 @@ TEST(Raid0, SimpleWrite) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                      uint32_t nr_vecs, uint64_t addr) {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             // SubCommand has the replicated bit set
@@ -227,7 +225,7 @@ TEST(Raid0, SimpleWrite) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+    auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
 
     // Set the address to within the second stripe (32KiB stripes)
@@ -246,9 +244,8 @@ TEST(Raid0, SplitWrite) {
     ASSERT_EQ(0, posix_memalign(&fake_buffer, device_a->block_size(), 96 * Ki));
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd,
-                                iovec* iovecs, uint32_t nr_vecs, uint64_t addr) -> io_result {
-            EXPECT_EQ(data->tag, 0xcafedead);
+        .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+                                uint32_t nr_vecs, uint64_t addr) -> io_result {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             // SubCommand has the replicated bit set
@@ -261,9 +258,8 @@ TEST(Raid0, SplitWrite) {
         });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd,
-                                iovec* iovecs, uint32_t nr_vecs, uint64_t addr) -> io_result {
-            EXPECT_EQ(data->tag, 0xcafedead);
+        .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+                                uint32_t nr_vecs, uint64_t addr) -> io_result {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
             // SubCommand has the replicated bit set
@@ -278,9 +274,8 @@ TEST(Raid0, SplitWrite) {
         });
     EXPECT_CALL(*device_c, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd,
-                                iovec* iovecs, uint32_t nr_vecs, uint64_t addr) -> io_result {
-            EXPECT_EQ(data->tag, 0xcafedead);
+        .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+                                uint32_t nr_vecs, uint64_t addr) -> io_result {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100010);
             // SubCommand has the replicated bit set
@@ -296,7 +291,7 @@ TEST(Raid0, SplitWrite) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+    auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
 
     // Set the address to within the second stripe (32KiB stripes)
     auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, fake_buffer, 96 * Ki, 36 * Ki);
@@ -313,9 +308,8 @@ TEST(Raid0, RetrySplitWritePortion) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                      uint32_t nr_vecs, uint64_t addr) -> io_result {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
             // SubCommand has the replicated bit set
@@ -331,7 +325,7 @@ TEST(Raid0, RetrySplitWritePortion) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_WRITE);
+    auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
     auto const retried_route = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100001}, ublkpp::sub_cmd_flags::RETRIED);
 
     // Set the address to within the second stripe (32KiB stripes)
@@ -346,9 +340,8 @@ TEST(Raid0, SimpleDiscard) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     EXPECT_CALL(*device_a, handle_discard(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
                      uint64_t const addr) {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device A
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             EXPECT_EQ(len, 28 * Ki);
@@ -361,7 +354,7 @@ TEST(Raid0, SimpleDiscard) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_DISCARD);
+    auto ublk_data = make_io_data(UBLK_IO_OP_DISCARD);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
 
     // Set the address to within the second stripe (32KiB stripes)
@@ -379,9 +372,8 @@ TEST(Raid0, MergedDiscard) {
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
     EXPECT_CALL(*device_a, handle_discard(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
                      uint64_t const addr) {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device A
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             EXPECT_EQ(len, 32 * Ki);
@@ -392,9 +384,8 @@ TEST(Raid0, MergedDiscard) {
         });
     EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
                      uint64_t const addr) {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
             EXPECT_EQ(len, 36 * Ki);
@@ -405,9 +396,8 @@ TEST(Raid0, MergedDiscard) {
         });
     EXPECT_CALL(*device_c, handle_discard(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
                      uint64_t const addr) {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device C
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100010);
             EXPECT_EQ(len, 32 * Ki);
@@ -420,7 +410,7 @@ TEST(Raid0, MergedDiscard) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_DISCARD);
+    auto ublk_data = make_io_data(UBLK_IO_OP_DISCARD);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
 
     // Set the address to within the second stripe (32KiB stripes)
@@ -438,9 +428,8 @@ TEST(Raid0, MergedDiscardRetry) {
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
     EXPECT_CALL(*device_a, handle_discard(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t const len,
                      uint64_t const addr) {
-            EXPECT_EQ(data->tag, 0xcafedead);
             // Route is for Device A
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             EXPECT_EQ(len, 32 * Ki);
@@ -455,7 +444,7 @@ TEST(Raid0, MergedDiscardRetry) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_DISCARD);
+    auto ublk_data = make_io_data(UBLK_IO_OP_DISCARD);
     auto const retried_route = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100000}, ublkpp::sub_cmd_flags::RETRIED);
 
     // Set the address to within the second stripe (32KiB stripes)
@@ -473,8 +462,7 @@ TEST(Raid0, SimpleFlush) {
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
     EXPECT_CALL(*device_a, handle_flush(_, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd) {
-            EXPECT_EQ(data->tag, 0xcafedead);
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             // SubCommand has the replicated bit set
@@ -483,8 +471,7 @@ TEST(Raid0, SimpleFlush) {
         });
     EXPECT_CALL(*device_b, handle_flush(_, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd) {
-            EXPECT_EQ(data->tag, 0xcafedead);
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
             // SubCommand has the replicated bit set
@@ -493,8 +480,7 @@ TEST(Raid0, SimpleFlush) {
         });
     EXPECT_CALL(*device_c, handle_flush(_, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd) {
-            EXPECT_EQ(data->tag, 0xcafedead);
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100010);
             // SubCommand has the replicated bit set
@@ -505,7 +491,7 @@ TEST(Raid0, SimpleFlush) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
-    auto ublk_data = make_io_data(0xcafedead, UBLK_IO_OP_FLUSH);
+    auto ublk_data = make_io_data(UBLK_IO_OP_FLUSH);
     auto const current_route = 0b10; // Pretend we've already gone through some upper layer
 
     auto res = raid_device.handle_flush(nullptr, &ublk_data, current_route);

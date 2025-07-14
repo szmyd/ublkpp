@@ -239,7 +239,7 @@ static inline int retrieve_result(async_io* io) {
         cmd = a_result.sub_cmd;
     }
     // TODO FIXME : hack not to return errors for "replicated" commands
-    if ((0 < res) && test_flags(cmd, sub_cmd_flags::REPLICATED)) return 0;
+    if ((0 < res) && test_flags(cmd, sub_cmd_flags::INTERNAL | sub_cmd_flags::REPLICATED)) return 0;
     return res;
 }
 

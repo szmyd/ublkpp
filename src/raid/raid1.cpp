@@ -37,9 +37,14 @@ using raid1::read_route;
 static folly::Expected< raid1::SuperBlock*, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
 
+struct free_page {
+    void operator()(void* x) { free(x); }
+};
+
 Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                      std::shared_ptr< UblkDisk > dev_b) :
         UblkDisk(),
+        _str_uuid(boost::uuids::to_string(uuid)),
         _device_a(std::move(dev_a)),
         _device_b(std::move(dev_b)),
         _read_from_dirty(0 < SISL_OPTIONS["read_from_dirty"].count()) {
@@ -64,18 +69,18 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 
-    auto sb_a = load_superblock(*_device_a, uuid, SISL_OPTIONS["chunk_size"].as< uint32_t >());
-    if (!sb_a) throw std::runtime_error(fmt::format("Could not read superblock! {}", sb_a.error().message()));
-    auto sb_b = load_superblock(*_device_b, uuid, SISL_OPTIONS["chunk_size"].as< uint32_t >());
-    if (!sb_b) {
-        free(sb_a.value());
-        throw std::runtime_error(fmt::format("Could not read superblock! {}", sb_b.error().message()));
-    }
+    auto read_super = load_superblock(*_device_a, uuid, SISL_OPTIONS["chunk_size"].as< uint32_t >());
+    if (!read_super)
+        throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
+    auto sb_a = std::shared_ptr< raid1::SuperBlock >(read_super.value(), free_page());
+    read_super = load_superblock(*_device_b, uuid, SISL_OPTIONS["chunk_size"].as< uint32_t >());
+    if (!read_super)
+        throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
+    auto sb_b = std::shared_ptr< raid1::SuperBlock >(read_super.value(), free_page());
 
     // We only keep the latest or if match and A unclean take B
-    if (auto res_pair = pick_superblock(sb_a.value(), sb_b.value()); res_pair.first) {
-        _sb = res_pair.first;
-        free(_sb == sb_a.value() ? sb_b.value() : sb_a.value());
+    if (auto res_pair = pick_superblock(sb_a.get(), sb_b.get()); res_pair.first) {
+        _sb = (res_pair.first == sb_a.get() ? std::move(sb_a) : std::move(sb_b));
         _read_route = res_pair.second;
     } else
         throw std::runtime_error("Could not find reasonable superblock!");
@@ -86,27 +91,23 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     // Start the degraded ops counter at 1
     _degraded_ops = (_sb->fields.bitmap.dirty ? 1 : 0);
 
-    // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to DIRTY
+    // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
+    // DIRTY
     sub_cmd_t const sub_cmd = 0U;
-    if (!write_superblock(*CLEAN_DEVICE, _sb)) {
-        RLOGD("Failed writing SuperBlock to: [{}] becoming degraded.", *CLEAN_DEVICE)
+    if (!write_superblock(*CLEAN_DEVICE, _sb.get())) {
+        RLOGE("Failed writing SuperBlock to: [{}] becoming degraded. [vol:{}]", *CLEAN_DEVICE, _str_uuid)
         // If already degraded this is Fatal
-        if (IS_DEGRADED) {
-            free(_sb);
-            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
-        }
+        if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
         // This will write the SB to DIRTY so we can skip this down below
         if (!__dirty_bitmap(CLEAN_SUBCMD, 0, 0)) {
-            free(_sb);
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
     }
     // Write to DIRTY only if not degraded.
     if (IS_DEGRADED) return;
-    if (write_superblock(*DIRTY_DEVICE, _sb)) return;
-    RLOGD("Failed writing SuperBlock to: [{}] becoming degraded.", *DIRTY_DEVICE)
+    if (write_superblock(*DIRTY_DEVICE, _sb.get())) return;
+    RLOGE("Failed writing SuperBlock to: [{}] becoming degraded. [vol:{}] ", *DIRTY_DEVICE, _str_uuid)
     if (!__dirty_bitmap(DIRTY_SUBCMD, 0, 0)) {
-        free(_sb);
         throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
     }
 }
@@ -115,9 +116,9 @@ Raid1Disk::~Raid1Disk() {
     if (!_sb) return;
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices
-    write_superblock(*CLEAN_DEVICE, _sb);
-    if (0 == _sb->fields.bitmap.dirty) write_superblock(*DIRTY_DEVICE, _sb);
-    free(_sb);
+    write_superblock(*CLEAN_DEVICE, _sb.get());
+    if (0 == _sb->fields.bitmap.dirty)
+        if (!write_superblock(*DIRTY_DEVICE, _sb.get())) RLOGW("Write clean_unmount failed [vol:{}]", _str_uuid)
 }
 
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
@@ -126,22 +127,65 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
-io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t, uint32_t, ublksrv_queue const*, ublk_io_data const*) {
+io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                    ublk_io_data const* data) {
     io_result dirty_result{0};
     if (!IS_DEGRADED) {
         // We only update the AGE if we're not degraded already
+        auto const orig_route = _read_route;
         SWITCH_TARGET(sub_cmd)
         ++_sb->fields.bitmap.age;
         _sb->fields.bitmap.dirty = 1;
+        RLOGW("BITMAP becoming dirty [tag:{:x}] [sub_cmd:{:b}] [age:{}] [vol:{}] ", (data ? data->tag : INT_MAX),
+              sub_cmd, (uint64_t)_sb->fields.bitmap.age, _str_uuid);
         // Must update age first; we do this synchronously to gate pending retry results
-        if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb); !sync_res) return sync_res;
+        if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb.get()); !sync_res) {
+            // Rollback the failure to update the header
+            _sb->fields.bitmap.dirty = 0;
+            --_sb->fields.bitmap.age;
+            _read_route = orig_route;
+            RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
+            return sync_res;
+        }
         _degraded_ops = 1;
     }
 
-    // TODO
+    // FIXME: This is very unoptimized for the purposes of being correct initially...
     // Generate the blocks we need to write in order to record that this device has
     // data to copy to the DIRTY device when available once again and write it to
     // the corresponding area of the CLEAN device.
+    auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
+    for (auto off = 0U; len > off;) {
+        auto [page_offset, word_offset, shift_offset, sz] =
+            raid1::calc_bitmap_region(addr + off, len - off, block_size(), be32toh(_sb->fields.bitmap.chunk_size));
+        RLOGW("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}] [sub_cmd:{:b}] [volid:{}]", page_offset, word_offset,
+              shift_offset, sz, sub_cmd, _str_uuid);
+
+        uint64_t* cur_page;
+        if (auto [it, happened] = _dirty_pages.emplace(std::make_pair(page_offset, nullptr)); happened) {
+            void* new_page{nullptr};
+            if (auto err = ::posix_memalign(&new_page, block_size(), block_size()); err)
+                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error)); // LCOV_EXCL_LINE
+            it->second.reset(reinterpret_cast< uint64_t* >(new_page), free_page());
+            cur_page = it->second.get();
+        } else
+            cur_page = it->second.get();
+        auto cur_word = cur_page + word_offset;
+        off += sz;
+        (*cur_word) |= ((uint64_t)0b1 << shift_offset);
+
+        auto iov = iovec{.iov_base = cur_page, .iov_len = block_size()};
+        auto page_addr = (block_size() * page_offset) + raid1::SuperBlock::SIZE;
+
+        if (auto res = data ? CLEAN_DEVICE->async_iov(q, data, new_cmd, &iov, 1, page_addr)
+                            : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
+            !res)
+            return res;
+        else
+            dirty_result = dirty_result.value() + res.value();
+        // MUST Submit here since iov is on the stack!
+        if (q) io_uring_submit(q->ring_ptr);
+    }
 
     return dirty_result;
 }
@@ -156,7 +200,7 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
     DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
 
     // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
-    if (IS_DEGRADED && (sub_cmd == CLEAN_SUBCMD))
+    if (IS_DEGRADED && (CLEAN_SUBCMD == sub_cmd))
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
     // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
@@ -229,9 +273,8 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func) {
     }
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
-    SWITCH_TARGET(CLEAN_SUBCMD);
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
-    return func(*CLEAN_DEVICE, CLEAN_SUBCMD);
+    return func(*DIRTY_DEVICE, DIRTY_SUBCMD);
 }
 
 void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
@@ -242,7 +285,8 @@ void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >&
 
 io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                                     uint64_t addr) {
-    RLOGT("Received DISCARD: [tag:{}] ublk io [sector:{}|len:{}]", data->tag, addr >> SECTOR_SHIFT, len)
+    RLOGT("received DISCARD: [tag:{:x}] ublk io [sector:{}|len:{}] [vol:{}] ", data->tag, addr >> SECTOR_SHIFT, len,
+          _str_uuid)
 
     // Adjust for reserved area
     addr += raid1::reserved_size;
@@ -255,9 +299,9 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    RLOGT("Received {}: [tag:{}] ublk io [sector:{}|len:{}] [sub_cmd:{:b}]",
+    RLOGT("Received {}: [tag:{:x}] ublk io [sector:{}|len:{}] [sub_cmd:{:b}] [vol:{}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> SECTOR_SHIFT, len,
-          sub_cmd)
+          sub_cmd, _str_uuid)
     // Adjust for reserved area
     addr += raid1::reserved_size;
 
@@ -272,7 +316,6 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
             return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr);
         },
         addr, len, q, data);
-    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 }
 
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
@@ -312,9 +355,9 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
     auto sb = read_superblock< raid1::SuperBlock >(device);
     if (!sb) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        RLOGW("Device does not have a valid raid1 superblock!: magic: {:x}\nread: {:x}\n Initializing!",
+        RLOGW("Device does not have a valid raid1 superblock!: magic: {:x}\nread: {:x}\n Initializing! [vol:{}]",
               spdlog::to_hex(magic_bytes, magic_bytes + sizeof(magic_bytes)),
-              spdlog::to_hex(sb->header.magic, sb->header.magic + sizeof(magic_bytes)))
+              spdlog::to_hex(sb->header.magic, sb->header.magic + sizeof(magic_bytes)), to_string(uuid))
         memset(sb, 0x00, raid1::SuperBlock::SIZE);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
@@ -333,11 +376,11 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (chunk_size != be32toh(sb->fields.bitmap.chunk_size)) {
-        RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B]",
-              be32toh(sb->fields.bitmap.chunk_size), chunk_size)
+        RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B] [vol:{}] ",
+              be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
-    RLOGD("Device has v{:0x} superblock [chunk_sz:{:x},{}]", be16toh(sb->header.version), chunk_size,
-          (1 == sb->fields.clean_unmount) ? "Clean" : "Dirty")
+    RLOGD("device has v{:0x} superblock [chunk_sz:{:x},{}] [vol:{}] ", be16toh(sb->header.version), chunk_size,
+          (1 == sb->fields.clean_unmount) ? "Clean" : "Dirty", to_string(uuid))
 
     if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
     return sb;

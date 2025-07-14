@@ -12,12 +12,14 @@ ENUM(read_route, int8_t, EITHER = -1, DEVA = 0, DEVB = 1);
 } // namespace raid1
 
 class Raid1Disk : public UblkDisk {
+    std::string _str_uuid;
 
     std::shared_ptr< UblkDisk > _device_a;
     std::shared_ptr< UblkDisk > _device_b;
 
     // Persistent state
-    raid1::SuperBlock* _sb;
+    std::shared_ptr< raid1::SuperBlock > _sb;
+    std::map< uint32_t, std::shared_ptr< uint64_t > > _dirty_pages;
 
     /// Some runtime parameters
     //  =======================
@@ -46,6 +48,8 @@ public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);
     ~Raid1Disk() override;
 
+    /// UBlkDisk Interface Overrides
+    /// ============================
     std::string type() const override { return "Raid1"; }
     std::list< int > open_for_uring(int const iouring_device) override;
 
@@ -60,5 +64,6 @@ public:
     io_result async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                         uint32_t nr_vecs, uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
+    /// ============================
 };
 } // namespace ublkpp
