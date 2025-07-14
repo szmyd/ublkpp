@@ -155,27 +155,31 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t l
     // data to copy to the DIRTY device when available once again and write it to
     // the corresponding area of the CLEAN device.
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
+    auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
+    auto const page_size = block_size();
     for (auto off = 0U; len > off;) {
         auto [page_offset, word_offset, shift_offset, sz] =
-            raid1::calc_bitmap_region(addr + off, len - off, block_size(), be32toh(_sb->fields.bitmap.chunk_size));
-        RLOGW("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}] [sub_cmd:{:b}] [volid:{}]", page_offset, word_offset,
-              shift_offset, sz, sub_cmd, _str_uuid);
+            raid1::calc_bitmap_region(addr + off, len - off, page_size, chunk_size);
+        auto nr_bits = (sz / chunk_size) + ((0 < (sz % chunk_size)) ? 1 : 0);
+        RLOGT("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}, sz:{}] [sub_cmd:{:b}] [volid:{}]", page_offset,
+              word_offset, shift_offset, nr_bits, sz, sub_cmd, _str_uuid);
 
         uint64_t* cur_page;
         if (auto [it, happened] = _dirty_pages.emplace(std::make_pair(page_offset, nullptr)); happened) {
             void* new_page{nullptr};
-            if (auto err = ::posix_memalign(&new_page, block_size(), block_size()); err)
+            if (auto err = ::posix_memalign(&new_page, page_size, page_size); err)
                 return folly::makeUnexpected(std::make_error_condition(std::errc::io_error)); // LCOV_EXCL_LINE
+            memset(new_page, 0, page_size);
             it->second.reset(reinterpret_cast< uint64_t* >(new_page), free_page());
             cur_page = it->second.get();
         } else
             cur_page = it->second.get();
         auto cur_word = cur_page + word_offset;
         off += sz;
-        (*cur_word) |= ((uint64_t)0b1 << shift_offset);
+        (*cur_word) |= (((uint64_t)0b1 << nr_bits) - 1) << (shift_offset - (nr_bits - 1));
 
-        auto iov = iovec{.iov_base = cur_page, .iov_len = block_size()};
-        auto page_addr = (block_size() * page_offset) + raid1::SuperBlock::SIZE;
+        auto iov = iovec{.iov_base = cur_page, .iov_len = page_size};
+        auto page_addr = (page_size * page_offset) + raid1::SuperBlock::SIZE;
 
         if (auto res = data ? CLEAN_DEVICE->async_iov(q, data, new_cmd, &iov, 1, page_addr)
                             : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
@@ -285,59 +289,58 @@ void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >&
 
 io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                                     uint64_t addr) {
-    RLOGT("received DISCARD: [tag:{:x}] ublk io [sector:{}|len:{}] [vol:{}] ", data->tag, addr >> SECTOR_SHIFT, len,
-          _str_uuid)
+    RLOGT("received DISCARD: [tag:{:x}] [lba:{}|len:{}] [vol:{}] ", data->tag, addr >> params()->basic.logical_bs_shift,
+          len, _str_uuid)
 
-    // Adjust for reserved area
-    addr += raid1::reserved_size;
     return __replicate(
         sub_cmd,
-        [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) { return d.handle_discard(q, data, scmd, len, addr); }, addr,
-        len, q, data);
+        [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) {
+            return d.handle_discard(q, data, scmd, len, addr + raid1::reserved_size);
+        },
+        addr, len, q, data);
 }
 
 io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    RLOGT("Received {}: [tag:{:x}] ublk io [sector:{}|len:{}] [sub_cmd:{:b}] [vol:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> SECTOR_SHIFT, len,
-          sub_cmd, _str_uuid)
-    // Adjust for reserved area
-    addr += raid1::reserved_size;
+    RLOGT("Received {}: [tag:{:x}] [lba:{}|len:{}] [sub_cmd:{:b}] [vol:{}]",
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
+          addr >> params()->basic.logical_bs_shift, len, sub_cmd, _str_uuid)
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
         return __failover_read(sub_cmd, [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr);
+            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + raid1::reserved_size);
         });
     return __replicate(
         sub_cmd,
         [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr);
+            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + raid1::reserved_size);
         },
         addr, len, q, data);
 }
 
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
-    // Adjust for reserved area
-    addr += raid1::reserved_size;
+    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
+    RLOGT("Received {}: [lba:{}|len:{}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+          addr >> params()->basic.logical_bs_shift, len, _str_uuid)
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
         return __failover_read(0U, [iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t) {
-            return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr);
+            return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr + raid1::reserved_size);
         });
 
     size_t res{0};
     if (auto io_res = __replicate(
             0U,
             [&res, op, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t s) {
-                auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr);
+                auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr + raid1::reserved_size);
                 // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
                 if (p_res && !test_flags(s, sub_cmd_flags::REPLICATED)) res += p_res.value();
                 return p_res;
             },
-            addr, __iovec_len(iovecs, iovecs + nr_vecs)); // LCOV_EXCL_LINE
+            addr, len);
         !io_res)
         return io_res;
     return res;

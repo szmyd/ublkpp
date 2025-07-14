@@ -20,6 +20,8 @@ SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
 using ::testing::_;
 using ::testing::Return;
+using ::ublkpp::Ki;
+using ::ublkpp::Mi;
 using ::ublkpp::Gi;
 using ::ublkpp::io_result;
 
