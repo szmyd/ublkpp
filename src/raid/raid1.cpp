@@ -188,8 +188,11 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
         // Handle update crossing multiple words
         for (auto bits_left = nr_bits; 0 < bits_left;) {
             auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+            auto const bits_to_set =
+                htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            (*cur_word) |= (((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1));
+            if ((*cur_word & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
+            (*cur_word) |= bits_to_set;
             ++cur_word;
             shift_offset = 63; // Word offset back to the beginning
         }
@@ -258,7 +261,10 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
     // attempt to come out of degraded mode after some period of _degraded_ops have passed which
     // is configurable
     if (IS_DEGRADED) {
-        if (!res) return res;
+        if (!res) {
+            RLOGE("Double failure! [tag:{:x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
+            return res;
+        }
         auto dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
         if (!dirty_res) return dirty_res;
         ++_degraded_ops;

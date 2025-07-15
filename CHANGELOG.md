@@ -6,6 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.6.1
 - ublkpp_tgt: Clear async_event before calling process_result
+- raid1: Bitmap words should be encoded as NETWORK byte order
 
 ## 0.6.0
 - raid1: Records dirty chunks to the BITMAP pages
