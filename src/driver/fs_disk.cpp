@@ -104,7 +104,7 @@ void FSDisk::collect_async(ublksrv_queue const*, std::list< async_result >&) {}
 
 io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
-    DLOGT("Flush {} : [tag:{:x}] ublk io [sub_cmd:{:b}]", _path.native(), data->tag, sub_cmd)
+    DLOGT("Flush {} : [tag:{:x}] ublk io [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
     if (direct_io) return 0;
     auto sqe = next_sqe(q);
     io_uring_prep_fsync(sqe, _uring_device, IORING_FSYNC_DATASYNC);
@@ -116,7 +116,8 @@ io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data,
 io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                                  uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    DLOGD("DISCARD {}: [tag:{:x}] ublk io [lba:{:x}|len:{}|sub_cmd:{:b}]", _path.native(), data->tag, lba, len, sub_cmd)
+    DLOGD("DISCARD {}: [tag:{:x}] ublk io [lba:{:x}|len:{}|sub_cmd:{}]", _path.native(), data->tag, lba, len,
+          ublkpp::to_string(sub_cmd))
     if (!_block_device) {
         auto sqe = next_sqe(q);
         io_uring_prep_fallocate(sqe, _uring_device, discard_to_fallocate(data->iod), addr, len);
@@ -145,8 +146,8 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
                             uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    DLOGT("{} {} : [tag:{:x}] ublk io [lba:{:x}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
-          _path.native(), data->tag, lba, __iovec_len(iovecs, iovecs + nr_vecs), sub_cmd)
+    DLOGT("{} {} : [tag:{:x}] ublk io [lba:{:x}|len:{}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+          _path.native(), data->tag, lba, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
     auto sqe = next_sqe(q);
 
     switch (op) {

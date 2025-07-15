@@ -41,6 +41,7 @@ class UBlkPPConan(ConanFile):
                         "CMakeLists.txt",
                         "cmake/*",
                         "include/*",
+                        "example/*",
                         "src/*",
                         "LICENSE"
                         )

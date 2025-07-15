@@ -209,7 +209,7 @@ void iSCSIDisk::async_complete(ublksrv_queue const* q, async_result&& result) {
 }
 
 io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd) {
-    DLOGT("Flush : [tag:{:x}] ublk io [sub_cmd:{:b}]", ublk_io->tag, sub_cmd)
+    DLOGT("Flush : [tag:{:x}] ublk io [sub_cmd:{}]", ublk_io->tag, ublkpp::to_string(sub_cmd))
     if (direct_io) return 0;
     return folly::makeUnexpected(std::make_error_condition(std::errc::not_supported));
 }
@@ -217,7 +217,8 @@ io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* ublk
 io_result iSCSIDisk::handle_discard(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd, uint32_t len,
                                     uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    DLOGD("DISCARD : [tag:{:x}] ublk io [lba:{:x}|len:{:x}|sub_cmd:{:b}]", ublk_io->tag, lba, len, sub_cmd)
+    DLOGD("DISCARD : [tag:{:x}] ublk io [lba:{:x}|len:{:x}|sub_cmd:{}]", ublk_io->tag, lba, len,
+          ublkpp::to_string(sub_cmd))
     return folly::makeUnexpected(std::make_error_condition(std::errc::not_supported));
 }
 
@@ -258,8 +259,8 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_
     // Convert the absolute address to an LBA offset
     auto const lba = addr >> params()->basic.logical_bs_shift;
 
-    DLOGT("{} : [tag:{:x}] ublk io [lba:{:x}|len:{:x}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
-          ublk_io->tag, lba, len, sub_cmd)
+    DLOGT("{} : [tag:{:x}] ublk io [lba:{:x}|len:{:x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+          ublk_io->tag, lba, len, ublkpp::to_string(sub_cmd))
 
     // We copy the iovec here since libiscsi does not make it stable
     auto cb_data = new iscsi_cb_data(ublk_io, ublk_io->tag, sub_cmd,
