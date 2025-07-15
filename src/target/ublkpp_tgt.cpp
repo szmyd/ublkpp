@@ -249,12 +249,18 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     --ublkpp_io->sub_cmds;
     sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
                                                      : ublkpp_io->async_completion->sub_cmd);
-    // Error should be returned regardless of other responses
-    if (0 > ublkpp_io->ret_val) return;
-
     // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
     auto const sub_cmd_res = retrieve_result(ublkpp_io);
-    TLOGT("I/O result [tag:{:x}|sub_cmd:{}] [sub_cmds_remain:{}]", data->tag, to_string(old_cmd), ublkpp_io->sub_cmds)
+
+    // Error should be returned regardless of other responses
+    if (0 > ublkpp_io->ret_val) {
+        TLOGT("I/O result ignored [tag:{:x}|sub_cmd:{}] [sub_cmds_remain:{}]", data->tag, to_string(old_cmd),
+              ublkpp_io->sub_cmds)
+        return;
+    }
+    TLOGT("I/O result: [{}] [tag:{:x}|sub_cmd:{}] [sub_cmds_remain:{}]", sub_cmd_res, data->tag, to_string(old_cmd),
+          ublkpp_io->sub_cmds)
+
     if (0 <= sub_cmd_res) {
         ublkpp_io->ret_val += sub_cmd_res;
         return;
@@ -303,6 +309,7 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     io_uring_submit(q->ring_ptr);
 
     if (io_res) {
+        ublkpp_io->ret_val = 0;
         ublkpp_io->sub_cmds = io_res.value();
         TLOGT("I/O [tag:{:x}] [sub_ios:{}]", data->tag, ublkpp_io->sub_cmds)
     } else
