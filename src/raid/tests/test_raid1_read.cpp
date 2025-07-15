@@ -154,6 +154,24 @@ TEST(Raid1, CalcBitmapRegions) {
         EXPECT_EQ(4 * Ki, sz);
     }
 
+    // First page, last word and bit offset into chunk, truncated at page boundary
+    {
+        auto [page_offset, word_offset, shift_offset, sz] =
+            calc_bitmap_region(page_width - (4 * Ki), 2 * chunk_size, block_size, chunk_size);
+        EXPECT_EQ(0, page_offset);
+        EXPECT_EQ(511, word_offset);
+        EXPECT_EQ(0, shift_offset);
+        EXPECT_EQ(4 * Ki, sz);
+        {
+            auto [pg_offset2, word_offset2, shift_offset2, sz2] =
+                calc_bitmap_region(page_width - (4 * Ki) + (sz), (2 * chunk_size) - sz, block_size, chunk_size);
+            EXPECT_EQ(1, pg_offset2);
+            EXPECT_EQ(0, word_offset2);
+            EXPECT_EQ(63, shift_offset2);
+            EXPECT_EQ((2 * chunk_size) - sz, sz2);
+        }
+    }
+
     // Third page, middle of second word
     {
         auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(

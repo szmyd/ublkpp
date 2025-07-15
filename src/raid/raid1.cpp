@@ -149,14 +149,18 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t l
         }
         _degraded_ops = 1;
     }
+    return __dirty_pages(sub_cmd, addr, len, q, data);
+}
 
-    // FIXME: This is very unoptimized for the purposes of being correct initially...
+io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                   ublk_io_data const* data) {
     // Generate the blocks we need to write in order to record that this device has
     // data to copy to the DIRTY device when available once again and write it to
     // the corresponding area of the CLEAN device.
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
     auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
     auto const page_size = block_size();
+    io_result page_result{0};
     for (auto off = 0U; len > off;) {
         auto [page_offset, word_offset, shift_offset, sz] =
             raid1::calc_bitmap_region(addr + off, len - off, page_size, chunk_size);
@@ -176,7 +180,19 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t l
             cur_page = it->second.get();
         auto cur_word = cur_page + word_offset;
         off += sz;
-        (*cur_word) |= (((uint64_t)0b1 << nr_bits) - 1) << (shift_offset - (nr_bits - 1));
+
+        // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
+        // word
+        if ((sz > chunk_size) && (0 != (addr + off) % chunk_size)) ++nr_bits;
+
+        // Handle update crossing multiple words
+        for (auto bits_left = nr_bits; 0 < bits_left;) {
+            auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+            bits_left -= bits_to_write;
+            (*cur_word) |= (((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1));
+            ++cur_word;
+            shift_offset = 63; // Word offset back to the beginning
+        }
 
         auto iov = iovec{.iov_base = cur_page, .iov_len = page_size};
         auto page_addr = (page_size * page_offset) + raid1::SuperBlock::SIZE;
@@ -186,12 +202,11 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t l
             !res)
             return res;
         else
-            dirty_result = dirty_result.value() + res.value();
+            page_result = page_result.value() + res.value();
         // MUST Submit here since iov is on the stack!
         if (q) io_uring_submit(q->ring_ptr);
     }
-
-    return dirty_result;
+    return page_result;
 }
 
 // Failed Async WRITEs all end up here and have the side-effect of dirtying the BITMAP
