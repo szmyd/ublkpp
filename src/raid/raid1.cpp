@@ -136,8 +136,8 @@ io_result Raid1Disk::__dirty_bitmap(sub_cmd_t sub_cmd, uint64_t addr, uint32_t l
         SWITCH_TARGET(sub_cmd)
         ++_sb->fields.bitmap.age;
         _sb->fields.bitmap.dirty = 1;
-        RLOGW("BITMAP becoming dirty [tag:{:x}] [sub_cmd:{:b}] [age:{}] [vol:{}] ", (data ? data->tag : INT_MAX),
-              sub_cmd, (uint64_t)_sb->fields.bitmap.age, _str_uuid);
+        RLOGW("BITMAP becoming dirty [tag:{:x}] [sub_cmd:{}] [age:{}] [vol:{}] ", (data ? data->tag : INT_MAX),
+              ublkpp::to_string(sub_cmd), (uint64_t)_sb->fields.bitmap.age, _str_uuid);
         // Must update age first; we do this synchronously to gate pending retry results
         if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb.get()); !sync_res) {
             // Rollback the failure to update the header
@@ -165,8 +165,8 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
         auto [page_offset, word_offset, shift_offset, sz] =
             raid1::calc_bitmap_region(addr + off, len - off, page_size, chunk_size);
         auto nr_bits = (sz / chunk_size) + ((0 < (sz % chunk_size)) ? 1 : 0);
-        RLOGT("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}, sz:{}] [sub_cmd:{:b}] [volid:{}]", page_offset,
-              word_offset, shift_offset, nr_bits, sz, sub_cmd, _str_uuid);
+        RLOGT("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}, sz:{}] [sub_cmd:{}] [volid:{}]", page_offset,
+              word_offset, shift_offset, nr_bits, sz, ublkpp::to_string(new_cmd), _str_uuid);
 
         uint64_t* cur_page;
         if (auto [it, happened] = _dirty_pages.emplace(std::make_pair(page_offset, nullptr)); happened) {
@@ -319,8 +319,9 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
                                uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Received {}: [tag:{:x}] [lba:{:x}|len:{}] [sub_cmd:{:b}] [vol:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, len, sub_cmd, _str_uuid)
+    RLOGT("Received {}: [tag:{:x}] [lba:{:x}|len:{}] [sub_cmd:{}] [vol:{}]",
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, len,
+          ublkpp::to_string(sub_cmd), _str_uuid)
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
