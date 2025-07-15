@@ -390,8 +390,8 @@ TEST(Raid1, SimpleRead) {
             // The route should shift up by 1
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
             EXPECT_EQ(nr_vecs, 1);
-            // It should not have the REPLICATED bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            // It should not have the REPLICATE bit set
+            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (8 * Ki) + reserved_size);
