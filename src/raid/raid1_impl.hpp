@@ -18,7 +18,7 @@ inline auto calc_bitmap_region(uint64_t addr, uint32_t len, uint32_t page_size, 
     static auto const bits_in_byte = 8UL;
     static auto const bits_in_uint64 = bits_in_byte * sizeof(uint64_t);
     auto const page_size_bits =
-        chunk_size * page_size * bits_in_byte;       // Number of bytes represented by a single page (block)
+        chunk_size * page_size * bits_in_byte;        // Number of bytes represented by a single page (block)
     auto const page = addr / page_size_bits;          // Which page does this address land in
     auto const page_off = (addr % page_size_bits);    // Bytes within the page
     auto const page_bit = (page_off / chunk_size);    // Bit within the page

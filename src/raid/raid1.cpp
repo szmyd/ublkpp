@@ -188,8 +188,11 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
         // Handle update crossing multiple words
         for (auto bits_left = nr_bits; 0 < bits_left;) {
             auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+            auto const bits_to_set =
+                htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            (*cur_word) |= (((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1));
+            if ((*cur_word & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
+            (*cur_word) |= bits_to_set;
             ++cur_word;
             shift_offset = 63; // Word offset back to the beginning
         }
@@ -218,19 +221,26 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
     // No Synchronous operations retry
     DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
 
-    // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
-    if (IS_DEGRADED && (CLEAN_SUBCMD == sub_cmd))
+    io_result dirty_res;
+    if (!IS_DEGRADED)
+        // Becoming degraded
+        dirty_res = __dirty_bitmap(sub_cmd, addr, len, q, async_data);
+    else if (CLEAN_SUBCMD == sub_cmd)
+        // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    else
+        // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
+        dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
 
-    // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
-    auto dirty_res = __dirty_bitmap(sub_cmd, addr, len, q, async_data);
     if (!dirty_res) return dirty_res;
 
     // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
-    _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
-
-    if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
-    return dirty_res.value() + 1;
+    if (!test_flags(sub_cmd, sub_cmd_flags::REPLICATED)) {
+        _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
+        if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
+        dirty_res = dirty_res.value() + 1;
+    }
+    return dirty_res;
 }
 
 /// This is the primary I/O handler call for RAID1
@@ -250,7 +260,16 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
     // If we are degraded we can just return here with the result of the CLEAN device. We will
     // attempt to come out of degraded mode after some period of _degraded_ops have passed which
     // is configurable
-    if (IS_DEGRADED && ++_degraded_ops) return res;
+    if (IS_DEGRADED) {
+        if (!res) {
+            RLOGE("Double failure! [tag:{:x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
+            return res;
+        }
+        auto dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
+        if (!dirty_res) return dirty_res;
+        ++_degraded_ops;
+        return res.value() + dirty_res.value();
+    }
 
     // If not-degraded and first sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
