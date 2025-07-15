@@ -243,17 +243,13 @@ static inline int retrieve_result(async_io* io) {
     return res;
 }
 
-// Just a cast helper for for pri
-static inline sub_cmd_t ublk_io_to_sub_cmd(async_io* io) {
-    if (io->tgt_io_cqe) return user_data_to_tgt_data(io->tgt_io_cqe->user_data);
-    return io->async_completion->sub_cmd;
-}
-
 static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
     auto ublkpp_io = reinterpret_cast< async_io* >(data->private_data);
+    sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
+                                                     : ublkpp_io->async_completion->sub_cmd);
     --ublkpp_io->sub_cmds;
-    TLOGT("I/O result [tag:{:x}] [sub_cmds_remain:{}]", data->tag, ublkpp_io->sub_cmds)
+    TLOGT("I/O result [tag:{:x}|sub_cmd:{}] [sub_cmds_remain:{}]", data->tag, to_string(old_cmd), ublkpp_io->sub_cmds)
     do {
         // Error should be returned regardless of other responses
         if (0 > ublkpp_io->ret_val) continue;
@@ -264,7 +260,6 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
             ublkpp_io->ret_val += sub_cmd_res;
             continue;
         }
-        auto const old_cmd = ublk_io_to_sub_cmd(ublkpp_io);
 
         // Do not retry a already Retried command
         if (is_retry(old_cmd)) {
@@ -276,14 +271,14 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
         // operation. This provides the context to the RAID layers to make intelligent decisions for a retried
         // sub_cmd.
         auto const sub_cmd = set_flags(old_cmd, sub_cmd_flags::RETRIED);
-        TLOGD("Retrying portion of I/O [res:{}] [tag:{:x}] [sub_cmd:{:b}]", sub_cmd_res, data->tag, sub_cmd)
+        TLOGD("Retrying portion of I/O [res:{}] [tag:{:x}] [sub_cmd:{}]", sub_cmd_res, data->tag, to_string(sub_cmd))
         auto io_res = device->queue_tgt_io(q, data, sub_cmd);
 
         // Submit to io_uring before yielding to make iovecs that are thread_local stable
         io_uring_submit(q->ring_ptr);
 
         if (!io_res) {
-            TLOGE("Retry Failed Immediately on I/O [tag:{:x}] [sub_cmd:{:b}] [err:{}]", data->tag, sub_cmd,
+            TLOGE("Retry Failed Immediately on I/O [tag:{:x}] [sub_cmd:{}] [err:{}]", data->tag, to_string(sub_cmd),
                   io_res.error().message())
             ublkpp_io->ret_val = sub_cmd_res;
             continue;
