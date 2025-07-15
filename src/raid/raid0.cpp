@@ -106,6 +106,7 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
 
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
+    auto const lba = addr >> params()->basic.logical_bs_shift;
     addr += _stride_width;
 
     auto cnt{0U};
@@ -115,10 +116,11 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
         if (retry && (stripe_off != ((sub_cmd >> device->route_size()) & 0x0Fu))) [[unlikely]]
             continue;
         auto const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
+        auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
 
-        RLOGD("Received DISCARD: [tag:{}] ublk io [sector:{}|len:{}] -> "
-              "[stripe_off:{}|logical_sector:{}|logical_len:{}]",
-              data->tag, addr >> SECTOR_SHIFT, len, stripe_off, logical_off >> SECTOR_SHIFT, logical_len)
+        RLOGD("Received DISCARD: [tag:{:x}] ublk io [lba:{:x}|len:{}] -> "
+              "[stripe_off:{}|logical_lba:{:x}|logical_len:{}]",
+              data->tag, lba, len, stripe_off, logical_lba, logical_len)
         auto res = device->handle_discard(q, data, new_sub_cmd, logical_len, logical_off);
         if (!res) return res;
         cnt += res.value();
@@ -190,9 +192,9 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-    RLOGT("Received {}: [tag:{}] ublk io [sector:{}|len:{}] [sub_cmd:{:b}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> SECTOR_SHIFT,
-          iovecs->iov_len, sub_cmd)
+    auto const lba = addr >> params()->basic.logical_bs_shift;
+    RLOGT("Received {}: [tag:{:x}] ublk io [lba:{:x}|len:{}] [sub_cmd:{:b}]",
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, iovecs->iov_len, sub_cmd)
 
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     addr += _stride_width;
@@ -201,10 +203,11 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         iovecs, addr,
         [q, data, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
                         uint32_t logical_off) {
-            RLOGT("Perform {}: [tag:{}] ublk aysnc_io -> "
-                  "[stripe_off:{}|logical_sector:{}|logical_len:{}|sub_cmd:{:b}]",
-                  ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, stripe_off,
-                  logical_off >> SECTOR_SHIFT, __iovec_len(iov, iov + nr_iovs), new_sub_cmd)
+            auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
+            RLOGT("Perform {}: [tag:{:x}] ublk aysnc_io -> "
+                  "[stripe_off:{}|logical_lba:{:x}|logical_len:{}|sub_cmd:{:b}]",
+                  ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, stripe_off, logical_lba,
+                  __iovec_len(iov, iov + nr_iovs), new_sub_cmd)
             return _stripe_array[stripe_off]->dev->async_iov(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
         },
         retry, sub_cmd);
