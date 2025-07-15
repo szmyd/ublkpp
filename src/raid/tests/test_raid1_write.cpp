@@ -12,8 +12,7 @@ TEST(Raid1, SimpleWrite) {
                      uint64_t addr) {
             // Route is for Device A
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-            // SubCommand does not have the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 16 * Ki);
             EXPECT_EQ(addr, (12 * Ki) + reserved_size);
             return 1;
@@ -25,7 +24,7 @@ TEST(Raid1, SimpleWrite) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
             // SubCommand has the replicated bit set
-            EXPECT_TRUE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_TRUE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 16 * Ki);
             EXPECT_EQ(addr, (12 * Ki) + reserved_size);
             return 1;
@@ -89,7 +88,7 @@ TEST(Raid1, WriteRetryA) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                      uint64_t addr) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (8 * Ki) + reserved_size);
             return 1;
@@ -178,7 +177,7 @@ TEST(Raid1, WriteRetryB) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -192,7 +191,7 @@ TEST(Raid1, WriteRetryB) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -221,7 +220,7 @@ TEST(Raid1, WriteDoubleFailure) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -302,7 +301,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-                EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
                 EXPECT_EQ(iovecs->iov_len, 4 * Ki);
                 EXPECT_EQ(addr, (8 * Ki) + reserved_size);
                 return 1;
@@ -323,7 +322,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                      uint64_t addr) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (8 * Ki) + reserved_size);
             return 1;
@@ -358,8 +357,7 @@ TEST(Raid1, WriteFailImmediateDevB) {
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-                // SubCommand has the replicated bit set now
-                EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
                 EXPECT_EQ(iovecs->iov_len, 4 * Ki);
                 EXPECT_EQ(addr, (8 * Ki) + reserved_size);
                 return 1;
@@ -435,7 +433,7 @@ TEST(Raid1, WriteFailImmediateFailFailSBUpdate) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                      uint64_t addr) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (8 * Ki) + reserved_size);
             return 1;
@@ -460,7 +458,7 @@ TEST(Raid1, Discard) {
         .WillOnce(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t len, uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-                EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
                 EXPECT_EQ(len, 4 * Ki);
                 EXPECT_EQ(addr, (8 * Ki) + reserved_size);
                 return 1;
@@ -470,7 +468,7 @@ TEST(Raid1, Discard) {
         .WillOnce(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t len, uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-                EXPECT_TRUE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+                EXPECT_TRUE(ublkpp::is_replicate(sub_cmd));
                 EXPECT_EQ(len, 4 * Ki);
                 EXPECT_EQ(addr, (8 * Ki) + reserved_size);
                 return 1;
@@ -500,7 +498,7 @@ TEST(Raid1, DiscardRetry) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATED);
+                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
         auto res = raid_device.handle_discard(nullptr, &ublk_data, sub_cmd, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
@@ -519,7 +517,7 @@ TEST(Raid1, DiscardRetry) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                      uint64_t addr) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (8 * Ki) + reserved_size);
             return 1;
@@ -713,7 +711,7 @@ TEST(Raid1, BITMAPUpdateFail) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                      uint64_t addr) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
+            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (8 * Ki) + reserved_size);
             return 1;

@@ -14,29 +14,29 @@ using ublkpp::sub_cmd_flags;
 using ublkpp::sub_cmd_t;
 
 TEST(SubCmd, FlagSetting) {
-    auto repl_set = ublkpp::set_flags(0, sub_cmd_flags::REPLICATED);
-    EXPECT_TRUE(test_flags(repl_set, sub_cmd_flags::REPLICATED));
-    EXPECT_FALSE(test_flags(repl_set, sub_cmd_flags::RETRIED));
+    auto repl_set = ublkpp::set_flags(0, sub_cmd_flags::REPLICATE);
+    EXPECT_TRUE(ublkpp::is_replicate(repl_set));
+    EXPECT_FALSE(ublkpp::is_retry(repl_set));
 
     auto both_set = ublkpp::set_flags(repl_set, sub_cmd_flags::RETRIED);
-    EXPECT_TRUE(test_flags(both_set, sub_cmd_flags::REPLICATED));
-    EXPECT_TRUE(test_flags(both_set, sub_cmd_flags::RETRIED));
+    EXPECT_TRUE(ublkpp::is_replicate(both_set));
+    EXPECT_TRUE(ublkpp::is_retry(both_set));
 
-    auto retry_set = ublkpp::unset_flags(both_set, sub_cmd_flags::REPLICATED);
-    EXPECT_FALSE(test_flags(retry_set, sub_cmd_flags::REPLICATED));
-    EXPECT_TRUE(test_flags(retry_set, sub_cmd_flags::RETRIED));
+    auto retry_set = ublkpp::unset_flags(both_set, sub_cmd_flags::REPLICATE);
+    EXPECT_FALSE(ublkpp::is_replicate(retry_set));
+    EXPECT_TRUE(ublkpp::is_retry(retry_set));
 
     auto neither_set = ublkpp::unset_flags(retry_set, sub_cmd_flags::RETRIED);
-    EXPECT_FALSE(test_flags(neither_set, sub_cmd_flags::REPLICATED));
-    EXPECT_FALSE(test_flags(neither_set, sub_cmd_flags::RETRIED));
+    EXPECT_FALSE(ublkpp::is_replicate(neither_set));
+    EXPECT_FALSE(ublkpp::is_retry(neither_set));
 
-    auto multi_set = ublkpp::set_flags(0, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATED);
-    EXPECT_TRUE(test_flags(multi_set, sub_cmd_flags::REPLICATED));
-    EXPECT_TRUE(test_flags(multi_set, sub_cmd_flags::RETRIED));
+    auto multi_set = ublkpp::set_flags(0, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATE);
+    EXPECT_TRUE(ublkpp::is_replicate(multi_set));
+    EXPECT_TRUE(ublkpp::is_retry(multi_set));
 
-    auto multi_unset = ublkpp::unset_flags(multi_set, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATED);
-    EXPECT_FALSE(test_flags(multi_unset, sub_cmd_flags::REPLICATED));
-    EXPECT_FALSE(test_flags(multi_unset, sub_cmd_flags::RETRIED));
+    auto multi_unset = ublkpp::unset_flags(multi_set, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATE);
+    EXPECT_FALSE(ublkpp::is_replicate(multi_unset));
+    EXPECT_FALSE(ublkpp::is_retry(multi_unset));
 }
 
 int main(int argc, char* argv[]) {

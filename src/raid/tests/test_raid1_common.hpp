@@ -20,10 +20,10 @@ SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
 using ::testing::_;
 using ::testing::Return;
-using ::ublkpp::Ki;
-using ::ublkpp::Mi;
 using ::ublkpp::Gi;
 using ::ublkpp::io_result;
+using ::ublkpp::Ki;
+using ::ublkpp::Mi;
 
 // NOTE: All RAID1 tests have to account for the RESERVED area of the RAID1 device itself,
 // this is a section at the HEAD of each backing device that holds a SuperBlock and BitMap
@@ -69,7 +69,7 @@ using ::ublkpp::raid1::reserved_size;
                                                     ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs,        \
                                                     uint64_t addr) -> io_result {                                      \
             EXPECT_TRUE(ublkpp::is_retry(sub_cmd));                                                                    \
-            EXPECT_TRUE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::INTERNAL));                                         \
+            EXPECT_TRUE(ublkpp::is_internal(sub_cmd));                                                                 \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_GE(addr, ublkpp::raid1::SuperBlock::SIZE); /* Expect write to bitmap!*/                             \

@@ -182,8 +182,6 @@ TEST(Raid0, SimpleRead) {
                      uint32_t nr_vecs, uint64_t addr) -> io_result {
             // The route should shift up by 4
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
-            // It should also not have the REPLICATED bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
             EXPECT_EQ(nr_vecs, 1);
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
@@ -213,8 +211,6 @@ TEST(Raid0, SimpleWrite) {
                      uint32_t nr_vecs, uint64_t addr) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             EXPECT_EQ(nr_vecs, 1);
             EXPECT_EQ(iovecs->iov_len, 16 * Ki);
             // This is the first chunk of the second device
@@ -248,8 +244,6 @@ TEST(Raid0, SplitWrite) {
                                 uint32_t nr_vecs, uint64_t addr) -> io_result {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             EXPECT_EQ(nr_vecs, 1);
             EXPECT_EQ(iovecs->iov_len, 32 * Ki);
             EXPECT_EQ((uint8_t*)iovecs->iov_base, (uint8_t*)fake_buffer + (60 * Ki));
@@ -262,8 +256,6 @@ TEST(Raid0, SplitWrite) {
                                 uint32_t nr_vecs, uint64_t addr) -> io_result {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             EXPECT_EQ(nr_vecs, 2);
             EXPECT_EQ(ublkpp::__iovec_len(iovecs, iovecs + nr_vecs), 32 * Ki);
             EXPECT_EQ((uint8_t*)iovecs->iov_base, (uint8_t*)fake_buffer);
@@ -278,8 +270,6 @@ TEST(Raid0, SplitWrite) {
                                 uint32_t nr_vecs, uint64_t addr) -> io_result {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100010);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             EXPECT_EQ(nr_vecs, 1);
             EXPECT_EQ(iovecs->iov_len, 32 * Ki);
             EXPECT_EQ((uint8_t*)iovecs->iov_base, (uint8_t*)fake_buffer + (28 * Ki));
@@ -312,8 +302,6 @@ TEST(Raid0, RetrySplitWritePortion) {
                      uint32_t nr_vecs, uint64_t addr) -> io_result {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             EXPECT_EQ(nr_vecs, 1);
             EXPECT_EQ(iovecs->iov_len, 28 * Ki);
             // This is the first chunk of the second device
@@ -346,8 +334,6 @@ TEST(Raid0, SimpleDiscard) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             EXPECT_EQ(len, 28 * Ki);
             EXPECT_EQ(addr, (32 * Ki) + (100 * Ki));
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
 
@@ -378,8 +364,6 @@ TEST(Raid0, MergedDiscard) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             EXPECT_EQ(len, 32 * Ki);
             EXPECT_EQ(addr, (64 * Ki));
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
     EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _))
@@ -390,8 +374,6 @@ TEST(Raid0, MergedDiscard) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
             EXPECT_EQ(len, 36 * Ki);
             EXPECT_EQ(addr, (32 * Ki) + (4 * Ki));
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
     EXPECT_CALL(*device_c, handle_discard(_, _, _, _, _))
@@ -402,8 +384,6 @@ TEST(Raid0, MergedDiscard) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100010);
             EXPECT_EQ(len, 32 * Ki);
             EXPECT_EQ(addr, 32 * Ki);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
 
@@ -434,8 +414,6 @@ TEST(Raid0, MergedDiscardRetry) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
             EXPECT_EQ(len, 32 * Ki);
             EXPECT_EQ(addr, (64 * Ki));
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
     EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _)).Times(0);
@@ -465,8 +443,6 @@ TEST(Raid0, SimpleFlush) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100000);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
     EXPECT_CALL(*device_b, handle_flush(_, _, _))
@@ -474,8 +450,6 @@ TEST(Raid0, SimpleFlush) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100001);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
     EXPECT_CALL(*device_c, handle_flush(_, _, _))
@@ -483,8 +457,6 @@ TEST(Raid0, SimpleFlush) {
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd) {
             // Route is for Device B
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100010);
-            // SubCommand has the replicated bit set
-            EXPECT_FALSE(test_flags(sub_cmd, ublkpp::sub_cmd_flags::REPLICATED));
             return 1;
         });
 

@@ -238,8 +238,8 @@ static inline int retrieve_result(async_io* io) {
         res = a_result.result;
         cmd = a_result.sub_cmd;
     }
-    // TODO FIXME : hack not to return errors for "replicated" commands
-    if ((0 < res) && test_flags(cmd, sub_cmd_flags::INTERNAL | sub_cmd_flags::REPLICATED)) return 0;
+    // Only return Errors from INTERNAL or REPLICATE commands
+    if ((0 < res) && (is_internal(cmd) || is_replicate(cmd))) return 0;
     return res;
 }
 
@@ -262,7 +262,7 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
         }
 
         // Do not retry a already Retried command
-        if (is_retry(old_cmd)) {
+        if (is_retry(old_cmd) || is_internal(old_cmd)) {
             ublkpp_io->ret_val = sub_cmd_res;
             continue;
         }

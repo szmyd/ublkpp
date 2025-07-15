@@ -235,7 +235,7 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
     if (!dirty_res) return dirty_res;
 
     // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
-    if (!test_flags(sub_cmd, sub_cmd_flags::REPLICATED)) {
+    if (!is_replicate(sub_cmd)) {
         _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
         if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
         dirty_res = dirty_res.value() + 1;
@@ -279,7 +279,7 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
         return res.value() + dirty_res.value();
     }
     // Otherwise tag the replica sub_cmd so we don't include its value in the target result
-    sub_cmd = set_flags(sub_cmd, sub_cmd_flags::REPLICATED);
+    sub_cmd = set_flags(sub_cmd, sub_cmd_flags::REPLICATE);
     auto a_v = res.value();
     if (res = func(*DIRTY_DEVICE, DIRTY_SUBCMD); !res) {
         // If the replica sub_cmd fails immediately we can dirty the bitmap here and return result from firsub_cmd
@@ -372,7 +372,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             [&res, op, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t s) {
                 auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr + raid1::reserved_size);
                 // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
-                if (p_res && !test_flags(s, sub_cmd_flags::REPLICATED)) res += p_res.value();
+                if (p_res && !is_replicate(s)) res += p_res.value();
                 return p_res;
             },
             addr, len);

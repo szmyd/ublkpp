@@ -14,7 +14,7 @@ constexpr auto sqe_reserved_width = 64U - (sqe_tag_width + sqe_op_width + sqe_tg
 // Device Specific Flags
 constexpr auto _flag_width = 8U;
 constexpr auto _route_width = sqe_tgt_data_width - _flag_width;
-ENUM(sub_cmd_flags, sub_cmd_t, NONE = 0, REPLICATED = 1, RETRIED = 2, INTERNAL = 4);
+ENUM(sub_cmd_flags, sub_cmd_t, NONE = 0, REPLICATE = 1, RETRIED = 2, INTERNAL = 4);
 
 inline sub_cmd_t set_flags(sub_cmd_t sub_cmd, sub_cmd_flags const flags) {
     return sub_cmd | (static_cast< sub_cmd_t >(flags) << _route_width);
@@ -28,7 +28,9 @@ inline bool test_flags(sub_cmd_t sub_cmd, sub_cmd_flags const flags) {
     return 0 < ((sub_cmd >> _route_width) & static_cast< sub_cmd_t >(flags));
 }
 
-inline bool is_retry(sub_cmd_t sub_cmd) { return test_flags(sub_cmd, sub_cmd_flags::RETRIED); }
+inline auto is_replicate(sub_cmd_t sub_cmd) { return test_flags(sub_cmd, sub_cmd_flags::REPLICATE); }
+inline auto is_retry(sub_cmd_t sub_cmd) { return test_flags(sub_cmd, sub_cmd_flags::RETRIED); }
+inline auto is_internal(sub_cmd_t sub_cmd) { return test_flags(sub_cmd, sub_cmd_flags::INTERNAL); }
 
 // SubCmd routing for Error Handling
 constexpr auto _route_mask = (1U << _route_width) - 1U;
