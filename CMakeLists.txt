@@ -19,4 +19,9 @@ if (CCACHE_FOUND)
     set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
 endif ()
 
+include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_subdirectory (src)
+
+if (EXISTS example)
+add_subdirectory (example)
+endif ()

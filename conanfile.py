@@ -26,6 +26,7 @@ class UBlkPPConan(ConanFile):
                 "coverage": ['True', 'False'],
                 "sanitize": ['True', 'False'],
                 "homeblocks": ['True', 'False'],
+                "iscsi": ['True', 'False'],
                 }
     default_options = {
                 'shared': False,
@@ -33,11 +34,13 @@ class UBlkPPConan(ConanFile):
                 'coverage': False,
                 'sanitize': False,
                 'homeblocks': True,
+                'iscsi': True,
             }
 
     exports_sources = (
                         "CMakeLists.txt",
                         "cmake/*",
+                        "include/*",
                         "src/*",
                         "LICENSE"
                         )
@@ -71,7 +74,8 @@ class UBlkPPConan(ConanFile):
         if (self.options.get_safe("homeblocks")):
             self.requires("homeblocks/[^2.1]@oss/main")
         self.requires("ublksrv/nbi.1.5.0")
-        self.requires("libiscsi/1.20.2")
+        if (self.options.get_safe("iscsi")):
+            self.requires("libiscsi/1.20.2")
 
     def layout(self):
         self.folders.source = "."
@@ -83,7 +87,7 @@ class UBlkPPConan(ConanFile):
             self.folders.build = join("build", str(self.settings.build_type))
         self.folders.generators = join(self.folders.build, "generators")
 
-        self.cpp.source.includedirs = ["src/include"]
+        self.cpp.source.includedirs = ["include"]
 
         self.cpp.build.libdirs = ["src"]
 
@@ -117,7 +121,7 @@ class UBlkPPConan(ConanFile):
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)
-        copy(self, "*.h*", join(self.source_folder, "src", "include"), join(self.package_folder, "include"), keep_path=True)
+        copy(self, "*.h*", join(self.source_folder, "include"), join(self.package_folder, "include"), keep_path=True)
         copy(self, "*.a", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 

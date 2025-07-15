@@ -304,8 +304,8 @@ void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >&
 
 io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                                     uint64_t addr) {
-    RLOGT("received DISCARD: [tag:{:x}] [lba:{}|len:{}] [vol:{}] ", data->tag, addr >> params()->basic.logical_bs_shift,
-          len, _str_uuid)
+    auto const lba = addr >> params()->basic.logical_bs_shift;
+    RLOGT("received DISCARD: [tag:{:x}] [lba:{:x}|len:{}] [vol:{}]", data->tag, lba, len, _str_uuid)
 
     return __replicate(
         sub_cmd,
@@ -318,9 +318,9 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    RLOGT("Received {}: [tag:{:x}] [lba:{}|len:{}] [sub_cmd:{:b}] [vol:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
-          addr >> params()->basic.logical_bs_shift, len, sub_cmd, _str_uuid)
+    auto const lba = addr >> params()->basic.logical_bs_shift;
+    RLOGT("Received {}: [tag:{:x}] [lba:{:x}|len:{}] [sub_cmd:{:b}] [vol:{}]",
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, len, sub_cmd, _str_uuid)
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
@@ -337,8 +337,8 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    RLOGT("Received {}: [lba:{}|len:{}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
-          addr >> params()->basic.logical_bs_shift, len, _str_uuid)
+    auto const lba = addr >> params()->basic.logical_bs_shift;
+    RLOGT("Received {}: [lba:{:x}|len:{}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len, _str_uuid)
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)

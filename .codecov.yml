@@ -13,3 +13,4 @@ parsers:
 ignore:
   - "**/tests/*"
   - "**/test_package/*"
+  - "**/example/*"
