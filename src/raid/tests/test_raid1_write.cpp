@@ -174,7 +174,7 @@ TEST(Raid1, WriteRetryB) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value()); // Only one here since failing command was replicated
     }
 
     // Queued Retries should not Fail Immediately, and not dirty of bitmap
@@ -188,12 +188,12 @@ TEST(Raid1, WriteRetryB) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value()); // Retried replicated
     }
-    // Expect an extra async results
+    // Expect no extra async results
     auto compls = std::list< ublkpp::async_result >();
     raid_device.collect_async(nullptr, compls);
-    EXPECT_EQ(compls.size(), 2);
+    EXPECT_EQ(compls.size(), 0);
     compls.clear();
 
     // expect unmount_clean on Device A
@@ -217,7 +217,7 @@ TEST(Raid1, WriteDoubleFailure) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value());
     }
 
     // Follow up retry on device A fails without operations on B
@@ -458,11 +458,11 @@ TEST(Raid1, DiscardRetry) {
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         // No need to re-write on A side
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value());
     }
     auto compls = std::list< ublkpp::async_result >();
     raid_device.collect_async(nullptr, compls);
-    EXPECT_EQ(compls.size(), 1);
+    EXPECT_EQ(compls.size(), 0);
     compls.clear();
 
     // Subsequent reads should not go to device B

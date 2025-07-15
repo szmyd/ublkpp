@@ -356,6 +356,9 @@ static void handle_event(ublksrv_queue const* q) {
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
     auto completed = std::list< async_result >();
     tgt->device->collect_async(q, completed);
+
+    // Clear the event from efd first, as we may cause new events by retrying failed sub_cmds
+    ublksrv_queue_handled_event(q);
     for (auto& result : completed) {
         try {
             auto ublkpp_io = reinterpret_cast< async_io* >(result.io->private_data);
@@ -366,7 +369,6 @@ static void handle_event(ublksrv_queue const* q) {
             ublkpp_io->co.resume();
         } catch (std::exception const& e) { ublksrv_complete_io(q, result.io->tag, -EIO); }
     }
-    ublksrv_queue_handled_event(q);
 }
 
 // Called in the context of start by ublksrv_dev_init()

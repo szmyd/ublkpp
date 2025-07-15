@@ -227,10 +227,12 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
     if (!dirty_res) return dirty_res;
 
     // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
-    _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
-
-    if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
-    return dirty_res.value() + 1;
+    if (!test_flags(sub_cmd, sub_cmd_flags::REPLICATED)) {
+        _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
+        if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
+        dirty_res = dirty_res.value() + 1;
+    }
+    return dirty_res;
 }
 
 /// This is the primary I/O handler call for RAID1
