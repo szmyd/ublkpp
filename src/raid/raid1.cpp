@@ -160,7 +160,7 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
     auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
     auto const page_size = block_size();
-    io_result page_result{0};
+    int page_result{0};
     for (auto off = 0U; len > off;) {
         auto [page_offset, word_offset, shift_offset, sz] =
             raid1::calc_bitmap_region(addr + off, len - off, page_size, chunk_size);
@@ -202,7 +202,7 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
             !res)
             return res;
         else
-            page_result = page_result.value() + res.value();
+            page_result += res.value();
         // MUST Submit here since iov is on the stack!
         if (q) io_uring_submit(q->ring_ptr);
     }

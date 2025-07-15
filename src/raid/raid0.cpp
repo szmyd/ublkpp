@@ -116,7 +116,7 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
             continue;
         auto const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
 
-        RLOGD("Received DISCARD: [tag:{}] ublk io [sector:{}|len:{}] -> "
+        RLOGD("Received DISCARD: [tag:{:x}] ublk io [sector:{}|len:{}] -> "
               "[stripe_off:{}|logical_sector:{}|logical_len:{}]",
               data->tag, addr >> SECTOR_SHIFT, len, stripe_off, logical_off >> SECTOR_SHIFT, logical_len)
         auto res = device->handle_discard(q, data, new_sub_cmd, logical_len, logical_off);
@@ -190,7 +190,7 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-    RLOGT("Received {}: [tag:{}] ublk io [sector:{}|len:{}] [sub_cmd:{:b}]",
+    RLOGT("Received {}: [tag:{:x}] ublk io [sector:{}|len:{}] [sub_cmd:{:b}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> SECTOR_SHIFT,
           iovecs->iov_len, sub_cmd)
 
@@ -201,7 +201,7 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         iovecs, addr,
         [q, data, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
                         uint32_t logical_off) {
-            RLOGT("Perform {}: [tag:{}] ublk aysnc_io -> "
+            RLOGT("Perform {}: [tag:{:x}] ublk aysnc_io -> "
                   "[stripe_off:{}|logical_sector:{}|logical_len:{}|sub_cmd:{:b}]",
                   ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, stripe_off,
                   logical_off >> SECTOR_SHIFT, __iovec_len(iov, iov + nr_iovs), new_sub_cmd)

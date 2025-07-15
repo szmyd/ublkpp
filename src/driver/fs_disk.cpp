@@ -104,7 +104,7 @@ void FSDisk::collect_async(ublksrv_queue const*, std::list< async_result >&) {}
 
 io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
-    DLOGT("Flush {} : [tag:{}] ublk io [sub_cmd:{:b}]", data->tag, _path.native(), sub_cmd)
+    DLOGT("Flush {} : [tag:{:x}] ublk io [sub_cmd:{:b}]", _path.native(), data->tag, sub_cmd)
     if (direct_io) return 0;
     auto sqe = next_sqe(q);
     io_uring_prep_fsync(sqe, _uring_device, IORING_FSYNC_DATASYNC);
@@ -115,7 +115,7 @@ io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data,
 
 io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                                  uint64_t addr) {
-    DLOGD("DISCARD {}: [tag:{}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", _path.native(), data->tag,
+    DLOGD("DISCARD {}: [tag:{:x}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", _path.native(), data->tag,
           addr >> SECTOR_SHIFT, len, sub_cmd)
     if (!_block_device) {
         auto sqe = next_sqe(q);
@@ -144,7 +144,7 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
 io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                             uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
-    DLOGT("{} {} : [tag:{}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+    DLOGT("{} {} : [tag:{:x}] ublk io [sector:{}|len:{}|sub_cmd:{:b}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), data->tag, addr >> SECTOR_SHIFT, __iovec_len(iovecs, iovecs + nr_vecs), sub_cmd)
     auto sqe = next_sqe(q);
 
