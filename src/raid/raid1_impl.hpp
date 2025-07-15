@@ -13,17 +13,20 @@ namespace raid1 {
 constexpr uint64_t reserved_size = 128 * Mi;
 constexpr uint64_t reserved_sectors = reserved_size >> SECTOR_SHIFT;
 
-static inline auto calc_bitmap_region(uint64_t addr, uint32_t len, uint32_t block_size, uint32_t chunk_size) {
-    auto const page_size_bits = chunk_size * block_size * 8;
-    auto const page = addr / page_size_bits;
-    DEBUG_ASSERT_LT(page, UINT32_MAX, "Page too big: {}", page) // LCOV_EXCL_LINE
-    auto const page_offset = addr % page_size_bits;
-    DEBUG_ASSERT_LT(page_offset, UINT32_MAX, "Pageoffset too big: {}", page_offset) // LCOV_EXCL_LINE
-    uint32_t const chunk_offset = page_offset / (chunk_size * 8);
-    auto const word_offset = chunk_offset % (sizeof(uint64_t) * 8);
-    auto const shift_offset = (sizeof(uint64_t) * 8) - word_offset;
-    auto const sz = std::min(len, ((uint32_t)(page_size_bits - page_offset)) * chunk_size);
-    return std::make_tuple(page, word_offset, shift_offset - 1, sz);
+// Each bit in the BITMAP represents a single "Chunk" of size chunk_size
+inline auto calc_bitmap_region(uint64_t addr, uint32_t len, uint32_t page_size, uint32_t chunk_size) {
+    static auto const bits_in_byte = 8UL;
+    static auto const bits_in_uint64 = bits_in_byte * sizeof(uint64_t);
+    auto const page_size_bits =
+        chunk_size * page_size * bits_in_byte;       // Number of bytes represented by a single page (block)
+    auto const page = addr / page_size_bits;          // Which page does this address land in
+    auto const page_off = (addr % page_size_bits);    // Bytes within the page
+    auto const page_bit = (page_off / chunk_size);    // Bit within the page
+    return std::make_tuple(page,                      // Page that address references
+                           page_bit / bits_in_uint64, // Word in the page
+                           bits_in_uint64 - (page_bit % bits_in_uint64) - 1,    // Shift within the Word
+                           std::min((uint64_t)len, (page_size_bits - page_off)) // Tail size of the page
+    );
 }
 
 #ifdef __LITTLE_ENDIAN

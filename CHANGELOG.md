@@ -1,20 +1,16 @@
-# Changelog
+#Changelog
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.5.3
-- No need to re-write to devb on deva failure
+## 0.6.0
+- raid1: Records dirty chunks to the BITMAP pages
 
-## 0.5.2
-- homeblk_disk: Move api
-
-## 0.5.1
-- ublkpp_tgt : fix narrowing conversion
-
-## 0.5.0
+## 0.5.x
 - homeblk_disk : introduced
+- raid1: more intelligent retry handling
+- ublkpp_tgt : fix narrowing conversion
 
 ## 0.4.x
 - iscsi_disk : introduced
