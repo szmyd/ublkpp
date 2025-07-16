@@ -65,7 +65,11 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
     }
     // Reserve space for the superblock/bitmap
-    our_params.basic.dev_sectors -= raid1::reserved_sectors;
+    our_params.basic.dev_sectors -= (raid1::reserved_size >> SECTOR_SHIFT);
+    if (our_params.basic.dev_sectors > (raid1::k_max_dev_size >> SECTOR_SHIFT)) {
+        RLOGW("Device would be larger than supported, only exposing [{}Gi] sized device", raid1::k_max_dev_size / Gi);
+        our_params.basic.dev_sectors = (raid1::k_max_dev_size >> SECTOR_SHIFT);
+    }
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 
@@ -159,11 +163,10 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
     // the corresponding area of the CLEAN device.
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
     auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
-    auto const page_size = block_size();
     int page_result{0};
     for (auto off = 0U; len > off;) {
         auto [page_offset, word_offset, shift_offset, sz] =
-            raid1::calc_bitmap_region(addr + off, len - off, page_size, chunk_size);
+            raid1::calc_bitmap_region(addr + off, len - off, chunk_size);
         auto nr_bits = (sz / chunk_size) + ((0 < (sz % chunk_size)) ? 1 : 0);
         RLOGT("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}, sz:{}] [sub_cmd:{}] [volid:{}]", page_offset,
               word_offset, shift_offset, nr_bits, sz, ublkpp::to_string(new_cmd), _str_uuid);
@@ -171,9 +174,9 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
         uint64_t* cur_page;
         if (auto [it, happened] = _dirty_pages.emplace(std::make_pair(page_offset, nullptr)); happened) {
             void* new_page{nullptr};
-            if (auto err = ::posix_memalign(&new_page, page_size, page_size); err)
+            if (auto err = ::posix_memalign(&new_page, block_size(), raid1::k_page_size); err)
                 return folly::makeUnexpected(std::make_error_condition(std::errc::io_error)); // LCOV_EXCL_LINE
-            memset(new_page, 0, page_size);
+            memset(new_page, 0, raid1::k_page_size);
             it->second.reset(reinterpret_cast< uint64_t* >(new_page), free_page());
             cur_page = it->second.get();
         } else
@@ -197,8 +200,8 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
             shift_offset = 63; // Word offset back to the beginning
         }
 
-        auto iov = iovec{.iov_base = cur_page, .iov_len = page_size};
-        auto page_addr = (page_size * page_offset) + raid1::SuperBlock::SIZE;
+        auto iov = iovec{.iov_base = cur_page, .iov_len = raid1::k_page_size};
+        auto page_addr = (raid1::k_page_size * page_offset) + raid1::k_page_size;
 
         if (auto res = data ? CLEAN_DEVICE->async_iov(q, data, new_cmd, &iov, 1, page_addr)
                             : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
@@ -396,7 +399,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
         RLOGW("Device does not have a valid raid1 superblock!: magic: {:x}\nread: {:x}\n Initializing! [vol:{}]",
               spdlog::to_hex(magic_bytes, magic_bytes + sizeof(magic_bytes)),
               spdlog::to_hex(sb->header.magic, sb->header.magic + sizeof(magic_bytes)), to_string(uuid))
-        memset(sb, 0x00, raid1::SuperBlock::SIZE);
+        memset(sb, 0x00, raid1::k_page_size);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
         sb->fields.clean_unmount = 1;
