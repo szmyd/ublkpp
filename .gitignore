@@ -18,3 +18,5 @@ CMakeSettings.json
 #
 logs/*
 *-verify.state
+
+scripts

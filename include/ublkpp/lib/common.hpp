@@ -15,6 +15,7 @@ constexpr T ilog2(T x) {
 [[maybe_unused]] constexpr auto Ki = 1024UL;
 [[maybe_unused]] constexpr auto Mi = Ki * Ki;
 [[maybe_unused]] constexpr auto Gi = Mi * Ki;
+[[maybe_unused]] constexpr auto Ti = Gi * Ki;
 
 constexpr auto SECTOR_SIZE = 512UL;
 constexpr auto SECTOR_SHIFT = ilog2(SECTOR_SIZE);

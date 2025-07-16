@@ -70,14 +70,14 @@ TEST(Raid1, PickSuper) {
 
 TEST(Raid1, CalcBitmapRegions) {
     static uint32_t chunk_size = 32 * Ki;
-    static uint32_t block_size = 4 * Ki;
-    static uint32_t page_width = chunk_size * block_size * 8;       // How many user data bytes does a BITMAP page cover
+    static uint32_t page_width = chunk_size * ublkpp::raid1::k_page_size *
+        ublkpp::raid1::k_bits_in_byte;                              // How many user data bytes does a BITMAP page cover
     static uint32_t word_width = chunk_size * sizeof(uint64_t) * 8; // How many user data bytes does a BITMAP WORD cover
 
     using ublkpp::raid1::calc_bitmap_region;
     // Test simple first chunk dirty
     {
-        auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(0, 4 * Ki, block_size, chunk_size);
+        auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(0, 4 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(63, shift_offset);
@@ -86,8 +86,7 @@ TEST(Raid1, CalcBitmapRegions) {
 
     // Still in first chunk
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region(4 * Ki, chunk_size, block_size, chunk_size);
+        auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(4 * Ki, chunk_size, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(63, shift_offset);
@@ -96,8 +95,7 @@ TEST(Raid1, CalcBitmapRegions) {
 
     // Second chunk (still in first word and first page)
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region(chunk_size, 16 * Ki, block_size, chunk_size);
+        auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(chunk_size, 16 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(62, shift_offset);
@@ -107,17 +105,26 @@ TEST(Raid1, CalcBitmapRegions) {
     // Last bit (chunk) of the first word and page
     {
         auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region((chunk_size * 64) - 4 * Ki, 16 * Ki, block_size, chunk_size);
+            calc_bitmap_region((chunk_size * 64) - 4 * Ki, 16 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(0, shift_offset);
         EXPECT_EQ(16 * Ki, sz);
     }
 
-    // Second word; first Chunk
+    // Middle bit (chunk) of the first word and page of differing chunk size
     {
         auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region(word_width, 16 * Ki, block_size, chunk_size);
+            calc_bitmap_region((chunk_size * 64) - 4 * Ki, 16 * Ki, chunk_size * 2);
+        EXPECT_EQ(0, page_offset);
+        EXPECT_EQ(0, word_offset);
+        EXPECT_EQ(32, shift_offset);
+        EXPECT_EQ(16 * Ki, sz);
+    }
+
+    // Second word; first Chunk
+    {
+        auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(word_width, 16 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(1, word_offset);
         EXPECT_EQ(63, shift_offset);
@@ -126,8 +133,7 @@ TEST(Raid1, CalcBitmapRegions) {
 
     // Second page, all in the first word
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region(page_width, 128 * Ki, block_size, chunk_size);
+        auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(page_width, 128 * Ki, chunk_size);
         EXPECT_EQ(1, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(63, shift_offset);
@@ -137,7 +143,7 @@ TEST(Raid1, CalcBitmapRegions) {
     // First page last word and bit, sz is truncated at page boundary
     {
         auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region(page_width - (chunk_size), 128 * Ki, block_size, chunk_size);
+            calc_bitmap_region(page_width - (chunk_size), 128 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(511, word_offset);
         EXPECT_EQ(0, shift_offset);
@@ -147,7 +153,7 @@ TEST(Raid1, CalcBitmapRegions) {
     // First page, last word and bit offset into chunk, truncated at page boundary
     {
         auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region(page_width - (4 * Ki), 12 * Ki, block_size, chunk_size);
+            calc_bitmap_region(page_width - (4 * Ki), 12 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(511, word_offset);
         EXPECT_EQ(0, shift_offset);
@@ -157,14 +163,14 @@ TEST(Raid1, CalcBitmapRegions) {
     // First page, last word and bit offset into chunk, truncated at page boundary
     {
         auto [page_offset, word_offset, shift_offset, sz] =
-            calc_bitmap_region(page_width - (4 * Ki), 2 * chunk_size, block_size, chunk_size);
+            calc_bitmap_region(page_width - (4 * Ki), 2 * chunk_size, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(511, word_offset);
         EXPECT_EQ(0, shift_offset);
         EXPECT_EQ(4 * Ki, sz);
         {
             auto [pg_offset2, word_offset2, shift_offset2, sz2] =
-                calc_bitmap_region(page_width - (4 * Ki) + (sz), (2 * chunk_size) - sz, block_size, chunk_size);
+                calc_bitmap_region(page_width - (4 * Ki) + (sz), (2 * chunk_size) - sz, chunk_size);
             EXPECT_EQ(1, pg_offset2);
             EXPECT_EQ(0, word_offset2);
             EXPECT_EQ(63, shift_offset2);
@@ -174,8 +180,8 @@ TEST(Raid1, CalcBitmapRegions) {
 
     // Third page, middle of second word
     {
-        auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(
-            (page_width * 2) + word_width + (3 * chunk_size), 5 * chunk_size, block_size, chunk_size);
+        auto [page_offset, word_offset, shift_offset, sz] =
+            calc_bitmap_region((page_width * 2) + word_width + (3 * chunk_size), 5 * chunk_size, chunk_size);
         EXPECT_EQ(2, page_offset);
         EXPECT_EQ(1, word_offset);
         EXPECT_EQ(60, shift_offset);
@@ -217,7 +223,7 @@ TEST(Raid1, FailedUpdateSBDevB) {
     auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, false);
     auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
     // Expect an extra WRITE to the SB when sync'ing the SB to DevB fails
-    EXPECT_SYNC_OP_REPEAT(UBLK_IO_OP_WRITE, 2, device_a, false, ublkpp::raid1::SuperBlock::SIZE, 0UL);
+    EXPECT_SYNC_OP_REPEAT(UBLK_IO_OP_WRITE, 2, device_a, false, ublkpp::raid1::k_page_size, 0UL);
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
@@ -238,13 +244,13 @@ TEST(Raid1, FailedSecondUpdateDevA) {
         .Times(2)
         .WillOnce([](uint8_t, iovec* iov, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::SuperBlock::SIZE, iov->iov_len);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, iov->iov_len);
             EXPECT_EQ(0UL, addr);
             return iov->iov_len;
         })
         .WillOnce([](uint8_t, iovec* iov, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::SuperBlock::SIZE, iov->iov_len);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, iov->iov_len);
             EXPECT_EQ(0UL, addr);
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         });
@@ -294,6 +300,25 @@ TEST(Raid1, DiffereingDeviceProbing) {
 
     // Device B lacks Discard support
     EXPECT_EQ(raid_device.can_discard(), false);
+
+    // expect unmount_clean update
+    EXPECT_TO_WRITE_SB(device_a);
+    EXPECT_TO_WRITE_SB(device_b);
+}
+
+// Brief: Test that RAID1 array maintains a self-imposing limit to restrict the reserved size
+//
+TEST(Raid1, DevicesLargerThanAllowed) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = ublkpp::raid1::k_max_dev_size + ublkpp::Ti});
+    auto device_b = CREATE_DISK(TestParams{.capacity = ublkpp::raid1::k_max_dev_size * 2});
+
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+    EXPECT_EQ(raid_device.capacity(), ublkpp::raid1::k_max_dev_size);
+    EXPECT_STREQ(raid_device.type().c_str(), "Raid1");
+
+    // CanDiscard and DirectIO `true` be default.
+    EXPECT_EQ(raid_device.can_discard(), true);
+    EXPECT_EQ(raid_device.direct_io, true);
 
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);

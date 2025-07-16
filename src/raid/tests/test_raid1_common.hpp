@@ -58,7 +58,7 @@ using ::ublkpp::raid1::reserved_size;
             return s;                                                                                                  \
         });
 
-#define EXPECT_SB_OP(OP, device, fail) EXPECT_SYNC_OP(OP, device, fail, ublkpp::raid1::SuperBlock::SIZE, 0UL);
+#define EXPECT_SB_OP(OP, device, fail) EXPECT_SYNC_OP(OP, device, fail, ublkpp::raid1::k_page_size, 0UL);
 #define EXPECT_TO_WRITE_SB_F(device, fail) EXPECT_SB_OP(UBLK_IO_OP_WRITE, device, fail)
 #define EXPECT_TO_WRITE_SB(device) EXPECT_TO_WRITE_SB_F(device, false)
 
@@ -72,15 +72,15 @@ using ::ublkpp::raid1::reserved_size;
             EXPECT_TRUE(ublkpp::is_internal(sub_cmd));                                                                 \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
-            EXPECT_GE(addr, ublkpp::raid1::SuperBlock::SIZE); /* Expect write to bitmap!*/                             \
-            EXPECT_LT(addr, reserved_size);                   /* Expect write to bitmap!*/                             \
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); /* Expect write to bitmap!*/                                  \
+            EXPECT_LT(addr, reserved_size);              /* Expect write to bitmap!*/                                  \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             auto const op = ublksrv_get_op(data->iod);                                                                 \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
             return 1;                                                                                                  \
         });
 
-#define EXPECT_SB_ASYNC_OP(OP, device, fail) EXPECT_ASYNC_OP(OP, device, fail, ublkpp::raid1::SuperBlock::SIZE);
+#define EXPECT_SB_ASYNC_OP(OP, device, fail) EXPECT_ASYNC_OP(OP, device, fail, ublkpp::raid1::k_page_size);
 #define EXPECT_TO_WRITE_SB_ASYNC_F(device, fail) EXPECT_SB_ASYNC_OP(UBLK_IO_OP_WRITE, device, fail)
 #define EXPECT_TO_WRITE_SB_ASYNC(device) EXPECT_TO_WRITE_SB_ASYNC_F(device, false)
 
