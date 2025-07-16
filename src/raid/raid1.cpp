@@ -73,11 +73,13 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 
-    auto read_super = load_superblock(*_device_a, uuid, SISL_OPTIONS["chunk_size"].as< uint32_t >());
+    _chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
+
+    auto read_super = load_superblock(*_device_a, uuid, _chunk_size);
     if (!read_super)
         throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
     auto sb_a = std::shared_ptr< raid1::SuperBlock >(read_super.value(), free_page());
-    read_super = load_superblock(*_device_b, uuid, SISL_OPTIONS["chunk_size"].as< uint32_t >());
+    read_super = load_superblock(*_device_b, uuid, _chunk_size);
     if (!read_super)
         throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
     auto sb_b = std::shared_ptr< raid1::SuperBlock >(read_super.value(), free_page());

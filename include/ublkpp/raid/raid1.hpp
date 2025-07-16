@@ -23,6 +23,7 @@ class Raid1Disk : public UblkDisk {
 
     /// Some runtime parameters
     //  =======================
+    uint32_t _chunk_size{0};            // Size each bit in the BITMAP represents
     bool const _read_from_dirty{false}; // Read from a device we *know* is dirty
     //  =======================
 
