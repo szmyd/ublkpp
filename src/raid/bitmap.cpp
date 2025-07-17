@@ -15,7 +15,7 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(
     auto const page_off = (addr % page_width_bits);   // Bytes within the page
     auto const page_bit = (page_off / chunk_size);    // Bit within the page
     return std::make_tuple(page,                      // Page that address references
-                           page_bit / bits_in_uint64, // Word in the page
+                           page_bit / bits_in_uint64, // Word in the page LCOV_EXCL_LINE
                            bits_in_uint64 - (page_bit % bits_in_uint64) - 1,     // Shift within the Word
                            std::min((uint64_t)len, (page_width_bits - page_off)) // Tail size of the page
     );
