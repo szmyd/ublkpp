@@ -4,21 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.6.4
-- raid1: Do not re-write unchanged pagesd
+## 0.7.0
+- raid1: Extract BITMAP into its own class
 
-## 0.6.3
+## 0.6.x
+- raid1: Do not re-write unchanged pages
 - raid1: Round-Robin reading
-
-## 0.6.2
 - homeblk_disk: Disable by default
 - raid1: Calculate reserved area based on limits
-
-## 0.6.1
 - ublkpp_tgt: Clear async_event before calling process_result
 - raid1: Bitmap words should be encoded as NETWORK byte order
-
-## 0.6.0
 - raid1: Records dirty chunks to the BITMAP pages
 
 ## 0.5.x

@@ -7,6 +7,7 @@
 namespace ublkpp {
 
 namespace raid1 {
+class Bitmap;
 struct SuperBlock;
 ENUM(read_route, int8_t, DEVA = -1, EITHER = 0, DEVB = 1);
 } // namespace raid1
@@ -19,22 +20,13 @@ class Raid1Disk : public UblkDisk {
 
     // Persistent state
     std::shared_ptr< raid1::SuperBlock > _sb;
-    std::map< uint32_t, std::shared_ptr< uint64_t > > _dirty_pages;
-
-    /// Some runtime parameters
-    //  =======================
-    uint32_t _chunk_size{0};            // Size each bit in the BITMAP represents
-    bool const _read_from_dirty{false}; // Read from a device we *know* is dirty
-    //  =======================
+    std::shared_ptr< raid1::Bitmap > _dirty_bitmap;
 
     // The current route to read consistently
     raid1::read_route _read_route{raid1::read_route::EITHER};
 
     // For implementing round-robin reads
     raid1::read_route _last_read{raid1::read_route::DEVB};
-
-    // Counter for testing availability changes
-    uint64_t _degraded_ops{0UL};
 
     // Asynchronous replies that did not go through io_uring
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;

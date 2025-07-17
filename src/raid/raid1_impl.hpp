@@ -3,9 +3,11 @@
 extern "C" {
 #include <endian.h>
 }
+#include <map>
 #include <tuple>
 
 #include <sisl/logging/logging.h>
+#include "ublkpp/raid/raid1.hpp"
 
 namespace ublkpp {
 
@@ -19,20 +21,26 @@ constexpr auto k_max_bitmap_chunks = k_max_dev_size / k_min_chunk_size;
 constexpr auto k_max_bitmap_size = k_max_bitmap_chunks / k_bits_in_byte;
 constexpr auto k_page_size = 4 * Ki;
 
-// Each bit in the BITMAP represents a single "Chunk" of size chunk_size
-inline auto calc_bitmap_region(uint64_t addr, uint32_t len, uint32_t chunk_size) {
-    static auto const bits_in_uint64 = k_bits_in_byte * sizeof(uint64_t);
-    auto const page_width_bits =
-        chunk_size * k_page_size * k_bits_in_byte;    // Number of bytes represented by a single page (block)
-    auto const page = addr / page_width_bits;         // Which page does this address land in
-    auto const page_off = (addr % page_width_bits);   // Bytes within the page
-    auto const page_bit = (page_off / chunk_size);    // Bit within the page
-    return std::make_tuple(page,                      // Page that address references
-                           page_bit / bits_in_uint64, // Word in the page
-                           bits_in_uint64 - (page_bit % bits_in_uint64) - 1,     // Shift within the Word
-                           std::min((uint64_t)len, (page_width_bits - page_off)) // Tail size of the page
-    );
-}
+class Bitmap {
+    using map_type_t = std::map< uint32_t, std::shared_ptr< uint64_t > >;
+
+    uint32_t _align;
+    uint32_t _chunk_size;
+    map_type_t _page_map;
+
+public:
+    Bitmap(uint32_t chunk_size, uint32_t align = k_page_size) : _align(align), _chunk_size(chunk_size) {}
+
+    auto page_size() const { return k_page_size; }
+
+    uint64_t* get_page(uint64_t offset, bool creat = false);
+    bool is_dirty(uint64_t addr, uint32_t len);
+    std::tuple< uint64_t*, uint32_t, uint32_t > dirty_page(uint64_t addr, uint32_t len);
+
+    // Each bit in the BITMAP represents a single "Chunk" of size chunk_size
+    static std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > calc_bitmap_region(uint64_t addr, uint32_t len,
+                                                                                   uint32_t chunk_size);
+};
 
 #ifdef __LITTLE_ENDIAN
 struct __attribute__((__packed__)) SuperBlock {
