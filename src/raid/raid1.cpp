@@ -223,8 +223,8 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
     // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
     _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
     if (q) {
-        if (0 != ublksrv_queue_send_event(q)) {
-            RLOGE("Failed to send event!"); // LCOV_EXCL_START
+        if (0 != ublksrv_queue_send_event(q)) { // LCOV_EXCL_START
+            RLOGE("Failed to send event!");
             return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         } // LCOV_EXCL_STOP
     }
