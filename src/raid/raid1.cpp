@@ -29,10 +29,12 @@ using raid1::read_route;
 #define DIRTY_DEVICE (read_route::DEVB == _read_route ? _device_a : _device_b)
 #define CLEAN_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_B : SEND_TO_A)
 #define DIRTY_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_A : SEND_TO_B)
+#define DEV_SUBCMD(device) (_device_a == (device) ? SEND_TO_A : SEND_TO_B)
 
 // If sub_cmd was for DevA switch Clean to B and vice-versa
-#define SWITCH_TARGET(s_cmd)                                                                                           \
+#define SET_TARGET(s_cmd)                                                                                              \
     _read_route = (0b1 & ((s_cmd) >> _device_b->route_size())) ? read_route::DEVA : read_route::DEVB;
+#define SET_LAST(s_cmd) _last_read = (0b1 & ((s_cmd) >> _device_b->route_size())) ? read_route::DEVB : read_route::DEVA;
 
 static folly::Expected< raid1::SuperBlock*, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
@@ -136,7 +138,7 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
 io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     // We only update the AGE if we're not degraded already
     auto const orig_route = _read_route;
-    SWITCH_TARGET(sub_cmd)
+    SET_TARGET(sub_cmd)
     ++_sb->fields.bitmap.age;
     _sb->fields.bitmap.dirty = 1;
     RLOGW("Device becoming degraded [sub_cmd:{}] [age:{}] [vol:{}] ", ublkpp::to_string(sub_cmd),
@@ -157,7 +159,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
 static inline uint64_t* __get_page(std::map< uint32_t, std::shared_ptr< uint64_t > >& page_map, uint64_t offset,
                                    uint32_t page_size = 0) {
     if (0 == page_size) {
-        if (auto it = page_map.find(offset); page_map.end() != it)
+        if (auto it = page_map.find(offset); page_map.end() == it)
             return nullptr;
         else
             return it->second.get();
@@ -194,15 +196,15 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, _chunk_size);
-    auto nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
-    RLOGT("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}, sz:{}] [sub_cmd:{}] [volid:{}]", page_offset, word_offset,
-          shift_offset, nr_bits, sz, ublkpp::to_string(new_cmd), _str_uuid);
 
     // Get/Create a Page
     auto cur_page = __get_page(_dirty_pages, page_offset, block_size());
     if (!cur_page) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error)); // LCOV_EXCL_LINE
     auto cur_word = cur_page + word_offset;
+    auto nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
 
+    RLOGT("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}, sz:{}] [sub_cmd:{}] [volid:{}]", page_offset, word_offset,
+          shift_offset, nr_bits, sz, ublkpp::to_string(new_cmd), _str_uuid);
     // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
     // word, it's unexpected that this will require writing into a third word
     if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
@@ -319,27 +321,64 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
     return a_v;
 }
 
-io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func) {
+io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len) {
     auto const retry = is_retry(sub_cmd);
-    if (!retry)
+    if (retry) {
+        SET_LAST(sub_cmd)
+    } else
         sub_cmd = shift_route(sub_cmd, route_size());
-    else if (IS_DEGRADED && !_read_from_dirty)
-        // If we are already degraded return error
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-    else {
-        // If Retry then rotate the devices
-        SWITCH_TARGET(sub_cmd)
+
+    // Pick a device to read from
+    auto route = read_route::DEVA;
+    auto need_to_test{false};
+    if (read_route::DEVB == _last_read) {
+        if (read_route::DEVB == _read_route) need_to_test = true;
+    } else {
+        route = read_route::DEVB;
+        if (read_route::DEVA == _read_route) need_to_test = true;
     }
 
+    // This is an optimization to allow READing from a degraded device and can be turned off
+    if (IS_DEGRADED && need_to_test) {
+        auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, _chunk_size);
+        // Check for a dirty page
+        if (auto cur_page = __get_page(_dirty_pages, page_offset); cur_page) {
+            auto cur_word = cur_page + word_offset;
+
+            // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
+            // next word, it's unexpected that this will require writing into a third word
+            auto nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
+            if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
+
+            // Handle update crossing multiple words (optimization potential?)
+            for (auto bits_left = nr_bits; 0 < bits_left;) {
+                auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+                auto const bits_to_set =
+                    htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
+                bits_left -= bits_to_write;
+                if (0 != (*cur_word & bits_to_set)) {
+                    // We've already attempted this device...we don't want to re-attempt
+                    if (retry) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                    // Switch to other route (which is clean)
+                    route = (read_route::DEVA == route) ? read_route::DEVB : read_route::DEVA;
+                    break;
+                }
+                ++cur_word;
+                shift_offset = 63; // Word offset back to the beginning
+            }
+        }
+    }
+    _last_read = route;
+
     // Attempt read on device; if it succeeds or we are degraded return the result
-    if (auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); res || (IS_DEGRADED && !_read_from_dirty) || retry) {
-        if (!retry && IS_DEGRADED) ++_degraded_ops;
+    auto device = (read_route::DEVA == route) ? _device_a : _device_b;
+    if (auto res = func(*device, DEV_SUBCMD(device)); res || (IS_DEGRADED && !_read_from_dirty) || retry) {
         return res;
     }
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
-    return func(*DIRTY_DEVICE, DIRTY_SUBCMD);
+    return __failover_read(sub_cmd, std::move(func), addr, len);
 }
 
 void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
@@ -371,9 +410,12 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
-        return __failover_read(sub_cmd, [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + raid1::reserved_size);
-        });
+        return __failover_read(
+            sub_cmd,
+            [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
+                return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + raid1::reserved_size);
+            },
+            addr, len);
     return __replicate(
         sub_cmd,
         [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
@@ -389,9 +431,12 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
-        return __failover_read(0U, [iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t) {
-            return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr + raid1::reserved_size);
-        });
+        return __failover_read(
+            0U,
+            [iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t) {
+                return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr + raid1::reserved_size);
+            },
+            addr, len);
 
     size_t res{0};
     if (auto io_res = __replicate(
@@ -441,7 +486,8 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (chunk_size != be32toh(sb->fields.bitmap.chunk_size)) {
-        RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B] [vol:{}] ",
+        RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B] "
+              "[vol:{}] ",
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
     RLOGD("device has v{:0x} superblock [chunk_sz:{:x},{}] [vol:{}] ", be16toh(sb->header.version), chunk_size,
