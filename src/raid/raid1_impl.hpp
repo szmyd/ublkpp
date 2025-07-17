@@ -28,13 +28,16 @@ class Bitmap {
     uint32_t _chunk_size;
     map_type_t _page_map;
 
+    uint64_t* __get_page(uint64_t offset, bool creat = false);
+
 public:
     Bitmap(uint32_t chunk_size, uint32_t align = k_page_size) : _align(align), _chunk_size(chunk_size) {}
 
     auto page_size() const { return k_page_size; }
 
-    uint64_t* get_page(uint64_t offset, bool creat = false);
     bool is_dirty(uint64_t addr, uint32_t len);
+
+    // Tuple of form [page*, page_offset, size_consumed (max len)]
     std::tuple< uint64_t*, uint32_t, uint32_t > dirty_page(uint64_t addr, uint32_t len);
 
     // Each bit in the BITMAP represents a single "Chunk" of size chunk_size

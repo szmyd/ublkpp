@@ -5,7 +5,11 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
-// Each bit in the BITMAP represents a single "Chunk" of size chunk_size
+// We use uint64_t pointers to access the allocated pages. calc_bitmap_region will return:
+//      * page_offset  : The page key in our page map (generated if we have a hole currently)
+//      * word_offset  : The uint64_t offset within the raid1::page_size byte array
+//      * shift_offset : The bits to begin setting within the word indicated
+//      * sz           : The number of bytes to represent as "dirty" from this index
 std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint32_t len,
                                                                                 uint32_t chunk_size) {
     static auto const bits_in_uint64 = k_bits_in_byte * sizeof(uint64_t);
@@ -21,7 +25,7 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(
     );
 }
 
-uint64_t* Bitmap::get_page(uint64_t offset, bool creat) {
+uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {
     if (!creat) {
         if (auto it = _page_map.find(offset); _page_map.end() == it)
             return nullptr;
@@ -42,7 +46,7 @@ uint64_t* Bitmap::get_page(uint64_t offset, bool creat) {
 bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
     auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
     // Check for a dirty page
-    auto cur_page = get_page(page_offset);
+    auto cur_page = __get_page(page_offset);
     if (!cur_page) return false;
 
     auto cur_word = cur_page + word_offset;
@@ -65,18 +69,17 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
     return false;
 }
 
-// We use uint64_t pointers to access the allocated pages. calc_bitmap_region will return:
-//      * page_offset  : The page key in our page map (generated if we have a hole currently)
-//      * word_offset  : The uint64_t offset within the raid1::page_size byte array
-//      * shift_offset : The bits to begin setting within the word indicated
-//      * sz           : The number of bytes to represent as "dirty" from this index
+// Returns:
+//      * page         : Pointer to the page
+//      * page_offset  : Page index
+//      * sz           : The number of bytes from the provided `len` that fit in this page
 std::tuple< uint64_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, uint32_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Get/Create a Page
-    auto cur_page = get_page(page_offset, k_page_size);
+    auto cur_page = __get_page(page_offset, k_page_size);
     if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
     auto cur_word = cur_page + word_offset;
     uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
