@@ -42,24 +42,25 @@ uint64_t* Bitmap::get_page(uint64_t offset, bool creat) {
 bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
     auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
     // Check for a dirty page
-    if (auto cur_page = get_page(page_offset); cur_page) {
-        auto cur_word = cur_page + word_offset;
+    auto cur_page = get_page(page_offset);
+    if (!cur_page) return false;
 
-        // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
-        // next word, it's unexpected that this will require writing into a third word
-        uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
-        if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
+    auto cur_word = cur_page + word_offset;
 
-        // Handle update crossing multiple words (optimization potential?)
-        for (auto bits_left = nr_bits; 0 < bits_left;) {
-            auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-            auto const bits_to_set =
-                htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
-            bits_left -= bits_to_write;
-            if (0 != (*cur_word & bits_to_set)) return true;
-            ++cur_word;
-            shift_offset = 63; // Word offset back to the beginning
-        }
+    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
+    // next word, it's unexpected that this will require writing into a third word
+    uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
+    if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
+
+    // Handle update crossing multiple words (optimization potential?)
+    for (auto bits_left = nr_bits; 0 < bits_left;) {
+        auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+        auto const bits_to_set =
+            htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
+        bits_left -= bits_to_write;
+        if (0 != (*cur_word & bits_to_set)) return true;
+        ++cur_word;
+        shift_offset = 63; // Word offset back to the beginning
     }
     return false;
 }

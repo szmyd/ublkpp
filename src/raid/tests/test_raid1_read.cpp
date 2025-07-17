@@ -359,7 +359,7 @@ TEST(Raid1, OpenDevices) {
     EXPECT_CALL(*device_b, collect_async(_, _)).Times(0);
     std::list< ublkpp::async_result > result_list;
     raid_device.collect_async(nullptr, result_list);
-    ASSERT_EQ(0, result_list.size());
+    EXPECT_EQ(0, result_list.size());
 
     device_a->uses_ublk_iouring = false;
     device_b->uses_ublk_iouring = false;
@@ -397,7 +397,7 @@ TEST(Raid1, UnknownOp) {
     auto ublk_data = make_io_data(0xFF, 4 * Ki, 8 * Ki);
     auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
     remove_io_data(ublk_data);
-    ASSERT_FALSE(res);
+    EXPECT_FALSE(res);
 
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
@@ -625,7 +625,7 @@ TEST(Raid1, SyncIoReadFailBoth) {
     EXPECT_SYNC_OP(test_op, device_a, true, test_sz, test_off + ublkpp::raid1::reserved_size);
     EXPECT_SYNC_OP(test_op, device_b, true, test_sz, test_off + ublkpp::raid1::reserved_size);
 
-    ASSERT_FALSE(raid_device.sync_io(test_op, nullptr, test_sz, test_off));
+    EXPECT_FALSE(raid_device.sync_io(test_op, nullptr, test_sz, test_off));
 
     // expect attempt to sync both SBs
     EXPECT_TO_WRITE_SB_F(device_a, true);
@@ -698,6 +698,25 @@ TEST(Raid1, ReadOnDegraded) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 4 * Ki);
         remove_io_data(ublk_data);
         EXPECT_TRUE(res);
+    }
+    // Reads on the degraded device for clean chunks are fine as well
+    {
+        EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                         uint64_t addr) {
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
+                // It should also have the RETRIED bit set
+                EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
+                EXPECT_EQ(iovecs->iov_len, 64 * Ki);
+                EXPECT_EQ(addr, (1 * Gi) + reserved_size);
+                return 1;
+            });
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 64 * Ki, 1 * Gi);
+        remove_io_data(ublk_data);
+        EXPECT_TRUE(res);
+        EXPECT_EQ(1, res.value());
     }
 
     // expect unmount_clean update
