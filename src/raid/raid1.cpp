@@ -14,6 +14,8 @@ SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
                   (no_read_from_dirty, "", "no_read_from_dirty", "Allow reads from a Dirty device",
+                   cxxopts::value< bool >(), ""),
+                  (no_write_to_dirty, "", "no_write_to_dirty", "Allow writes to a Dirty device",
                    cxxopts::value< bool >(), ""))
 
 namespace ublkpp {
@@ -229,41 +231,44 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
 //  READ operations need only go to one side. So they are handled separately.
 io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                  ublk_io_data const* async_data) {
-    if (is_retry(sub_cmd)) [[unlikely]]
-        return __handle_async_retry(sub_cmd, addr, len, q, async_data);
+    // Apply our shift to the sub_cmd if it's not a replica write
+    auto const replica_write = is_replicate(sub_cmd);
+    if (!replica_write) {
+        sub_cmd = shift_route(sub_cmd, route_size());
+        sub_cmd = CLEAN_SUBCMD;
+    }
 
-    // Apply our shift to the sub_cmd if it's not a retry
-    sub_cmd = shift_route(sub_cmd, route_size());
-
-    auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD);
+    auto res = func(*(CLEAN_SUBCMD == sub_cmd ? CLEAN_DEVICE : DIRTY_DEVICE), sub_cmd);
 
     // If we are degraded we can just return here with the result of the CLEAN device.
-    if (IS_DEGRADED) {
+    if (IS_DEGRADED && !replica_write) {
         if (!res) {
             RLOGE("Double failure! [tag:{:x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return res;
         }
-        RECORD_DEGRADED_WRITE(sub_cmd)
-        return res.value() + dirty_res.value();
+        if (_dirty_bitmap->is_dirty(addr, len) || 0 < SISL_OPTIONS["no_write_to_dirty"].as< bool >()) {
+            RECORD_DEGRADED_WRITE(sub_cmd)
+            return res.value() + dirty_res.value();
+        }
     }
 
-    // If not-degraded and first sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
+    // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
-        RECORD_DEGRADED_WRITE(CLEAN_SUBCMD)
+        RECORD_DEGRADED_WRITE(sub_cmd)
+        if (replica_write) return dirty_res;
         if (res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); !res) return res;
         return res.value() + dirty_res.value();
     }
+    if (replica_write) return res;
+
     // Otherwise tag the replica sub_cmd so we don't include its value in the target result
+    sub_cmd = DIRTY_SUBCMD;
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::REPLICATE);
-    auto a_v = res.value();
-    if (res = func(*DIRTY_DEVICE, DIRTY_SUBCMD); !res) {
-        // If the replica sub_cmd fails immediately we can dirty the bitmap here and return result from firsub_cmd
-        RECORD_DEGRADED_WRITE(DIRTY_SUBCMD)
-        a_v += dirty_res.value();
-    } else
-        a_v += res.value();
+    auto replica_res = __replicate(sub_cmd, std::move(func), addr, len, q, async_data);
+    if (!replica_res) return replica_res;
+    res = res.value() += replica_res.value();
     // Assuming all was successful, return the aggregate of the results
-    return a_v;
+    return res;
 }
 
 io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len) {
@@ -315,6 +320,9 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("received DISCARD: [tag:{:x}] [lba:{:x}|len:{}] [vol:{}]", data->tag, lba, len, _str_uuid)
 
+    if (is_retry(sub_cmd)) [[unlikely]]
+        return __handle_async_retry(sub_cmd, addr, len, q, data);
+
     return __replicate(
         sub_cmd,
         [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) {
@@ -339,6 +347,10 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
                 return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + raid1::reserved_size);
             },
             addr, len);
+
+    if (is_retry(sub_cmd)) [[unlikely]]
+        return __handle_async_retry(sub_cmd, addr, len, q, data);
+
     return __replicate(
         sub_cmd,
         [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {

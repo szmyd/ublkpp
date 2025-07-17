@@ -4,8 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.1
+- raid1: Writes in degraded mode
+
 ## 0.7.0
 - raid1: Extract BITMAP into its own class
+- raid1: Reads in degraded mode
 
 ## 0.6.x
 - raid1: Do not re-write unchanged pages
