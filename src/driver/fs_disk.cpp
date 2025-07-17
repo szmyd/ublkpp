@@ -179,6 +179,9 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         DLOGE("Direct read on un-opened device!")
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
+    auto const lba = addr >> params()->basic.logical_bs_shift;
+    DLOGT("{} {} : [INTERNAL] ublk io [lba:{:x}|len:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(), lba,
+          __iovec_len(iovecs, iovecs + nr_vecs))
     auto res = ssize_t{-1};
     switch (op) {
     case UBLK_IO_OP_READ: {

@@ -49,6 +49,8 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
                      std::shared_ptr< UblkDisk > dev_b) :
         UblkDisk(), _str_uuid(boost::uuids::to_string(uuid)), _device_a(std::move(dev_a)), _device_b(std::move(dev_b)) {
     direct_io = true;
+    // We enqueue async responses for RAID1 retries even if our underlying devices use uring
+    uses_ublk_iouring = false;
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
@@ -62,7 +64,6 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
             std::max(our_params.basic.physical_bs_shift, device->params()->basic.physical_bs_shift);
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
-        if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
     }
     // Reserve space for the superblock/bitmap
     our_params.basic.dev_sectors -= (raid1::reserved_size >> SECTOR_SHIFT);
@@ -221,7 +222,12 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
 
     // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
     _pending_results[q].emplace_back(async_result{async_data, sub_cmd, (int)len});
-    if (q) ublksrv_queue_send_event(q); // LCOV_EXCL_LINE
+    if (q) {
+        if (0 != ublksrv_queue_send_event(q)) {
+            RLOGE("Failed to send event!"); // LCOV_EXCL_START
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        } // LCOV_EXCL_STOP
+    }
     return dirty_res.value() + 1;
 }
 
@@ -281,17 +287,19 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     // Pick a device to read from
     auto route = read_route::DEVA;
     auto need_to_test{false};
-    if (read_route::DEVB == _last_read) {
-        if (read_route::DEVB == _read_route) need_to_test = true;
+    if (IS_DEGRADED && 0 < SISL_OPTIONS["no_read_from_dirty"].count()) {
+        route = _read_route;
     } else {
-        route = read_route::DEVB;
-        if (read_route::DEVA == _read_route) need_to_test = true;
+        if (read_route::DEVB == _last_read) {
+            if (read_route::DEVB == _read_route) need_to_test = true;
+        } else {
+            route = read_route::DEVB;
+            if (read_route::DEVA == _read_route) need_to_test = true;
+        }
     }
 
     // An optimization to allow READing from a degraded device and can be turned off with the read_from_dirty flag
     if (IS_DEGRADED && need_to_test) {
-        if (0 < SISL_OPTIONS["no_read_from_dirty"].count())
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
         if (_dirty_bitmap->is_dirty(addr, len)) {
             // We've already attempted this device...we don't want to re-attempt
             if (retry) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
