@@ -61,27 +61,50 @@ TEST(Raid1, WriteRetryA) {
         ASSERT_TRUE(res);
         EXPECT_EQ(2, res.value());
     }
+    // Expect an extra async results
+    auto compls = std::list< ublkpp::async_result >();
+    raid_device.collect_async(nullptr, compls);
+    EXPECT_EQ(compls.size(), 1);
+    compls.clear();
 
-    // Queued Retries should not Fail Immediately, and not dirty header
+    // Queued Retries should not Fail Immediately, and not dirty header or pages
     {
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
-        EXPECT_TO_WRITE_SB_ASYNC(device_b);
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value());
     }
-    // Expect an extra async results
-    auto compls = std::list< ublkpp::async_result >();
     raid_device.collect_async(nullptr, compls);
-    EXPECT_EQ(compls.size(), 2);
+    EXPECT_EQ(compls.size(), 1);
     compls.clear();
 
     {
-        // Subsequent writes to dirty regions should not go to the degraded device
+        // Subsequent writes to dirty regions should not go to the degraded device or dirty already dirty pages
+        auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                         uint64_t addr) {
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+                return 1;
+            });
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(1, res.value());
+    }
+
+    {
+        // Subsequent writes to clean regions should not go to the degraded device and dirty new pages
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
@@ -91,7 +114,7 @@ TEST(Raid1, WriteRetryA) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
                 EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
                 EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-                EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+                EXPECT_EQ(addr, (180 * Ki) + reserved_size);
                 return 1;
             })
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
@@ -102,7 +125,7 @@ TEST(Raid1, WriteRetryA) {
                 EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
                 return 1;
             });
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 180 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(2, res.value());
@@ -188,7 +211,7 @@ TEST(Raid1, WriteRetryB) {
 
     // Queued Retries should not Fail Immediately, and not dirty of bitmap
     {
-        EXPECT_TO_WRITE_SB_ASYNC(device_a);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
@@ -197,7 +220,7 @@ TEST(Raid1, WriteRetryB) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(1, res.value()); // Retried replicated
+        EXPECT_EQ(0, res.value());
     }
     // Expect no extra async results
     auto compls = std::list< ublkpp::async_result >();
@@ -326,7 +349,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
             EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
             EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-            EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+            EXPECT_EQ(addr, (180 * Ki) + reserved_size);
             return 1;
         })
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
@@ -337,7 +360,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
             EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
             return 1;
         });
-    auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+    auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 180 * Ki);
     remove_io_data(ublk_data);
     ASSERT_TRUE(res);
     EXPECT_EQ(2, res.value());
