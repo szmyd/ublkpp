@@ -24,7 +24,7 @@ using raid1::read_route;
 #define SEND_TO_B (sub_cmd | 0b1)
 
 // Route routines
-#define IS_DEGRADED (0 < _degraded_ops)
+#define IS_DEGRADED (1 == _sb->fields.bitmap.dirty)
 #define CLEAN_DEVICE (read_route::DEVB == _read_route ? _device_b : _device_a)
 #define DIRTY_DEVICE (read_route::DEVB == _read_route ? _device_a : _device_b)
 #define CLEAN_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_B : SEND_TO_A)
@@ -45,11 +45,7 @@ struct free_page {
 
 Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                      std::shared_ptr< UblkDisk > dev_b) :
-        UblkDisk(),
-        _str_uuid(boost::uuids::to_string(uuid)),
-        _device_a(std::move(dev_a)),
-        _device_b(std::move(dev_b)),
-        _read_from_dirty(0 == SISL_OPTIONS["no_read_from_dirty"].count()) {
+        UblkDisk(), _str_uuid(boost::uuids::to_string(uuid)), _device_a(std::move(dev_a)), _device_b(std::move(dev_b)) {
     direct_io = true;
     // Discover overall Device parameters
     auto& our_params = *params();
@@ -75,13 +71,13 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 
-    _chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
+    auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
 
-    auto read_super = load_superblock(*_device_a, uuid, _chunk_size);
+    auto read_super = load_superblock(*_device_a, uuid, chunk_size);
     if (!read_super)
         throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
     auto sb_a = std::shared_ptr< raid1::SuperBlock >(read_super.value(), free_page());
-    read_super = load_superblock(*_device_b, uuid, _chunk_size);
+    read_super = load_superblock(*_device_b, uuid, chunk_size);
     if (!read_super)
         throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
     auto sb_b = std::shared_ptr< raid1::SuperBlock >(read_super.value(), free_page());
@@ -96,9 +92,6 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
 
-    // Start the degraded ops counter at 1
-    _degraded_ops = (_sb->fields.bitmap.dirty ? 1 : 0);
-
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
     sub_cmd_t const sub_cmd = 0U;
@@ -111,6 +104,10 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
     }
+
+    // TODO read in existing dirty BITMAP pages
+    _dirty_bitmap = std::make_unique< raid1::Bitmap >(chunk_size, block_size());
+
     // Write to DIRTY only if not degraded.
     if (IS_DEGRADED) return;
     if (write_superblock(*DIRTY_DEVICE, _sb.get())) return;
@@ -152,95 +149,10 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
         RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
-    _degraded_ops = 1;
     return 0;
 }
 
-static inline uint64_t* __get_page(std::map< uint32_t, std::shared_ptr< uint64_t > >& page_map, uint64_t offset,
-                                   uint32_t page_size = 0) {
-    if (0 == page_size) {
-        if (auto it = page_map.find(offset); page_map.end() == it)
-            return nullptr;
-        else
-            return it->second.get();
-    }
-
-    auto [it, happened] = page_map.emplace(std::make_pair(offset, nullptr));
-    if (happened) {
-        void* new_page{nullptr};
-        if (auto err = ::posix_memalign(&new_page, page_size, raid1::k_page_size); err)
-            return nullptr; // LCOV_EXCL_LINE
-        memset(new_page, 0, raid1::k_page_size);
-        it->second.reset(reinterpret_cast< uint64_t* >(new_page), free_page());
-    }
-    return it->second.get();
-}
-
-static inline bool __is_dirty(std::map< uint32_t, std::shared_ptr< uint64_t > >& page_map, uint64_t addr, uint32_t len,
-                              uint32_t chunk_size) {
-    auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, chunk_size);
-    // Check for a dirty page
-    if (auto cur_page = __get_page(page_map, page_offset); cur_page) {
-        auto cur_word = cur_page + word_offset;
-
-        // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
-        // next word, it's unexpected that this will require writing into a third word
-        auto nr_bits = (sz / chunk_size) + ((0 < (sz % chunk_size)) ? 1 : 0);
-        if ((sz > chunk_size) && (0 != addr) % chunk_size) ++nr_bits;
-
-        // Handle update crossing multiple words (optimization potential?)
-        for (auto bits_left = nr_bits; 0 < bits_left;) {
-            auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-            auto const bits_to_set =
-                htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
-            bits_left -= bits_to_write;
-            if (0 != (*cur_word & bits_to_set)) return true;
-            ++cur_word;
-            shift_offset = 63; // Word offset back to the beginning
-        }
-    }
-    return false;
-}
-
-static inline auto __dirty_page(std::map< uint32_t, std::shared_ptr< uint64_t > >& page_map, uint64_t addr,
-                                uint32_t len, uint32_t chunk_size, uint32_t page_size) {
-    // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
-    // Calculate the tuple mentioned above
-    auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, chunk_size);
-
-    // Get/Create a Page
-    auto cur_page = __get_page(page_map, page_offset, page_size);
-    if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
-    auto cur_word = cur_page + word_offset;
-    auto nr_bits = (sz / chunk_size) + ((0 < (sz % chunk_size)) ? 1 : 0);
-
-    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
-    // word, it's unexpected that this will require writing into a third word
-    if ((sz > chunk_size) && (0 != addr) % chunk_size) ++nr_bits;
-
-    // Handle update crossing multiple words (optimization potential?)
-    bool updated{false};
-    for (auto bits_left = nr_bits; 0 < bits_left;) {
-        auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-        auto const bits_to_set =
-            htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
-        bits_left -= bits_to_write;
-        if ((*cur_word & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
-        updated = true;
-        (*cur_word) |= bits_to_set;
-        ++cur_word;
-        shift_offset = 63; // Word offset back to the beginning
-    }
-    if (!updated) cur_page = nullptr;
-    return std::make_tuple(cur_page, page_offset, sz);
-}
-
 // Generate and submit the BITMAP pages we need to write in order to record the incoming mutations (WRITE/DISCARD)
-// We use uint64_t pointers to access the allocated pages. calc_bitmap_region will return:
-//      * page_offset  : The page key in our page map (generated if we have a hole currently)
-//      * word_offset  : The uint64_t offset within the raid1::page_size byte array
-//      * shift_offset : The bits to begin setting within the word indicated
-//      * sz           : The number of bytes to represent as "dirty" from this index
 //
 // After some bit-twiddling to manipulate the bits indicated above we asynchronously write that page to the
 // corresponding region of the working device. This is added to the sub_cmds that the target requires to complete
@@ -252,17 +164,17 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
                                    ublk_io_data const* data) {
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
 
-    auto [page, pg_offset, sz] = __dirty_page(_dirty_pages, addr, len, _chunk_size, block_size());
+    auto [page, pg_offset, sz] = _dirty_bitmap->dirty_page(addr, len);
     // No page updates to make
     if (!page) return 0;
 
-    auto iov = iovec{.iov_base = page, .iov_len = raid1::k_page_size};
-    auto page_addr = (raid1::k_page_size * pg_offset) + raid1::k_page_size;
+    auto const pg_size = _dirty_bitmap->page_size();
+    auto iov = iovec{.iov_base = page, .iov_len = pg_size};
+    auto page_addr = (pg_size * pg_offset) + pg_size;
 
     auto res = data ? CLEAN_DEVICE->async_iov(q, data, new_cmd, &iov, 1, page_addr)
                     : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
     if (!res) return res;
-    ++_degraded_ops;
 
     // We can write across a page boundary; if we detect that we did not consume all the bytes, we need to
     // issue another dirty_page and aggregate its result
@@ -325,9 +237,7 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
 
     auto res = func(*CLEAN_DEVICE, CLEAN_SUBCMD);
 
-    // If we are degraded we can just return here with the result of the CLEAN device. We will
-    // attempt to come out of degraded mode after some period of _degraded_ops have passed which
-    // is configurable
+    // If we are degraded we can just return here with the result of the CLEAN device.
     if (IS_DEGRADED) {
         if (!res) {
             RLOGE("Double failure! [tag:{:x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
@@ -375,8 +285,9 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
 
     // An optimization to allow READing from a degraded device and can be turned off with the read_from_dirty flag
     if (IS_DEGRADED && need_to_test) {
-        if (!_read_from_dirty) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-        if (__is_dirty(_dirty_pages, addr, len, _chunk_size)) {
+        if (0 < SISL_OPTIONS["no_read_from_dirty"].count())
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        if (_dirty_bitmap->is_dirty(addr, len)) {
             // We've already attempted this device...we don't want to re-attempt
             if (retry) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
             route = (read_route::DEVA == route) ? read_route::DEVB : read_route::DEVA;

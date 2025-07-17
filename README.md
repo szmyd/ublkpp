@@ -21,7 +21,7 @@ with a single Target. The lifetime of the ublk device is tied to the lifetime of
 
 ### Build and Run Server Application
 
-    $ conan create -s:h build_type=Release --build missing ublkpp
+    $ conan build -s:h build_type=Release --build missing ublkpp
     $ sudo modprobe ublk_drv
     $ fallocate -l 2G file1.dat
     $ fallocate -l 2G file2.dat
@@ -31,9 +31,9 @@ with a single Target. The lifetime of the ublk device is tied to the lifetime of
         0000000 0000 0000 0000 0000 0000 0000 0000 0000
         *
         0000100
-    $ sudo ublkpp/test_package/build/Debug/ublkpp_disk -cv 2 --raid10 file1.dat,file2.dat,file3.dat,file4.dat
+    $ sudo ublkpp/build/Release/example/ublkpp_disk -cv 2 --raid10 file1.dat,file2.dat,file3.dat,file4.dat
         ... // SuperBlock Initialization
-        [07/06/25 18:01:50] [info] [test_package/build/Debug/ublkpp_disk] [223787] [ublkpp_tgt.cpp:178:start] Device exposed as UBD device: [/dev/ublkb0]
+        [07/06/25 18:01:50] [info] [build/Release/example/ublkpp_disk] [223787] [ublkpp_tgt.cpp:178:start] Device exposed as UBD device: [/dev/ublkb0]
 
 ### Usage
 In another session we should find the exposed BLOCK device.

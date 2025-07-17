@@ -12,6 +12,7 @@ target_link_libraries(raid0
 add_library(raid1 OBJECT)
 target_sources(raid1 PRIVATE
     raid1.cpp
+    bitmap.cpp
 )
 target_link_libraries(raid1
     sisl::sisl
