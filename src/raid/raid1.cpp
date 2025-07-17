@@ -13,8 +13,8 @@
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (read_from_dirty, "", "read_from_dirty", "Allow reads from a Dirty device", cxxopts::value< bool >(),
-                   ""))
+                  (no_read_from_dirty, "", "no_read_from_dirty", "Allow reads from a Dirty device",
+                   cxxopts::value< bool >(), ""))
 
 namespace ublkpp {
 using raid1::read_route;
@@ -49,7 +49,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         _str_uuid(boost::uuids::to_string(uuid)),
         _device_a(std::move(dev_a)),
         _device_b(std::move(dev_b)),
-        _read_from_dirty(0 < SISL_OPTIONS["read_from_dirty"].count()) {
+        _read_from_dirty(0 == SISL_OPTIONS["no_read_from_dirty"].count()) {
     direct_io = true;
     // Discover overall Device parameters
     auto& our_params = *params();
@@ -176,6 +176,65 @@ static inline uint64_t* __get_page(std::map< uint32_t, std::shared_ptr< uint64_t
     return it->second.get();
 }
 
+static inline bool __is_dirty(std::map< uint32_t, std::shared_ptr< uint64_t > >& page_map, uint64_t addr, uint32_t len,
+                              uint32_t chunk_size) {
+    auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, chunk_size);
+    // Check for a dirty page
+    if (auto cur_page = __get_page(page_map, page_offset); cur_page) {
+        auto cur_word = cur_page + word_offset;
+
+        // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
+        // next word, it's unexpected that this will require writing into a third word
+        auto nr_bits = (sz / chunk_size) + ((0 < (sz % chunk_size)) ? 1 : 0);
+        if ((sz > chunk_size) && (0 != addr) % chunk_size) ++nr_bits;
+
+        // Handle update crossing multiple words (optimization potential?)
+        for (auto bits_left = nr_bits; 0 < bits_left;) {
+            auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+            auto const bits_to_set =
+                htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
+            bits_left -= bits_to_write;
+            if (0 != (*cur_word & bits_to_set)) return true;
+            ++cur_word;
+            shift_offset = 63; // Word offset back to the beginning
+        }
+    }
+    return false;
+}
+
+static inline auto __dirty_page(std::map< uint32_t, std::shared_ptr< uint64_t > >& page_map, uint64_t addr,
+                                uint32_t len, uint32_t chunk_size, uint32_t page_size) {
+    // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
+    // Calculate the tuple mentioned above
+    auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, chunk_size);
+
+    // Get/Create a Page
+    auto cur_page = __get_page(page_map, page_offset, page_size);
+    if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
+    auto cur_word = cur_page + word_offset;
+    auto nr_bits = (sz / chunk_size) + ((0 < (sz % chunk_size)) ? 1 : 0);
+
+    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
+    // word, it's unexpected that this will require writing into a third word
+    if ((sz > chunk_size) && (0 != addr) % chunk_size) ++nr_bits;
+
+    // Handle update crossing multiple words (optimization potential?)
+    bool updated{false};
+    for (auto bits_left = nr_bits; 0 < bits_left;) {
+        auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+        auto const bits_to_set =
+            htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
+        bits_left -= bits_to_write;
+        if ((*cur_word & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
+        updated = true;
+        (*cur_word) |= bits_to_set;
+        ++cur_word;
+        shift_offset = 63; // Word offset back to the beginning
+    }
+    if (!updated) cur_page = nullptr;
+    return std::make_tuple(cur_page, page_offset, sz);
+}
+
 // Generate and submit the BITMAP pages we need to write in order to record the incoming mutations (WRITE/DISCARD)
 // We use uint64_t pointers to access the allocated pages. calc_bitmap_region will return:
 //      * page_offset  : The page key in our page map (generated if we have a hole currently)
@@ -193,36 +252,12 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
                                    ublk_io_data const* data) {
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
 
-    // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
-    // Calculate the tuple mentioned above
-    auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, _chunk_size);
+    auto [page, pg_offset, sz] = __dirty_page(_dirty_pages, addr, len, _chunk_size, block_size());
+    // No page updates to make
+    if (!page) return 0;
 
-    // Get/Create a Page
-    auto cur_page = __get_page(_dirty_pages, page_offset, block_size());
-    if (!cur_page) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error)); // LCOV_EXCL_LINE
-    auto cur_word = cur_page + word_offset;
-    auto nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
-
-    RLOGT("Making dirty: [pg:{}, word:{}, bit:{}, nr_bits:{}, sz:{}] [sub_cmd:{}] [volid:{}]", page_offset, word_offset,
-          shift_offset, nr_bits, sz, ublkpp::to_string(new_cmd), _str_uuid);
-    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
-    // word, it's unexpected that this will require writing into a third word
-    if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
-
-    // Handle update crossing multiple words (optimization potential?)
-    for (auto bits_left = nr_bits; 0 < bits_left;) {
-        auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-        auto const bits_to_set =
-            htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
-        bits_left -= bits_to_write;
-        if ((*cur_word & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
-        (*cur_word) |= bits_to_set;
-        ++cur_word;
-        shift_offset = 63; // Word offset back to the beginning
-    }
-
-    auto iov = iovec{.iov_base = cur_page, .iov_len = raid1::k_page_size};
-    auto page_addr = (raid1::k_page_size * page_offset) + raid1::k_page_size;
+    auto iov = iovec{.iov_base = page, .iov_len = raid1::k_page_size};
+    auto page_addr = (raid1::k_page_size * pg_offset) + raid1::k_page_size;
 
     auto res = data ? CLEAN_DEVICE->async_iov(q, data, new_cmd, &iov, 1, page_addr)
                     : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
@@ -338,43 +373,20 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         if (read_route::DEVA == _read_route) need_to_test = true;
     }
 
-    // This is an optimization to allow READing from a degraded device and can be turned off
+    // An optimization to allow READing from a degraded device and can be turned off with the read_from_dirty flag
     if (IS_DEGRADED && need_to_test) {
-        auto [page_offset, word_offset, shift_offset, sz] = raid1::calc_bitmap_region(addr, len, _chunk_size);
-        // Check for a dirty page
-        if (auto cur_page = __get_page(_dirty_pages, page_offset); cur_page) {
-            auto cur_word = cur_page + word_offset;
-
-            // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
-            // next word, it's unexpected that this will require writing into a third word
-            auto nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
-            if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
-
-            // Handle update crossing multiple words (optimization potential?)
-            for (auto bits_left = nr_bits; 0 < bits_left;) {
-                auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-                auto const bits_to_set =
-                    htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
-                bits_left -= bits_to_write;
-                if (0 != (*cur_word & bits_to_set)) {
-                    // We've already attempted this device...we don't want to re-attempt
-                    if (retry) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-                    // Switch to other route (which is clean)
-                    route = (read_route::DEVA == route) ? read_route::DEVB : read_route::DEVA;
-                    break;
-                }
-                ++cur_word;
-                shift_offset = 63; // Word offset back to the beginning
-            }
+        if (!_read_from_dirty) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        if (__is_dirty(_dirty_pages, addr, len, _chunk_size)) {
+            // We've already attempted this device...we don't want to re-attempt
+            if (retry) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            route = (read_route::DEVA == route) ? read_route::DEVB : read_route::DEVA;
         }
     }
     _last_read = route;
 
     // Attempt read on device; if it succeeds or we are degraded return the result
     auto device = (read_route::DEVA == route) ? _device_a : _device_b;
-    if (auto res = func(*device, DEV_SUBCMD(device)); res || (IS_DEGRADED && !_read_from_dirty) || retry) {
-        return res;
-    }
+    if (auto res = func(*device, DEV_SUBCMD(device)); res || retry) { return res; }
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
