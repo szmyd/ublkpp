@@ -8,7 +8,7 @@ namespace ublkpp {
 
 namespace raid1 {
 struct SuperBlock;
-ENUM(read_route, int8_t, EITHER = -1, DEVA = 0, DEVB = 1);
+ENUM(read_route, int8_t, DEVA = -1, EITHER = 0, DEVB = 1);
 } // namespace raid1
 
 class Raid1Disk : public UblkDisk {
@@ -30,6 +30,9 @@ class Raid1Disk : public UblkDisk {
     // The current route to read consistently
     raid1::read_route _read_route{raid1::read_route::EITHER};
 
+    // For implementing round-robin reads
+    raid1::read_route _last_read{raid1::read_route::DEVB};
+
     // Counter for testing availability changes
     uint64_t _degraded_ops{0UL};
 
@@ -40,7 +43,7 @@ class Raid1Disk : public UblkDisk {
     io_result __become_degraded(sub_cmd_t sub_cmd);
     io_result __dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                             ublk_io_data const* data);
-    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func);
+    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len);
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* async_data);
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,

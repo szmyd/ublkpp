@@ -408,29 +408,52 @@ TEST(Raid1, UnknownOp) {
 TEST(Raid1, SimpleRead) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
-        .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
-                     uint32_t nr_vecs, uint64_t addr) {
-            // The route should shift up by 1
-            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-            EXPECT_EQ(nr_vecs, 1);
-            // It should not have the REPLICATE bit set
-            EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
-            EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
-            EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-            EXPECT_EQ(addr, (8 * Ki) + reserved_size);
-            return 1;
-        });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
-
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+    {
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+                         uint32_t nr_vecs, uint64_t addr) {
+                // The route should shift up by 1
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
+                EXPECT_EQ(nr_vecs, 1);
+                // It should not have the REPLICATE bit set
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
+                EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
-    auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 8 * Ki);
-    auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
-    remove_io_data(ublk_data);
-    ASSERT_TRUE(res);
-    EXPECT_EQ(1, res.value());
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 8 * Ki);
+        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(1, res.value());
+    }
+    // Reads-Round-Robin
+    {
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+                         uint32_t nr_vecs, uint64_t addr) {
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+                EXPECT_EQ(nr_vecs, 1);
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
+                EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_EQ(addr, (8 * Ki) + reserved_size);
+                return 1;
+            });
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
+
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 8 * Ki);
+        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(1, res.value());
+    }
 
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
@@ -476,10 +499,12 @@ TEST(Raid1, FailoverRead) {
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 }
+
 // Brief: Test retrying a READ through the RAID1 Device, and subsequent READs now go to B
 //
-// Assuming some I/O READ failed the Target will reissue with the original `route`. Ensure that
-// the READ is redirected to the alternative Device.
+// A failed read does not prevent us from continuing to try and read from the device, it must
+// experience a failure to mutate, so this immediate read failure still has the follow-up read
+// attempt on device A.
 TEST(Raid1, ReadRetryA) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
@@ -507,12 +532,12 @@ TEST(Raid1, ReadRetryA) {
     EXPECT_EQ(1, res.value());
 
     // Now test the normal path
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                      uint64_t addr) {
             // The route has changed to point to device_b
-            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
             // It should not have the RETRIED bit set
             EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
@@ -606,8 +631,8 @@ TEST(Raid1, SyncIoReadFailBoth) {
     EXPECT_TO_WRITE_SB_F(device_b, true);
 }
 
-// Brief: Degrade the array and then fail read; it should not attempt failover read
-TEST(Raid1, DoNotFailoverReadFromDegraded) {
+// Brief: Degrade the array and then fail read; it should not attempt failover read from dirty regions
+TEST(Raid1, ReadOnDegraded) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
@@ -627,20 +652,51 @@ TEST(Raid1, DoNotFailoverReadFromDegraded) {
         EXPECT_EQ(2, res.value());
     }
 
-    // Now send retry reads; they should fail immediately
+    // Now send retry reads for the region; they should fail immediately
     {
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101}, ublkpp::sub_cmd_flags::RETRIED);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 32 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 4 * Ki);
         remove_io_data(ublk_data);
-        ASSERT_FALSE(res);
+        EXPECT_FALSE(res);
     }
+    // Retries from non-dirty chunks go through
     {
+        EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                         uint64_t addr) {
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
+                // It should also have the RETRIED bit set
+                EXPECT_TRUE(ublkpp::is_retry(sub_cmd));
+                EXPECT_EQ(iovecs->iov_len, 64 * Ki);
+                EXPECT_EQ(addr, (128 * Ki) + reserved_size);
+                return 1;
+            });
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101}, ublkpp::sub_cmd_flags::RETRIED);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 128 * Ki);
+        remove_io_data(ublk_data);
+        EXPECT_TRUE(res);
+    }
+    // Retries from the degraded device are fine
+    {
+        EXPECT_CALL(*device_b, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                         uint64_t addr) {
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+                // It should also have the RETRIED bit set
+                EXPECT_TRUE(ublkpp::is_retry(sub_cmd));
+                EXPECT_EQ(iovecs->iov_len, 64 * Ki);
+                EXPECT_EQ(addr, (4 * Ki) + reserved_size);
+                return 1;
+            });
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 32 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 64 * Ki, 4 * Ki);
         remove_io_data(ublk_data);
-        ASSERT_FALSE(res);
+        EXPECT_TRUE(res);
     }
 
     // expect unmount_clean update
