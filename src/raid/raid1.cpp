@@ -106,7 +106,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     }
 
     // TODO read in existing dirty BITMAP pages
-    _dirty_bitmap = std::make_shared< raid1::Bitmap >(chunk_size, block_size());
+    _dirty_bitmap = std::make_unique< raid1::Bitmap >(chunk_size, block_size());
 
     // Write to DIRTY only if not degraded.
     if (IS_DEGRADED) return;

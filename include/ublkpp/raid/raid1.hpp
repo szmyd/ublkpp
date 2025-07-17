@@ -20,7 +20,7 @@ class Raid1Disk : public UblkDisk {
 
     // Persistent state
     std::shared_ptr< raid1::SuperBlock > _sb;
-    std::shared_ptr< raid1::Bitmap > _dirty_bitmap;
+    std::unique_ptr< raid1::Bitmap > _dirty_bitmap;
 
     // The current route to read consistently
     raid1::read_route _read_route{raid1::read_route::EITHER};
