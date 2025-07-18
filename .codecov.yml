@@ -11,6 +11,6 @@ parsers:
       macro: no
 
 ignore:
-  - "**/tests/*"
+  - "**/tests/**"
   - "test_package/*"
   - "example/*"

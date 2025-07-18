@@ -19,4 +19,6 @@ target_link_libraries(raid1
     ublksrv::ublksrv
 )
 
+if ((DEFINED ENABLE_TESTS) AND (${ENABLE_TESTS}))
 add_subdirectory (tests)
+endif()

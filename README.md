@@ -58,7 +58,7 @@ In another session we should find the exposed BLOCK device.
         *
         0000100
 
-If we dump the first 256B of any backing device we'll find the RAID-0 SuperBlock for the first Stripe.
+If we dump the first 256B of any backing device we'll find the RAID-1 SuperBlock for the first Stripe.
 
 ## License Information
 Primary Author: [Brian Szmyd](https://github.com/szmyd)

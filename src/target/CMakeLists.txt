@@ -10,4 +10,6 @@ target_link_libraries(ublkpp_tgt
 )
 
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
+if ((DEFINED ENABLE_TESTS) AND (${ENABLE_TESTS}))
 add_subdirectory (tests)
+endif()

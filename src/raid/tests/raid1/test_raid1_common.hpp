@@ -4,8 +4,6 @@
 #include <gtest/gtest.h>
 
 #include <boost/uuid/random_generator.hpp>
-#include <sisl/logging/logging.h>
-#include <sisl/options/options.h>
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid1.hpp"
@@ -13,10 +11,6 @@
 #include "raid/superblock.hpp"
 #include "tests/test_disk.hpp"
 
-#define ENABLED_OPTIONS logging, raid1
-
-SISL_LOGGING_INIT(ublk_raid)
-SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
 using ::testing::_;
 using ::testing::Return;
