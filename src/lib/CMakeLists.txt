@@ -17,4 +17,6 @@ target_link_libraries(ublk_disk
     ublksrv::ublksrv
 )
 
+if ((DEFINED ENABLE_TESTS) AND (${ENABLE_TESTS}))
 add_subdirectory (tests)
+endif()
