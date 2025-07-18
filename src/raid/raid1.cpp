@@ -77,9 +77,9 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
 
     auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
     if ((raid1::k_min_chunk_size > chunk_size) || (raid1::k_max_dev_size < chunk_size)) {
-        RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, raid1::k_min_chunk_size / Ki)
+        RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, raid1::k_min_chunk_size / Ki) // LCOV_EXCL_START
         throw std::runtime_error("Invalid Chunk Size");
-    }
+    } // LCOV_EXCL_STOP
 
     auto read_super = load_superblock(*_device_a, uuid, chunk_size);
     if (!read_super)
