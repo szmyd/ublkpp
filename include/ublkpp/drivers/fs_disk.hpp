@@ -16,7 +16,7 @@ public:
     explicit FSDisk(std::filesystem::path const& path);
     ~FSDisk() override;
 
-    std::string type() const override { return "FSDisk"; }
+    std::string type() const override { return _path.native(); }
     std::list< int > open_for_uring(int const iouring_device) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;

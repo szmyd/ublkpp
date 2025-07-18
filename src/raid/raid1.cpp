@@ -66,7 +66,8 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
     // Reserve space for the superblock/bitmap
-    RLOGI("RAID-1 : reserving {}KiB for SuperBlock & Bitmap", raid1::reserved_size / Ki);
+    RLOGI("RAID-1 : reserving {}LBAs for SuperBlock & Bitmap",
+          raid1::reserved_size >> params()->basic.logical_bs_shift);
     our_params.basic.dev_sectors -= (raid1::reserved_size >> SECTOR_SHIFT);
     if (our_params.basic.dev_sectors > (raid1::k_max_dev_size >> SECTOR_SHIFT)) {
         RLOGW("Device would be larger than supported, only exposing [{}Gi] sized device", raid1::k_max_dev_size / Gi);
@@ -98,11 +99,12 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         throw std::runtime_error("Could not find reasonable superblock!");
 
     // Read in existing dirty BITMAP pages
-    _dirty_bitmap = std::make_unique< raid1::Bitmap >(chunk_size, block_size());
-    if (0 != _sb->fields.bitmap.dirty) _dirty_bitmap->load_from(*CLEAN_DEVICE, capacity());
+    _dirty_bitmap = std::make_unique< raid1::Bitmap >(capacity(), chunk_size, block_size());
+    if (0 != _sb->fields.bitmap.dirty) _dirty_bitmap->load_from(*CLEAN_DEVICE);
+    // TODO Enable
     // Or initialize one
-    else
-        _dirty_bitmap->init_to(*_device_a, *_device_b);
+    // else
+    // _dirty_bitmap->init_to(*_device_a, *_device_b);
 
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;

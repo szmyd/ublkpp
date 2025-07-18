@@ -24,14 +24,23 @@ constexpr auto k_page_size = 4 * Ki;
 class Bitmap {
     using map_type_t = std::map< uint32_t, std::shared_ptr< uint64_t > >;
 
-    uint32_t _align;
+    uint64_t _data_size;
     uint32_t _chunk_size;
+    uint32_t _align;
     map_type_t _page_map;
+
+    uint32_t const _page_width_bits; // Number of bytes represented by a single page (block)
+    uint32_t const _num_pages;
 
     uint64_t* __get_page(uint64_t offset, bool creat = false);
 
 public:
-    Bitmap(uint32_t chunk_size, uint32_t align = k_page_size) : _align(align), _chunk_size(chunk_size) {}
+    Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align = k_page_size) :
+            _data_size(data_size),
+            _chunk_size(chunk_size),
+            _align(align),
+            _page_width_bits(_chunk_size * k_page_size * k_bits_in_byte),
+            _num_pages(_data_size / _page_width_bits + ((0 == _data_size % _page_width_bits) ? 0 : 1)) {}
 
     auto page_size() const { return k_page_size; }
 
@@ -45,7 +54,7 @@ public:
                                                                                    uint32_t chunk_size);
 
     void init_to(UblkDisk& device_a, UblkDisk& device_b);
-    void load_from(UblkDisk& device, uint64_t data_size);
+    void load_from(UblkDisk& device);
 };
 
 #ifdef __LITTLE_ENDIAN

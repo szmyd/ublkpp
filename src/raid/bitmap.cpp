@@ -31,20 +31,37 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(
     );
 }
 
-void Bitmap::init_to(UblkDisk&, UblkDisk&) {}
-
-void Bitmap::load_from(UblkDisk& device, uint64_t capacity) {
-    // We read each page from the Device into memory if it is not ZERO'd out
-    auto const page_width_bits =
-        _chunk_size * k_page_size * k_bits_in_byte; // Number of bytes represented by a single page (block)
-    auto const num_pages = capacity / page_width_bits + ((0 == capacity % page_width_bits) ? 0 : 1);
-
+void Bitmap::init_to(UblkDisk& dev_a, UblkDisk& dev_b) {
+    // TODO we should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov
+    // call
+    RLOGI("Initializing RAID-1 Bitmaps on \n\tDeviceA:[{}]\n\t\tand \n\tDeviceB:[{}]", dev_a, dev_b);
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
-    for (auto pg_idx = 0UL; num_pages > pg_idx; ++pg_idx) {
-        RLOGT("Loading page: {} of {} page(s)", pg_idx + 1, num_pages);
+    if (auto err = ::posix_memalign(&iov.iov_base, std::max(dev_a.block_size(), dev_b.block_size()), k_page_size);
+        0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
+        if (EINVAL == err) RLOGE("Invalid Argument while initializing superblock!")
+        throw std::runtime_error("OutOfMemory");
+    } // LCOV_EXCL_STOP
+    memset(iov.iov_base, 0, k_page_size);
+    for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
+        auto res_a = dev_a.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
+        auto res_b = dev_b.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
+        if (!res_a || !res_b) {
+            free(iov.iov_base);
+            throw std::runtime_error(
+                fmt::format("Failed to read: {}", !res_a ? res_a.error().message() : res_b.error().message()));
+        }
+    }
+    free(iov.iov_base);
+}
+
+void Bitmap::load_from(UblkDisk& device) {
+    // We read each page from the Device into memory if it is not ZERO'd out
+    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
+    for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
+        RLOGT("Loading page: {} of {} page(s)", pg_idx + 1, _num_pages);
         if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
             0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
-            if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
+            if (EINVAL == err) RLOGE("Invalid Argument while initializing superblock!")
             throw std::runtime_error("OutOfMemory");
         } // LCOV_EXCL_STOP
         if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx & k_page_size)); !res) {
@@ -75,7 +92,7 @@ uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {
     if (happened) {
         void* new_page{nullptr};
         if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
-        memset(new_page, 0, raid1::k_page_size);
+        memset(new_page, 0, k_page_size);
         it->second.reset(reinterpret_cast< uint64_t* >(new_page), free_page());
     }
     return it->second.get();
