@@ -20,6 +20,12 @@ if (CCACHE_FOUND)
 endif ()
 
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_subdirectory (src)
 
+find_package(sisl REQUIRED)
+find_package(ublksrv REQUIRED)
+find_package(isa-l REQUIRED)
+find_package(libiscsi QUIET)
+find_package(homeblocks QUIET)
+
+add_subdirectory (src)
 add_subdirectory (example)

@@ -1,6 +1,13 @@
 #include "raid1_impl.hpp"
 
+#include <isa-l/mem_routines.h>
+#include <ublk_cmd.h>
+
+#include "lib/logging.hpp"
+
 namespace ublkpp::raid1 {
+constexpr auto bits_in_uint64 = k_bits_in_byte * sizeof(uint64_t);
+
 struct free_page {
     void operator()(void* x) { free(x); }
 };
@@ -12,7 +19,6 @@ struct free_page {
 //      * sz           : The number of bytes to represent as "dirty" from this index
 std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint32_t len,
                                                                                 uint32_t chunk_size) {
-    static auto const bits_in_uint64 = k_bits_in_byte * sizeof(uint64_t);
     auto const page_width_bits =
         chunk_size * k_page_size * k_bits_in_byte;    // Number of bytes represented by a single page (block)
     auto const page = addr / page_width_bits;         // Which page does this address land in
@@ -23,6 +29,38 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(
                            bits_in_uint64 - (page_bit % bits_in_uint64) - 1,     // Shift within the Word
                            std::min((uint64_t)len, (page_width_bits - page_off)) // Tail size of the page
     );
+}
+
+void Bitmap::init_to(UblkDisk&, UblkDisk&) {}
+
+void Bitmap::load_from(UblkDisk& device, uint64_t capacity) {
+    // We read each page from the Device into memory if it is not ZERO'd out
+    auto const page_width_bits =
+        _chunk_size * k_page_size * k_bits_in_byte; // Number of bytes represented by a single page (block)
+    auto const num_pages = capacity / page_width_bits + ((0 == capacity % page_width_bits) ? 0 : 1);
+
+    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
+    for (auto pg_idx = 0UL; num_pages > pg_idx; ++pg_idx) {
+        RLOGT("Loading page: {} of {} page(s)", pg_idx + 1, num_pages);
+        if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
+            0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
+            if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
+            throw std::runtime_error("OutOfMemory");
+        } // LCOV_EXCL_STOP
+        if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx & k_page_size)); !res) {
+            free(iov.iov_base);
+            throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
+        }
+        // If page is empty; leave a hole
+        if (0 == isal_zero_detect(iov.iov_base, k_page_size)) continue;
+        RLOGT("Page: {} is *DIRTY*!", pg_idx + 1);
+
+        // Insert new dirty page into page map
+        auto [it, _] = _page_map.emplace(std::make_pair(pg_idx, nullptr));
+        if (_page_map.end() == it) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
+        it->second.reset(reinterpret_cast< uint64_t* >(iov.iov_base), free_page());
+        iov.iov_base = nullptr;
+    }
 }
 
 uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {

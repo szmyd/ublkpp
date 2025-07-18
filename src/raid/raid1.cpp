@@ -97,6 +97,13 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     } else
         throw std::runtime_error("Could not find reasonable superblock!");
 
+    // Read in existing dirty BITMAP pages
+    _dirty_bitmap = std::make_unique< raid1::Bitmap >(chunk_size, block_size());
+    if (0 != _sb->fields.bitmap.dirty) _dirty_bitmap->load_from(*CLEAN_DEVICE, capacity());
+    // Or initialize one
+    else
+        _dirty_bitmap->init_to(*_device_a, *_device_b);
+
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
 
@@ -112,9 +119,6 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
     }
-
-    // TODO read in existing dirty BITMAP pages
-    _dirty_bitmap = std::make_unique< raid1::Bitmap >(chunk_size, block_size());
 
     // Write to DIRTY only if not degraded.
     if (IS_DEGRADED) return;
@@ -458,8 +462,7 @@ std::pair< raid1::SuperBlock*, read_route > pick_superblock(raid1::SuperBlock* d
         return std::make_pair(a_fields.clean_unmount ? dev_a : dev_b, read_route::EITHER);
 
     // Otherwise this is a clean device, we can read from either side
-    // Start new devices at 1
-    a_fields.bitmap.age = std::max(a_fields.bitmap.age, 1UL);
+    // Leaving AGE == 0 will indicate to RAID1 layer that this is a new device
     return std::make_pair(dev_a, read_route::EITHER);
 }
 } // namespace raid1

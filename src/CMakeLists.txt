@@ -2,12 +2,6 @@ cmake_minimum_required (VERSION 3.11)
 
 add_compile_options(-Wall -Wextra -Werror)
 
-find_package(sisl REQUIRED)
-find_package(ublksrv REQUIRED)
-
-find_package(libiscsi QUIET)
-find_package(homeblocks QUIET)
-
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_subdirectory (lib)
@@ -24,6 +18,7 @@ list(APPEND LIBRARY_OBJECTS
   $<TARGET_OBJECTS:logging>
   )
 list(APPEND LIBRARY_LINKS
+    isa-l::isa-l
     ublksrv::ublksrv
   )
 
