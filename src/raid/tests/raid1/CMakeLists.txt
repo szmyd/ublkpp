@@ -6,6 +6,7 @@ list(APPEND RAID1_TEST_SRCS
   device_probe.cpp
   device_probe_differ.cpp
   device_probe_exceed.cpp
+  discard_retry_large.cpp
   discard_retry.cpp
   double_retry.cpp
   flush_retry.cpp

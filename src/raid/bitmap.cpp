@@ -137,18 +137,17 @@ std::tuple< uint64_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, ui
     auto cur_page = __get_page(page_offset, k_page_size);
     if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
     auto cur_word = cur_page + word_offset;
-    uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
-
     // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
     // word, it's unexpected that this will require writing into a third word
-    if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
+    uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
 
     // Handle update crossing multiple words (optimization potential?)
     bool updated{false};
     for (auto bits_left = nr_bits; 0 < bits_left;) {
         auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-        auto const bits_to_set =
-            htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
+        auto const bits_to_set = htobe64(64 == bits_to_write ? UINT64_MAX
+                                                             : (((uint64_t)0b1 << bits_to_write) - 1)
+                                                 << (shift_offset - (bits_to_write - 1)));
         bits_left -= bits_to_write;
         if ((*cur_word & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
         updated = true;

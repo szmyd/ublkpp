@@ -271,20 +271,11 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_
         cb_data->io_vec[i].iov_len = iovecs[i].iov_len;
     }
 
-    scsi_task* task{nullptr};
-    switch (op) {
-    case UBLK_IO_OP_READ: {
-        task = iscsi_read16_iov_task(_session->ctx, _session->url->lun, lba, len, block_size(), 0, 0, 0, 0, 0,
-                                     __iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
-    } break;
-    case UBLK_IO_OP_WRITE: {
-        task = iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
-                                      __iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
-    } break;
-    default: {
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
-    }
-    }
+    auto task = (UBLK_IO_OP_READ == op)
+        ? iscsi_read16_iov_task(_session->ctx, _session->url->lun, lba, len, block_size(), 0, 0, 0, 0, 0, __iscsi_rw_cb,
+                                cb_data, cb_data->io_vec, nr_vecs)
+        : iscsi_write16_iov_task(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
+                                 __iscsi_rw_cb, cb_data, cb_data->io_vec, nr_vecs);
 
     if (!task) {
         DLOGE("Failed {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE", iscsi_get_error(_session->ctx));
@@ -307,21 +298,11 @@ io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 
     DLOGT("{} : [INTERNAL] ublk io [lba:{:x}|len:{:x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len)
 
-    scsi_task* task{nullptr};
-    switch (op) {
-    case UBLK_IO_OP_READ: {
-        task = iscsi_read16_iov_sync(_session->ctx, _session->url->lun, lba, len, block_size(), 0, 0, 0, 0, 0,
-                                     reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
-    } break;
-    case UBLK_IO_OP_WRITE: {
-        task = iscsi_write16_iov_sync(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
-                                      reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
-    } break;
-    default: {
-        DLOGE("Unknown SYNC operation: [op:{}]", op);
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-    }
-    }
+    auto task = (UBLK_IO_OP_READ == op)
+        ? iscsi_read16_iov_sync(_session->ctx, _session->url->lun, lba, len, block_size(), 0, 0, 0, 0, 0,
+                                reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs)
+        : iscsi_write16_iov_sync(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
+                                 reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
     if (!task) return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
     if (SCSI_STATUS_GOOD != task->status) {
         DLOGW("iSCSI cmd returned error: [status:{}] iscsi_err: ", task->status, iscsi_get_error(_session->ctx));

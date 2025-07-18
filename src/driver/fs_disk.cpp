@@ -150,25 +150,20 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
           _path.native(), data->tag, lba, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
     auto sqe = next_sqe(q);
 
-    switch (op) {
-    case UBLK_IO_OP_READ: {
+    if (UBLK_IO_OP_READ == op) {
         if (1 == nr_vecs)
             io_uring_prep_rw(IORING_OP_READ, sqe, _uring_device, iovecs->iov_base, iovecs->iov_len, addr);
         else
             io_uring_prep_readv(sqe, _uring_device, iovecs, nr_vecs, addr);
-    } break;
-    case UBLK_IO_OP_WRITE: {
+    } else {
         if (1 == nr_vecs)
             io_uring_prep_rw(IORING_OP_WRITE, sqe, _uring_device, iovecs->iov_base, iovecs->iov_len, addr);
         else
             io_uring_prep_writev(sqe, _uring_device, iovecs, nr_vecs, addr);
-    } break;
-    default:
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
 
     // Set ForceUnitAccess bit to bypass caches
-    if (UBLK_IO_OP_WRITE == op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
+    if (UBLK_IO_OP_READ != op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
 
     sqe->user_data = build_tgt_sqe_data(data->tag, op, sub_cmd);
     return 1;
