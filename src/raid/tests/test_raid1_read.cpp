@@ -1,5 +1,10 @@
 #include "test_raid1_common.hpp"
 
+#define ENABLED_OPTIONS logging, raid1
+
+SISL_LOGGING_INIT(ublk_raid)
+SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
+
 TEST(Raid1, PickSuper) {
     {
         auto deva_sb =

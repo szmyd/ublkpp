@@ -13,10 +13,6 @@
 #include "raid/superblock.hpp"
 #include "tests/test_disk.hpp"
 
-#define ENABLED_OPTIONS logging, raid1
-
-SISL_LOGGING_INIT(ublk_raid)
-SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
 using ::testing::_;
 using ::testing::Return;
