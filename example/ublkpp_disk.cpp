@@ -19,6 +19,7 @@
 
 SISL_OPTION_GROUP(example_app,
                   (uuid, "", "vol_id", "Volume UUID to use (else random)", ::cxxopts::value< std::string >(), ""),
+                  (loop, "", "loop", "Attach a single device 1-to-1", ::cxxopts::value< std::string >(), "<path>"),
                   (raid0, "", "raid0", "Devices for RAID0 device", ::cxxopts::value< std::vector< std::string > >(),
                    "<path>[,<path>,...]"),
                   (raid1, "", "raid1", "Devices for RAID1 device", ::cxxopts::value< std::vector< std::string > >(),
@@ -53,10 +54,19 @@ Result _run_target(boost::uuids::uuid const& vol_id, std::unique_ptr< D >&& dev)
 // Return a device based on the format of the input
 // From libiscsi.h iSCSI URLs are in the form:
 //   iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>
-static std::shared_ptr< ublkpp::UblkDisk > get_driver(std::string const& resource) {
+static std::unique_ptr< ublkpp::UblkDisk > get_driver(std::string const& resource) {
     if (auto path = std::filesystem::path(resource); std::filesystem::exists(path))
-        return std::make_shared< ublkpp::FSDisk >(path);
-    return std::make_shared< ublkpp::iSCSIDisk >(resource);
+        return std::make_unique< ublkpp::FSDisk >(path);
+    return std::make_unique< ublkpp::iSCSIDisk >(resource);
+}
+
+Result create_loop(boost::uuids::uuid const& id, std::string const& path) {
+    auto dev = std::unique_ptr< ublkpp::UblkDisk >();
+    try {
+        dev = get_driver(path);
+    } catch (std::runtime_error const& e) {}
+    if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    return _run_target(id, std::move(dev));
 }
 
 Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
@@ -93,13 +103,13 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
     try {
         auto cnt{0U};
         auto devices = std::vector< std::shared_ptr< ublkpp::UblkDisk > >();
-        auto dev_a = std::shared_ptr< ublkpp::UblkDisk >();
+        auto dev_a = std::unique_ptr< ublkpp::UblkDisk >();
         for (auto const& mirror : layout) {
             auto new_dev = get_driver(mirror);
             if (0 == cnt++ % 2)
-                dev_a = new_dev;
+                dev_a = std::move(new_dev);
             else
-                devices.push_back(std::make_shared< ublkpp::Raid1Disk >(id, dev_a, new_dev));
+                devices.push_back(std::make_shared< ublkpp::Raid1Disk >(id, std::move(dev_a), std::move(new_dev)));
         }
         dev =
             std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(devices));
@@ -123,7 +133,9 @@ int main(int argc, char* argv[]) {
         ? boost::uuids::string_generator()(SISL_OPTIONS["vol_id"].as< std::string >())
         : boost::uuids::random_generator()();
     Result res;
-    if (0 < SISL_OPTIONS["raid0"].count()) {
+    if (0 < SISL_OPTIONS["loop"].count()) {
+        res = create_loop(vol_id, SISL_OPTIONS["loop"].as< std::string >());
+    } else if (0 < SISL_OPTIONS["raid0"].count()) {
         res = create_raid0(vol_id, SISL_OPTIONS["raid0"].as< std::vector< std::string > >());
     } else if (0 < SISL_OPTIONS["raid1"].count()) {
         res = create_raid1(vol_id, SISL_OPTIONS["raid1"].as< std::vector< std::string > >());

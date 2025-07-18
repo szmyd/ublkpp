@@ -6,6 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.7.4
 - raid1: Fix degraded discard
+- ublkpp_disk: Added "loop" mode
 
 ## 0.7.3
 - raid1: Bitmap Load/Init
