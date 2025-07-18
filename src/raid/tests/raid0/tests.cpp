@@ -1,19 +1,12 @@
+#include <boost/uuid/random_generator.hpp>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-
-#include <boost/uuid/random_generator.hpp>
-#include <sisl/logging/logging.h>
-#include <sisl/options/options.h>
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid0.hpp"
 #include "raid/raid0_impl.hpp"
 #include "raid/superblock.hpp"
 #include "tests/test_disk.hpp"
-
-SISL_LOGGING_INIT(ublk_raid)
-
-SISL_OPTIONS_ENABLE(logging)
 
 using ::testing::_;
 using ::testing::Return;
@@ -509,14 +502,4 @@ TEST(Raid0, CalcTuples) {
     TEST_ACCESS(3, Ki, ((Ki) * 6) + Ki + 512, 512, 1, (2 * Ki) + 512, 512);
     // Access on second stripe of 3-device RAID, second chunk, across third device
     TEST_ACCESS(3, 128 * Ki, ((128 * Ki) * 4) + Ki, 128 * Ki, 1, (129 * Ki), 127 * Ki);
-}
-
-int main(int argc, char* argv[]) {
-    int parsed_argc = argc;
-    ::testing::InitGoogleTest(&parsed_argc, argv);
-    SISL_OPTIONS_LOAD(parsed_argc, argv, logging);
-    sisl::logging::SetLogger(std::string(argv[0]));
-    spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
-    parsed_argc = 1;
-    return RUN_ALL_TESTS();
 }

@@ -4,8 +4,6 @@
 #include <gtest/gtest.h>
 
 #include <boost/uuid/random_generator.hpp>
-#include <sisl/logging/logging.h>
-#include <sisl/options/options.h>
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid1.hpp"
