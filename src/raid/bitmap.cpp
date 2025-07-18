@@ -1,6 +1,13 @@
 #include "raid1_impl.hpp"
 
+#include <isa-l/mem_routines.h>
+#include <ublk_cmd.h>
+
+#include "lib/logging.hpp"
+
 namespace ublkpp::raid1 {
+constexpr auto bits_in_uint64 = k_bits_in_byte * sizeof(uint64_t);
+
 struct free_page {
     void operator()(void* x) { free(x); }
 };
@@ -12,7 +19,6 @@ struct free_page {
 //      * sz           : The number of bytes to represent as "dirty" from this index
 std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint32_t len,
                                                                                 uint32_t chunk_size) {
-    static auto const bits_in_uint64 = k_bits_in_byte * sizeof(uint64_t);
     auto const page_width_bits =
         chunk_size * k_page_size * k_bits_in_byte;    // Number of bytes represented by a single page (block)
     auto const page = addr / page_width_bits;         // Which page does this address land in
@@ -23,6 +29,55 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(
                            bits_in_uint64 - (page_bit % bits_in_uint64) - 1,     // Shift within the Word
                            std::min((uint64_t)len, (page_width_bits - page_off)) // Tail size of the page
     );
+}
+
+void Bitmap::init_to(UblkDisk& dev_a, UblkDisk& dev_b) {
+    // TODO we should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov
+    // call
+    RLOGI("Initializing RAID-1 Bitmaps on \n\tDeviceA:[{}]\n\t\tand \n\tDeviceB:[{}]", dev_a, dev_b);
+    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
+    if (auto err = ::posix_memalign(&iov.iov_base, std::max(dev_a.block_size(), dev_b.block_size()), k_page_size);
+        0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
+        if (EINVAL == err) RLOGE("Invalid Argument while initializing superblock!")
+        throw std::runtime_error("OutOfMemory");
+    } // LCOV_EXCL_STOP
+    memset(iov.iov_base, 0, k_page_size);
+    for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
+        auto res_a = dev_a.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
+        auto res_b = dev_b.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
+        if (!res_a || !res_b) {
+            free(iov.iov_base);
+            throw std::runtime_error(
+                fmt::format("Failed to read: {}", !res_a ? res_a.error().message() : res_b.error().message()));
+        }
+    }
+    free(iov.iov_base);
+}
+
+void Bitmap::load_from(UblkDisk& device) {
+    // We read each page from the Device into memory if it is not ZERO'd out
+    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
+    for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
+        RLOGT("Loading page: {} of {} page(s)", pg_idx + 1, _num_pages);
+        if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
+            0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
+            if (EINVAL == err) RLOGE("Invalid Argument while initializing superblock!")
+            throw std::runtime_error("OutOfMemory");
+        } // LCOV_EXCL_STOP
+        if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx & k_page_size)); !res) {
+            free(iov.iov_base);
+            throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
+        }
+        // If page is empty; leave a hole
+        if (0 == isal_zero_detect(iov.iov_base, k_page_size)) continue;
+        RLOGT("Page: {} is *DIRTY*!", pg_idx + 1);
+
+        // Insert new dirty page into page map
+        auto [it, _] = _page_map.emplace(std::make_pair(pg_idx, nullptr));
+        if (_page_map.end() == it) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
+        it->second.reset(reinterpret_cast< uint64_t* >(iov.iov_base), free_page());
+        iov.iov_base = nullptr;
+    }
 }
 
 uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {
@@ -37,7 +92,7 @@ uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {
     if (happened) {
         void* new_page{nullptr};
         if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
-        memset(new_page, 0, raid1::k_page_size);
+        memset(new_page, 0, k_page_size);
         it->second.reset(reinterpret_cast< uint64_t* >(new_page), free_page());
     }
     return it->second.get();
