@@ -28,10 +28,9 @@ struct __attribute__((__packed__)) SuperBlock {
         uint8_t uuid[16];
     } header;
     struct {
-        uint8_t clean_unmount : 1, : 0; // was cleanly unmounted
+        uint8_t clean_unmount : 1, read_route : 2, : 0; // was cleanly unmounted
         struct {
             uint32_t chunk_size; // Number of bytes each bit represents
-            uint8_t read_route : 2, : 0;
             uint64_t age;
         } bitmap;
     } fields;

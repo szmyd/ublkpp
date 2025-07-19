@@ -27,7 +27,7 @@ using raid1::read_route;
 
 // Route routines
 #define IS_DEGRADED (_is_degraded.test(std::memory_order_acquire))
-#define READ_ROUTE static_cast< read_route >(_sb->fields.bitmap.read_route)
+#define READ_ROUTE static_cast< read_route >(_sb->fields.read_route)
 #define CLEAN_DEVICE (read_route::DEVB == READ_ROUTE ? _device_b : _device_a)
 #define DIRTY_DEVICE (read_route::DEVB == READ_ROUTE ? _device_a : _device_b)
 #define CLEAN_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_B : SEND_TO_A)
@@ -103,12 +103,12 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         _dirty_bitmap->init_to(*_device_a);
         if (!b_new) {
             RLOGW("Device is new [{}], dirty all of device [{}]", *_device_a, *_device_b)
-            _sb->fields.bitmap.read_route = static_cast< uint8_t >(read_route::DEVB);
+            _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
         }
     }
     if (b_new) {
         _dirty_bitmap->init_to(*_device_b);
-        if (!a_new) { _sb->fields.bitmap.read_route = static_cast< uint8_t >(read_route::DEVA); }
+        if (!a_new) { _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVA); }
     }
     // We need to completely dirty one side if either is new when the other is not
     if ((a_new != b_new) && (a_new || b_new)) {
@@ -172,17 +172,16 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
 io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
-    auto const orig_route = _sb->fields.bitmap.read_route;
-    _sb->fields.bitmap.read_route = (0b1 & ((sub_cmd) >> _device_b->route_size()))
-        ? static_cast< uint8_t >(read_route::DEVA)
-        : static_cast< uint8_t >(read_route::DEVB);
+    auto const orig_route = _sb->fields.read_route;
+    _sb->fields.read_route = (0b1 & ((sub_cmd) >> _device_b->route_size())) ? static_cast< uint8_t >(read_route::DEVA)
+                                                                            : static_cast< uint8_t >(read_route::DEVB);
     ++_sb->fields.bitmap.age;
     RLOGW("Device becoming degraded [sub_cmd:{}] [age:{}] [vol:{}] ", ublkpp::to_string(sub_cmd),
           static_cast< uint64_t >(_sb->fields.bitmap.age), _str_uuid);
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb.get()); !sync_res) {
         // Rollback the failure to update the header
-        _sb->fields.bitmap.read_route = static_cast< uint8_t >(orig_route);
+        _sb->fields.read_route = static_cast< uint8_t >(orig_route);
         --_sb->fields.bitmap.age;
         _is_degraded.clear(std::memory_order_release);
         RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
@@ -450,7 +449,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
         sb->fields.clean_unmount = 1;
         sb->fields.bitmap.chunk_size = htobe32(chunk_size);
         sb->fields.bitmap.age = 0;
-        sb->fields.bitmap.read_route = static_cast< uint8_t >(read_route::EITHER);
+        sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
         was_new = true;
     }
 
@@ -478,10 +477,10 @@ namespace raid1 {
 std::pair< raid1::SuperBlock*, read_route > pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
     auto a_fields = dev_a->fields;
     if (auto b_fields = dev_b->fields; a_fields.bitmap.age < b_fields.bitmap.age) {
-        b_fields.bitmap.read_route = static_cast< uint8_t >(read_route::DEVB);
+        b_fields.read_route = static_cast< uint8_t >(read_route::DEVB);
         return std::make_pair(dev_b, read_route::DEVB);
     } else if (a_fields.bitmap.age > b_fields.bitmap.age) {
-        b_fields.bitmap.read_route = static_cast< uint8_t >(read_route::DEVA);
+        b_fields.read_route = static_cast< uint8_t >(read_route::DEVA);
         return std::make_pair(dev_a, read_route::DEVA);
     } else if (a_fields.clean_unmount != b_fields.clean_unmount)
         return std::make_pair(a_fields.clean_unmount ? dev_a : dev_b, read_route::EITHER);
