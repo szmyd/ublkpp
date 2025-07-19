@@ -26,3 +26,17 @@ TEST(Raid1, InitBitmap) {
 
     bitmap.init_to(*device);
 }
+
+// Ensure that all required pages are initialized
+TEST(Raid1, InitBitmapFailure) {
+    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 2 * ublkpp::Gi});
+    auto bitmap = ublkpp::raid1::Bitmap(2 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+
+    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(1)
+        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
+
+    EXPECT_THROW(bitmap.init_to(*device), std::runtime_error);
+}
