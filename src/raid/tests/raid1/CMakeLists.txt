@@ -35,6 +35,7 @@ target_sources(raid1_tests PRIVATE
 )
 target_link_libraries (raid1_tests
   GTest::gmock
+  isa-l::isa-l
   sisl::sisl
   ublksrv::ublksrv
 )
