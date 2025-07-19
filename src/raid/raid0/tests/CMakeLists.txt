@@ -19,19 +19,3 @@ target_link_libraries (test_raid0
   sisl::sisl
 )
 add_test(NAME Raid0Test COMMAND test_raid0 -cv 2)
-
-add_subdirectory (raid1)
-add_executable(test_raid1)
-target_sources(test_raid1 PRIVATE
-  raid1_test.cpp
-  $<TARGET_OBJECTS:raid1_tests>
-  $<TARGET_OBJECTS:logging>
-  $<TARGET_OBJECTS:raid1>
-  $<TARGET_OBJECTS:ublk_disk>
-)
-target_link_libraries (test_raid1
-  GTest::gmock
-  isa-l::isa-l
-  sisl::sisl
-)
-add_test(NAME Raid1Test COMMAND test_raid1 -cv 2)

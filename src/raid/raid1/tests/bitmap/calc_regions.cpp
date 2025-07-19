@@ -1,6 +1,6 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "raid/bitmap.hpp"
+#include "raid/raid1/bitmap.hpp"
 
 #define Ki 1024
 

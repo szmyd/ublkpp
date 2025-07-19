@@ -2,7 +2,7 @@
 
 #include <isa-l/mem_routines.h>
 
-#include "raid/bitmap.hpp"
+#include "raid/raid1/bitmap.hpp"
 
 // Ensure that all required pages are initialized
 TEST(Raid1, InitBitmap) {
@@ -22,4 +22,3 @@ TEST(Raid1, InitBitmap) {
 
     bitmap.init_to(*device);
 }
-
