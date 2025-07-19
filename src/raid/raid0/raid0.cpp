@@ -13,7 +13,7 @@ namespace ublkpp {
 class StripeDevice {
     struct destroy_sb {
         void operator()(raid0::SuperBlock* p) const {
-            DEBUG_ASSERT_NOTNULL(p, "Freeing NULL ptr!")
+            DEBUG_ASSERT_NOTNULL(p, "Freeing NULL ptr!") // LCOV_EXCL_LINE
             free(p);
         }
     };
@@ -143,7 +143,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
     // Special case for single device
     if (1 == _stripe_array.size()) return func(0, sub_cmd, iovecs, 1, addr);
 
-    DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX)
+    DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
     auto const len = (uint32_t)iovecs->iov_len;
     uint32_t cnt{0};
     for (auto off = 0U; len > off;) {
@@ -175,9 +175,9 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
 
         // Last sub_cmd for this device, issue now
         if ((_stride_width - _stripe_size) >= (len - off)) {
-            DEBUG_ASSERT_LE(io_addr, UINT32_MAX)
+            DEBUG_ASSERT_LE(io_addr, UINT32_MAX) // LCOV_EXCL_LINE
             sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
-            DEBUG_ASSERT_LE(alive_cmds, UINT32_MAX)
+            DEBUG_ASSERT_LE(alive_cmds, UINT32_MAX) // LCOV_EXCL_LINE
             auto res = func(stripe_off, new_sub_cmd, io_array.data(), alive_cmds, (uint32_t)io_addr);
             // Set this back to zero so the next command can reuse
             alive_cmds = 0;
