@@ -4,7 +4,7 @@ TEST(Raid1, UnknownOp) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     auto ublk_data = make_io_data(0xFF, 4 * Ki, 8 * Ki);
     auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);

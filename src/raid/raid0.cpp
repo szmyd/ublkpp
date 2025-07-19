@@ -62,6 +62,8 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // Finally we'll calculate the volume size as a multiple of the smallest array device
     // and adjust to account for the superblock we will write at the HEAD of each array device.
     // To keep things simple, we'll just use the first chunk from each device for ourselves.
+    RLOGI("RAID-0 : reserving {} blocks for SuperBlock",
+          (_stripe_size * _stripe_array.size()) >> our_params.basic.logical_bs_shift);
     our_params.basic.dev_sectors -= (_stripe_size >> SECTOR_SHIFT);
     our_params.basic.dev_sectors *= _stripe_array.size();
 
@@ -247,9 +249,7 @@ static folly::Expected< raid0::SuperBlock*, std::error_condition > load_superblo
 
     // Check for MAGIC, initialize SB if missing
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        RLOGW("Device does not have a valid raid0 superblock!: magic: {:x}\nread: {:x}\n Initializing!",
-              spdlog::to_hex(magic_bytes, magic_bytes + sizeof(magic_bytes)),
-              spdlog::to_hex(sb->header.magic, sb->header.magic + sizeof(magic_bytes)))
+        RLOGW("Device does not have a valid raid0 superblock! Initializing! [vol:{}]", to_string(uuid))
         memset(sb, 0x00, raid0::SuperBlock::SIZE);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));

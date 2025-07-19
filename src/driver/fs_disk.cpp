@@ -56,7 +56,7 @@ FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
         auto const lbs = static_cast< uint32_t >(st.st_blksize);
         our_params.basic.logical_bs_shift = static_cast< uint8_t >(ilog2(lbs));
         our_params.basic.physical_bs_shift = our_params.basic.logical_bs_shift;
-        DLOGD("Backing is a not block device [{}:{}:{}]!", str_path, lbs, lbs)
+        DLOGD("Backing is a regular file [{}:{}:{}]!", str_path, lbs, lbs)
     } else {
         DLOGE("fstat({}) returned non-block/non-regular file!", str_path, strerror(errno))
         throw std::runtime_error("Bad file!");

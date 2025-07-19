@@ -6,7 +6,7 @@ TEST(Raid1, DevicesLargerThanAllowed) {
     auto device_a = CREATE_DISK(TestParams{.capacity = ublkpp::raid1::k_max_dev_size + ublkpp::Ti});
     auto device_b = CREATE_DISK(TestParams{.capacity = ublkpp::raid1::k_max_dev_size * 2});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     EXPECT_EQ(raid_device.capacity(), ublkpp::raid1::k_max_dev_size);
     EXPECT_STREQ(raid_device.type().c_str(), "Raid1");
 
