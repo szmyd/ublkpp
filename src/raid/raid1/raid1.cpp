@@ -93,7 +93,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     if (auto sb_res = pick_superblock(sb_a.get(), sb_b.get()); sb_res) {
         _sb = (sb_res == sb_a.get() ? std::move(sb_a) : std::move(sb_b));
     } else
-        throw std::runtime_error("Could not find reasonable superblock!");
+        throw std::runtime_error("Could not find reasonable superblock!"); // LCOV_EXCL_LINE
 
     sub_cmd_t const sub_cmd = 0U;
     // Read in existing dirty BITMAP pages
