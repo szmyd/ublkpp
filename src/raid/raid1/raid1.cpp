@@ -8,7 +8,7 @@
 #include <sisl/options/options.h>
 
 #include "bitmap.hpp"
-#include "superblock.hpp"
+#include "raid/superblock.hpp"
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",

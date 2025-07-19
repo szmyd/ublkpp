@@ -6,7 +6,7 @@
 #include <ublksrv_utils.h>
 
 #include "raid0_impl.hpp"
-#include "superblock.hpp"
+#include "raid/superblock.hpp"
 
 namespace ublkpp {
 

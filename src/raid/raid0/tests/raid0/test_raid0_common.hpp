@@ -6,7 +6,7 @@
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid0.hpp"
-#include "raid/raid0_impl.hpp"
+#include "raid/raid0/raid0_impl.hpp"
 #include "raid/superblock.hpp"
 #include "tests/test_disk.hpp"
 
