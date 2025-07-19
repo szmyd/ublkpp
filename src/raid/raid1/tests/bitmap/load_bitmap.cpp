@@ -18,7 +18,7 @@ TEST(Raid1, LoadBitmap) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);   // Expect write to bitmap!
             EXPECT_LT(addr, ublkpp::raid1::reserved_size); // Expect write to bitmap!
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
+            memset(iovecs->iov_base, 0xff, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
 
