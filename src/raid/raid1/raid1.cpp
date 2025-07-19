@@ -90,8 +90,8 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     auto sb_b = std::shared_ptr< raid1::SuperBlock >(read_super.value().first, free_page());
 
     // We only keep the latest or if match and A unclean take B
-    if (auto res_pair = pick_superblock(sb_a.get(), sb_b.get()); res_pair.first) {
-        _sb = (res_pair.first == sb_a.get() ? std::move(sb_a) : std::move(sb_b));
+    if (auto sb_res = pick_superblock(sb_a.get(), sb_b.get()); sb_res) {
+        _sb = (sb_res == sb_a.get() ? std::move(sb_a) : std::move(sb_b));
     } else
         throw std::runtime_error("Could not find reasonable superblock!");
 
@@ -474,18 +474,17 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
 }
 
 namespace raid1 {
-std::pair< raid1::SuperBlock*, read_route > pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
-    auto a_fields = dev_a->fields;
-    if (auto b_fields = dev_b->fields; a_fields.bitmap.age < b_fields.bitmap.age) {
-        b_fields.read_route = static_cast< uint8_t >(read_route::DEVB);
-        return std::make_pair(dev_b, read_route::DEVB);
-    } else if (a_fields.bitmap.age > b_fields.bitmap.age) {
-        b_fields.read_route = static_cast< uint8_t >(read_route::DEVA);
-        return std::make_pair(dev_a, read_route::DEVA);
-    } else if (a_fields.clean_unmount != b_fields.clean_unmount)
-        return std::make_pair(a_fields.clean_unmount ? dev_a : dev_b, read_route::EITHER);
+raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
+    if (dev_a->fields.bitmap.age < dev_b->fields.bitmap.age) {
+        dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
+        return dev_b;
+    } else if (dev_a->fields.bitmap.age > dev_b->fields.bitmap.age) {
+        dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
+        return dev_a;
+    } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount)
+        return dev_a->fields.clean_unmount ? dev_a : dev_b;
 
-    return std::make_pair(dev_a, read_route::EITHER);
+    return dev_a;
 }
 } // namespace raid1
 
