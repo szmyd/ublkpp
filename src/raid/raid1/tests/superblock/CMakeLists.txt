@@ -5,5 +5,6 @@ list(APPEND RAID1_TEST_SRCS
   superblock/init_issues.cpp
   superblock/new_device.cpp
   superblock/pick_super.cpp
+  superblock/route_set.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)
