@@ -43,7 +43,7 @@ static_assert(k_page_size == sizeof(SuperBlock), "Size of raid1::SuperBlock does
 
 constexpr uint64_t reserved_size = sizeof(SuperBlock) + k_max_bitmap_size;
 
-extern std::pair< SuperBlock*, read_route > pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
+extern SuperBlock* pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
 
 } // namespace raid1
 
