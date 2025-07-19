@@ -1,7 +1,5 @@
 #include "test_raid1_common.hpp"
 
-#include <isa-l/mem_routines.h>
-
 // Brief: If either devices should not load/write superblocks correctly, initialization should throw
 TEST(Raid1, ReadingSBProblems) {
     // Fail Read SB from DevA
