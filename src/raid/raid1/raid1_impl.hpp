@@ -31,7 +31,7 @@ struct __attribute__((__packed__)) SuperBlock {
         uint8_t clean_unmount : 1, : 0; // was cleanly unmounted
         struct {
             uint32_t chunk_size; // Number of bytes each bit represents
-            uint8_t dirty : 1, : 0;
+            uint8_t read_route : 2, : 0;
             uint64_t age;
         } bitmap;
     } fields;

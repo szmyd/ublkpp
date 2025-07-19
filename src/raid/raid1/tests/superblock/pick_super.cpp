@@ -4,11 +4,11 @@ TEST(Raid1, PickSuper) {
     {
         auto deva_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 0}},
+                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 0}},
                                       ._reserved = {0}};
         auto devb_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 0}},
+                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 0}},
                                       ._reserved = {0}};
         auto choice = ublkpp::raid1::pick_superblock(&deva_sb, &devb_sb);
         EXPECT_EQ(choice.first, &deva_sb);
@@ -17,11 +17,11 @@ TEST(Raid1, PickSuper) {
     {
         auto deva_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 0}},
+                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 0}},
                                       ._reserved = {0}};
         auto devb_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 1}},
+                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 1}},
                                       ._reserved = {0}};
         auto choice = ublkpp::raid1::pick_superblock(&deva_sb, &devb_sb);
         EXPECT_EQ(choice.first, &devb_sb);
@@ -30,11 +30,11 @@ TEST(Raid1, PickSuper) {
     {
         auto deva_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 1}},
+                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 1}},
                                       ._reserved = {0}};
         auto devb_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 1, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 1}},
+                                      .fields = {.clean_unmount = 1, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 1}},
                                       ._reserved = {0}};
         auto choice = ublkpp::raid1::pick_superblock(&deva_sb, &devb_sb);
         EXPECT_EQ(choice.first, &devb_sb);
@@ -43,11 +43,11 @@ TEST(Raid1, PickSuper) {
     {
         auto deva_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 2}},
+                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 2}},
                                       ._reserved = {0}};
         auto devb_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 1, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 1}},
+                                      .fields = {.clean_unmount = 1, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 1}},
                                       ._reserved = {0}};
         auto choice = ublkpp::raid1::pick_superblock(&deva_sb, &devb_sb);
         EXPECT_EQ(choice.first, &deva_sb);
@@ -56,11 +56,11 @@ TEST(Raid1, PickSuper) {
     {
         auto deva_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 1, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 2}},
+                                      .fields = {.clean_unmount = 1, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 2}},
                                       ._reserved = {0}};
         auto devb_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
-                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .dirty = 0, .age = 2}},
+                                      .fields = {.clean_unmount = 0, .bitmap = {.chunk_size = 0, .read_route = 0, .age = 2}},
                                       ._reserved = {0}};
         auto choice = ublkpp::raid1::pick_superblock(&deva_sb, &devb_sb);
         EXPECT_EQ(choice.first, &deva_sb);

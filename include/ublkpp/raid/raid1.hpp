@@ -10,7 +10,7 @@ namespace ublkpp {
 namespace raid1 {
 class Bitmap;
 struct SuperBlock;
-ENUM(read_route, int8_t, DEVA = -1, EITHER = 0, DEVB = 1);
+ENUM(read_route, uint8_t, EITHER = 0, DEVA = 1, DEVB = 2);
 } // namespace raid1
 
 class Raid1Disk : public UblkDisk {
@@ -23,9 +23,6 @@ class Raid1Disk : public UblkDisk {
     std::atomic_flag _is_degraded;
     std::shared_ptr< raid1::SuperBlock > _sb;
     std::unique_ptr< raid1::Bitmap > _dirty_bitmap;
-
-    // The current route to read consistently
-    raid1::read_route _read_route{raid1::read_route::EITHER};
 
     // For implementing round-robin reads
     raid1::read_route _last_read{raid1::read_route::DEVB};

@@ -1,5 +1,7 @@
 #include "test_raid1_common.hpp"
 
+#include <isa-l/mem_routines.h>
+
 // Brief: If either devices should not load/write superblocks correctly, initialization should throw
 TEST(Raid1, ReadingSBProblems) {
     // Fail Read SB from DevA
@@ -26,7 +28,7 @@ TEST(Raid1, ReadingSBProblems) {
                          ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
-    // Should not throw just dirty SB
+    // Should not throw just dirty SB and pages
     {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
         auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
