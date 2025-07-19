@@ -56,11 +56,13 @@ void Bitmap::load_from(UblkDisk& device) {
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
     for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
         RLOGT("Loading page: {} of {} page(s)", pg_idx + 1, _num_pages);
-        if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
-            0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
-            if (EINVAL == err) RLOGE("Invalid Argument while initializing superblock!")
-            throw std::runtime_error("OutOfMemory");
-        } // LCOV_EXCL_STOP
+        if (nullptr == iov.iov_base) {
+            if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
+                0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
+                if (EINVAL == err) RLOGE("Invalid Argument while initializing superblock!")
+                throw std::runtime_error("OutOfMemory");
+            } // LCOV_EXCL_STOP
+        }
         if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx & k_page_size)); !res) {
             free(iov.iov_base);
             throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
@@ -75,6 +77,7 @@ void Bitmap::load_from(UblkDisk& device) {
         it->second.reset(reinterpret_cast< uint64_t* >(iov.iov_base), free_page());
         iov.iov_base = nullptr;
     }
+    if (nullptr != iov.iov_base) free(iov.iov_base);
 }
 
 uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {
