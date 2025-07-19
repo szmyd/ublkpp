@@ -125,4 +125,3 @@ TEST(Raid1, CalcBitmapRegions) {
         EXPECT_EQ(5 * chunk_size, sz);
     }
 }
-

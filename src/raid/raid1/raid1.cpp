@@ -26,7 +26,7 @@ using raid1::read_route;
 #define SEND_TO_B (sub_cmd | 0b1)
 
 // Route routines
-#define IS_DEGRADED (1 == _sb->fields.bitmap.dirty)
+#define IS_DEGRADED (_is_degraded.test(std::memory_order_acquire))
 #define CLEAN_DEVICE (read_route::DEVB == _read_route ? _device_b : _device_a)
 #define DIRTY_DEVICE (read_route::DEVB == _read_route ? _device_a : _device_b)
 #define CLEAN_SUBCMD ((read_route::DEVB == _read_route) ? SEND_TO_B : SEND_TO_A)
@@ -144,8 +144,10 @@ Raid1Disk::~Raid1Disk() {
         }
     }
     RLOGD("shutting down array; clean bit set [vol:{}]", _str_uuid)
-    if (0 == _sb->fields.bitmap.dirty)
-        if (!write_superblock(*DIRTY_DEVICE, _sb.get())) RLOGW("Write clean_unmount failed [vol:{}]", _str_uuid)
+    if (0 == _sb->fields.bitmap.dirty) {
+        if (!write_superblock(*DIRTY_DEVICE, _sb.get())) { RLOGW("Write clean_unmount failed [vol:{}]", _str_uuid) }
+    } else
+        _is_degraded.test_and_set(std::memory_order_relaxed);
 }
 
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
@@ -156,6 +158,7 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
 
 io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     // We only update the AGE if we're not degraded already
+    if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
     auto const orig_route = _read_route;
     SET_TARGET(sub_cmd)
     ++_sb->fields.bitmap.age;
@@ -168,6 +171,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
         _sb->fields.bitmap.dirty = 0;
         --_sb->fields.bitmap.age;
         _read_route = orig_route;
+        _is_degraded.clear(std::memory_order_release);
         RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
@@ -215,9 +219,7 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
 /// usage requires `q`, `async_data`, `addr`, `len` be defined
 #define RECORD_DEGRADED_WRITE(s_cmd)                                                                                   \
     io_result dirty_res;                                                                                               \
-    if (!IS_DEGRADED) {                                                                                                \
-        if (dirty_res = __become_degraded((s_cmd)); !dirty_res) return dirty_res;                                      \
-    }                                                                                                                  \
+    if (dirty_res = __become_degraded((s_cmd)); !dirty_res) return dirty_res;                                          \
     dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);                                                      \
     if (!dirty_res) return dirty_res;
 

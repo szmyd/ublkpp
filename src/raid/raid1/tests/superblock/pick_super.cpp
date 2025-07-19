@@ -67,4 +67,3 @@ TEST(Raid1, PickSuper) {
         EXPECT_EQ(choice.second, ublkpp::raid1::read_route::EITHER);
     }
 }
-

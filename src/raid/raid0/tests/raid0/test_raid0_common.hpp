@@ -40,4 +40,3 @@ using ::ublkpp::UblkDisk;
     }()
 
 #define CREATE_DISK(params) CREATE_DISK_F((params), false, false, false, false)
-

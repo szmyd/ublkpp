@@ -6,21 +6,24 @@ TEST(Raid1, ReadingSBProblems) {
     {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, true, false, false);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, false, false);
-        EXPECT_THROW(auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+        EXPECT_THROW(auto raid_device =
+                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Fail Read SB from DevB
     {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, false);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, true, true, false);
-        EXPECT_THROW(auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+        EXPECT_THROW(auto raid_device =
+                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Fail Read SB from Both
     {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, true, true, false);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, true, false);
-        EXPECT_THROW(auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+        EXPECT_THROW(auto raid_device =
+                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Should not throw just dirty SB
@@ -47,7 +50,8 @@ TEST(Raid1, ReadingSBProblems) {
     {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
-        EXPECT_THROW(auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+        EXPECT_THROW(auto raid_device =
+                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
 
@@ -70,8 +74,8 @@ TEST(Raid1, ReadingSBProblems) {
                 EXPECT_EQ(0UL, addr);
                 return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
             });
-        EXPECT_THROW(auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+        EXPECT_THROW(auto raid_device =
+                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
 }
-
