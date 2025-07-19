@@ -69,7 +69,7 @@ void Bitmap::load_from(UblkDisk& device) {
         }
         // If page is empty; leave a hole
         if (0 == isal_zero_detect(iov.iov_base, k_page_size)) continue;
-        RLOGT("Page: {} is *DIRTY*!", pg_idx + 1);
+        RLOGT("Page: {} is *DIRTY*!", pg_idx + 1)
 
         // Insert new dirty page into page map
         auto [it, _] = _page_map.emplace(std::make_pair(pg_idx, nullptr));

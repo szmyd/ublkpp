@@ -26,7 +26,7 @@ TEST(Raid1, ReadingSBProblems) {
                          ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
-    // Should not throw just dirty SB
+    // Should not throw just dirty SB and pages
     {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
         auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
