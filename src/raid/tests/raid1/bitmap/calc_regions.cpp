@@ -1,4 +1,8 @@
-#include "test_raid1_common.hpp"
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include "raid/bitmap.hpp"
+
+#define Ki 1024
 
 TEST(Raid1, CalcBitmapRegions) {
     static uint32_t chunk_size = 32 * Ki;

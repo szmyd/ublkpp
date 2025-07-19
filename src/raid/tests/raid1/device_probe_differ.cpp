@@ -10,7 +10,7 @@ TEST(Raid1, DiffereingDeviceProbing) {
     auto device_b =
         CREATE_DISK((TestParams{.capacity = 3 * Gi, .l_size = 4 * Ki, .p_size = 4 * Ki, .can_discard = false}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     // Smallest disk was 3GiB
     EXPECT_EQ(raid_device.capacity(), (3 * Gi) - reserved_size);
 

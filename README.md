@@ -19,7 +19,7 @@ based on [ublksrv](https://github.com/ublk-org/ublksrv) IO_URING implementation.
 An example application lives under the `test_package` directory. It can be used to try out basic RAID1/0/10 capabilities
 with a single Target. The lifetime of the ublk device is tied to the lifetime of the process itself.
 
-### Build and Run Server Application
+### Build and Run Example Application
 
     $ conan build -s:h build_type=Release --build missing ublkpp
     $ sudo modprobe ublk_drv

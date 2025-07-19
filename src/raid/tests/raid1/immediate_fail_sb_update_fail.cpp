@@ -4,7 +4,7 @@
 TEST(Raid1, WriteFailImmediateFailFailSBUpdate) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     {
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))

@@ -3,14 +3,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <boost/uuid/random_generator.hpp>
+#include <boost/uuid/string_generator.hpp>
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid1.hpp"
 #include "raid/raid1_impl.hpp"
 #include "raid/superblock.hpp"
 #include "tests/test_disk.hpp"
-
 
 using ::testing::_;
 using ::testing::Return;
@@ -26,6 +25,15 @@ using ::ublkpp::Mi;
 // the tests based on this constant.
 using ::ublkpp::raid1::reserved_size;
 
+// This RAID1 header is copied to simulate loading a previous clean device
+static const uint8_t raid1_header[64] = {0x53, 0x25, 0xff, 0x0a, 0x34, 0x99, 0x3e, 0xc5, 0x67, 0x3a, 0xc8, 0x17, 0x49,
+                                         0xae, 0x1b, 0x64, 0x00, 0x01, 0xad, 0xa4, 0x07, 0x37, 0x30, 0xe3, 0x49, 0xfe,
+                                         0x99, 0x42, 0x5a, 0x28, 0x7d, 0x71, 0xeb, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                         0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+                                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
+
 #define EXPECT_SYNC_OP_REPEAT(OP, CNT, device, fail, sz, off)                                                          \
     EXPECT_CALL(*(device), sync_iov(OP, _, _, _))                                                                      \
         .Times((CNT))                                                                                                  \
@@ -35,7 +43,10 @@ using ::ublkpp::raid1::reserved_size;
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
-            if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
+            if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
+                memset(iovecs->iov_base, 000, iovecs->iov_len);                                                        \
+                memcpy(iovecs->iov_base, raid1_header, sizeof(raid1_header));                                          \
+            }                                                                                                          \
             return s;                                                                                                  \
         });
 
@@ -48,7 +59,10 @@ using ::ublkpp::raid1::reserved_size;
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
-            if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
+            if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
+                memset(iovecs->iov_base, 000, iovecs->iov_len);                                                        \
+                memcpy(iovecs->iov_base, raid1_header, sizeof(raid1_header));                                          \
+            }                                                                                                          \
             return s;                                                                                                  \
         });
 

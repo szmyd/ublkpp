@@ -22,7 +22,7 @@ TEST(Raid1, OpenDevices) {
         return std::list< int >{INT_MAX - 1};
     });
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::random_generator()(), device_a, device_b);
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     auto fd_list = raid_device.open_for_uring(2);
     EXPECT_EQ(3, fd_list.size());
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 3)));
