@@ -49,4 +49,3 @@ TEST(Raid0, MergedDiscard) {
     EXPECT_EQ(3, res.value());
     remove_io_data(ublk_data);
 }
-

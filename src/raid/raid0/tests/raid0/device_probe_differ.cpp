@@ -24,4 +24,3 @@ TEST(Raid0, DiffereingDeviceProbing) {
     // Device A lacks DirectI/O support
     EXPECT_EQ(raid_device.direct_io, false);
 }
-

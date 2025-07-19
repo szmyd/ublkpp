@@ -38,4 +38,3 @@ TEST(Raid0, SimpleFlush) {
     EXPECT_EQ(3, res.value());
     remove_io_data(ublk_data);
 }
-

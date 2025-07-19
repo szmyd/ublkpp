@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <boost/uuid/uuid.hpp>
 #include <sisl/utility/enum.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
@@ -19,6 +20,7 @@ class Raid1Disk : public UblkDisk {
     std::shared_ptr< UblkDisk > _device_b;
 
     // Persistent state
+    std::atomic_flag _is_degraded;
     std::shared_ptr< raid1::SuperBlock > _sb;
     std::unique_ptr< raid1::Bitmap > _dirty_bitmap;
 

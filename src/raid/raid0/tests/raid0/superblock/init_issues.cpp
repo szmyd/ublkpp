@@ -19,4 +19,3 @@ TEST(Raid0, FailedReadSB) {
                      std::runtime_error);
     }
 }
-

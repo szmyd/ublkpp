@@ -74,13 +74,13 @@ void Bitmap::load_from(UblkDisk& device) {
         // Insert new dirty page into page map
         auto [it, _] = _page_map.emplace(std::make_pair(pg_idx, nullptr));
         if (_page_map.end() == it) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
-        it->second.reset(reinterpret_cast< uint64_t* >(iov.iov_base), free_page());
+        it->second.reset(reinterpret_cast< word_t* >(iov.iov_base), free_page());
         iov.iov_base = nullptr;
     }
     if (nullptr != iov.iov_base) free(iov.iov_base);
 }
 
-uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {
+Bitmap::word_t* Bitmap::__get_page(uint64_t offset, bool creat) {
     if (!creat) {
         if (auto it = _page_map.find(offset); _page_map.end() == it)
             return nullptr;
@@ -93,7 +93,7 @@ uint64_t* Bitmap::__get_page(uint64_t offset, bool creat) {
         void* new_page{nullptr};
         if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
         memset(new_page, 0, k_page_size);
-        it->second.reset(reinterpret_cast< uint64_t* >(new_page), free_page());
+        it->second.reset(reinterpret_cast< word_t* >(new_page), free_page());
     }
     return it->second.get();
 }
@@ -117,7 +117,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
         auto const bits_to_set =
             htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
         bits_left -= bits_to_write;
-        if (0 != (*cur_word & bits_to_set)) return true;
+        if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_set)) return true;
         ++cur_word;
         shift_offset = 63; // Word offset back to the beginning
     }
@@ -128,7 +128,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 //      * page         : Pointer to the page
 //      * page_offset  : Page index
 //      * sz           : The number of bytes from the provided `len` that fit in this page
-std::tuple< uint64_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, uint32_t len) {
+std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, uint32_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
@@ -149,9 +149,9 @@ std::tuple< uint64_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, ui
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
         bits_left -= bits_to_write;
-        if ((*cur_word & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
+        auto const was = cur_word->fetch_or(bits_to_set, std::memory_order_release);
+        if ((was & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
         updated = true;
-        (*cur_word) |= bits_to_set;
         ++cur_word;
         shift_offset = 63; // Word offset back to the beginning
     }

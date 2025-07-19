@@ -90,4 +90,3 @@ TEST(Raid1, ReadOnDegraded) {
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_b);
 }
-
