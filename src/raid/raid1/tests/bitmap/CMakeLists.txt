@@ -5,6 +5,7 @@ list(APPEND RAID1_TEST_SRCS
   bitmap/cross_page.cpp
   bitmap/init_bitmap.cpp
   bitmap/load_bitmap.cpp
+  bitmap/load_fail.cpp
   bitmap/multiword.cpp
   bitmap/update_fail.cpp
 )
