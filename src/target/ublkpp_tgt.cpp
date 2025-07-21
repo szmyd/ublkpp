@@ -226,20 +226,17 @@ struct async_io {
 };
 
 // Process the result codes from the CQE or Async Completiong
-static inline int retrieve_result(async_io* io) {
+static inline int retrieve_result(sub_cmd_t cmd, async_io* io) {
     int res{-EIO};
-    sub_cmd_t cmd;
     if (auto cqe = io->tgt_io_cqe; cqe) {
         res = cqe->res;
-        cmd = user_data_to_tgt_data(cqe->user_data);
     } else {
         DEBUG_ASSERT_NOTNULL(io->async_completion, "No completion to process!");
         auto a_result = *io->async_completion;
         res = a_result.result;
-        cmd = a_result.sub_cmd;
     }
-    // Only return Errors from INTERNAL or REPLICATE commands
-    if ((0 < res) && (is_internal(cmd) || is_replicate(cmd))) return 0;
+    // Only return Errors from DEPENDENT or REPLICATE commands
+    if ((0 < res) && (is_dependent(cmd) || is_replicate(cmd))) return 0;
     return res;
 }
 
@@ -250,7 +247,7 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
                                                      : ublkpp_io->async_completion->sub_cmd);
     // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
-    auto const sub_cmd_res = retrieve_result(ublkpp_io);
+    auto const sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
 
     // Error should be returned regardless of other responses
     if (0 > ublkpp_io->ret_val) {
@@ -266,8 +263,8 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
         return;
     }
 
-    // Do not retry a already Retried command
-    if (is_retry(old_cmd) || is_internal(old_cmd)) {
+    // Do not retry a already Retried or Dependent commands
+    if (is_retry(old_cmd) || is_dependent(old_cmd)) {
         ublkpp_io->ret_val = sub_cmd_res;
         return;
     }

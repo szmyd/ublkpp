@@ -116,10 +116,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     _dirty_bitmap = std::make_unique< raid1::Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
     if (a_new) {
         _dirty_bitmap->init_to(*_device_a);
-        if (!b_new) {
-            RLOGW("Device is new [{}], dirty all of device [{}]", *_device_a, *_device_b)
-            _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
-        }
+        if (!b_new) _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
     }
     if (b_new) {
         _dirty_bitmap->init_to(*_device_b);
@@ -219,7 +216,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
 io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* data) {
     // Flag this operation as a required dependencies for the original sub_cmd
-    auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
+    auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::DEPENDENT);
 
     auto [page, pg_offset, sz] = _dirty_bitmap->dirty_page(addr, len);
     // No page updates to make
