@@ -18,8 +18,7 @@ list(APPEND RAID1_TEST_SRCS
   open_devices.cpp
   read_degraded.cpp
   read_failover.cpp
-  read_retry_deva.cpp
-  read_retry_devb.cpp
+  read_retry.cpp
   retry_deva.cpp
   retry_devb.cpp
   retry_failure_deva.cpp

@@ -34,7 +34,10 @@ static const ublkpp::raid1::SuperBlock normal_superblock = {
                         0x3f}},
     .fields = {.clean_unmount = 1,
                .read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::EITHER),
-               .bitmap = {.chunk_size = htobe32(32 * Ki), .age = 0}},
+               .bitmap = {.uuid = {0xa7, 0x59, 0x97, 0x84, 0xd0, 0xae, 0x45, 0x5c, 0x91, 0x3c, 0x86, 0x50, 0x21, 0x01,
+                                   0xd9, 0xd3},
+                          .chunk_size = htobe32(32 * Ki),
+                          .age = 0}},
     ._reserved = {0x00}};
 
 static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
@@ -49,7 +52,6 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
-                memset(iovecs->iov_base, 000, iovecs->iov_len);                                                        \
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);                              \
             }                                                                                                          \
             return s;                                                                                                  \
@@ -65,7 +67,6 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
-                memset(iovecs->iov_base, 000, iovecs->iov_len);                                                        \
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);                              \
             }                                                                                                          \
             return s;                                                                                                  \

@@ -2,6 +2,7 @@
 
 #include <set>
 
+#include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
@@ -89,16 +90,30 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     auto b_new = read_super.value().second;
     auto sb_b = std::shared_ptr< raid1::SuperBlock >(read_super.value().first, free_page());
 
+    // Let's check the BITMAP uuids if neither devices are new
+    if ((!a_new && !b_new) &&
+        (0 != memcmp(sb_a->fields.bitmap.uuid, sb_b->fields.bitmap.uuid, sizeof(sb_a->fields.bitmap.uuid)))) {
+        RLOGE("Devices do not belong to the same RAID-1 device!");
+        throw std::runtime_error("Devices do not belong to the same RAID-1 device.");
+    }
+
     // We only keep the latest or if match and A unclean take B
     if (auto sb_res = pick_superblock(sb_a.get(), sb_b.get()); sb_res) {
         _sb = (sb_res == sb_a.get() ? std::move(sb_a) : std::move(sb_b));
     } else
         throw std::runtime_error("Could not find reasonable superblock!"); // LCOV_EXCL_LINE
 
-    sub_cmd_t const sub_cmd = 0U;
+    // Initialize those that are new
+    if (a_new && b_new) {
+        // Generate a new random UUID for the BITMAP that we'll use to protected ourselves on re-assembly
+        auto const bitmap_uuid = boost::uuids::random_generator()();
+        RLOGD("Generated new BITMAP: {} [vol:{}]", boost::uuids::to_string(bitmap_uuid), _str_uuid);
+        memcpy(_sb->fields.bitmap.uuid, bitmap_uuid.data, sizeof(_sb->fields.bitmap.uuid));
+        _sb->fields.bitmap.age = htobe64(1);
+    }
+
     // Read in existing dirty BITMAP pages
     _dirty_bitmap = std::make_unique< raid1::Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
-    // Initialize those that are new
     if (a_new) {
         _dirty_bitmap->init_to(*_device_a);
         if (!b_new) {
@@ -110,7 +125,9 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         _dirty_bitmap->init_to(*_device_b);
         if (!a_new) { _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVA); }
     }
+
     // We need to completely dirty one side if either is new when the other is not
+    sub_cmd_t const sub_cmd = 0U;
     if ((a_new != b_new) && (a_new || b_new)) {
         RLOGW("Device is new [{}], dirty all of device [{}]", *(a_new ? _device_a : _device_b),
               *(a_new ? _device_b : _device_a))

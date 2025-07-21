@@ -13,7 +13,6 @@ TEST(Raid1, NewDeviceB) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });
@@ -79,7 +78,6 @@ TEST(Raid1, NewDeviceA) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });
@@ -145,7 +143,6 @@ TEST(Raid1, NewDeviceThrowCantDirty) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });
@@ -189,7 +186,6 @@ TEST(Raid1, NewDeviceThrowCantClean) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });

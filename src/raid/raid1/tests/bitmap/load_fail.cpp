@@ -13,7 +13,6 @@ TEST(Raid1, FailLoadOnInit) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });
