@@ -31,9 +31,9 @@ TEST(Raid1, NewDeviceB) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0, memcmp(raid1_header, iovecs->iov_base, sizeof(ublkpp::raid1::SuperBlock::header)));
-            auto header = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            auto superblock = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             EXPECT_EQ(ublkpp::raid1::read_route::DEVA,
-                      static_cast< ublkpp::raid1::read_route >(header->fields.read_route));
+                      static_cast< ublkpp::raid1::read_route >(superblock->fields.read_route));
             EXPECT_EQ(0UL, addr);
             return ublkpp::raid1::k_page_size;
         });
@@ -97,9 +97,9 @@ TEST(Raid1, NewDeviceA) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0, memcmp(raid1_header, iovecs->iov_base, sizeof(ublkpp::raid1::SuperBlock::header)));
-            auto header = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            auto superblock = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             EXPECT_EQ(ublkpp::raid1::read_route::DEVB,
-                      static_cast< ublkpp::raid1::read_route >(header->fields.read_route));
+                      static_cast< ublkpp::raid1::read_route >(superblock->fields.read_route));
             EXPECT_EQ(0UL, addr);
             return ublkpp::raid1::k_page_size;
         });
