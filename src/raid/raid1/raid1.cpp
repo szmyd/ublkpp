@@ -301,8 +301,15 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
             RLOGE("Double failure! [tag:{:x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return res;
         }
-        if (_dirty_bitmap->is_dirty(addr, len) || 0 < SISL_OPTIONS["no_write_to_dirty"].as< bool >()) {
-            RECORD_DEGRADED_WRITE(sub_cmd)
+        auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
+        auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
+
+        // If the address or length are not entirely aligned by the chunk size and there are dirty bits, then try
+        // and dirty more pages, the recovery strategy will need to correct this later
+        if ((!totally_aligned && _dirty_bitmap->is_dirty(addr, len)) ||
+            0 < SISL_OPTIONS["no_write_to_dirty"].as< bool >()) {
+            auto dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
+            if (!dirty_res) return dirty_res;
             return res.value() + dirty_res.value();
         }
     }
