@@ -50,11 +50,25 @@ pipeline {
                         values 'Debug', 'RelWithDebInfo'
                     }
                     axis {
+                        name 'COVERAGE'
+                        values 'False', 'True'
+                    }
+                    axis {
                         name 'SANITIZE'
                         values 'False', 'True'
                     }
                 }
                 excludes {
+                    exclude {
+                        axis {
+                            name 'BUILD_TYPE'
+                            values 'RelWithDebInfo'
+                        }
+                        axis {
+                            name 'COVERAGE'
+                            values 'True'
+                        }
+                    }
                     exclude {
                         axis {
                             name 'SANITIZE'
@@ -69,12 +83,45 @@ pipeline {
 
                 stages {
                     stage("Build") {
+                        when {
+                            expression { "${COVERAGE}" == 'False' }
+                        }
                         steps {
                             script {
                                 def BUILD_OPTIONS = "-o ${PROJECT}/*:sanitize=${SANITIZE} -o sisl/*:prerelease=False -s:h build_type=${BUILD_TYPE}"
                                 sh "conan create -c tools.build:skip_test=True --build missing ${BUILD_OPTIONS} ${CONAN_FLAGS} ."
                             }
                         }
+                    }
+                    stage('Coverage') {
+                       when { not { anyOf {
+                          branch "${STABLE_BRANCH}"
+                          expression { "${COVERAGE}" == 'False' }
+                       } } }
+
+                       stages {
+                          stage("Code Coverage") {
+                             steps {
+                                slackSend channel: '#sds-ci', message: "*${PROJECT}:${TAG}* is undergoing Code Coverage."
+                                sh "echo \"sonar.branch.name=${BRANCH_NAME}\" >> sonar-project.properties"
+                                sh "conan install -c tools.build:skip_test=True --build missing -o ${PROJECT}/*:coverage=True -s:h build_type=${BUILD_TYPE} ."
+                                sh "build-wrapper-linux-x86-64 --out-dir /tmp/sonar conan build -o ${PROJECT}/*:coverage=True -s:h build_type=${BUILD_TYPE} ."
+                                sh "gcovr --exclude-throw-branches --exclude-lines-by-pattern '.*(LOG|ASSERT).*' --sonarqube coverage.xml -r ."
+                                withSonarQubeEnv('sds-sonar')  {
+                                   sh "sonar-scanner -Dsonar.projectBaseDir=. -Dsonar.projectVersion=\"${VER}\""
+                                }
+                             }
+                             post {
+                                failure {
+                                   script {
+                                      sh "mkdir ./coverage_logs"
+                                      sh "cp -a build/${BUILD_TYPE}/Testing/Temporary/LastTest.log ./coverage_logs/"
+                                   }
+                                   archiveArtifacts artifacts: "coverage_logs/*", fingerprint: true
+                                }
+                             }
+                          }
+                       }
                     }
                     stage("Deploy Runnable") {
                         when {
@@ -84,6 +131,7 @@ pipeline {
                                     branch "${STABLE_BRANCH}"
                                 }
                                 expression { "${SANITIZE}" == 'False' }
+                                expression { "${COVERAGE}" == 'False' }
                             }
                         }
                         steps {
