@@ -14,13 +14,14 @@ TEST(Raid1, WrongUUIDA) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memset(iovecs->iov_base, 000, iovecs->iov_len);
-            memcpy(iovecs->iov_base, raid1_header, sizeof(ublkpp::raid1::SuperBlock::header));
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             auto superblock = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             superblock->header.uuid[0] = 0xbb;
             return ublkpp::raid1::k_page_size;
         });
 
-    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b), std::runtime_error);
+    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
 }
 
 TEST(Raid1, WrongUUIDB) {
@@ -34,7 +35,7 @@ TEST(Raid1, WrongUUIDB) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memset(iovecs->iov_base, 000, iovecs->iov_len);
-            memcpy(iovecs->iov_base, raid1_header, sizeof(ublkpp::raid1::SuperBlock::header));
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
 
             return ublkpp::raid1::k_page_size;
         });
@@ -46,11 +47,12 @@ TEST(Raid1, WrongUUIDB) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memset(iovecs->iov_base, 000, iovecs->iov_len);
-            memcpy(iovecs->iov_base, raid1_header, sizeof(ublkpp::raid1::SuperBlock::header));
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             auto superblock = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             superblock->header.uuid[0] = 0xbb;
             return ublkpp::raid1::k_page_size;
         });
 
-    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b), std::runtime_error);
+    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
 }

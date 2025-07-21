@@ -97,7 +97,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
 
     sub_cmd_t const sub_cmd = 0U;
     // Read in existing dirty BITMAP pages
-    _dirty_bitmap = std::make_unique< raid1::Bitmap >(capacity(), chunk_size, block_size());
+    _dirty_bitmap = std::make_unique< raid1::Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
     // Initialize those that are new
     if (a_new) {
         _dirty_bitmap->init_to(*_device_a);
@@ -175,14 +175,15 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     auto const orig_route = _sb->fields.read_route;
     _sb->fields.read_route = (0b1 & ((sub_cmd) >> _device_b->route_size())) ? static_cast< uint8_t >(read_route::DEVA)
                                                                             : static_cast< uint8_t >(read_route::DEVB);
-    ++_sb->fields.bitmap.age;
+    auto const old_age = _sb->fields.bitmap.age;
+    _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
     RLOGW("Device becoming degraded [sub_cmd:{}] [age:{}] [vol:{}] ", ublkpp::to_string(sub_cmd),
-          static_cast< uint64_t >(_sb->fields.bitmap.age), _str_uuid);
+          static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb.get()); !sync_res) {
         // Rollback the failure to update the header
         _sb->fields.read_route = static_cast< uint8_t >(orig_route);
-        --_sb->fields.bitmap.age;
+        _sb->fields.bitmap.age = old_age;
         _is_degraded.clear(std::memory_order_release);
         RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
@@ -200,6 +201,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
 // word represents: (64 * 32 * 1024) == 2MiB which is larger than our max I/O for an operation.
 io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* data) {
+    // Flag this operation as a required dependencies for the original sub_cmd
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::INTERNAL);
 
     auto [page, pg_offset, sz] = _dirty_bitmap->dirty_page(addr, len);
@@ -475,10 +477,10 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
 
 namespace raid1 {
 raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
-    if (dev_a->fields.bitmap.age < dev_b->fields.bitmap.age) {
+    if (be64toh(dev_a->fields.bitmap.age) < be64toh(dev_b->fields.bitmap.age)) {
         dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
         return dev_b;
-    } else if (dev_a->fields.bitmap.age > dev_b->fields.bitmap.age) {
+    } else if (be64toh(dev_a->fields.bitmap.age) > be64toh(dev_b->fields.bitmap.age)) {
         dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
         return dev_a;
     } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount)
