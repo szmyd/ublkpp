@@ -25,11 +25,12 @@ struct __attribute__((__packed__)) SuperBlock {
     struct {
         uint8_t magic[16]; // This is a static set of 128bits to confirm existing superblock
         uint16_t version;
-        uint8_t uuid[16];
+        uint8_t uuid[16]; // This is a user UUID that is assigned when the array is created
     } header;
     struct {
         uint8_t clean_unmount : 1, read_route : 2, : 0; // was cleanly unmounted
         struct {
+            uint8_t uuid[16];    // This is a BITMAP UUID that is assigned when the array is created
             uint32_t chunk_size; // Number of bytes each bit represents
             uint64_t age;
         } bitmap;
