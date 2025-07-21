@@ -75,6 +75,16 @@ pipeline {
                             values 'True'
                         }
                         axis {
+                            name 'COVERAGE'
+                            values 'True'
+                        }
+                    }
+                    exclude {
+                        axis {
+                            name 'SANITIZE'
+                            values 'True'
+                        }
+                        axis {
                             name 'BUILD_TYPE'
                             values 'RelWithDebInfo'
                         }

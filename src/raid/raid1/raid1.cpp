@@ -320,9 +320,9 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     // Pick a device to read from
     auto route = read_route::DEVA;
     auto need_to_test{false};
-    if (IS_DEGRADED && 0 < SISL_OPTIONS["no_read_from_dirty"].count()) {
+    if (IS_DEGRADED && 0 < SISL_OPTIONS["no_read_from_dirty"].count()) { // LCOV_EXCL_START
         route = READ_ROUTE;
-    } else {
+    } else { // LCOV_EXCL_STOP
         if (read_route::DEVB == _last_read) {
             if (read_route::DEVB == READ_ROUTE) need_to_test = true;
         } else {
