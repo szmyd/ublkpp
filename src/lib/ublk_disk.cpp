@@ -46,13 +46,13 @@ UblkDisk::~UblkDisk() = default;
 
 io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
                               uint32_t const len, uint64_t const addr) {
-    TLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")
+    DLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")
     auto iov = iovec{.iov_base = buf, .iov_len = len};
     return async_iov(q, data, sub_cmd, &iov, 1, addr);
 }
 
 io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) {
-    TLOGW("Use of deprecated ::sync_io(...)! Please convert to using ::sync_iov(...)")
+    DLOGW("Use of deprecated ::sync_io(...)! Please convert to using ::sync_iov(...)")
     auto iov = iovec{.iov_base = buf, .iov_len = len};
     return sync_iov(op, &iov, 1, addr);
 }
