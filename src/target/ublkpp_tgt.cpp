@@ -251,7 +251,7 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
 
     // Internal commands are not part of the result like a replicate command, but we do inform the devices of the result
     if (is_internal(old_cmd)) {
-        TLOGT("Reporting internal result: [tag:{:x}|sub_cmd:{}|res:{}]", data->tag, old_cmd, sub_cmd_res);
+        TLOGW("Reporting internal result: [tag:{:x}|sub_cmd:{}|res:{}]", data->tag, to_string(old_cmd), sub_cmd_res);
         auto io_res = device->queue_internal_resp(q, data, old_cmd, sub_cmd_res);
         DEBUG_ASSERT(io_res, "HandleInternal return error!") // LCOV_EXCL_LINE
         // Could enqueue more requeusts

@@ -31,7 +31,10 @@ class Raid1Disk : public UblkDisk {
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
 
     // Internal routines
+    io_result __become_clean();
     io_result __become_degraded(sub_cmd_t sub_cmd);
+    io_result __clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                            ublk_io_data const* data);
     io_result __dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                             ublk_io_data const* data);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len);

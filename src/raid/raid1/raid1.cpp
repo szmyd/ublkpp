@@ -183,6 +183,24 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
+io_result Raid1Disk::__become_clean() {
+    RLOGW("Device becoming clean [vol:{}] ", _str_uuid);
+    // We only update the AGE if we're not degraded already
+    _sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
+    if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb.get()); !sync_res) {
+        _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
+        RLOGE("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
+        return write_superblock(*CLEAN_DEVICE, _sb.get());
+    }
+    if (auto sync_res = write_superblock(*DIRTY_DEVICE, _sb.get()); !sync_res) {
+        _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
+        RLOGE("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
+        return write_superblock(*CLEAN_DEVICE, _sb.get());
+    }
+    _is_degraded.clear(std::memory_order_release);
+    return 0;
+}
+
 io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
@@ -205,6 +223,41 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     return 0;
 }
 
+io_result Raid1Disk::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                   ublk_io_data const* data) {
+    auto const lba = addr >> params()->basic.logical_bs_shift;
+    RLOGD("Cleaning pages for [tag:{:x}] [lba:{}|len:{}|sub_cmd:{}] [vol:{}]", data->tag, lba, len,
+          ublkpp::to_string(sub_cmd), _str_uuid);
+    auto [page, pg_offset, sz] = _dirty_bitmap->clean_page(addr, len);
+    auto res = io_result(0);
+    if (page) {
+        auto const pg_size = _dirty_bitmap->page_size();
+        auto iov = iovec{.iov_base = page, .iov_len = pg_size};
+        auto page_addr = (pg_size * pg_offset) + pg_size;
+
+        res = data ? CLEAN_DEVICE->async_iov(q, data, sub_cmd, &iov, 1, page_addr)
+                   : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
+        if (!res) return res;
+    }
+
+    // We can write across a page boundary; if we detect that we did not consume all the bytes, we need to
+    // issue another dirty_page and aggregate its result
+    if (sz < len) [[unlikely]] {
+        if (auto chained_pg_res = __clean_pages(sub_cmd, addr + sz, len - sz, q, data); !chained_pg_res)
+            return chained_pg_res;
+        else
+            res = res.value() + chained_pg_res.value();
+    }
+
+    // MUST Submit here since iov is on the stack!
+    if (q && 0 < res.value()) io_uring_submit(q->ring_ptr);
+
+    // We've cleaned the BITMAP!
+    if (0 == _dirty_bitmap->dirty_pages()) __become_clean();
+
+    return res;
+}
+
 // Generate and submit the BITMAP pages we need to write in order to record the incoming mutations (WRITE/DISCARD)
 //
 // After some bit-twiddling to manipulate the bits indicated above we asynchronously write that page to the
@@ -219,16 +272,16 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::DEPENDENT);
 
     auto [page, pg_offset, sz] = _dirty_bitmap->dirty_page(addr, len);
-    // No page updates to make
-    if (!page) return 0;
+    auto res = io_result(0);
+    if (page) {
+        auto const pg_size = _dirty_bitmap->page_size();
+        auto iov = iovec{.iov_base = page, .iov_len = pg_size};
+        auto page_addr = (pg_size * pg_offset) + pg_size;
 
-    auto const pg_size = _dirty_bitmap->page_size();
-    auto iov = iovec{.iov_base = page, .iov_len = pg_size};
-    auto page_addr = (pg_size * pg_offset) + pg_size;
-
-    auto res = data ? CLEAN_DEVICE->async_iov(q, data, new_cmd, &iov, 1, page_addr)
-                    : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
-    if (!res) return res;
+        res = data ? CLEAN_DEVICE->async_iov(q, data, new_cmd, &iov, 1, page_addr)
+                   : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
+        if (!res) return res;
+    }
 
     // We can write across a page boundary; if we detect that we did not consume all the bytes, we need to
     // issue another dirty_page and aggregate its result
@@ -240,7 +293,7 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
     }
 
     // MUST Submit here since iov is on the stack!
-    if (q) io_uring_submit(q->ring_ptr);
+    if (q && 0 < res.value()) io_uring_submit(q->ring_ptr);
     return res;
 }
 
@@ -376,9 +429,12 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     return __failover_read(sub_cmd, std::move(func), addr, len);
 }
 
-io_result Raid1Disk::handle_internal(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t,
-                                     int) {
-    return 0;
+io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
+                                     uint32_t nr_vecs, uint64_t addr, int res) {
+    sub_cmd = unset_flags(sub_cmd, sub_cmd_flags::INTERNAL);
+    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
+    if (0 == res) return __clean_pages(sub_cmd, addr, len, q, data);
+    return __dirty_pages(sub_cmd, addr, len, q, data);
 }
 
 void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
