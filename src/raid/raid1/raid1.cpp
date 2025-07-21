@@ -295,12 +295,21 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
 
     auto res = func(*(CLEAN_SUBCMD == sub_cmd ? CLEAN_DEVICE : DIRTY_DEVICE), sub_cmd);
 
-    // If we are degraded we can just return here with the result of the CLEAN device.
-    if (IS_DEGRADED && !replica_write) {
-        if (!res) {
+    // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
+    if (!res) {
+        if (IS_DEGRADED && !replica_write) {
             RLOGE("Double failure! [tag:{:x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return res;
         }
+        RECORD_DEGRADED_WRITE(sub_cmd)
+        if (replica_write) return dirty_res;
+        if (res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); !res) return res;
+        return res.value() + dirty_res.value();
+    }
+    if (replica_write) return res;
+
+    // If we are degraded we need to process this differently depending on the BITMAP state
+    if (IS_DEGRADED) {
         auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
         auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
 
@@ -312,16 +321,10 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
             if (!dirty_res) return dirty_res;
             return res.value() + dirty_res.value();
         }
+        // We will go ahead and attempt this WRITE on a known degraded device,
+        // set this flag so we can clear any bits in the bitmap should is succeed
+        sub_cmd = set_flags(sub_cmd, sub_cmd_flags::INTERNAL);
     }
-
-    // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
-    if (!res) {
-        RECORD_DEGRADED_WRITE(sub_cmd)
-        if (replica_write) return dirty_res;
-        if (res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); !res) return res;
-        return res.value() + dirty_res.value();
-    }
-    if (replica_write) return res;
 
     // Otherwise tag the replica sub_cmd so we don't include its value in the target result
     sub_cmd = DIRTY_SUBCMD;
@@ -371,6 +374,11 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
     return __failover_read(sub_cmd, std::move(func), addr, len);
+}
+
+io_result Raid1Disk::handle_internal(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t,
+                                     int) {
+    return 0;
 }
 
 void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {

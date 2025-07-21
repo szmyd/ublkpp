@@ -31,6 +31,8 @@ public:
     uint8_t route_size() const override { return ilog2(_max_stripe_cnt); }
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
+    io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
+                              uint32_t nr_vecs, uint64_t addr, int res) override;
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                              uint64_t addr) override;

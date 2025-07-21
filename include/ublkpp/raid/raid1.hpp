@@ -51,6 +51,8 @@ public:
 
     uint8_t route_size() const override { return 1; }
 
+    io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
+                              uint32_t nr_vecs, uint64_t addr, int res) override;
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
     // RAID-1 Devices can not sit on-top of non-O_DIRECT devices, so there's nothing to flush
     io_result handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) override { return 0; }

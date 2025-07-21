@@ -247,7 +247,17 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
                                                      : ublkpp_io->async_completion->sub_cmd);
     // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
-    auto const sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
+    auto sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
+
+    // Internal commands are not part of the result like a replicate command, but we do inform the devices of the result
+    if (is_internal(old_cmd)) {
+        TLOGT("Reporting internal result: [tag:{:x}|sub_cmd:{}|res:{}]", data->tag, old_cmd, sub_cmd_res);
+        auto io_res = device->queue_internal_resp(q, data, old_cmd, sub_cmd_res);
+        DEBUG_ASSERT(io_res, "HandleInternal return error!") // LCOV_EXCL_LINE
+        // Could enqueue more requeusts
+        if (io_res) ublkpp_io->sub_cmds += io_res.value();
+        sub_cmd_res = 0;
+    }
 
     // Error should be returned regardless of other responses
     if (0 > ublkpp_io->ret_val) {

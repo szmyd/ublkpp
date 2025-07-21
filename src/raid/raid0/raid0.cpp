@@ -81,6 +81,20 @@ std::list< int > Raid0Disk::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
+io_result Raid0Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
+                                     uint32_t nr_vecs, uint64_t addr, int res) {
+    if (1 != nr_vecs) return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    addr += _stride_width;
+    return __distribute(
+        iovecs, addr,
+        [q, data, res, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
+                             uint32_t logical_off) {
+            return _stripe_array[stripe_off]->dev->handle_internal(q, data, new_sub_cmd, iov, nr_iovs, logical_off,
+                                                                   res);
+        },
+        true, sub_cmd);
+}
+
 void Raid0Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     for (auto const& stripe : _stripe_array) {
         if (!stripe->dev->uses_ublk_iouring) stripe->dev->collect_async(q, results);
