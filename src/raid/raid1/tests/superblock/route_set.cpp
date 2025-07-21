@@ -13,7 +13,6 @@ TEST(Raid1, RoutePreSet) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             auto header = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             header->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
@@ -46,7 +45,6 @@ TEST(Raid1, RoutePreSet) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            memset(iovecs->iov_base, 000, iovecs->iov_len);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });

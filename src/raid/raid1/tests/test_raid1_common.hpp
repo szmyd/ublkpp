@@ -52,7 +52,6 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
-                memset(iovecs->iov_base, 000, iovecs->iov_len);                                                        \
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);                              \
             }                                                                                                          \
             return s;                                                                                                  \
@@ -68,7 +67,6 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
-                memset(iovecs->iov_base, 000, iovecs->iov_len);                                                        \
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);                              \
             }                                                                                                          \
             return s;                                                                                                  \
