@@ -235,17 +235,16 @@ io_result Raid1Disk::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
         auto iov = iovec{.iov_base = page, .iov_len = pg_size};
         auto page_addr = (pg_size * pg_offset) + pg_size;
 
+        // These don't actually need to succeed; it's optimistic
         res = data ? CLEAN_DEVICE->async_iov(q, data, CLEAN_SUBCMD, &iov, 1, page_addr)
                    : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
-        if (!res) return res;
+        if (!res) return 0;
     }
 
     // We can write across a page boundary; if we detect that we did not consume all the bytes, we need to
     // issue another dirty_page and aggregate its result
     if (sz < len) [[unlikely]] {
-        if (auto chained_pg_res = __clean_pages(sub_cmd, addr + sz, len - sz, q, data); !chained_pg_res)
-            return chained_pg_res;
-        else
+        if (auto chained_pg_res = __clean_pages(sub_cmd, addr + sz, len - sz, q, data); chained_pg_res)
             res = res.value() + chained_pg_res.value();
     }
 
