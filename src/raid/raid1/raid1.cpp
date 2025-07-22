@@ -184,7 +184,7 @@ std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
 }
 
 io_result Raid1Disk::__become_clean() {
-    RLOGW("Device becoming clean [vol:{}] ", _str_uuid);
+    RLOGW("Device becoming clean [vol:{}] ", _str_uuid)
     // We only update the AGE if we're not degraded already
     _sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
     if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb.get()); !sync_res) {
@@ -222,7 +222,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
 io_result Raid1Disk::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* data) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGD("Cleaning pages for [tag:{:x}] [lba:{}|len:{}|sub_cmd:{}] [vol:{}]", data->tag, lba, len,
+    RLOGT("Cleaning pages for [tag:{:x}] [lba:{}|len:{}|sub_cmd:{}] [vol:{}]", data->tag, lba, len,
           ublkpp::to_string(sub_cmd), _str_uuid);
     auto [page, pg_offset, sz] = _dirty_bitmap->clean_page(addr, len);
     auto res = io_result(0);
