@@ -292,13 +292,6 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
     return res;
 }
 
-/// usage requires `q`, `async_data`, `addr`, `len` be defined
-#define RECORD_DEGRADED_WRITE(s_cmd)                                                                                   \
-    io_result dirty_res;                                                                                               \
-    if (dirty_res = __become_degraded((s_cmd)); !dirty_res) return dirty_res;                                          \
-    dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);                                                      \
-    if (!dirty_res) return dirty_res;
-
 // Failed Async WRITEs all end up here and have the side-effect of dirtying the BITMAP
 // on the working device. This blocks the final result going back from the original operation
 // as we chain additional sub_cmds by returning a value > 0 including a new "result" for the
@@ -313,7 +306,10 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
     // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
-    RECORD_DEGRADED_WRITE(sub_cmd)
+    io_result dirty_res;
+    if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
+    dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
+    if (!dirty_res) return dirty_res;
 
     if (is_replicate(sub_cmd)) return dirty_res;
 
@@ -349,7 +345,11 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
             RLOGE("Double failure! [tag:{:x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return res;
         }
-        RECORD_DEGRADED_WRITE(sub_cmd)
+        io_result dirty_res;
+        if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
+        dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
+        if (!dirty_res) return dirty_res;
+
         if (replica_write) return dirty_res;
         if (res = func(*CLEAN_DEVICE, CLEAN_SUBCMD); !res) return res;
         return res.value() + dirty_res.value();
