@@ -211,6 +211,16 @@ void Raid1Disk::__resync_task() {
     using namespace std::chrono_literals;
     RLOGW("Resync Task started for [vol:{}]", _str_uuid);
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
+    auto total_cleaned = 0UL;
+    // Set ourselves up with a buffer to do all the read/write operations from
+    auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
+    if (auto err = ::posix_memalign(&iov.iov_base, block_size(), params()->basic.max_sectors << SECTOR_SHIFT);
+        0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
+        if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
+        RLOGE("Out of Memory while reading superblock!")
+        return;
+    } // LCOV_EXCL_STOP
+
     while (static_cast< uint8_t >(resync_state::STOPPED) != cur_state && IS_DEGRADED) {
         // Wait to become IDLE
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
@@ -222,28 +232,22 @@ void Raid1Disk::__resync_task() {
         while (static_cast< uint8_t >(resync_state::STOPPED) != cur_state && 0 < _dirty_bitmap->dirty_pages()) {
             auto [logical_off, sz] = _dirty_bitmap->next_dirty();
             if (0 == sz) break;
+            iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
             auto const lba = logical_off >> params()->basic.logical_bs_shift;
-            RLOGD("Resync Task will clear [sz:{}KiB|lba:{:x}] from [vol:{}]", sz, lba, _str_uuid)
-
-            // TODO DO SOME WORK
-            auto iov = iovec{.iov_base = nullptr, .iov_len = sz};
-            if (auto err = ::posix_memalign(&iov.iov_base, block_size(), sz); 0 != err || nullptr == iov.iov_base)
-                [[unlikely]] { // LCOV_EXCL_START
-                if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
-                RLOGE("Out of Memory while reading superblock!")
-                return;
-            } // LCOV_EXCL_STOP
+            RLOGD("Resync Task will clear [sz:{}KiB|lba:{:x}] [total:{}KiB] from [vol:{}]", iov.iov_len / Ki, lba,
+                  total_cleaned / Ki, _str_uuid)
             if (auto res = CLEAN_DEVICE->sync_iov(UBLK_IO_OP_READ, &iov, 1, logical_off + raid1::reserved_size); res) {
                 if (auto clear_res =
                         DIRTY_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, logical_off + raid1::reserved_size);
                     !clear_res) {
-                    RLOGW("Could not write clean chunks of [sz:{}] [res:{}]", sz, clear_res.error().message());
-                } else
-                    __clean_pages(0, logical_off, sz, nullptr, nullptr);
+                    RLOGW("Could not write clean chunks of [sz:{}] [res:{}]", iov.iov_len, clear_res.error().message());
+                } else {
+                    __clean_pages(0, logical_off, iov.iov_len, nullptr, nullptr);
+                    total_cleaned += iov.iov_len;
+                }
             } else {
-                RLOGE("Could not read Data of [sz:{}] [res:{}]", sz, res.error().message())
+                RLOGE("Could not read Data of [sz:{}] [res:{}]", iov.iov_len, res.error().message())
             }
-            free(iov.iov_base);
 
             while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
                 std::this_thread::sleep_for(50ms);
@@ -252,13 +256,15 @@ void Raid1Disk::__resync_task() {
             while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
                 if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                     cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                    RLOGD("Waiting for IDLE.")
+                    RLOGT("Resync Task Sleeping...")
+                    std::this_thread::sleep_for(1s);
                 } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
                     break;
                 }
             }
         }
     }
+    free(iov.iov_base);
     RLOGW("Resync Completed? Exiting!")
     cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
@@ -537,6 +543,7 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("received DISCARD: [tag:{:x}] [lba:{:x}|len:{}] [vol:{}]", data->tag, lba, len, _str_uuid)
 
+    // Stop any on-going resync
     if (static_cast< uint8_t >(resync_state::PAUSE) != _resync_state.load()) idle_transition(q, false);
 
     if (is_retry(sub_cmd)) [[unlikely]]
@@ -558,6 +565,7 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, len,
           ublkpp::to_string(sub_cmd), _str_uuid)
 
+    // Stop any on-going resync
     if (static_cast< uint8_t >(resync_state::IDLE) != _resync_state.load()) idle_transition(q, false);
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
@@ -585,6 +593,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [lba:{:x}|len:{}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len, _str_uuid)
 
+    // Stop any on-going resync
     if (static_cast< uint8_t >(resync_state::IDLE) != _resync_state.load()) idle_transition(nullptr, false);
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly

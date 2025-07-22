@@ -11,9 +11,11 @@ namespace ublkpp::raid1 {
 
 static_assert(sizeof(uint64_t) == sizeof(std::atomic_uint64_t), "BITMAP Cannot be ATOMIC!");
 class Bitmap {
+public:
     using word_t = std::atomic_uint64_t;
     using map_type_t = std::map< uint32_t, std::shared_ptr< word_t > >;
 
+private:
     uint64_t _data_size;
     uint32_t _chunk_size;
     uint32_t _align;
