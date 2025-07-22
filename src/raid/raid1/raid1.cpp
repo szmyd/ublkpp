@@ -188,14 +188,10 @@ io_result Raid1Disk::__become_clean() {
     // We only update the AGE if we're not degraded already
     _sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
     if (auto sync_res = write_superblock(*CLEAN_DEVICE, _sb.get()); !sync_res) {
-        _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
-        RLOGE("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
-        return write_superblock(*CLEAN_DEVICE, _sb.get());
+        RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
     }
     if (auto sync_res = write_superblock(*DIRTY_DEVICE, _sb.get()); !sync_res) {
-        _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
-        RLOGE("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
-        return write_superblock(*CLEAN_DEVICE, _sb.get());
+        RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
     }
     _is_degraded.clear(std::memory_order_release);
     return 0;
