@@ -208,14 +208,14 @@ void Raid1Disk::__resync_task() {
         // Wait to become IDLE
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
             cur_state = static_cast< uint8_t >(resync_state::IDLE);
-            RLOGW("Resync Task Sleeping...")
-            std::this_thread::sleep_for(500ms);
+            RLOGD("Resync Task Sleeping...")
+            std::this_thread::sleep_for(2s);
         }
         while (0 < _dirty_bitmap->dirty_pages()) {
-            auto [pg_offset, logical_off, sz] = _dirty_bitmap->next_dirty();
+            auto [logical_off, sz] = _dirty_bitmap->next_dirty();
             if (0 == sz) break;
             auto const lba = logical_off >> params()->basic.logical_bs_shift;
-            RLOGW("Resync Task with clear {}KiB @ [lba:{:x}] from pg:{:0x} [vol:{}]", sz, lba, pg_offset, _str_uuid)
+            RLOGD("Resync Task will clear [sz:{}KiB|lba:{:x}] from [vol:{}]", sz, lba, _str_uuid)
 
             // TODO DO SOME WORK
             auto iov = iovec{.iov_base = nullptr, .iov_len = sz};
@@ -230,26 +230,22 @@ void Raid1Disk::__resync_task() {
                         DIRTY_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, logical_off + raid1::reserved_size);
                     !clear_res) {
                     RLOGW("Could not write clean chunks of [sz:{}] [res:{}]", sz, clear_res.error().message());
-                } else {
-                    RLOGD("Cleaned...")
+                } else
                     __clean_pages(0, logical_off, sz, nullptr, nullptr);
-                }
             } else {
                 RLOGE("Could not read Data of [sz:{}] [res:{}]", sz, res.error().message())
             }
             free(iov.iov_base);
 
-            RLOGW("Resync Task Sleeping!")
             while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
                 std::this_thread::sleep_for(50ms);
             }
-            std::this_thread::sleep_for(100ms);
+            std::this_thread::sleep_for(5ms);
             while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
                 if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                     cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                    RLOGW("Waiting for IDLE.")
+                    RLOGD("Waiting for IDLE.")
                 }
-                std::this_thread::sleep_for(500ms);
             }
         }
         RLOGW("Resync Completed? Exiting!")

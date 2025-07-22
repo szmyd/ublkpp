@@ -173,12 +173,20 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
     return std::make_tuple(cur_page, page_offset, sz);
 }
 
-std::tuple< uint32_t, uint64_t, uint32_t > Bitmap::next_dirty() {
+std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     auto it = _page_map.begin();
-    if (_page_map.end() == it) return std::make_tuple(0, 0, 0);
-    uint64_t logical_off = 0;
-
-    return std::make_tuple(0, logical_off, 32768);
+    if (_page_map.end() == it) return std::make_pair(0, 0);
+    uint64_t logical_off = k_page_size * it->first;
+    // Find the first dirty word
+    for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
+        auto const cur_word = (it->second.get() + word_off)->load(std::memory_order_relaxed);
+        if (0 == cur_word) continue;
+        logical_off += (word_off * bits_in_uint64 * _chunk_size);
+        auto const first_set_bit = __builtin_clzl(be64toh(cur_word));
+        logical_off += (first_set_bit / 8) * ((bits_in_uint64 * _chunk_size) / 8);
+        break;
+    }
+    return std::make_pair(logical_off, (bits_in_uint64 * _chunk_size) / 4);
 }
 
 // Returns:
