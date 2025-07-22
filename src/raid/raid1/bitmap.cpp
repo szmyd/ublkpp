@@ -6,7 +6,7 @@
 #include "lib/logging.hpp"
 
 namespace ublkpp::raid1 {
-constexpr auto bits_in_uint64 = k_bits_in_byte * sizeof(uint64_t);
+constexpr auto bits_in_word = k_bits_in_byte * sizeof(Bitmap::word_t);
 
 struct free_page {
     void operator()(void* x) { free(x); }
@@ -33,13 +33,13 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
 std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint32_t len,
                                                                                 uint32_t chunk_size) {
     auto const page_width_bits =
-        chunk_size * k_page_size * k_bits_in_byte;    // Number of bytes represented by a single page (block)
-    auto const page = addr / page_width_bits;         // Which page does this address land in
-    auto const page_off = (addr % page_width_bits);   // Bytes within the page
-    auto const page_bit = (page_off / chunk_size);    // Bit within the page
-    return std::make_tuple(page,                      // Page that address references
-                           page_bit / bits_in_uint64, // Word in the page LCOV_EXCL_LINE
-                           bits_in_uint64 - (page_bit % bits_in_uint64) - 1,     // Shift within the Word
+        chunk_size * k_page_size * k_bits_in_byte;  // Number of bytes represented by a single page (block)
+    auto const page = addr / page_width_bits;       // Which page does this address land in
+    auto const page_off = (addr % page_width_bits); // Bytes within the page
+    auto const page_bit = (page_off / chunk_size);  // Bit within the page
+    return std::make_tuple(page,                    // Page that address references
+                           page_bit / bits_in_word, // Word in the page LCOV_EXCL_LINE
+                           bits_in_word - (page_bit % bits_in_word) - 1,         // Shift within the Word
                            std::min((uint64_t)len, (page_width_bits - page_off)) // Tail size of the page
     );
 }
@@ -132,7 +132,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
         bits_left -= bits_to_read;
         if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_check)) return true;
         ++cur_word;
-        shift_offset = 63; // Word offset back to the beginning
+        shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
     return false;
 }
@@ -166,7 +166,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
                                                    << (shift_offset - (bits_to_write - 1)));
         cur_word->fetch_and(~bits_to_clear, std::memory_order_release);
         ++cur_word;
-        shift_offset = 63; // Word offset back to the beginning
+        shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
     // Do not return clean pages, return the static page
     if (0 == isal_zero_detect(cur_page, k_page_size)) cur_page = _clean_page.get();
@@ -175,18 +175,31 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
 
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     auto it = _page_map.begin();
+    // Find the first dirty word
     if (_page_map.end() == it) return std::make_pair(0, 0);
     uint64_t logical_off = k_page_size * it->first;
+
     // Find the first dirty word
+    auto word = 0UL;
     for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
-        auto const cur_word = (it->second.get() + word_off)->load(std::memory_order_relaxed);
-        if (0 == cur_word) continue;
-        logical_off += (word_off * bits_in_uint64 * _chunk_size);
-        auto const first_set_bit = __builtin_clzl(be64toh(cur_word));
-        logical_off += (first_set_bit / 8) * ((bits_in_uint64 * _chunk_size) / 8);
+        word = be64toh((it->second.get() + word_off)->load(std::memory_order_relaxed));
+        if (0 == word) continue;
+        logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
         break;
     }
-    return std::make_pair(logical_off, (bits_in_uint64 * _chunk_size) / 4);
+
+    // How long does the dirt stretch?
+    uint32_t sz = 0;
+    if (0 != word) {
+        auto set_bit = __builtin_clzl(word);
+        logical_off += set_bit * _chunk_size; // Adjust for bit within word
+        RLOGD("addr: {:x} word: {:064b}", logical_off, word);
+        // Consume as many consecutive set-bits as we can in the rest of the word
+        while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
+            sz += _chunk_size;
+        }
+    }
+    return std::make_pair(logical_off, sz);
 }
 
 // Returns:
@@ -218,7 +231,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t ad
         if ((was & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
         updated = true;
         ++cur_word;
-        shift_offset = 63; // Word offset back to the beginning
+        shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
     if (!updated) cur_page = nullptr;
     return std::make_tuple(cur_page, page_offset, sz);
