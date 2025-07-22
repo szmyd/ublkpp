@@ -12,6 +12,19 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
+Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
+        _data_size(data_size),
+        _chunk_size(chunk_size),
+        _align(align),
+        _page_width_bits(_chunk_size * k_page_size * k_bits_in_byte),
+        _num_pages(_data_size / _page_width_bits + ((0 == _data_size % _page_width_bits) ? 0 : 1)) {
+    void* new_page{nullptr};
+    if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
+        throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
+    memset(new_page, 0, k_page_size);
+    _clean_page.reset(reinterpret_cast< word_t* >(new_page), free_page());
+}
+
 // We use uint64_t pointers to access the allocated pages. calc_bitmap_region will return:
 //      * page_offset  : The page key in our page map (generated if we have a hole currently)
 //      * word_offset  : The uint64_t offset within the raid1::page_size byte array
@@ -113,15 +126,51 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
-        auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-        auto const bits_to_set =
-            htobe64((((uint64_t)0b1 << bits_to_write) - 1) << (shift_offset - (bits_to_write - 1)));
-        bits_left -= bits_to_write;
-        if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_set)) return true;
+        auto const bits_to_read = std::min(shift_offset + 1, bits_left);
+        auto const bits_to_check =
+            htobe64((((uint64_t)0b1 << bits_to_read) - 1) << (shift_offset - (bits_to_read - 1)));
+        bits_left -= bits_to_read;
+        if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_check)) return true;
         ++cur_word;
         shift_offset = 63; // Word offset back to the beginning
     }
     return false;
+}
+
+size_t Bitmap::dirty_pages() {
+    std::erase_if(_page_map, [](const auto& it) { return (0 == isal_zero_detect(it.second.get(), k_page_size)); });
+    return _page_map.size();
+}
+
+std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t addr, uint32_t len) {
+    // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
+    // Calculate the tuple mentioned above
+    auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
+
+    // Get/Create a Page
+    auto cur_page = __get_page(page_offset);
+    DEBUG_ASSERT_NOTNULL(cur_page, "Expected to find dirty page!")
+    if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
+
+    auto cur_word = cur_page + word_offset;
+    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
+    // word, it's unexpected that this will require writing into a third word
+    uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
+
+    // Handle update crossing multiple words (optimization potential?)
+    for (auto bits_left = nr_bits; 0 < bits_left;) {
+        auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+        bits_left -= bits_to_write;
+        auto const bits_to_clear = htobe64(64 == bits_to_write ? UINT64_MAX
+                                                               : (((uint64_t)0b1 << bits_to_write) - 1)
+                                                   << (shift_offset - (bits_to_write - 1)));
+        cur_word->fetch_and(~bits_to_clear, std::memory_order_release);
+        ++cur_word;
+        shift_offset = 63; // Word offset back to the beginning
+    }
+    // Do not return clean pages, return the static page
+    if (0 == isal_zero_detect(cur_page, k_page_size)) cur_page = _clean_page.get();
+    return std::make_tuple(cur_page, page_offset, sz);
 }
 
 // Returns:
@@ -134,7 +183,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t ad
     auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Get/Create a Page
-    auto cur_page = __get_page(page_offset, k_page_size);
+    auto cur_page = __get_page(page_offset, true);
     if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
     auto cur_word = cur_page + word_offset;
     // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next

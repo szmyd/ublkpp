@@ -50,6 +50,9 @@ public:
     // Target entry-point for I/O
     io_result queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
 
+    // Internal result response
+    io_result queue_internal_resp(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, int res);
+
     virtual std::string type() const = 0;
 
     /// Device Specific I/O Handlers
@@ -60,6 +63,9 @@ public:
 
     // Async replies collected here
     virtual void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) = 0;
+
+    virtual io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res);
 
     virtual io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) = 0;
 

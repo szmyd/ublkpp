@@ -83,7 +83,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
                                                     ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs,        \
                                                     uint64_t addr) -> io_result {                                      \
             EXPECT_TRUE(ublkpp::is_retry(sub_cmd));                                                                    \
-            EXPECT_TRUE(ublkpp::is_internal(sub_cmd));                                                                 \
+            EXPECT_TRUE(ublkpp::is_dependent(sub_cmd));                                                                \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); /* Expect write to bitmap!*/                                  \

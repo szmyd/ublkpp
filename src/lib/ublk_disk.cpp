@@ -44,6 +44,11 @@ UblkDisk::UblkDisk() :
 
 UblkDisk::~UblkDisk() = default;
 
+io_result UblkDisk::handle_internal(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t,
+                                    int) {
+    return 0;
+}
+
 io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
                               uint32_t const len, uint64_t const addr) {
     DLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")
@@ -77,6 +82,14 @@ io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* dat
     default:
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
+}
+
+io_result UblkDisk::queue_internal_resp(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
+    thread_local auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
+    ublksrv_io_desc const* iod = data->iod;
+    iov.iov_base = (void*)iod->addr;
+    iov.iov_len = (iod->nr_sectors << SECTOR_SHIFT);
+    return handle_internal(q, data, sub_cmd, &iov, 1, iod->start_sector << SECTOR_SHIFT, res);
 }
 
 std::string UblkDisk::to_string() const {

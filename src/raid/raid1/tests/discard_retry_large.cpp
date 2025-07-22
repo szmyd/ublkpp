@@ -12,7 +12,7 @@ TEST(Raid1, LargeDiscardRetry) {
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                            uint32_t nr_vecs, uint64_t addr) -> io_result {
             EXPECT_TRUE(ublkpp::is_retry(sub_cmd));
-            EXPECT_TRUE(ublkpp::is_internal(sub_cmd));
+            EXPECT_TRUE(ublkpp::is_dependent(sub_cmd));
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::__iovec_len(iovecs, iovecs + nr_vecs), ublkpp::raid1::k_page_size);
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); /* Expect write to bitmap!*/
