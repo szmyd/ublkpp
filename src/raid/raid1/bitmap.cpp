@@ -173,6 +173,14 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
     return std::make_tuple(cur_page, page_offset, sz);
 }
 
+std::tuple< uint32_t, uint64_t, uint32_t > Bitmap::next_dirty() {
+    auto it = _page_map.begin();
+    if (_page_map.end() == it) return std::make_tuple(0, 0, 0);
+    uint64_t logical_off = 0;
+
+    return std::make_tuple(0, logical_off, 32768);
+}
+
 // Returns:
 //      * page         : Pointer to the page
 //      * page_offset  : Page index

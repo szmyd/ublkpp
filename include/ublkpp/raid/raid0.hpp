@@ -29,6 +29,7 @@ public:
     std::list< int > open_for_uring(int const iouring_device) override;
 
     uint8_t route_size() const override { return ilog2(_max_stripe_cnt); }
+    void idle_transition(ublksrv_queue const*, bool) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
     io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,

@@ -95,6 +95,12 @@ io_result Raid0Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const*
         true, sub_cmd);
 }
 
+void Raid0Disk::idle_transition(ublksrv_queue const* q, bool enter) {
+    for (auto const& stripe : _stripe_array) {
+        stripe->dev->idle_transition(q, enter);
+    }
+}
+
 void Raid0Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     for (auto const& stripe : _stripe_array) {
         if (!stripe->dev->uses_ublk_iouring) stripe->dev->collect_async(q, results);

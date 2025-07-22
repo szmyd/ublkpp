@@ -22,6 +22,8 @@ SISL_OPTION_GROUP(raid1,
 namespace ublkpp {
 using raid1::read_route;
 
+ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3);
+
 // SubCmd decoders
 #define SEND_TO_A (sub_cmd & ((1U << sqe_tgt_data_width) - 2))
 #define SEND_TO_B (sub_cmd | 0b1)
@@ -139,6 +141,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
 
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
+    _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
 
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
@@ -197,6 +200,65 @@ io_result Raid1Disk::__become_clean() {
     return 0;
 }
 
+void Raid1Disk::__resync_task() {
+    using namespace std::chrono_literals;
+    RLOGW("Resync Task started for [vol:{}]", _str_uuid);
+    auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
+    while (IS_DEGRADED) {
+        // Wait to become IDLE
+        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
+            cur_state = static_cast< uint8_t >(resync_state::IDLE);
+            RLOGW("Resync Task Sleeping...")
+            std::this_thread::sleep_for(500ms);
+        }
+        while (0 < _dirty_bitmap->dirty_pages()) {
+            auto [pg_offset, logical_off, sz] = _dirty_bitmap->next_dirty();
+            if (0 == sz) break;
+            auto const lba = logical_off >> params()->basic.logical_bs_shift;
+            RLOGW("Resync Task with clear {}KiB @ [lba:{:x}] from pg:{:0x} [vol:{}]", sz, lba, pg_offset, _str_uuid)
+
+            // TODO DO SOME WORK
+            auto iov = iovec{.iov_base = nullptr, .iov_len = sz};
+            if (auto err = ::posix_memalign(&iov.iov_base, block_size(), sz); 0 != err || nullptr == iov.iov_base)
+                [[unlikely]] { // LCOV_EXCL_START
+                if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
+                RLOGE("Out of Memory while reading superblock!")
+                return;
+            } // LCOV_EXCL_STOP
+            if (auto res = CLEAN_DEVICE->sync_iov(UBLK_IO_OP_READ, &iov, 1, logical_off + raid1::reserved_size); res) {
+                if (auto clear_res =
+                        DIRTY_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, logical_off + raid1::reserved_size);
+                    !clear_res) {
+                    RLOGW("Could not write clean chunks of [sz:{}] [res:{}]", sz, clear_res.error().message());
+                } else {
+                    RLOGD("Cleaned...")
+                    __clean_pages(0, logical_off, sz, nullptr, nullptr);
+                }
+            } else {
+                RLOGE("Could not read Data of [sz:{}] [res:{}]", sz, res.error().message())
+            }
+            free(iov.iov_base);
+
+            RLOGW("Resync Task Sleeping!")
+            while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
+                std::this_thread::sleep_for(50ms);
+            }
+            std::this_thread::sleep_for(100ms);
+            while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
+                if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
+                    cur_state = static_cast< uint8_t >(resync_state::IDLE);
+                    RLOGW("Waiting for IDLE.")
+                }
+                std::this_thread::sleep_for(500ms);
+            }
+        }
+        RLOGW("Resync Completed? Exiting!")
+    }
+    cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
+        ;
+}
+
 io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
@@ -216,14 +278,14 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
         RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
+    std::thread([this] { __resync_task(); }).detach();
     return 0;
 }
 
 io_result Raid1Disk::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* data) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Cleaning pages for [tag:{:x}] [lba:{}|len:{}|sub_cmd:{}] [vol:{}]", data->tag, lba, len,
-          ublkpp::to_string(sub_cmd), _str_uuid);
+    RLOGT("Cleaning pages for [lba:{:x}|len:{}|sub_cmd:{}] [vol:{}]", lba, len, ublkpp::to_string(sub_cmd), _str_uuid);
     auto [page, pg_offset, sz] = _dirty_bitmap->clean_page(addr, len);
     auto res = io_result(0);
     if (page) {
@@ -432,6 +494,31 @@ io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const*
     return __dirty_pages(sub_cmd, addr, len, q, data);
 }
 
+void Raid1Disk::idle_transition(ublksrv_queue const*, bool enter) {
+    using namespace std::chrono_literals;
+    if (enter) {
+        RLOGT("Entering IDLE")
+        auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE))) {
+            if (static_cast< uint8_t >(resync_state::IDLE) == _resync_state.load()) return;
+            std::this_thread::sleep_for(50ms);
+        }
+        RLOGT("IDLE entered")
+    } else {
+        RLOGT("Entering PAUSE")
+        auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
+        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::PAUSE))) {
+            if (static_cast< uint8_t >(resync_state::ACTIVE) == _resync_state.load()) {
+                RLOGT("Interrupting resync...")
+                cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+            }
+            if (static_cast< uint8_t >(resync_state::PAUSE) == _resync_state.load()) break;
+            std::this_thread::sleep_for(50ms);
+        }
+        RLOGT("IDLE exited")
+    }
+}
+
 void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     results.splice(results.end(), std::move(_pending_results[q]));
     if (!_device_a->uses_ublk_iouring) _device_a->collect_async(q, results);
@@ -442,6 +529,8 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
                                     uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("received DISCARD: [tag:{:x}] [lba:{:x}|len:{}] [vol:{}]", data->tag, lba, len, _str_uuid)
+
+    if (static_cast< uint8_t >(resync_state::PAUSE) != _resync_state.load()) idle_transition(q, false);
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
@@ -461,6 +550,8 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     RLOGT("Received {}: [tag:{:x}] [lba:{:x}|len:{}] [sub_cmd:{}] [vol:{}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, len,
           ublkpp::to_string(sub_cmd), _str_uuid)
+
+    if (static_cast< uint8_t >(resync_state::IDLE) != _resync_state.load()) idle_transition(q, false);
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
@@ -486,6 +577,8 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [lba:{:x}|len:{}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len, _str_uuid)
+
+    if (static_cast< uint8_t >(resync_state::IDLE) != _resync_state.load()) idle_transition(nullptr, false);
 
     // READs are a specisub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
