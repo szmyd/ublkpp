@@ -201,12 +201,9 @@ io_result Raid1Disk::__become_clean() {
         RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
     }
     _is_degraded.clear(std::memory_order_release);
-    if (_resync_task.joinable()) {
-        auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED)))
-            ;
-        _resync_task.join();
-    }
+    auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED)))
+        ;
     return 0;
 }
 
@@ -287,6 +284,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
         RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
+    if (_resync_task.joinable()) _resync_task.join();
     _resync_task = std::thread([this] { __resync_task(); });
     return 0;
 }
