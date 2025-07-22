@@ -95,6 +95,48 @@ TEST(Raid1, WriteRetryA) {
     }
 
     {
+        // Same with non-immediate failures
+        auto ublk_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 220 * Ki);
+        ublkpp::sub_cmd_t internal_sub_cmd;
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([&internal_sub_cmd](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
+                                          uint32_t, uint64_t) {
+                EXPECT_TRUE(ublkpp::is_internal(sub_cmd));
+                internal_sub_cmd = sub_cmd;
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                         uint64_t addr) {
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_EQ(addr, (220 * Ki) + reserved_size);
+                return 1;
+            });
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 220 * Ki);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(2, res.value());
+
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
+                         uint64_t addr) {
+                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+                return 1;
+            });
+        res = raid_device.queue_internal_resp(nullptr, &ublk_data, internal_sub_cmd, -5);
+        EXPECT_EQ(1, res.value());
+        EXPECT_TRUE(res);
+        remove_io_data(ublk_data);
+    }
+
+    {
         // Subsequent writes that encompass clean regions should go to the degraded device and dirty new pages if it
         // fails
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
