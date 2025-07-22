@@ -64,6 +64,8 @@ public:
     // Async replies collected here
     virtual void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) = 0;
 
+    virtual void idle_transition(ublksrv_queue const*, bool) {};
+
     virtual io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                       iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res);
 
