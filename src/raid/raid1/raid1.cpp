@@ -235,7 +235,7 @@ io_result Raid1Disk::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
         auto iov = iovec{.iov_base = page, .iov_len = pg_size};
         auto page_addr = (pg_size * pg_offset) + pg_size;
 
-        res = data ? CLEAN_DEVICE->async_iov(q, data, sub_cmd, &iov, 1, page_addr)
+        res = data ? CLEAN_DEVICE->async_iov(q, data, CLEAN_SUBCMD, &iov, 1, page_addr)
                    : CLEAN_DEVICE->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
         if (!res) return res;
     }

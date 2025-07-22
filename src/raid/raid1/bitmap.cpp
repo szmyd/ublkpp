@@ -161,13 +161,14 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
     for (auto bits_left = nr_bits; 0 < bits_left;) {
         auto const bits_to_write = std::min(shift_offset + 1, bits_left);
         bits_left -= bits_to_write;
+        RLOGD("bl: {}  btw: {} so: {}", bits_left, bits_to_write, shift_offset);
         auto const bits_to_clear = htobe64(64 == bits_to_write ? UINT64_MAX
                                                                : (((uint64_t)0b1 << bits_to_write) - 1)
                                                    << (shift_offset - (bits_to_write - 1)));
 
         auto old_word = cur_word->fetch_and(~bits_to_clear, std::memory_order_release);
-        RLOGD("Clearing chunks in page. Old word:\n\t{:064b}\n\t\tMask:\n\t{:064b}\n\t\tNew word\n\t{:064b}", old_word,
-              ~bits_to_clear, cur_word->load());
+        RLOGD("Clearing chunks in page. Old word:\n\t{:064b}\n\t\tMask:\n\t{:064b}\n\t\tNew word\n\t{:064b}",
+              be64toh(old_word), be64toh(~bits_to_clear), be64toh(cur_word->load()));
         ++cur_word;
         shift_offset = 63; // Word offset back to the beginning
     }

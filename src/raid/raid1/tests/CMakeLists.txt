@@ -19,12 +19,10 @@ list(APPEND RAID1_TEST_SRCS
   read_degraded.cpp
   read_failover.cpp
   read_retry.cpp
-  retry_deva.cpp
-  retry_devb.cpp
   retry_failure_deva.cpp
   unknown_op.cpp
-  write_fail_immediate_deva.cpp
-  write_fail_immediate_devb.cpp
+  write_fail.cpp
+  write_retry.cpp
 )
 
 add_subdirectory (bitmap)
