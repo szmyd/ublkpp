@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <thread>
+
 #include <boost/uuid/uuid.hpp>
 #include <sisl/utility/enum.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
@@ -28,6 +30,7 @@ class Raid1Disk : public UblkDisk {
     raid1::read_route _last_read{raid1::read_route::DEVB};
 
     // Active Re-Sync Task
+    std::thread _resync_task;
     std::atomic< uint8_t > _resync_state;
 
     // Asynchronous replies that did not go through io_uring

@@ -22,7 +22,7 @@ SISL_OPTION_GROUP(raid1,
 namespace ublkpp {
 using raid1::read_route;
 
-ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3);
+ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPED = 4);
 
 // SubCmd decoders
 #define SEND_TO_A (sub_cmd & ((1U << sqe_tgt_data_width) - 2))
@@ -164,6 +164,10 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
 }
 
 Raid1Disk::~Raid1Disk() {
+    auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED)))
+        ;
+    if (_resync_task.joinable()) _resync_task.join();
     if (!_sb) return;
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices
@@ -197,6 +201,12 @@ io_result Raid1Disk::__become_clean() {
         RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
     }
     _is_degraded.clear(std::memory_order_release);
+    if (_resync_task.joinable()) {
+        auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED)))
+            ;
+        _resync_task.join();
+    }
     return 0;
 }
 
@@ -204,14 +214,15 @@ void Raid1Disk::__resync_task() {
     using namespace std::chrono_literals;
     RLOGW("Resync Task started for [vol:{}]", _str_uuid);
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
-    while (IS_DEGRADED) {
+    while (static_cast< uint8_t >(resync_state::STOPPED) != cur_state && IS_DEGRADED) {
         // Wait to become IDLE
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
+            if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
             cur_state = static_cast< uint8_t >(resync_state::IDLE);
-            RLOGD("Resync Task Sleeping...")
-            std::this_thread::sleep_for(2s);
+            RLOGT("Resync Task Sleeping...")
+            std::this_thread::sleep_for(1s);
         }
-        while (0 < _dirty_bitmap->dirty_pages()) {
+        while (static_cast< uint8_t >(resync_state::STOPPED) != cur_state && 0 < _dirty_bitmap->dirty_pages()) {
             auto [logical_off, sz] = _dirty_bitmap->next_dirty();
             if (0 == sz) break;
             auto const lba = logical_off >> params()->basic.logical_bs_shift;
@@ -245,11 +256,13 @@ void Raid1Disk::__resync_task() {
                 if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                     cur_state = static_cast< uint8_t >(resync_state::IDLE);
                     RLOGD("Waiting for IDLE.")
+                } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
+                    break;
                 }
             }
         }
-        RLOGW("Resync Completed? Exiting!")
     }
+    RLOGW("Resync Completed? Exiting!")
     cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
         ;
@@ -274,7 +287,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
         RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
-    std::thread([this] { __resync_task(); }).detach();
+    _resync_task = std::thread([this] { __resync_task(); });
     return 0;
 }
 
