@@ -121,8 +121,11 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 
     // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
     // next word, it's unexpected that this will require writing into a third word
-    uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
-    if ((sz > _chunk_size) && (0 != addr) % _chunk_size) ++nr_bits;
+    auto const offset = addr % _chunk_size;
+    auto const left_hand = std::min(_chunk_size - offset, sz);
+    auto const right_hand = (sz - left_hand) % _chunk_size;
+    auto const middle = sz - (left_hand + right_hand);
+    uint32_t const nr_bits = (left_hand ? 1 : 0) + ((middle) / _chunk_size) + (right_hand ? 1 : 0);
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -157,7 +160,11 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
     auto cur_word = cur_page + word_offset;
     // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
     // word, it's unexpected that this will require writing into a third word
-    uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
+    auto const offset = addr % _chunk_size;
+    auto const left_hand = std::min(_chunk_size - offset, sz);
+    auto const right_hand = (sz - left_hand) % _chunk_size;
+    auto const middle = sz - (left_hand + right_hand);
+    uint32_t const nr_bits = (left_hand ? 1 : 0) + ((middle) / _chunk_size) + (right_hand ? 1 : 0);
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
