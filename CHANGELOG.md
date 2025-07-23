@@ -4,41 +4,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.2
+- raid1: Initiate resync task o
+
 ## 0.8.1
-- Improve latency on resync thread
+- raid1: Improve latency on resync thread
 
 ## 0.8.0
-- Active resync thread
+- raid1: Active resync thread
 
-## 0.7.9
+## 0.7.x
 - raid1: Give the BITMAP its own uuid
-
-## 0.7.8
 - raid1: Fix endian encoding of SuperBlock integers
-
-## 0.7.7
 - Fix re-loading dirty device after shutdown
-
-## 0.7.6
 - raid1: Make Bitmap atomic
-
-## 0.7.5
 - raid1: Initialize bitmaps on new array devices
-
-## 0.7.4
 - raid1: Fix degraded discard
 - ublkpp_disk: Added "loop" mode
-
-## 0.7.3
 - raid1: Bitmap Load/Init
-
-## 0.7.2
 - General fixes
-
-## 0.7.1
 - raid1: Writes in degraded mode
-
-## 0.7.0
 - raid1: Extract BITMAP into its own class
 - raid1: Reads in degraded mode
 

@@ -156,9 +156,10 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         return;
     }
 
-    if (write_superblock(*DIRTY_DEVICE, _sb.get())) return;
-    RLOGE("Failed writing SuperBlock to: [{}] becoming degraded. [vol:{}] ", *DIRTY_DEVICE, _str_uuid)
-    if (!__become_degraded(DIRTY_SUBCMD)) {
+    if (write_superblock(*DIRTY_DEVICE, _sb.get())) {
+        // If we're starting degraded, we need to initiate a resync_task
+        if (IS_DEGRADED) _resync_task = std::thread([this] { __resync_task(); });
+    } else if (!__become_degraded(DIRTY_SUBCMD)) {
         throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
     }
 }
