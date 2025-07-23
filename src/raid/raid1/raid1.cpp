@@ -248,11 +248,9 @@ void Raid1Disk::__resync_task() {
             } else {
                 RLOGE("Could not read Data of [sz:{}] [res:{}]", iov.iov_len, res.error().message())
             }
-
-            while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
-                std::this_thread::sleep_for(50ms);
-            }
-            std::this_thread::sleep_for(5ms);
+            while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING)))
+                ;
+            std::this_thread::sleep_for(10us);
             while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
                 if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                     cur_state = static_cast< uint8_t >(resync_state::IDLE);
@@ -514,7 +512,7 @@ void Raid1Disk::idle_transition(ublksrv_queue const*, bool enter) {
         auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE))) {
             if (static_cast< uint8_t >(resync_state::IDLE) == _resync_state.load()) return;
-            std::this_thread::sleep_for(50ms);
+            std::this_thread::sleep_for(10us);
         }
         RLOGT("IDLE entered")
     } else {
@@ -526,7 +524,7 @@ void Raid1Disk::idle_transition(ublksrv_queue const*, bool enter) {
                 cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
             }
             if (static_cast< uint8_t >(resync_state::PAUSE) == _resync_state.load()) break;
-            std::this_thread::sleep_for(50ms);
+            std::this_thread::sleep_for(10us);
         }
         RLOGT("IDLE exited")
     }
