@@ -29,19 +29,30 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
 //      * page_offset  : The page key in our page map (generated if we have a hole currently)
 //      * word_offset  : The uint64_t offset within the raid1::page_size byte array
 //      * shift_offset : The bits to begin setting within the word indicated
+//      * nr_bits      : The number of bits fit in this word
 //      * sz           : The number of bytes to represent as "dirty" from this index
-std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint32_t len,
-                                                                                uint32_t chunk_size) {
+std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint32_t len,
+                                                                                          uint32_t chunk_size) {
     auto const page_width_bits =
         chunk_size * k_page_size * k_bits_in_byte;  // Number of bytes represented by a single page (block)
     auto const page = addr / page_width_bits;       // Which page does this address land in
     auto const page_off = (addr % page_width_bits); // Bytes within the page
     auto const page_bit = (page_off / chunk_size);  // Bit within the page
-    return std::make_tuple(page,                    // Page that address references
-                           page_bit / bits_in_word, // Word in the page LCOV_EXCL_LINE
-                           bits_in_word - (page_bit % bits_in_word) - 1,         // Shift within the Word
-                           std::min((uint64_t)len, (page_width_bits - page_off)) // Tail size of the page
-    );
+    auto const sz = std::min((uint64_t)len, (page_width_bits - page_off));
+
+    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
+    // next word, it's unexpected that this will require writing into a third word
+    auto const alignment = addr % chunk_size;
+    auto const left_hand = std::min(chunk_size - alignment, sz);
+    auto const right_hand = (sz - left_hand) % chunk_size;
+    auto const middle = sz - (left_hand + right_hand);
+    uint32_t const nr_bits = (left_hand ? 1 : 0) + ((middle) / chunk_size) + (right_hand ? 1 : 0);
+
+    return std::make_tuple(page,                                         // Page that address references
+                           page_bit / bits_in_word,                      // Word in the page LCOV_EXCL_LINE
+                           bits_in_word - (page_bit % bits_in_word) - 1, // Shift within the Word
+                           nr_bits,
+                           sz); // Tail size of the page
 }
 
 void Bitmap::init_to(UblkDisk& device) {
@@ -112,20 +123,12 @@ Bitmap::word_t* Bitmap::__get_page(uint64_t offset, bool creat) {
 }
 
 bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
-    auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
+    auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
     // Check for a dirty page
     auto cur_page = __get_page(page_offset);
     if (!cur_page) return false;
 
     auto cur_word = cur_page + word_offset;
-
-    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
-    // next word, it's unexpected that this will require writing into a third word
-    auto const offset = addr % _chunk_size;
-    auto const left_hand = std::min(_chunk_size - offset, sz);
-    auto const right_hand = (sz - left_hand) % _chunk_size;
-    auto const middle = sz - (left_hand + right_hand);
-    uint32_t const nr_bits = (left_hand ? 1 : 0) + ((middle) / _chunk_size) + (right_hand ? 1 : 0);
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -150,7 +153,7 @@ size_t Bitmap::dirty_pages() {
 std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t addr, uint32_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
-    auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
+    auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Get/Create a Page
     auto cur_page = __get_page(page_offset);
@@ -158,13 +161,6 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
     if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
 
     auto cur_word = cur_page + word_offset;
-    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
-    // word, it's unexpected that this will require writing into a third word
-    auto const offset = addr % _chunk_size;
-    auto const left_hand = std::min(_chunk_size - offset, sz);
-    auto const right_hand = (sz - left_hand) % _chunk_size;
-    auto const middle = sz - (left_hand + right_hand);
-    uint32_t const nr_bits = (left_hand ? 1 : 0) + ((middle) / _chunk_size) + (right_hand ? 1 : 0);
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -218,19 +214,12 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
 std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, uint32_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
-    auto [page_offset, word_offset, shift_offset, sz] = calc_bitmap_region(addr, len, _chunk_size);
+    auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Get/Create a Page
     auto cur_page = __get_page(page_offset, true);
     if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
     auto cur_word = cur_page + word_offset;
-    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
-    // word, it's unexpected that this will require writing into a third word
-    auto const offset = addr % _chunk_size;
-    auto const left_hand = std::min(_chunk_size - offset, sz);
-    auto const right_hand = (sz - left_hand) % _chunk_size;
-    auto const middle = sz - (left_hand + right_hand);
-    uint32_t const nr_bits = (left_hand ? 1 : 0) + ((middle) / _chunk_size) + (right_hand ? 1 : 0);
     // Handle update crossing multiple words (optimization potential?)
     bool updated{false};
     for (auto bits_left = nr_bits; 0 < bits_left;) {

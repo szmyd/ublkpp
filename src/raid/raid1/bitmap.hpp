@@ -41,8 +41,8 @@ public:
     std::pair< uint64_t, uint32_t > next_dirty();
 
     // Each bit in the BITMAP represents a single "Chunk" of size chunk_size
-    static std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > calc_bitmap_region(uint64_t addr, uint32_t len,
-                                                                                   uint32_t chunk_size);
+    static std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t >
+    calc_bitmap_region(uint64_t addr, uint32_t len, uint32_t chunk_size);
 
     void init_to(UblkDisk& device);
     void load_from(UblkDisk& device);
