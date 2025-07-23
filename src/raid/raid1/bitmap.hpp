@@ -22,7 +22,7 @@ private:
     map_type_t _page_map;
     std::shared_ptr< word_t > _clean_page;
 
-    uint32_t const _page_width_bits; // Number of bytes represented by a single page (block)
+    uint32_t const _page_width; // Number of bytes represented by a single page (block)
     uint32_t const _num_pages;
 
     word_t* __get_page(uint64_t offset, bool creat = false);

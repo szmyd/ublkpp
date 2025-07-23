@@ -16,8 +16,8 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
         _data_size(data_size),
         _chunk_size(chunk_size),
         _align(align),
-        _page_width_bits(_chunk_size * k_page_size * k_bits_in_byte),
-        _num_pages(_data_size / _page_width_bits + ((0 == _data_size % _page_width_bits) ? 0 : 1)) {
+        _page_width(_chunk_size * k_page_size * k_bits_in_byte),
+        _num_pages(_data_size / _page_width + ((0 == _data_size % _page_width) ? 0 : 1)) {
     void* new_page{nullptr};
     if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
         throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
@@ -179,7 +179,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     auto it = _page_map.begin();
     // Find the first dirty word
     if (_page_map.end() == it) return std::make_pair(0, 0);
-    uint64_t logical_off = k_page_size * it->first;
+    uint64_t logical_off = _page_width * it->first;
 
     // Find the first dirty word
     auto word = 0UL;
