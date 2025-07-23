@@ -219,8 +219,9 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t ad
     auto cur_word = cur_page + word_offset;
     // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the next
     // word, it's unexpected that this will require writing into a third word
-    uint32_t nr_bits = (sz / _chunk_size) + ((0 < (sz % _chunk_size)) ? 1 : 0);
-
+    auto const left_hand = _chunk_size - (addr % _chunk_size);
+    uint32_t const nr_bits =
+        (left_hand ? 1 : 0) + ((sz - left_hand) / _chunk_size) + (((sz - left_hand) % _chunk_size) ? 1 : 0);
     // Handle update crossing multiple words (optimization potential?)
     bool updated{false};
     for (auto bits_left = nr_bits; 0 < bits_left;) {
