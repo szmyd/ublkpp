@@ -65,7 +65,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
     // Reserve space for the superblock/bitmap
-    RLOGI("RAID-1 : reserving {} blocks for SuperBlock & Bitmap",
+    RLOGD("RAID-1 : reserving {} blocks for SuperBlock & Bitmap",
           raid1::reserved_size >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (raid1::reserved_size >> SECTOR_SHIFT);
     if (our_params.basic.dev_sectors > (raid1::k_max_dev_size >> SECTOR_SHIFT)) {
@@ -631,7 +631,6 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
     if (!sb) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     bool was_new{false};
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        RLOGW("Device does not have a valid raid1 superblock! Initializing! [{}] [vol:{}]", device, to_string(uuid))
         memset(sb, 0x00, raid1::k_page_size);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));

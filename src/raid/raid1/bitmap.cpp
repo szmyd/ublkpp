@@ -46,7 +46,7 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(
 
 void Bitmap::init_to(UblkDisk& device) {
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
-    RLOGI("Initializing RAID-1 Bitmaps on: [{}]", device);
+    RLOGD("Initializing RAID-1 Bitmaps on: [{}]", device);
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
     if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
         0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
