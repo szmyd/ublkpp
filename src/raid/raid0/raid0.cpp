@@ -140,8 +140,8 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
         sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
         auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
 
-        RLOGD("Received DISCARD: [tag:{:x}] ublk io [lba:{:x}|len:{}] -> "
-              "[stripe_off:{}|logical_lba:{:x}|logical_len:{}|sub_cmd:{}]",
+        RLOGD("Received DISCARD: [tag:{:0x}] ublk io [lba:{:0x}|len:{:0x}] -> "
+              "[stripe_off:{}|logical_lba:{:0x}|logical_len:{:0x}|sub_cmd:{}]",
               data->tag, lba, len, stripe_off, logical_lba, logical_len, ublkpp::to_string(new_sub_cmd))
         auto res = device->handle_discard(q, data, new_sub_cmd, logical_len, logical_off);
         if (!res) return res;
@@ -216,7 +216,7 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Received {}: [tag:{:x}] ublk io [lba:{:x}|len:{}] [sub_cmd:{}]",
+    RLOGT("Received {}: [tag:{:0x}] ublk io [lba:{:0x}|len:{:0x}] [sub_cmd:{}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, iovecs->iov_len,
           ublkpp::to_string(sub_cmd))
 
@@ -228,8 +228,8 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         [q, data, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
                         uint32_t logical_off) {
             auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
-            RLOGT("Perform {}: [tag:{:x}] ublk aysnc_io -> "
-                  "[stripe_off:{}|logical_lba:{:x}|logical_len:{}|sub_cmd:{}]",
+            RLOGT("Perform {}: [tag:{:0x}] ublk aysnc_io -> "
+                  "[stripe_off:{}|logical_lba:{:0x}|logical_len:{:0x}|sub_cmd:{}]",
                   ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, stripe_off, logical_lba,
                   __iovec_len(iov, iov + nr_iovs), ublkpp::to_string(new_sub_cmd))
             return _stripe_array[stripe_off]->dev->async_iov(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
@@ -247,7 +247,7 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     return __distribute(iovecs, addr,
                         [op, this](uint32_t stripe_off, sub_cmd_t, iovec* iov, uint32_t nr_iovs, uint32_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
-                                  "[stripe_off:{}|logical_sector:{}|logical_len:{}]",
+                                  "[stripe_off:{}|logical_sector:{}|logical_len:{:0x}]",
                                   op == UBLK_IO_OP_READ ? "READ" : "WRITE", stripe_off, logical_off >> SECTOR_SHIFT,
                                   __iovec_len(iov, iov + nr_iovs))
                             return _stripe_array[stripe_off]->dev->sync_iov(op, iov, nr_iovs, logical_off);
@@ -285,13 +285,13 @@ static folly::Expected< raid0::SuperBlock*, std::error_condition > load_superblo
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if ((stripe_size != be32toh(sb->fields.stripe_size)) || (stripe_off != be16toh(sb->fields.stripe_off))) {
-        RLOGE("Superblock does not match given array parameters: Expected [stripe_sz:{:x},stripe_off:{}] != Found "
-              "[stripe_sz:{:x},stripe_off:{}]",
+        RLOGE("Superblock does not match given array parameters: Expected [stripe_sz:{:0x},stripe_off:{}] != Found "
+              "[stripe_sz:{:0x},stripe_off:{}]",
               stripe_size, stripe_off, be32toh(sb->fields.stripe_size), be16toh(sb->fields.stripe_off))
         free(sb);
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
-    RLOGD("Device has v{:0x} superblock [stripe_sz:{:x},stripe_off:{}]", be16toh(sb->header.version), stripe_size,
+    RLOGD("Device has v{:0x} superblock [stripe_sz:{:0x},stripe_off:{}]", be16toh(sb->header.version), stripe_size,
           stripe_off)
 
     // Migrating to latest version
