@@ -102,7 +102,7 @@ TEST(Raid1, WriteRetryA) {
             .Times(1)
             .WillOnce([&internal_sub_cmd](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                           uint32_t, uint64_t) {
-                EXPECT_TRUE(ublkpp::is_internal(sub_cmd));
+                EXPECT_FALSE(ublkpp::is_internal(sub_cmd));
                 internal_sub_cmd = sub_cmd;
                 return 1;
             });

@@ -236,7 +236,7 @@ void Raid1Disk::__resync_task() {
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         if (0 == sz) break;
         iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
-        auto const lba = logical_off >> params()->basic.logical_bs_shift;
+        auto const lba = (logical_off + raid1::reserved_size) >> params()->basic.logical_bs_shift;
         if (0 == cnt++ % 64) {
             RLOGD("Resync Task #{} will clear [sz:{}KiB|lba:{:0x}] [total:{}KiB] from [vol:{}]", cnt, iov.iov_len / Ki,
                   lba, total_cleaned / Ki, _str_uuid)
@@ -448,7 +448,7 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
         }
         // We will go ahead and attempt this WRITE on a known degraded device,
         // set this flag so we can clear any bits in the bitmap should is succeed
-        sub_cmd = set_flags(sub_cmd, sub_cmd_flags::INTERNAL);
+        if (totally_aligned) sub_cmd = set_flags(sub_cmd, sub_cmd_flags::INTERNAL);
     }
 
     // Otherwise tag the replica sub_cmd so we don't include its value in the target result
