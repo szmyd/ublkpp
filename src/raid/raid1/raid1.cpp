@@ -236,7 +236,7 @@ void Raid1Disk::__resync_task() {
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         if (0 == sz) break;
         iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
-        auto const lba = logical_off >> params()->basic.logical_bs_shift;
+        auto const lba = (logical_off + raid1::reserved_size) >> params()->basic.logical_bs_shift;
         if (0 == cnt++ % 64) {
             RLOGD("Resync Task #{} will clear [sz:{}KiB|lba:{:0x}] [total:{}KiB] from [vol:{}]", cnt, iov.iov_len / Ki,
                   lba, total_cleaned / Ki, _str_uuid)
@@ -433,15 +433,12 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
     }
     if (replica_write) return res;
 
-    // If we are degraded we need to process this differently depending on the BITMAP state
-    if (IS_DEGRADED) {
+    // If the address or length are not entirely aligned by the chunk size and there are dirty bits, then try
+    // and dirty more pages, the recovery strategy will need to correct this later
+    if (IS_DEGRADED && _dirty_bitmap->is_dirty(addr, len)) {
         auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
         auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
-
-        // If the address or length are not entirely aligned by the chunk size and there are dirty bits, then try
-        // and dirty more pages, the recovery strategy will need to correct this later
-        if ((!totally_aligned && _dirty_bitmap->is_dirty(addr, len)) ||
-            0 < SISL_OPTIONS["no_write_to_dirty"].as< bool >()) {
+        if (!totally_aligned || (0 < SISL_OPTIONS["no_write_to_dirty"].as< bool >())) {
             auto dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
             if (!dirty_res) return dirty_res;
             return res.value() + dirty_res.value();
