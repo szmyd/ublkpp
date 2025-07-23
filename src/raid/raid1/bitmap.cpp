@@ -138,7 +138,9 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 }
 
 size_t Bitmap::dirty_pages() {
-    std::erase_if(_page_map, [](const auto& it) { return (0 == isal_zero_detect(it.second.get(), k_page_size)); });
+    auto cnt =
+        std::erase_if(_page_map, [](const auto& it) { return (0 == isal_zero_detect(it.second.get(), k_page_size)); });
+    if (0 < cnt) { RLOGD("Dropped {} page(s) from the Bitmap", cnt); }
     return _page_map.size();
 }
 
@@ -193,7 +195,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     if (0 != word) {
         auto set_bit = __builtin_clzl(word);
         logical_off += set_bit * _chunk_size; // Adjust for bit within word
-        RLOGD("addr: {:x} word: {:064b}", logical_off, word);
+        RLOGT("addr: {:0x} word: {:064b}", logical_off, word);
         // Consume as many consecutive set-bits as we can in the rest of the word
         while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
             sz += _chunk_size;

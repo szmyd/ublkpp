@@ -63,8 +63,8 @@ TEST(Raid1, CleanBitmap) {
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
                 EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-                EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
-                EXPECT_LT(addr, reserved_size);                                               // Expect write to bitmap!
+                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
                 EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size));
                 return 1;
             });

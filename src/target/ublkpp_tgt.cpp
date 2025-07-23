@@ -260,11 +260,11 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
 
     // Error should be returned regardless of other responses
     if (0 > ublkpp_io->ret_val) {
-        TLOGT("I/O result ignored [tag:{:x}|sub_cmd:{}] [sub_cmds_remain:{}]", data->tag, to_string(old_cmd),
+        TLOGT("I/O result ignored [tag:{:0x}|sub_cmd:{}] [sub_cmds_remain:{}]", data->tag, to_string(old_cmd),
               ublkpp_io->sub_cmds)
         return;
     }
-    TLOGT("I/O result: [{}] [tag:{:x}|sub_cmd:{}] [sub_cmds_remain:{}]", sub_cmd_res, data->tag, to_string(old_cmd),
+    TLOGT("I/O result: [{}] [tag:{:0x}|sub_cmd:{}] [sub_cmds_remain:{}]", sub_cmd_res, data->tag, to_string(old_cmd),
           ublkpp_io->sub_cmds)
 
     if (0 <= sub_cmd_res) {
@@ -282,14 +282,14 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     // operation. This provides the context to the RAID layers to make intelligent decisions for a retried
     // sub_cmd.
     auto const sub_cmd = set_flags(old_cmd, sub_cmd_flags::RETRIED);
-    TLOGD("Retrying portion of I/O [res:{}] [tag:{:x}] [sub_cmd:{}]", sub_cmd_res, data->tag, to_string(sub_cmd))
+    TLOGD("Retrying portion of I/O [res:{}] [tag:{:0x}] [sub_cmd:{}]", sub_cmd_res, data->tag, to_string(sub_cmd))
     auto io_res = device->queue_tgt_io(q, data, sub_cmd);
 
     // Submit to io_uring before yielding to make iovecs that are thread_local stable
     io_uring_submit(q->ring_ptr);
 
     if (!io_res) {
-        TLOGE("Retry Failed Immediately on I/O [tag:{:x}] [sub_cmd:{}] [err:{}]", data->tag, to_string(sub_cmd),
+        TLOGE("Retry Failed Immediately on I/O [tag:{:0x}] [sub_cmd:{}] [err:{}]", data->tag, to_string(sub_cmd),
               io_res.error().message())
         ublkpp_io->ret_val = sub_cmd_res;
         return;
@@ -317,9 +317,9 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     if (io_res) {
         ublkpp_io->ret_val = 0;
         ublkpp_io->sub_cmds = io_res.value();
-        TLOGT("I/O [tag:{:x}] [sub_ios:{}]", data->tag, ublkpp_io->sub_cmds)
+        TLOGT("I/O [tag:{:0x}] [sub_ios:{}]", data->tag, ublkpp_io->sub_cmds)
     } else
-        TLOGD("IO Failed Immediately to queue io [tag:{:x}], err: [{}]", data->tag, io_res.error().message())
+        TLOGD("IO Failed Immediately to queue io [tag:{:0x}], err: [{}]", data->tag, io_res.error().message())
 
     // For each sub_cmd enqueued, we expect a response to be processed.
     while (0 < ublkpp_io->sub_cmds) {
@@ -329,9 +329,9 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
 
     // Operation is complete, result is in io_res
     if (0 > ublkpp_io->ret_val) [[unlikely]] {
-        TLOGE("Returning error for [tag:{:x}] [res:{}]", data->tag, ublkpp_io->ret_val)
+        TLOGE("Returning error for [tag:{:0x}] [res:{}]", data->tag, ublkpp_io->ret_val)
     } else {
-        TLOGT("I/O complete [tag:{:x}] [res:{}]", data->tag, ublkpp_io->ret_val)
+        TLOGT("I/O complete [tag:{:0x}] [res:{}]", data->tag, ublkpp_io->ret_val)
     }
     ublksrv_complete_io(q, data->tag, ublkpp_io->ret_val);
 }
@@ -380,7 +380,7 @@ static void handle_event(ublksrv_queue const* q) {
 
 static void idle_transition(ublksrv_queue const* q, bool enter) {
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    TLOGI("Idle Trans: {}", enter)
+    TLOGT("Idle Trans: {}", enter)
     tgt->device->idle_transition(q, enter);
 }
 
