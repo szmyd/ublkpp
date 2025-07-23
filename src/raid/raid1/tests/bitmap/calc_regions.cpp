@@ -13,7 +13,7 @@ TEST(Raid1, CalcBitmapRegions) {
     using ublkpp::raid1::Bitmap;
     // Test simple first chunk dirty
     {
-        auto [page_offset, word_offset, shift_offset, sz] = Bitmap::calc_bitmap_region(0, 4 * Ki, chunk_size);
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] = Bitmap::calc_bitmap_region(0, 4 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(63, shift_offset);
@@ -22,91 +22,103 @@ TEST(Raid1, CalcBitmapRegions) {
 
     // Still in first chunk
     {
-        auto [page_offset, word_offset, shift_offset, sz] = Bitmap::calc_bitmap_region(4 * Ki, chunk_size, chunk_size);
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
+            Bitmap::calc_bitmap_region(4 * Ki, chunk_size, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(63, shift_offset);
+        EXPECT_EQ(2, nr_bits);
         EXPECT_EQ(chunk_size, sz);
     }
 
     // Second chunk (still in first word and first page)
     {
-        auto [page_offset, word_offset, shift_offset, sz] = Bitmap::calc_bitmap_region(chunk_size, 16 * Ki, chunk_size);
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
+            Bitmap::calc_bitmap_region(chunk_size, 16 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(62, shift_offset);
+        EXPECT_EQ(1, nr_bits);
         EXPECT_EQ(16 * Ki, sz);
     }
 
     // Last bit (chunk) of the first word and page
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             Bitmap::calc_bitmap_region((chunk_size * 64) - 4 * Ki, 16 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(0, shift_offset);
+        EXPECT_EQ(2, nr_bits);
         EXPECT_EQ(16 * Ki, sz);
     }
 
     // Middle bit (chunk) of the first word and page of differing chunk size
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             Bitmap::calc_bitmap_region((chunk_size * 64) - 4 * Ki, 16 * Ki, chunk_size * 2);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(32, shift_offset);
+        EXPECT_EQ(2, nr_bits);
         EXPECT_EQ(16 * Ki, sz);
     }
 
     // Second word; first Chunk
     {
-        auto [page_offset, word_offset, shift_offset, sz] = Bitmap::calc_bitmap_region(word_width, 16 * Ki, chunk_size);
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
+            Bitmap::calc_bitmap_region(word_width, 16 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(1, word_offset);
         EXPECT_EQ(63, shift_offset);
+        EXPECT_EQ(1, nr_bits);
         EXPECT_EQ(16 * Ki, sz);
     }
 
     // Second page, all in the first word
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             Bitmap::calc_bitmap_region(page_width, 128 * Ki, chunk_size);
         EXPECT_EQ(1, page_offset);
         EXPECT_EQ(0, word_offset);
         EXPECT_EQ(63, shift_offset);
+        EXPECT_EQ(4, nr_bits);
         EXPECT_EQ(128 * Ki, sz);
     }
 
     // First page last word and bit, sz is truncated at page boundary
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             Bitmap::calc_bitmap_region(page_width - (chunk_size), 128 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(511, word_offset);
         EXPECT_EQ(0, shift_offset);
+        EXPECT_EQ(1, nr_bits);
         EXPECT_EQ(chunk_size, sz);
     }
 
     // First page, last word and bit offset into chunk, truncated at page boundary
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             Bitmap::calc_bitmap_region(page_width - (4 * Ki), 12 * Ki, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(511, word_offset);
         EXPECT_EQ(0, shift_offset);
+        EXPECT_EQ(1, nr_bits);
         EXPECT_EQ(4 * Ki, sz);
     }
 
     // First page, last word and bit offset into chunk, truncated at page boundary
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             Bitmap::calc_bitmap_region(page_width - (4 * Ki), 2 * chunk_size, chunk_size);
         EXPECT_EQ(0, page_offset);
         EXPECT_EQ(511, word_offset);
         EXPECT_EQ(0, shift_offset);
+        EXPECT_EQ(1, nr_bits);
         EXPECT_EQ(4 * Ki, sz);
         {
-            auto [pg_offset2, word_offset2, shift_offset2, sz2] =
+            auto [pg_offset2, word_offset2, shift_offset2, nr_bits, sz2] =
                 Bitmap::calc_bitmap_region(page_width - (4 * Ki) + (sz), (2 * chunk_size) - sz, chunk_size);
             EXPECT_EQ(1, pg_offset2);
             EXPECT_EQ(0, word_offset2);
@@ -117,11 +129,12 @@ TEST(Raid1, CalcBitmapRegions) {
 
     // Third page, middle of second word
     {
-        auto [page_offset, word_offset, shift_offset, sz] =
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             Bitmap::calc_bitmap_region((page_width * 2) + word_width + (3 * chunk_size), 5 * chunk_size, chunk_size);
         EXPECT_EQ(2, page_offset);
         EXPECT_EQ(1, word_offset);
         EXPECT_EQ(60, shift_offset);
+        EXPECT_EQ(5, nr_bits);
         EXPECT_EQ(5 * chunk_size, sz);
     }
 }
