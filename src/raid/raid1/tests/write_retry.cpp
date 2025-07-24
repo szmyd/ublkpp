@@ -63,13 +63,9 @@ TEST(Raid1, WriteRetryA) {
     }
 
     {
-        // Subsequent unaligned writes to clean regions should go to the degraded device and dirty new pages
+        // Subsequent unaligned writes to clean regions should not go to the degraded device and dirty new pages
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
-            .Times(1)
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-            });
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
             .Times(2)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
@@ -92,6 +88,22 @@ TEST(Raid1, WriteRetryA) {
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(2, res.value());
+    }
+
+    {
+        // Make Device A avail again
+        iovec iov{.iov_base = nullptr, .iov_len = 12 * Ki};
+        EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+            .Times(1)
+            .WillOnce([](uint8_t, iovec* iovecs, uint32_t, uint64_t addr) {
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+                return iovecs->iov_len;
+            });
+        auto res = raid_device.handle_internal(nullptr, nullptr, 0b100, &iov, 1, 4 * Ki, 0);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
     }
 
     {
@@ -269,13 +281,9 @@ TEST(Raid1, WriteRetryB) {
     compls.clear();
 
     {
-        // Subsequent unaligned writes to clean regions should go to the degraded device and dirty new pages
+        // Subsequent unaligned writes to clean regions should not go to the degraded device and dirty new pages
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
-            .Times(1)
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
             .Times(3)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
@@ -306,6 +314,22 @@ TEST(Raid1, WriteRetryB) {
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(3, res.value());
+    }
+
+    {
+        // Make Device B avail again
+        iovec iov{.iov_base = nullptr, .iov_len = 12 * Ki};
+        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+            .Times(1)
+            .WillOnce([](uint8_t, iovec* iovecs, uint32_t, uint64_t addr) {
+                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
+                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+                return iovecs->iov_len;
+            });
+        auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 64 * Ki, 0);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
     }
 
     {
