@@ -134,7 +134,8 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
     for (auto bits_left = nr_bits; 0 < bits_left;) {
         auto const bits_to_read = std::min(shift_offset + 1, bits_left);
         auto const bits_to_check =
-            htobe64((((uint64_t)0b1 << bits_to_read) - 1) << (shift_offset - (bits_to_read - 1)));
+            htobe64(64 == bits_to_read ? UINT64_MAX
+                                       : (((uint64_t)0b1 << bits_to_read) - 1) << (shift_offset - (bits_to_read - 1)));
         bits_left -= bits_to_read;
         if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_check)) return true;
         ++cur_word;

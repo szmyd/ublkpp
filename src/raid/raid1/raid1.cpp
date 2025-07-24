@@ -382,7 +382,7 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
         // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
-    // Record this degraded WRITE in the bitmap, result is # of async writes enqueued
+    // Record this degraded operation in the bitmap, result is # of async writes enqueued
     io_result dirty_res;
     if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
     dirty_res = __dirty_pages(sub_cmd, addr, len, q, async_data);
@@ -546,7 +546,9 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 
     return __replicate(
         sub_cmd,
-        [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) {
+        [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) -> io_result {
+            // Discard does not support internal commands, we can safely ignore these optimistic operations
+            if (is_internal(scmd)) return 0;
             return d.handle_discard(q, data, scmd, len, addr + raid1::reserved_size);
         },
         addr, len, q, data);
