@@ -10,6 +10,7 @@ list(APPEND RAID1_TEST_SRCS
   bitmap/load_fail.cpp
   bitmap/mismatched.cpp
   bitmap/multiword.cpp
+  bitmap/next_dirty.cpp
   bitmap/update_fail.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)
