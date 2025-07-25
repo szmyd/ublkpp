@@ -15,11 +15,13 @@ struct SuperBlock;
 ENUM(read_route, uint8_t, EITHER = 0, DEVA = 1, DEVB = 2);
 } // namespace raid1
 
+class MirrorDevice;
+
 class Raid1Disk : public UblkDisk {
     std::string _str_uuid;
 
-    std::shared_ptr< UblkDisk > _device_a;
-    std::shared_ptr< UblkDisk > _device_b;
+    std::shared_ptr< MirrorDevice > _device_a;
+    std::shared_ptr< MirrorDevice > _device_b;
 
     // Persistent state
     std::atomic_flag _is_degraded;
