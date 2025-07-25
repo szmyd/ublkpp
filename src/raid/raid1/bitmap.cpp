@@ -123,23 +123,27 @@ Bitmap::word_t* Bitmap::__get_page(uint64_t offset, bool creat) {
 }
 
 bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
-    auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
-    // Check for a dirty page
-    auto cur_page = __get_page(page_offset);
-    if (!cur_page) return false;
+    for (auto off = 0U; len > off;) {
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
+            calc_bitmap_region(addr + off, len - off, _chunk_size);
+        off += sz;
+        // Check for a dirty page
+        auto cur_page = __get_page(page_offset);
+        if (!cur_page) continue;
 
-    auto cur_word = cur_page + word_offset;
+        auto cur_word = cur_page + word_offset;
 
-    // Handle update crossing multiple words (optimization potential?)
-    for (auto bits_left = nr_bits; 0 < bits_left;) {
-        auto const bits_to_read = std::min(shift_offset + 1, bits_left);
-        auto const bits_to_check =
-            htobe64(64 == bits_to_read ? UINT64_MAX
-                                       : (((uint64_t)0b1 << bits_to_read) - 1) << (shift_offset - (bits_to_read - 1)));
-        bits_left -= bits_to_read;
-        if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_check)) return true;
-        ++cur_word;
-        shift_offset = bits_in_word - 1; // Word offset back to the beginning
+        // Handle update crossing multiple words (optimization potential?)
+        for (auto bits_left = nr_bits; 0 < bits_left;) {
+            auto const bits_to_read = std::min(shift_offset + 1, bits_left);
+            auto const bits_to_check = htobe64(64 == bits_to_read ? UINT64_MAX
+                                                                  : (((uint64_t)0b1 << bits_to_read) - 1)
+                                                       << (shift_offset - (bits_to_read - 1)));
+            bits_left -= bits_to_read;
+            if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_check)) return true;
+            ++cur_word;
+            shift_offset = bits_in_word - 1; // Word offset back to the beginning
+        }
     }
     return false;
 }
