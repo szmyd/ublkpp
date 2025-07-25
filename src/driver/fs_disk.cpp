@@ -9,17 +9,32 @@ extern "C" {
 }
 
 #include <fstream>
+#include <random>
 
 #include <sisl/logging/logging.h>
+#include <sisl/options/options.h>
 #include <ublksrv_utils.h>
 #include <ublksrv.h>
 
 #include "fs_disk_impl.hpp"
 #include "lib/logging.hpp"
 
+SISL_OPTION_GROUP(fs_disk,
+                  (random_errors, "", "random_errors", "Inject random errors into some devices",
+                   cxxopts::value< bool >(), ""))
 namespace ublkpp {
 
+static uint64_t k_rand_error{0};
+static uint64_t k_io_cnt{0};
+
 FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
+    if (0 != SISL_OPTIONS["random_errors"].count()) {
+        std::random_device r;
+        std::default_random_engine e1(r());
+        std::uniform_int_distribution< uint64_t > uniform_dist(1, 4);
+        if (0 == k_rand_error) k_rand_error = uniform_dist(e1) * 17;
+    }
+
     auto const str_path = _path.native();
     _fd = open(str_path.c_str(), O_RDWR);
     if (_fd < 0) {
@@ -148,6 +163,15 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     auto const lba = addr >> params()->basic.logical_bs_shift;
     DLOGT("{} {} : [tag:{:0x}] ublk io [lba:{:0x}|len:{:0x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), data->tag, lba, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
+    if (0 != SISL_OPTIONS["random_errors"].count()) [[unlikely]] {
+        // Random errors on even disks
+        if ((UBLK_IO_OP_WRITE == op) && !is_internal(sub_cmd) && !is_retry(sub_cmd) && (0 == sub_cmd % 2) &&
+            (0 == (k_io_cnt++ % k_rand_error))) {
+            DLOGE("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}]", _path.native(), lba,
+                  __iovec_len(iovecs, iovecs + nr_vecs))
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        }
+    }
     auto sqe = next_sqe(q);
 
     if (UBLK_IO_OP_READ == op) {
