@@ -172,3 +172,32 @@ TEST(Raid1, WriteFailImmediateDevB) {
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 }
+
+// Immediate Write Fail
+TEST(Raid1, WriteFailImmediateBoth) {
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+
+    {
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce(
+                [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
+                    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce(
+                [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
+                    return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                });
+        EXPECT_TO_WRITE_SB(device_b);
+
+        auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+        remove_io_data(ublk_data);
+        ASSERT_FALSE(res);
+    }
+    EXPECT_TO_WRITE_SB_F(device_b, true);
+}
