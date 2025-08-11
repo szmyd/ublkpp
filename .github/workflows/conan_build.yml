@@ -20,6 +20,8 @@ jobs:
         exclude:
           - build-type: Debug
             prerelease: "False"
+          - build-type: Release
+            prerelease: "True"
           - build-type: Debug
             tooling: None
           - build-type: Debug

@@ -64,4 +64,12 @@ TEST(Raid0, OpenDevices) {
     auto const internal_route = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100000}, ublkpp::sub_cmd_flags::INTERNAL);
     raid_device.queue_internal_resp(nullptr, &ublk_data, internal_route, 0);
     remove_io_data(ublk_data);
+
+    EXPECT_CALL(*device_a, idle_transition(nullptr, true)).Times(1);
+    EXPECT_CALL(*device_b, idle_transition(nullptr, true)).Times(1);
+    raid_device.idle_transition(nullptr, true);
+
+    EXPECT_CALL(*device_a, idle_transition(nullptr, false)).Times(1);
+    EXPECT_CALL(*device_b, idle_transition(nullptr, false)).Times(1);
+    raid_device.idle_transition(nullptr, false);
 }
