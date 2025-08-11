@@ -57,9 +57,11 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         _str_uuid(boost::uuids::to_string(uuid)),
         _device_a(std::make_shared< MirrorDevice >(std::move(dev_a))),
         _device_b(std::make_shared< MirrorDevice >(std::move(dev_b))) {
-    direct_io = true;
+    direct_io = true; // RAID-1 requires DIO
+
     // We enqueue async responses for RAID1 retries even if our underlying devices use uring
     uses_ublk_iouring = false;
+
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
@@ -210,6 +212,10 @@ Raid1Disk::~Raid1Disk() {
             RLOGW("Write clean_unmount failed [vol:{}]", _str_uuid)
         }
     }
+}
+
+bool Raid1Disk::contains(std::string const& id) const {
+    return _device_a->disk->contains(id) || _device_b->disk->contains(id);
 }
 
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {

@@ -13,7 +13,7 @@ TEST(Raid0, IdenticalDeviceProbing) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
     EXPECT_EQ(raid_device.capacity(), (3 * Gi) - (32 * 3 * Ki));
-    EXPECT_STREQ(raid_device.type().c_str(), "Raid0");
+    EXPECT_STREQ(raid_device.id().c_str(), "RAID0");
 
     // CanDiscard and DirectIO `true` be default.
     EXPECT_EQ(raid_device.can_discard(), true);

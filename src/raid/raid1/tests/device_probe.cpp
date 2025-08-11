@@ -11,7 +11,7 @@ TEST(Raid1, IdenticalDeviceProbing) {
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     EXPECT_EQ(raid_device.capacity(), (Gi)-reserved_size);
-    EXPECT_STREQ(raid_device.type().c_str(), "Raid1");
+    EXPECT_STREQ(raid_device.id().c_str(), "RAID1");
 
     // CanDiscard and DirectIO `true` be default.
     EXPECT_EQ(raid_device.can_discard(), true);

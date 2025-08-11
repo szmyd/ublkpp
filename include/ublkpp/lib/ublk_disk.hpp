@@ -53,7 +53,8 @@ public:
     // Internal result response
     io_result queue_internal_resp(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, int res);
 
-    virtual std::string type() const = 0;
+    virtual std::string id() const = 0;
+    virtual bool contains(std::string const& id) const = 0;
 
     /// Device Specific I/O Handlers
     virtual std::list< int > open_for_uring(int const iouring_device_start) = 0;

@@ -73,6 +73,20 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
 
 Raid0Disk::~Raid0Disk() = default;
 
+std::shared_ptr< UblkDisk > Raid0Disk::get_device(std::string const& dev_id) const {
+    for (auto& stripe : _stripe_array) {
+        if (stripe->dev->contains(dev_id)) return stripe->dev;
+    }
+    return nullptr;
+}
+
+bool Raid0Disk::contains(std::string const& id) const {
+    for (auto& stripe : _stripe_array) {
+        if (stripe->dev->contains(id)) return true;
+    }
+    return false;
+}
+
 std::list< int > Raid0Disk::open_for_uring(int const iouring_device_start) {
     auto fds = std::list< int >();
     for (auto& stripe : _stripe_array) {
@@ -269,7 +283,8 @@ static folly::Expected< raid0::SuperBlock*, std::error_condition > load_superblo
 
     // Check for MAGIC, initialize SB if missing
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        RLOGW("Device does not have a valid raid0 superblock! Initializing! [vol:{}]", to_string(uuid))
+        RLOGW("Device does not have a valid raid0 superblock! Initializing! [stripe_size:{}KiB, vol:{}]",
+              stripe_size / Ki, to_string(uuid))
         memset(sb, 0x00, raid0::SuperBlock::SIZE);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));

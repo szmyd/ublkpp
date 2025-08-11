@@ -235,7 +235,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t ad
         bits_left -= bits_to_write;
         auto const was = cur_word->fetch_or(bits_to_set, std::memory_order_release);
         ++cur_word;
-        shift_offset = bits_in_word - 1; // Word offset back to the beginning
+        shift_offset = bits_in_word - 1;                  // Word offset back to the beginning
         if ((was & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
         updated = true;
     }

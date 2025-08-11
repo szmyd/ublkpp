@@ -162,6 +162,10 @@ iSCSIDisk::iSCSIDisk(std::string const& url) {
 
 iSCSIDisk::~iSCSIDisk() = default;
 
+std::string iSCSIDisk::id() const { return _session->url->target; }
+
+bool iSCSIDisk::contains(std::string const& id) const { return std::string(_session->url->target) == id; }
+
 // Initialize our event loop before we start getting I/O
 std::list< int > iSCSIDisk::open_for_uring(int const) {
     using namespace std::chrono_literals;

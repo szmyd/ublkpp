@@ -32,7 +32,8 @@ public:
             our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         direct_io = test_params.direct_io;
     }
-    std::string type() const override { return std::string("TestDisk"); }
+    std::string id() const override { return std::string("TestDisk"); }
+    bool contains(std::string const& id) const override { return this->id() == id; }
 
     MOCK_METHOD(std::list< int >, open_for_uring, (int const), (override));
     MOCK_METHOD(io_result, handle_internal,

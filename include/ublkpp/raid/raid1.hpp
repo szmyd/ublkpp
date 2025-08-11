@@ -56,9 +56,15 @@ public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);
     ~Raid1Disk() override;
 
+    /// Raid1Disk API
+    /// =============
+
+    /// =============
+
     /// UBlkDisk Interface Overrides
     /// ============================
-    std::string type() const override { return "Raid1"; }
+    std::string id() const override { return "RAID1"; }
+    bool contains(std::string const& id) const override;
     std::list< int > open_for_uring(int const iouring_device) override;
 
     uint8_t route_size() const override { return 1; }

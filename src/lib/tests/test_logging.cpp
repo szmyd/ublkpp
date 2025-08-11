@@ -22,7 +22,7 @@ TEST(Logging, FlagSetting) {
 TEST(UblkDisk, ToString) {
     auto test_disk = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = ublkpp::Gi});
     LOGINFO("Test disk: {}", test_disk);
-    EXPECT_STREQ("TestDisk", test_disk->type().c_str());
+    EXPECT_STREQ("TestDisk", test_disk->id().c_str());
 }
 
 int main(int argc, char* argv[]) {

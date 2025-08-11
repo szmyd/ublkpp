@@ -24,8 +24,16 @@ public:
               std::vector< std::shared_ptr< UblkDisk > >&& disks);
     ~Raid0Disk() override;
 
+    /// Raid0Disk API
+    /// =============
+    std::shared_ptr< UblkDisk > get_device(std::string const& dev_id) const;
     uint32_t stripe_size() const { return _stripe_size; }
-    std::string type() const override { return "Raid0"; }
+    /// =============
+
+    /// UBlkDisk Interface Overrides
+    /// ============================
+    std::string id() const override { return "RAID0"; }
+    bool contains(std::string const& id) const override;
     std::list< int > open_for_uring(int const iouring_device) override;
 
     uint8_t route_size() const override { return ilog2(_max_stripe_cnt); }
@@ -42,5 +50,6 @@ public:
                         uint32_t nr_vecs, uint64_t addr) override;
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
+    /// ============================
 };
 } // namespace ublkpp
