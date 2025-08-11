@@ -4,22 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.8.5
+## 0.9.1
+- raid0: Fix leak on invalid superblock
+
+## 0.9.0
+- raid1: Avoid I/O attempts on known degraded devices
+
+## 0.8.x
 - raid1-bitmap: Fix word wrapping on dirty words
-
-## 0.8.4
 - raid1: Do not attempt discard on degraded devices
-
-## 0.8.3
 - raid1: Bugs discovered during testing
-
-## 0.8.2
 - raid1: Initiate resync task
-
-## 0.8.1
 - raid1: Improve latency on resync thread
-
-## 0.8.0
 - raid1: Active resync thread
 
 ## 0.7.x
