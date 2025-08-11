@@ -221,11 +221,38 @@ Raid1Disk::~Raid1Disk() {
 
 std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device_id,
                                                    std::shared_ptr< UblkDisk > new_device) {
-    auto new_mirror = std::make_shared< MirrorDevice >(_uuid, new_device);
-    if (_device_a->disk->contains(old_device_id))
+    if (!new_device->direct_io) return new_device;
+    auto& our_params = *params();
+    if (our_params.basic.dev_sectors > new_device->params()->basic.dev_sectors ||
+        our_params.basic.logical_bs_shift < new_device->params()->basic.logical_bs_shift) {
+        RLOGE("Refusing to use device, requires: [lbs<={} && cap>={}Ki]!", 1 << our_params.basic.logical_bs_shift,
+              (our_params.basic.dev_sectors << SECTOR_SHIFT) / Ki)
+        return new_device;
+    }
+
+    if (IS_DEGRADED && CLEAN_DEVICE->disk->contains(old_device_id)) {
+        RLOGE("Refusing to replace working mirror from degraded device!")
+        return new_device;
+    }
+
+    // Write the superblock and clear the BITMAP region of the new device before usage
+    std::shared_ptr< MirrorDevice > new_mirror;
+    try {
+        new_mirror = std::make_shared< MirrorDevice >(_uuid, new_device);
+        _dirty_bitmap->init_to(*new_mirror->disk);
+    } catch (std::runtime_error const& e) { return new_device; }
+
+    if (_device_a->disk->contains(old_device_id)) {
         _device_a.swap(new_mirror);
-    else if (_device_b->disk->contains(old_device_id))
+        __become_degraded(0U);
+    } else if (_device_b->disk->contains(old_device_id)) {
         _device_b.swap(new_mirror);
+        __become_degraded(1U << _device_b->disk->route_size());
+    }
+    write_superblock(*DIRTY_DEVICE->disk, _sb.get());
+    // TODO what's the right thing to do here if this fails?
+    __dirty_pages(0U, 0, capacity(), nullptr, nullptr);
+
     return new_mirror->disk;
 }
 
