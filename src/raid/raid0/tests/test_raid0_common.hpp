@@ -1,6 +1,8 @@
 #pragma once
 
 #include <boost/uuid/random_generator.hpp>
+#include <boost/uuid/string_generator.hpp>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <ublksrv.h>
@@ -15,6 +17,21 @@ using ::testing::Return;
 using ::ublkpp::Gi;
 using ::ublkpp::io_result;
 using ::ublkpp::UblkDisk;
+
+// This RAID0 header is copied to simulate loading a previous clean device
+static const ublkpp::raid0::SuperBlock normal_superblock =
+    {.header = {.magic = {0127, 0345, 072, 0211, 0254, 033, 070, 0146, 0125, 0377, 0204, 065, 0131, 0120, 0306, 047},
+                .version = htobe16(1),
+                .uuid = {0xad, 0xa4, 0x07, 0x37, 0x30, 0xe3, 0x49, 0xfe, 0x99, 0x42, 0x5a, 0x28, 0x7d, 0x71, 0xeb,
+                         0x3f}},
+     .fields =
+         {
+             .stripe_off = 0,
+             .stripe_size = htobe32(128 * Ki),
+         },
+     ._reserved = {0x00}};
+
+static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
 
 #define EXPECT_SYNC_OP(OP, device, fail, sz, off)                                                                      \
     EXPECT_CALL(*(device), sync_iov(OP, _, _, _))                                                                      \
