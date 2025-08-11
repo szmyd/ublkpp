@@ -10,6 +10,8 @@ extern "C" {
 
 namespace ublkpp::raid0 {
 
+constexpr auto k_page_size = 4 * Ki;
+
 inline auto next_subcmd(uint32_t const stride_width, uint32_t const stripe_size, uint64_t const addr,
                         uint32_t const len) {
     // If single disk, nothing needed
@@ -48,7 +50,7 @@ inline auto merged_subcmds(uint32_t const stride_width, uint32_t const stripe_si
 
 #ifdef __LITTLE_ENDIAN
 struct __attribute__((__packed__)) SuperBlock {
-    static constexpr auto SIZE = 4 * Ki;
+    static constexpr auto SIZE = k_page_size;
     struct {
         uint8_t magic[16]; // This is a unconsumed set of 128bits to confirm existing superblock
         uint16_t version;
@@ -58,9 +60,9 @@ struct __attribute__((__packed__)) SuperBlock {
         uint16_t stripe_off;  // Position within the array
         uint32_t stripe_size; // Number of bytes before rotating devices
     } fields;
-    uint8_t _reserved[SIZE - (sizeof(header) + sizeof(fields))];
+    uint8_t _reserved[k_page_size - (sizeof(header) + sizeof(fields))];
 };
-static_assert(SuperBlock::SIZE == sizeof(SuperBlock), "Size of raid0::SuperBlock does not match SuperBlock::SIZE!");
+static_assert(k_page_size == sizeof(SuperBlock), "Size of raid0::SuperBlock does not match SIZE!");
 #else
 #error "Big Endian not supported!"
 #endif

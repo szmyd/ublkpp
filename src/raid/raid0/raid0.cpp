@@ -282,6 +282,7 @@ static folly::Expected< raid0::SuperBlock*, std::error_condition > load_superblo
     memcpy(read_uuid.data, sb->header.uuid, sizeof(sb->header.uuid));
     if (uuid != read_uuid) {
         RLOGE("Superblock did not have a matching UUID expected: {} read: {}", to_string(uuid), to_string(read_uuid))
+        free(sb);
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if ((stripe_size != be32toh(sb->fields.stripe_size)) || (stripe_off != be16toh(sb->fields.stripe_off))) {
