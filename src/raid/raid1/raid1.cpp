@@ -46,7 +46,7 @@ struct free_page {
 
 class MirrorDevice {
 public:
-    MirrorDevice(std::shared_ptr< UblkDisk > device) : disk(std::move(device)) {}
+    explicit MirrorDevice(std::shared_ptr< UblkDisk > device) : disk(std::move(device)) {}
     std::shared_ptr< UblkDisk > const disk;
     std::atomic_flag unavail;
 };
@@ -212,6 +212,16 @@ Raid1Disk::~Raid1Disk() {
             RLOGW("Write clean_unmount failed [vol:{}]", _str_uuid)
         }
     }
+}
+
+std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device_id,
+                                                   std::shared_ptr< UblkDisk > new_device) {
+    auto new_mirror = std::make_shared< MirrorDevice >(new_device);
+    if (_device_a->disk->contains(old_device_id))
+        _device_a.swap(new_mirror);
+    else if (_device_b->disk->contains(old_device_id))
+        _device_b.swap(new_mirror);
+    return new_mirror->disk;
 }
 
 bool Raid1Disk::contains(std::string const& id) const {
