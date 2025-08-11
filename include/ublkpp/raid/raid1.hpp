@@ -15,10 +15,11 @@ struct SuperBlock;
 ENUM(read_route, uint8_t, EITHER = 0, DEVA = 1, DEVB = 2);
 } // namespace raid1
 
-class MirrorDevice;
+struct MirrorDevice;
 
 class Raid1Disk : public UblkDisk {
-    std::string _str_uuid;
+    boost::uuids::uuid const _uuid;
+    std::string const _str_uuid;
 
     std::shared_ptr< MirrorDevice > _device_a;
     std::shared_ptr< MirrorDevice > _device_b;

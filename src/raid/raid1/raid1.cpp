@@ -44,19 +44,37 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
-class MirrorDevice {
-public:
-    explicit MirrorDevice(std::shared_ptr< UblkDisk > device) : disk(std::move(device)) {}
+struct MirrorDevice {
+    MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device);
     std::shared_ptr< UblkDisk > const disk;
+    std::shared_ptr< raid1::SuperBlock > sb;
     std::atomic_flag unavail;
+
+    bool new_device{false};
 };
+
+MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device) :
+        disk(std::move(device)) {
+    auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
+    if ((raid1::k_min_chunk_size > chunk_size) || (raid1::k_max_dev_size < chunk_size)) {
+        RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, raid1::k_min_chunk_size / Ki) // LCOV_EXCL_START
+        throw std::runtime_error("Invalid Chunk Size");
+    } // LCOV_EXCL_STOP
+
+    auto read_super = load_superblock(*disk, uuid, chunk_size);
+    if (!read_super)
+        throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
+    new_device = read_super.value().second;
+    sb = std::shared_ptr< raid1::SuperBlock >(read_super.value().first, free_page());
+}
 
 Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                      std::shared_ptr< UblkDisk > dev_b) :
         UblkDisk(),
+        _uuid(uuid),
         _str_uuid(boost::uuids::to_string(uuid)),
-        _device_a(std::make_shared< MirrorDevice >(std::move(dev_a))),
-        _device_b(std::make_shared< MirrorDevice >(std::move(dev_b))) {
+        _device_a(std::make_shared< MirrorDevice >(uuid, std::move(dev_a))),
+        _device_b(std::make_shared< MirrorDevice >(uuid, std::move(dev_b))) {
     direct_io = true; // RAID-1 requires DIO
 
     // We enqueue async responses for RAID1 retries even if our underlying devices use uring
@@ -89,41 +107,27 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 
-    auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
-    if ((raid1::k_min_chunk_size > chunk_size) || (raid1::k_max_dev_size < chunk_size)) {
-        RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, raid1::k_min_chunk_size / Ki) // LCOV_EXCL_START
-        throw std::runtime_error("Invalid Chunk Size");
-    } // LCOV_EXCL_STOP
-
-    auto read_super = load_superblock(*_device_a->disk, uuid, chunk_size);
-    if (!read_super)
-        throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
-    auto a_new = read_super.value().second;
-    auto sb_a = std::shared_ptr< raid1::SuperBlock >(read_super.value().first, free_page());
-    read_super = load_superblock(*_device_b->disk, uuid, chunk_size);
-    if (!read_super)
-        throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
-    auto b_new = read_super.value().second;
-    auto sb_b = std::shared_ptr< raid1::SuperBlock >(read_super.value().first, free_page());
     _is_degraded.clear();
     _device_a->unavail.clear();
     _device_b->unavail.clear();
 
-    // Let's check the BITMAP uuids if neither devices are new
-    if ((!a_new && !b_new) &&
-        (0 != memcmp(sb_a->fields.bitmap.uuid, sb_b->fields.bitmap.uuid, sizeof(sb_a->fields.bitmap.uuid)))) {
+    // Let's check the BITMAP uuids if either device is new
+    if ((!_device_a->new_device && !_device_b->new_device) &&
+        (0 !=
+         memcmp(_device_a->sb->fields.bitmap.uuid, _device_b->sb->fields.bitmap.uuid,
+                sizeof(_sb->fields.bitmap.uuid)))) {
         RLOGE("Devices do not belong to the same RAID-1 device!");
         throw std::runtime_error("Devices do not belong to the same RAID-1 device.");
     }
 
     // We only keep the latest or if match and A unclean take B
-    if (auto sb_res = pick_superblock(sb_a.get(), sb_b.get()); sb_res) {
-        _sb = (sb_res == sb_a.get() ? std::move(sb_a) : std::move(sb_b));
+    if (auto sb_res = pick_superblock(_device_a->sb.get(), _device_b->sb.get()); sb_res) {
+        _sb = (sb_res == _device_a->sb.get() ? std::move(_device_a->sb) : std::move(_device_b->sb));
     } else
         throw std::runtime_error("Could not find reasonable superblock!"); // LCOV_EXCL_LINE
 
     // Initialize those that are new
-    if (a_new && b_new) {
+    if (_device_a->new_device && _device_b->new_device) {
         // Generate a new random UUID for the BITMAP that we'll use to protected ourselves on re-assembly
         auto const bitmap_uuid = boost::uuids::random_generator()();
         RLOGD("Generated new BITMAP: {} [vol:{}]", boost::uuids::to_string(bitmap_uuid), _str_uuid);
@@ -133,16 +137,16 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
 
     // Read in existing dirty BITMAP pages
     _dirty_bitmap = std::make_unique< raid1::Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
-    if (a_new) {
+    if (_device_a->new_device) {
         _dirty_bitmap->init_to(*_device_a->disk);
-        if (!b_new) {
+        if (!_device_b->new_device) {
             _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
             _device_a->unavail.test_and_set(std::memory_order_relaxed);
         }
     }
-    if (b_new) {
+    if (_device_b->new_device) {
         _dirty_bitmap->init_to(*_device_b->disk);
-        if (!a_new) {
+        if (!_device_a->new_device) {
             _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
             _device_b->unavail.test_and_set(std::memory_order_relaxed);
         }
@@ -150,9 +154,10 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
 
     // We need to completely dirty one side if either is new when the other is not
     sub_cmd_t const sub_cmd = 0U;
-    if ((a_new != b_new) && (a_new || b_new)) {
-        RLOGW("Device is new [{}], dirty all of device [{}]", *(a_new ? _device_a->disk : _device_b->disk),
-              *(a_new ? _device_b->disk : _device_a->disk))
+    if (_device_a->new_device xor _device_b->new_device) {
+        RLOGW("Device is new [{}], dirty all of device [{}]",
+              *(_device_a->new_device ? _device_a->disk : _device_b->disk),
+              *(_device_a->new_device ? _device_b->disk : _device_a->disk))
         if (auto res = __dirty_pages(CLEAN_SUBCMD, 0, capacity(), nullptr, nullptr); !res)
             throw std::runtime_error(fmt::format("Could not dirty bitmap! {}", res.error().message()));
         _is_degraded.test_and_set(std::memory_order_relaxed);
@@ -216,7 +221,7 @@ Raid1Disk::~Raid1Disk() {
 
 std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device_id,
                                                    std::shared_ptr< UblkDisk > new_device) {
-    auto new_mirror = std::make_shared< MirrorDevice >(new_device);
+    auto new_mirror = std::make_shared< MirrorDevice >(_uuid, new_device);
     if (_device_a->disk->contains(old_device_id))
         _device_a.swap(new_mirror);
     else if (_device_b->disk->contains(old_device_id))
@@ -269,7 +274,7 @@ void Raid1Disk::__resync_task() {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
         cur_state = static_cast< uint8_t >(resync_state::IDLE);
         RLOGT("Resync Task Sleeping...")
-        std::this_thread::sleep_for(1s);
+        std::this_thread::sleep_for(250ms);
     }
     RLOGW("Resync Task started for [vol:{}] dirty_pgs: {}", _str_uuid, _dirty_bitmap->dirty_pages())
 
