@@ -50,7 +50,6 @@ inline auto merged_subcmds(uint32_t const stride_width, uint32_t const stripe_si
 
 #ifdef __LITTLE_ENDIAN
 struct __attribute__((__packed__)) SuperBlock {
-    static constexpr auto SIZE = k_page_size;
     struct {
         uint8_t magic[16]; // This is a unconsumed set of 128bits to confirm existing superblock
         uint16_t version;

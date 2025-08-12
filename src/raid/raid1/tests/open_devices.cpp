@@ -7,8 +7,8 @@
 // that RAID1 is collecting these FDs and passing the io_uring offset to the lower layers.
 TEST(Raid1, OpenDevices) {
     static const auto start_idx = 2;
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
     // Each device should be subsequently opened and return a set with their sole FD.
     EXPECT_CALL(*device_a, open_for_uring(_)).Times(1).WillOnce([](int const fd_off) {

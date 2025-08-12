@@ -24,7 +24,6 @@ public:
     ~iSCSIDisk() override;
 
     std::string id() const override;
-    bool contains(std::string const& id) const override;
     std::list< int > open_for_uring(int const) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;

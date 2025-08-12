@@ -26,7 +26,6 @@ public:
     ~HomeBlkDisk() override;
 
     std::string id() const override { return "HomeBlkDisk"; }
-    bool contains(std::string const& ) const override { return false; }
     std::list< int > open_for_uring(int const iouring_device) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;

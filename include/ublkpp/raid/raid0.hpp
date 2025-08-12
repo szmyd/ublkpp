@@ -26,14 +26,13 @@ public:
 
     /// Raid0Disk API
     /// =============
-    std::shared_ptr< UblkDisk > get_device(std::string const& dev_id) const;
+    std::shared_ptr< UblkDisk > get_device(uint32_t stripe_offset) const;
     uint32_t stripe_size() const { return _stripe_size; }
     /// =============
 
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const override { return "RAID0"; }
-    bool contains(std::string const& id) const override;
     std::list< int > open_for_uring(int const iouring_device) override;
 
     uint8_t route_size() const override { return ilog2(_max_stripe_cnt); }

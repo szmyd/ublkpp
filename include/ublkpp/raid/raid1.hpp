@@ -65,7 +65,6 @@ public:
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const override { return "RAID1"; }
-    bool contains(std::string const& id) const override;
     std::list< int > open_for_uring(int const iouring_device) override;
 
     uint8_t route_size() const override { return 1; }

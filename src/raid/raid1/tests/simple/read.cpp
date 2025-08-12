@@ -3,8 +3,8 @@
 // Brief: Test a READ through the RAID1 Device. We should only receive the READ on one of the
 // two underlying replicas.
 TEST(Raid1, SimpleRead) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     {
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))

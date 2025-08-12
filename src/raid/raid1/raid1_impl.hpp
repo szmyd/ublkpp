@@ -21,14 +21,14 @@ constexpr auto k_page_size = 4 * Ki;
 
 #ifdef __LITTLE_ENDIAN
 struct __attribute__((__packed__)) SuperBlock {
-    static constexpr auto SIZE = k_page_size;
     struct {
         uint8_t magic[16]; // This is a static set of 128bits to confirm existing superblock
         uint16_t version;
         uint8_t uuid[16]; // This is a user UUID that is assigned when the array is created
     } header;
     struct {
-        uint8_t clean_unmount : 1, read_route : 2, : 0; // was cleanly unmounted
+        // was cleanly unmounted, position in RAID1 and current Healthy device
+        uint8_t clean_unmount : 1, read_route : 2, device_b : 1, : 0;
         struct {
             uint8_t uuid[16];    // This is a BITMAP UUID that is assigned when the array is created
             uint32_t chunk_size; // Number of bytes each bit represents

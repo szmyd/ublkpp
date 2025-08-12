@@ -9,7 +9,7 @@
 #include <sisl/options/options.h>
 
 #include "bitmap.hpp"
-#include "raid/superblock.hpp"
+#include "lib/logging.hpp"
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
@@ -37,6 +37,8 @@ ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPP
 #define DIRTY_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_A : SEND_TO_B)
 #define DEV_SUBCMD(device) (_device_a->disk == (device) ? SEND_TO_A : SEND_TO_B)
 
+static raid1::SuperBlock* read_superblock(UblkDisk& device);
+static io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b);
 static folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
 
@@ -70,11 +72,9 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
 
 Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                      std::shared_ptr< UblkDisk > dev_b) :
-        UblkDisk(),
-        _uuid(uuid),
-        _str_uuid(boost::uuids::to_string(uuid)),
-        _device_a(std::make_shared< MirrorDevice >(uuid, std::move(dev_a))),
-        _device_b(std::make_shared< MirrorDevice >(uuid, std::move(dev_b))) {
+        UblkDisk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {
+    //        _device_a(std::make_shared< MirrorDevice >(uuid, std::move(dev_a))),
+    //        _device_b(std::make_shared< MirrorDevice >(uuid, std::move(dev_b))) {
     direct_io = true; // RAID-1 requires DIO
 
     // We enqueue async responses for RAID1 retries even if our underlying devices use uring
@@ -83,18 +83,15 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
-    for (auto device_array = std::set< std::shared_ptr< MirrorDevice > >{_device_a, _device_b};
-         auto const& device : device_array) {
-        if (!device->disk->direct_io)
-            throw std::runtime_error(fmt::format("Device does not support O_DIRECT! {}", device->disk));
-        our_params.basic.dev_sectors =
-            std::min(our_params.basic.dev_sectors, device->disk->params()->basic.dev_sectors);
+    for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
+        if (!device->direct_io) throw std::runtime_error(fmt::format("Device does not support O_DIRECT! {}", device));
+        our_params.basic.dev_sectors = std::min(our_params.basic.dev_sectors, device->params()->basic.dev_sectors);
         our_params.basic.logical_bs_shift =
-            std::max(our_params.basic.logical_bs_shift, device->disk->params()->basic.logical_bs_shift);
+            std::max(our_params.basic.logical_bs_shift, device->params()->basic.logical_bs_shift);
         our_params.basic.physical_bs_shift =
-            std::max(our_params.basic.physical_bs_shift, device->disk->params()->basic.physical_bs_shift);
+            std::max(our_params.basic.physical_bs_shift, device->params()->basic.physical_bs_shift);
 
-        if (!device->disk->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
+        if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
     // Reserve space for the superblock/bitmap
     RLOGD("RAID-1 : reserving {} blocks for SuperBlock & Bitmap",
@@ -107,9 +104,17 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 
-    _is_degraded.clear();
-    _device_a->unavail.clear();
-    _device_b->unavail.clear();
+    // Load SuperBlocks to determine original layout
+    _device_a = std::make_shared< MirrorDevice >(uuid, std::move(dev_a));
+    if (_device_a->new_device) {
+        _device_b = std::make_shared< MirrorDevice >(uuid, std::move(dev_b));
+        if (!_device_b->new_device && !_device_b->sb->fields.device_b) _device_a.swap(_device_b);
+    } else {
+        _device_b = std::make_shared< MirrorDevice >(uuid, std::move(dev_b));
+        if (!_device_b->new_device && (_device_a->sb->fields.device_b == _device_b->sb->fields.device_b))
+            throw std::runtime_error("Found both devices were assigned the same slot!");
+        if (_device_a->sb->fields.device_b) _device_a.swap(_device_b);
+    }
 
     // Let's check the BITMAP uuids if either device is new
     if ((!_device_a->new_device && !_device_b->new_device) &&
@@ -173,11 +178,12 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
 
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
+    _sb->fields.device_b = 0;
     _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
 
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
-    if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get())) {
+    if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE)) {
         RLOGE("Failed writing SuperBlock to: [{}] becoming degraded. [vol:{}]", *CLEAN_DEVICE->disk, _str_uuid)
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
@@ -188,7 +194,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
         return;
     }
 
-    if (write_superblock(*DIRTY_DEVICE->disk, _sb.get())) {
+    if (write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE)) {
         // If we're starting degraded, we need to initiate a resync_task
         if (IS_DEGRADED) _resync_task = std::thread([this] { __resync_task(); });
     } else if (!__become_degraded(DIRTY_SUBCMD)) {
@@ -204,7 +210,7 @@ Raid1Disk::~Raid1Disk() {
     if (!_sb) return;
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices
-    if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get()); !res) {
+    if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !res) {
         if (IS_DEGRADED) {
             RLOGE("failed to clear clean bit...full sync required upon next assembly [vol:{}]", _str_uuid)
         } else {
@@ -213,7 +219,7 @@ Raid1Disk::~Raid1Disk() {
     }
     RLOGD("shutting down array; clean bit set [vol:{}]", _str_uuid)
     if (!IS_DEGRADED) {
-        if (!write_superblock(*DIRTY_DEVICE->disk, _sb.get())) {
+        if (!write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE)) {
             RLOGW("Write clean_unmount failed [vol:{}]", _str_uuid)
         }
     }
@@ -230,7 +236,7 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
         return new_device;
     }
 
-    if (IS_DEGRADED && CLEAN_DEVICE->disk->contains(old_device_id)) {
+    if (IS_DEGRADED && CLEAN_DEVICE->disk->id() == old_device_id) {
         RLOGE("Refusing to replace working mirror from degraded device!")
         return new_device;
     }
@@ -242,22 +248,18 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
         _dirty_bitmap->init_to(*new_mirror->disk);
     } catch (std::runtime_error const& e) { return new_device; }
 
-    if (_device_a->disk->contains(old_device_id)) {
+    if (_device_a->disk->id() == old_device_id) {
         _device_a.swap(new_mirror);
         __become_degraded(0U);
-    } else if (_device_b->disk->contains(old_device_id)) {
+    } else if (_device_b->disk->id() == old_device_id) {
         _device_b.swap(new_mirror);
         __become_degraded(1U << _device_b->disk->route_size());
     }
-    write_superblock(*DIRTY_DEVICE->disk, _sb.get());
+    write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE);
     // TODO what's the right thing to do here if this fails?
     __dirty_pages(0U, 0, capacity(), nullptr, nullptr);
 
     return new_mirror->disk;
-}
-
-bool Raid1Disk::contains(std::string const& id) const {
-    return _device_a->disk->contains(id) || _device_b->disk->contains(id);
 }
 
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
@@ -270,10 +272,10 @@ io_result Raid1Disk::__become_clean() {
     RLOGW("Device becoming clean [vol:{}] ", _str_uuid)
     // We only update the AGE if we're not degraded already
     _sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
-    if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get()); !sync_res) {
+    if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false); !sync_res) {
         RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
     }
-    if (auto sync_res = write_superblock(*DIRTY_DEVICE->disk, _sb.get()); !sync_res) {
+    if (auto sync_res = write_superblock(*_device_b->disk, _sb.get(), true); !sync_res) {
         RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
     }
     _is_degraded.clear(std::memory_order_release);
@@ -361,7 +363,7 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     RLOGW("Device becoming degraded [sub_cmd:{}] [age:{}] [vol:{}] ", ublkpp::to_string(sub_cmd),
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
     // Must update age first; we do this synchronously to gate pending retry results
-    if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get()); !sync_res) {
+    if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !sync_res) {
         // Rollback the failure to update the header
         _sb->fields.read_route = static_cast< uint8_t >(orig_route);
         _sb->fields.bitmap.age = old_age;
@@ -708,11 +710,46 @@ static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0
 
 constexpr auto SB_VERSION = 1;
 
+static raid1::SuperBlock* read_superblock(UblkDisk& device) {
+    auto const sb_size = sizeof(raid1::SuperBlock);
+    RLOGT("Reading Superblock from: [{}] {}%{} == {}", device, sb_size, device.block_size(),
+          sb_size % device.block_size())
+    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
+                    device, sb_size)
+    auto iov = iovec{.iov_base = nullptr, .iov_len = sb_size};
+    if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), sb_size); 0 != err || nullptr == iov.iov_base)
+        [[unlikely]] { // LCOV_EXCL_START
+        if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
+        RLOGE("Out of Memory while reading superblock!")
+        return nullptr;
+    } // LCOV_EXCL_STOP
+    if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 0UL); !res) {
+        RLOGE("Could not read SuperBlock of [sz:{}] [res:{}]", sb_size, res.error().message())
+        free(iov.iov_base);
+        return nullptr;
+    }
+    return static_cast< raid1::SuperBlock* >(iov.iov_base);
+}
+
+static io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b) {
+    auto const sb_size = sizeof(raid1::SuperBlock);
+    RLOGT("Writing Superblock to: [{}]", device)
+    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
+                    device, sb_size)
+    auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
+    // We temporarily set the Superblock for Device A/B based on argument
+    if (device_b) sb->fields.device_b = 1;
+    auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
+    sb->fields.device_b = 0;
+    if (!res) RLOGE("Error writing Superblock to: [{}]!", device, res.error().message())
+    return res;
+}
+
 // Read and load the RAID1 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
 static folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
-    auto sb = read_superblock< raid1::SuperBlock >(device);
+    auto sb = read_superblock(device);
     if (!sb) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     bool was_new{false};
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
@@ -759,6 +796,7 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
 
     return dev_a;
 }
+
 } // namespace raid1
 
 } // namespace ublkpp

@@ -4,32 +4,32 @@
 TEST(Raid1, ReadingSBProblems) {
     // Fail Read SB from DevA
     {
-        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, true, false, false);
-        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, false, false);
+        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, false, false);
+        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, true, false, false);
         EXPECT_THROW(auto raid_device =
                          ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Fail Read SB from DevB
     {
-        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, false);
-        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, true, true, false);
+        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true, false);
+        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, false, true, true, false);
         EXPECT_THROW(auto raid_device =
                          ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Fail Read SB from Both
     {
-        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, true, true, false);
-        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, true, false);
+        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, true, false);
+        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, true, true, false);
         EXPECT_THROW(auto raid_device =
                          ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Should not throw just dirty SB and pages
     {
-        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
-        auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, false, true);
+        auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
         auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         // expect unmount_clean update
         EXPECT_TO_WRITE_SB(device_b);
@@ -37,10 +37,10 @@ TEST(Raid1, ReadingSBProblems) {
 
     // Should not throw just dirty SB
     {
-        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, false);
-        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
+        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true, false);
+        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, false, false, false, true);
         // Expect an extra WRITE to the SB when sync'ing the SB to DevB fails
-        EXPECT_SYNC_OP_REPEAT(UBLK_IO_OP_WRITE, 2, device_a, false, ublkpp::raid1::k_page_size, 0UL);
+        EXPECT_SYNC_OP_REPEAT(UBLK_IO_OP_WRITE, 2, device_a, false, false, ublkpp::raid1::k_page_size, 0UL);
         auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         // expect unmount_clean update
         EXPECT_TO_WRITE_SB(device_a);
@@ -48,8 +48,8 @@ TEST(Raid1, ReadingSBProblems) {
 
     // Fail writing both SBs
     {
-        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
-        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
+        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, false, true);
+        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, false, false, false, true);
         EXPECT_THROW(auto raid_device =
                          ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
@@ -57,8 +57,8 @@ TEST(Raid1, ReadingSBProblems) {
 
     // Fail Second Update to DevA
     {
-        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, false);
-        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true);
+        auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true, false);
+        auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, false, false, false, true);
         // Expect an extra WRITE to the SB when sync'ing the SB to DevB fails
         EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
             .Times(2)

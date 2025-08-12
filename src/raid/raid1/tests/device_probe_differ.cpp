@@ -6,9 +6,9 @@
 // parameter. The final RAID1 parameters should represent the lowest feature set of
 // both devices including Capacity, BlockSize, Discard
 TEST(Raid1, DiffereingDeviceProbing) {
-    auto device_a = CREATE_DISK((TestParams{.capacity = 5 * Gi, .l_size = 512, .p_size = 8 * Ki}));
+    auto device_a = CREATE_DISK_A((TestParams{.capacity = 5 * Gi, .l_size = 512, .p_size = 8 * Ki}));
     auto device_b =
-        CREATE_DISK((TestParams{.capacity = 3 * Gi, .l_size = 4 * Ki, .p_size = 4 * Ki, .can_discard = false}));
+        CREATE_DISK_B((TestParams{.capacity = 3 * Gi, .l_size = 4 * Ki, .p_size = 4 * Ki, .can_discard = false}));
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     // Smallest disk was 3GiB
