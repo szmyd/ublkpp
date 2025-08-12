@@ -9,7 +9,6 @@
 
 #include "ublkpp/raid/raid0.hpp"
 #include "raid/raid0/raid0_impl.hpp"
-#include "raid/superblock.hpp"
 #include "tests/test_disk.hpp"
 
 using ::testing::_;
@@ -46,7 +45,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             return s;                                                                                                  \
         });
 
-#define EXPECT_SB_OP(OP, device, fail) EXPECT_SYNC_OP(OP, device, fail, ublkpp::raid0::SuperBlock::SIZE, 0UL);
+#define EXPECT_SB_OP(OP, device, fail) EXPECT_SYNC_OP(OP, device, fail, sizeof(ublkpp::raid0::SuperBlock), 0UL);
 
 #define CREATE_DISK_F(params, no_read, fail_read, no_write, fail_write)                                                \
     [] {                                                                                                               \

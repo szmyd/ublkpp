@@ -46,6 +46,8 @@ TEST(Raid1, RoutePreSet) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto superblock = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            superblock->fields.device_b = 1;
             return ublkpp::raid1::k_page_size;
         });
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
@@ -54,7 +56,6 @@ TEST(Raid1, RoutePreSet) {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
-            EXPECT_EQ(0, memcmp(&normal_superblock, iovecs->iov_base, sizeof(ublkpp::raid1::SuperBlock::header)));
             return ublkpp::raid1::k_page_size;
         });
 

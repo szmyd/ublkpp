@@ -4,8 +4,8 @@
 
 // Retry write that failed on DeviceA and check next write does not dirty bitmap again
 TEST(Raid1, WriteRetryA) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     {
@@ -243,8 +243,8 @@ TEST(Raid1, WriteRetryA) {
 
 // Retry write that failed on DeviceB
 TEST(Raid1, WriteRetryB) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     {

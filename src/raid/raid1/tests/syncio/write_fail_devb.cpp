@@ -1,8 +1,8 @@
 #include "test_raid1_common.hpp"
 
 TEST(Raid1, SyncIoWriteFailB) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     auto const test_op = UBLK_IO_OP_WRITE;
@@ -26,7 +26,7 @@ TEST(Raid1, SyncIoWriteFailB) {
             EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
             return iov->iov_len;
         });
-    EXPECT_SYNC_OP(test_op, device_b, true, test_sz, test_off + reserved_size);
+    EXPECT_SYNC_OP(test_op, device_b, true, true, test_sz, test_off + reserved_size);
 
     auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
     ASSERT_TRUE(res);

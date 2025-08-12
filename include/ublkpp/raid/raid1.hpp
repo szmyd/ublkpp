@@ -15,10 +15,11 @@ struct SuperBlock;
 ENUM(read_route, uint8_t, EITHER = 0, DEVA = 1, DEVB = 2);
 } // namespace raid1
 
-class MirrorDevice;
+struct MirrorDevice;
 
 class Raid1Disk : public UblkDisk {
-    std::string _str_uuid;
+    boost::uuids::uuid const _uuid;
+    std::string const _str_uuid;
 
     std::shared_ptr< MirrorDevice > _device_a;
     std::shared_ptr< MirrorDevice > _device_b;
@@ -56,9 +57,14 @@ public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);
     ~Raid1Disk() override;
 
+    /// Raid1Disk API
+    /// =============
+    std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
+    /// =============
+
     /// UBlkDisk Interface Overrides
     /// ============================
-    std::string type() const override { return "Raid1"; }
+    std::string id() const override { return "RAID1"; }
     std::list< int > open_for_uring(int const iouring_device) override;
 
     uint8_t route_size() const override { return 1; }

@@ -25,7 +25,7 @@ public:
                 std::shared_ptr< homeblocks::VolumeManager > hb_vol_if, uint32_t const _max_tx);
     ~HomeBlkDisk() override;
 
-    std::string type() const override { return "HomeBlkDisk"; }
+    std::string id() const override { return "HomeBlkDisk"; }
     std::list< int > open_for_uring(int const iouring_device) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;

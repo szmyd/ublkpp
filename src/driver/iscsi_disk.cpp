@@ -162,6 +162,8 @@ iSCSIDisk::iSCSIDisk(std::string const& url) {
 
 iSCSIDisk::~iSCSIDisk() = default;
 
+std::string iSCSIDisk::id() const { return _session->url->target; }
+
 // Initialize our event loop before we start getting I/O
 std::list< int > iSCSIDisk::open_for_uring(int const) {
     using namespace std::chrono_literals;

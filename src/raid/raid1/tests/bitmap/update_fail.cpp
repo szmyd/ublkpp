@@ -2,8 +2,8 @@
 
 // Test the failure to update the BITMAP but not the SB header itself
 TEST(Raid1, BITMAPUpdateFail) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     {
@@ -11,7 +11,7 @@ TEST(Raid1, BITMAPUpdateFail) {
         auto const test_off = 8 * Ki;
         auto const test_sz = 12 * Ki;
 
-        EXPECT_SYNC_OP(test_op, device_a, true, test_sz, test_off + reserved_size);
+        EXPECT_SYNC_OP(test_op, device_a, false, true, test_sz, test_off + reserved_size);
         EXPECT_CALL(*device_b, sync_iov(test_op, _, _, _))
             .Times(2)
             .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {

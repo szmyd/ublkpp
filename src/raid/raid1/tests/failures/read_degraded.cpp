@@ -2,8 +2,8 @@
 
 // Brief: Degrade the array and then fail read; it should not attempt failover read from dirty regions
 TEST(Raid1, ReadOnDegraded) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // First send a retry write to degrade the array on side A

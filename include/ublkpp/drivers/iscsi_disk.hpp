@@ -23,7 +23,7 @@ public:
     explicit iSCSIDisk(std::string const& url);
     ~iSCSIDisk() override;
 
-    std::string type() const override { return "iSCSIDisk"; }
+    std::string id() const override;
     std::list< int > open_for_uring(int const) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;

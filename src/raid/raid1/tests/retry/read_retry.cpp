@@ -6,8 +6,8 @@
 // experience a failure to mutate, so this immediate read failure still has the follow-up read
 // attempt on device A.
 TEST(Raid1, ReadRetryA) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
@@ -60,8 +60,8 @@ TEST(Raid1, ReadRetryA) {
 
 // Brief: Identical to ReadRetryA but for Device B.
 TEST(Raid1, ReadRetryB) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
