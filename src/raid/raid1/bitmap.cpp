@@ -69,7 +69,7 @@ void Bitmap::init_to(UblkDisk& device) {
         auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
         if (!res) {
             free(iov.iov_base);
-            throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
+            throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message()));
         }
     }
     free(iov.iov_base);
