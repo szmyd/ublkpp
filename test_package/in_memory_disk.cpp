@@ -14,7 +14,7 @@ public:
     ~InMemoryDisk() override {}
 
     std::string id() const override { return "InMemoryDisk"; }
-    bool contains(std::string const& id) const { return false; }
+    bool contains(std::string const&) const { return false; }
     std::list< int > open_for_uring(int const iouring_device) override { return {}; }
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override { return; }
