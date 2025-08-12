@@ -9,6 +9,7 @@ using ::ublkpp::Ki;
 
 struct TestParams {
     uint64_t capacity{0};
+    std::string const id = "TestDisk";
     uint32_t l_size{ublkpp::DEFAULT_BLOCK_SIZE};
     uint32_t p_size{ublkpp::DEFAULT_BLOCK_SIZE};
     uint32_t max_io{512 * Ki};
@@ -20,7 +21,8 @@ namespace ublkpp {
 
 class TestDisk : public UblkDisk {
 public:
-    explicit TestDisk(TestParams const& test_params) : UblkDisk() {
+    std::string my_id;
+    explicit TestDisk(TestParams const& test_params) : UblkDisk(), my_id(test_params.id) {
         auto& our_params = *params();
         our_params.basic.dev_sectors = test_params.capacity >> SECTOR_SHIFT;
         our_params.basic.logical_bs_shift = ilog2(test_params.l_size);
@@ -32,7 +34,7 @@ public:
             our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         direct_io = test_params.direct_io;
     }
-    std::string id() const override { return std::string("TestDisk"); }
+    std::string id() const override { return my_id; }
 
     MOCK_METHOD(std::list< int >, open_for_uring, (int const), (override));
     MOCK_METHOD(io_result, handle_internal,
