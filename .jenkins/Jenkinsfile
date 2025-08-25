@@ -136,10 +136,7 @@ pipeline {
                     stage("Deploy Runnable") {
                         when {
                             allOf {
-                                anyOf {
-                                    branch "${DEV_BRANCH}"
-                                    branch "${STABLE_BRANCH}"
-                                }
+                                expression { !(env.BRANCH_NAME =~ /PR-/) }
                                 expression { "${SANITIZE}" == 'False' }
                                 expression { "${COVERAGE}" == 'False' }
                             }
