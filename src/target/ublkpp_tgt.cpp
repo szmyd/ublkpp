@@ -103,12 +103,15 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
         !q) {
         ublk_err("ublk dev %d queue %d init queue failed", dev_id, q_id);
         sem_post(queue_sem);
+        target.reset();
         return NULL;
     }
 
-    /* override the queue affinity by just selecting one cpu */
+    // select one cpu
     set_queue_thread_affinity(cdev);
     sem_post(queue_sem);
+
+    target.reset();
 
     TLOGD("tid {}: ublk dev {} queue {} started", ublksrv_gettid(), dev_id, q->q_id)
     do {
@@ -183,6 +186,7 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
         sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt, i, &queue_sem).detach();
     }
+    tgt.reset();
 
     // Wait for Queues to start
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i)

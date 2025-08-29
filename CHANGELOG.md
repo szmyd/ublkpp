@@ -4,10 +4,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.9.1
-- raid0: Fix leak on invalid superblock
+## 0.10.1
+- Fix shutdown
 
-## 0.9.0
+## 0.10.0
+- Start device mgmt logic
+
+## 0.9.x
+- raid0: Fix leak on invalid superblock
 - raid1: Avoid I/O attempts on known degraded devices
 
 ## 0.8.x
