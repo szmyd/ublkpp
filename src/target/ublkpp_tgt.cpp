@@ -145,10 +145,6 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
 
     auto const dinfo = ublksrv_ctrl_get_dev_info(ctrl_dev);
     auto const dev_id = dinfo->dev_id;
-    if (0 < dev_id) {
-        TLOGE("Cannot get ctrl info {}", tgt->device)
-        return folly::makeUnexpected(std::make_error_condition(std::errc::no_such_device));
-    }
 
     // Wait for Ctrl device to appear
     check_dev(dinfo);
