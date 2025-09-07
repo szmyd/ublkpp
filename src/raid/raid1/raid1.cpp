@@ -37,10 +37,11 @@ ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPP
 #define DIRTY_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_A : SEND_TO_B)
 #define DEV_SUBCMD(device) (_device_a->disk == (device) ? SEND_TO_A : SEND_TO_B)
 
-static raid1::SuperBlock* read_superblock(UblkDisk& device);
 static io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b);
 static folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
+
+namespace raid1 {
 
 struct free_page {
     void operator()(void* x) { free(x); }
@@ -70,8 +71,8 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
     sb = std::shared_ptr< raid1::SuperBlock >(read_super.value().first, free_page());
 }
 
-Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                     std::shared_ptr< UblkDisk > dev_b) :
+Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
+                             std::shared_ptr< UblkDisk > dev_b) :
         UblkDisk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {
     direct_io = true; // RAID-1 requires DIO
 
@@ -200,7 +201,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
     }
 }
 
-Raid1Disk::~Raid1Disk() {
+Raid1DiskImpl::~Raid1DiskImpl() {
     auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED)))
         ;
@@ -223,8 +224,8 @@ Raid1Disk::~Raid1Disk() {
     }
 }
 
-std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device_id,
-                                                   std::shared_ptr< UblkDisk > new_device) {
+std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_device_id,
+                                                       std::shared_ptr< UblkDisk > new_device) {
     if (!new_device->direct_io) return new_device;
     auto& our_params = *params();
     if (our_params.basic.dev_sectors > new_device->params()->basic.dev_sectors ||
@@ -260,13 +261,13 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
     return new_mirror->disk;
 }
 
-std::list< int > Raid1Disk::open_for_uring(int const iouring_device_start) {
+std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
     auto fds = (_device_a->disk->open_for_uring(iouring_device_start));
     fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
     return fds;
 }
 
-io_result Raid1Disk::__become_clean() {
+io_result Raid1DiskImpl::__become_clean() {
     RLOGW("Device becoming clean [vol:{}] ", _str_uuid)
     // We only update the AGE if we're not degraded already
     _sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
@@ -283,7 +284,7 @@ io_result Raid1Disk::__become_clean() {
     return 0;
 }
 
-void Raid1Disk::__resync_task() {
+void Raid1DiskImpl::__resync_task() {
     using namespace std::chrono_literals;
     // Set ourselves up with a buffer to do all the read/write operations from
     auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
@@ -349,7 +350,7 @@ void Raid1Disk::__resync_task() {
         ;
 }
 
-io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
+io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
     auto const orig_route = _sb->fields.read_route;
@@ -375,8 +376,8 @@ io_result Raid1Disk::__become_degraded(sub_cmd_t sub_cmd) {
     return 0;
 }
 
-io_result Raid1Disk::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                   ublk_io_data const* data) {
+io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                       ublk_io_data const* data) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Cleaning pages for [lba:{:0x}|len:{:0x}|sub_cmd:{}] [vol:{}]", lba, len, ublkpp::to_string(sub_cmd),
           _str_uuid);
@@ -418,8 +419,8 @@ io_result Raid1Disk::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
 // that we shift into the next word to set the remaining bits. That's handled here as well, but it is not expected
 // that this is unbounded as the bits each represent a significant amount of data. With 32KiB chunks (the minimum) a
 // word represents: (64 * 32 * 1024) == 2MiB which is larger than our max I/O for an operation.
-io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                   ublk_io_data const* data) {
+io_result Raid1DiskImpl::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                       ublk_io_data const* data) {
     // Flag this operation as a required dependencies for the original sub_cmd
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::DEPENDENT);
 
@@ -453,8 +454,8 @@ io_result Raid1Disk::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t le
 // on the working device. This blocks the final result going back from the original operation
 // as we chain additional sub_cmds by returning a value > 0 including a new "result" for the
 // original sub_cmd
-io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                          ublk_io_data const* async_data) {
+io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                              ublk_io_data const* async_data) {
     // No Synchronous operations retry
     DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
 
@@ -485,8 +486,8 @@ io_result Raid1Disk::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint
 //
 //  RAID1 is primary responsible for replicating mutations (e.g. Writes/Discards) to a pair of compatible devices.
 //  READ operations need only go to one side. So they are handled separately.
-io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                 ublk_io_data const* async_data) {
+io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
+                                     ublksrv_queue const* q, ublk_io_data const* async_data) {
     // Apply our shift to the sub_cmd if it's not a replica write
     auto const replica_write = is_replicate(sub_cmd);
     if (!replica_write) {
@@ -541,7 +542,7 @@ io_result Raid1Disk::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, 
     return res;
 }
 
-io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len) {
+io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len) {
     auto const retry = is_retry(sub_cmd);
     if (retry) {
         _last_read = (0b1 & ((sub_cmd) >> _device_b->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
@@ -581,8 +582,8 @@ io_result Raid1Disk::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     return __failover_read(sub_cmd, std::move(func), addr, len);
 }
 
-io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                                     uint32_t nr_vecs, uint64_t addr, int res) {
+io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                         iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res) {
     sub_cmd = unset_flags(sub_cmd, sub_cmd_flags::INTERNAL);
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     if (0 == res) {
@@ -592,7 +593,7 @@ io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const*
     return __dirty_pages(sub_cmd, addr, len, q, data);
 }
 
-void Raid1Disk::idle_transition(ublksrv_queue const*, bool enter) {
+void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     using namespace std::chrono_literals;
     if (enter) {
         auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
@@ -613,14 +614,14 @@ void Raid1Disk::idle_transition(ublksrv_queue const*, bool enter) {
     }
 }
 
-void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
+void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     results.splice(results.end(), std::move(_pending_results[q]));
     if (!_device_a->disk->uses_ublk_iouring) _device_a->disk->collect_async(q, results);
     if (!_device_b->disk->uses_ublk_iouring) _device_b->disk->collect_async(q, results);
 }
 
-io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                                    uint64_t addr) {
+io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                        uint32_t len, uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("received DISCARD: [tag:{:0x}] [lba:{:0x}|len:{:0x}] [vol:{}]", data->tag, lba, len, _str_uuid)
 
@@ -640,8 +641,8 @@ io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
         addr, len, q, data);
 }
 
-io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                               uint32_t nr_vecs, uint64_t addr) {
+io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
+                                   uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [tag:{:0x}] [lba:{:0x}|len:{:0x}] [sub_cmd:{}] [vol:{}]",
@@ -671,7 +672,7 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         addr, len, q, data);
 }
 
-io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
+io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [lba:{:0x}|len:{:0x}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len, _str_uuid)
@@ -702,6 +703,21 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         return io_res;
     return res;
 }
+
+raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
+    if (be64toh(dev_a->fields.bitmap.age) < be64toh(dev_b->fields.bitmap.age)) {
+        dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
+        return dev_b;
+    } else if (be64toh(dev_a->fields.bitmap.age) > be64toh(dev_b->fields.bitmap.age)) {
+        dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
+        return dev_a;
+    } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount)
+        return dev_a->fields.clean_unmount ? dev_a : dev_b;
+
+    return dev_a;
+}
+
+} // namespace raid1
 
 static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0305,
                                         0147, 072, 0310, 027, 0111, 0256, 033, 0144};
@@ -781,20 +797,52 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
     return std::make_pair(sb, was_new);
 }
 
-namespace raid1 {
-raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
-    if (be64toh(dev_a->fields.bitmap.age) < be64toh(dev_b->fields.bitmap.age)) {
-        dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
-        return dev_b;
-    } else if (be64toh(dev_a->fields.bitmap.age) > be64toh(dev_b->fields.bitmap.age)) {
-        dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
-        return dev_a;
-    } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount)
-        return dev_a->fields.clean_unmount ? dev_a : dev_b;
-
-    return dev_a;
+/// Raid1Disk Public Class
+Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
+                     std::shared_ptr< UblkDisk > dev_b) :
+        _impl(std::make_unique< raid1::Raid1DiskImpl >(uuid, dev_a, dev_b)) {
+    direct_io = _impl->direct_io;
+    uses_ublk_iouring = _impl->uses_ublk_iouring;
 }
 
-} // namespace raid1
+Raid1Disk::~Raid1Disk() = default;
+
+std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device_id,
+                                                   std::shared_ptr< UblkDisk > new_device) {
+    return _impl->swap_device(old_device_id, new_device);
+}
+uint32_t Raid1Disk::block_size() const { return _impl->block_size(); }
+bool Raid1Disk::can_discard() const { return _impl->can_discard(); }
+uint64_t Raid1Disk::capacity() const { return _impl->capacity(); }
+// ================
+
+ublk_params* Raid1Disk::params() { return _impl->params(); }
+ublk_params const* Raid1Disk::params() const { return _impl->params(); }
+std::string Raid1Disk::id() const { return _impl->id(); }
+std::list< int > Raid1Disk::open_for_uring(int const iouring_device) { return _impl->open_for_uring(iouring_device); }
+uint8_t Raid1Disk::route_size() const { return _impl->route_size(); }
+void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
+
+io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
+                                     uint32_t nr_vecs, uint64_t addr, int res) {
+    return _impl->handle_internal(q, data, sub_cmd, iovec, nr_vecs, addr, res);
+}
+void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& compl_list) {
+    return _impl->collect_async(q, compl_list);
+}
+io_result Raid1Disk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    return _impl->handle_flush(q, data, sub_cmd);
+}
+io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
+                                    uint64_t addr) {
+    return _impl->handle_discard(q, data, sub_cmd, len, addr);
+}
+io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
+                               uint32_t nr_vecs, uint64_t addr) {
+    return _impl->async_iov(q, data, sub_cmd, iovecs, nr_vecs, addr);
+}
+io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept {
+    return _impl->sync_iov(op, iovecs, nr_vecs, offset);
+}
 
 } // namespace ublkpp
