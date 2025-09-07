@@ -1,10 +1,6 @@
 #pragma once
 
-#include <atomic>
-#include <thread>
-
 #include <boost/uuid/uuid.hpp>
-#include <sisl/utility/enum.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
 namespace ublkpp {

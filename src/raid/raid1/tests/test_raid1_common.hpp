@@ -7,7 +7,7 @@
 #include <ublksrv.h>
 
 #include "ublkpp/raid/raid1.hpp"
-#include "raid/raid1/raid1_impl.hpp"
+#include "raid/raid1/raid1_superblock.hpp"
 #include "tests/test_disk.hpp"
 
 using ::testing::_;
