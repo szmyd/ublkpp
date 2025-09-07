@@ -9,6 +9,7 @@
 #include <sisl/options/options.h>
 
 #include "bitmap.hpp"
+#include "raid1_impl.hpp"
 #include "lib/logging.hpp"
 
 SISL_OPTION_GROUP(raid1,

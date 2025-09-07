@@ -5,7 +5,7 @@
 #include <memory>
 #include <tuple>
 
-#include "raid1_impl.hpp"
+#include "raid1_superblock.hpp"
 
 namespace ublkpp::raid1 {
 
