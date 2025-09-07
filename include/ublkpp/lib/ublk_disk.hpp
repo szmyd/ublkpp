@@ -37,13 +37,13 @@ public:
 
     // Constant parameters for device
     // ================
-    uint32_t block_size() const;
-    bool can_discard() const;
-    uint64_t capacity() const;
+    virtual uint32_t block_size() const;
+    virtual bool can_discard() const;
+    virtual uint64_t capacity() const;
     // ================
 
-    ublk_params* params() { return _params.get(); }
-    ublk_params const* params() const { return _params.get(); }
+    virtual ublk_params* params() { return _params.get(); }
+    virtual ublk_params const* params() const { return _params.get(); }
 
     std::string to_string() const;
 
