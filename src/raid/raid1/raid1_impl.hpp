@@ -1,7 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <map>
+#include <memory>
 #include <thread>
+
+#include "ublkpp/raid/raid1.hpp"
 
 namespace ublkpp {
 

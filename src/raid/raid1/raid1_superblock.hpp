@@ -7,7 +7,7 @@ extern "C" {
 #include <sisl/logging/logging.h>
 #include <sisl/utility/enum.hpp>
 
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/lib/ublk_disk.hpp"
 
 namespace ublkpp {
 
