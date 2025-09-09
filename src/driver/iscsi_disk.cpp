@@ -25,16 +25,16 @@ constexpr auto k_physical_block_size = 4 * Ki;
 
 struct iscsi_session {
     ~iscsi_session() {
-        if (logged_in) iscsi_logout_sync(ctx);
-        if (logged_in || attached) iscsi_disconnect(ctx);
         if (url) iscsi_destroy_url(url);
-        if (ctx) iscsi_destroy_context(ctx);
+        if (ctx) {
+            if (0 != iscsi_is_logged_in(ctx)) iscsi_logout_sync(ctx);
+            iscsi_disconnect(ctx);
+            iscsi_destroy_context(ctx);
+        }
     }
 
     iscsi_context* ctx{nullptr};
     iscsi_url* url{nullptr};
-    bool attached{false};
-    bool logged_in{false};
 };
 
 static void iscsi_log(int level, const char* message) {
@@ -49,7 +49,7 @@ static void iscsi_log(int level, const char* message) {
     }
 }
 
-static std::unique_ptr< iscsi_session > iscsi_connect(std::string const& url) {
+static std::unique_ptr< iscsi_session > create_iscsi_session(std::string const& url) {
     auto session = std::make_unique< iscsi_session >();
     DEBUG_ASSERT(session, "Failed to allocate iSCSI session!");
 
@@ -69,33 +69,6 @@ static std::unique_ptr< iscsi_session > iscsi_connect(std::string const& url) {
         return nullptr;
     }
 
-    if (session->attached = (0 == iscsi_connect_sync(session->ctx, session->url->portal)); !session->attached) {
-        return nullptr;
-    }
-
-    iscsi_set_session_type(session->ctx, ISCSI_SESSION_DISCOVERY);
-    if (session->logged_in = (0 == iscsi_login_sync(session->ctx)); !session->logged_in) {
-        DLOGE("{}", iscsi_get_error(session->ctx))
-        return nullptr;
-    }
-
-    auto discovery_addr = iscsi_discovery_sync(session->ctx);
-    if (!discovery_addr) {
-        DLOGE("{}", iscsi_get_error(session->ctx))
-        return nullptr;
-    }
-    session->logged_in = !(0 == iscsi_logout_sync(session->ctx));
-    session->attached = !(0 == iscsi_disconnect(session->ctx));
-
-    strcpy(session->url->portal, discovery_addr->portals->portal);
-    if (0 != SISL_OPTIONS["connect_any"].count()) {
-        strcpy(session->url->target, discovery_addr->target_name);
-        DLOGI("Discovered target: [{}]", discovery_addr->target_name);
-    } else if (0 != strcmp(session->url->target, discovery_addr->target_name)) {
-        DLOGE("Discovered a different target than expected: [{}] discovered: [{}]", session->url->target,
-              discovery_addr->target_name);
-        return nullptr;
-    }
     return session;
 }
 
@@ -104,12 +77,11 @@ static bool iscsi_login(std::unique_ptr< iscsi_session >& session) {
     iscsi_set_header_digest(session->ctx, ISCSI_HEADER_DIGEST_NONE);
     iscsi_set_targetname(session->ctx, session->url->target);
 
-    if (session->logged_in = (0 == iscsi_full_connect_sync(session->ctx, session->url->portal, session->url->lun));
-        !session->logged_in) {
+    if (0 != iscsi_full_connect_sync(session->ctx, session->url->portal, session->url->lun)) {
         DLOGE("{}", iscsi_get_error(session->ctx))
         return false;
     }
-    return session->logged_in;
+    return (0 != iscsi_is_logged_in(session->ctx));
 }
 
 static std::pair< uint64_t, uint32_t > probe_topology(std::unique_ptr< iscsi_session >& session) {
@@ -137,7 +109,7 @@ iSCSIDisk::iSCSIDisk(std::string const& url) {
     uses_ublk_iouring = false;
 
     // Establish iSCSI login
-    if (_session = iscsi_connect(url); !_session)
+    if (_session = create_iscsi_session(url); !_session)
         throw std::runtime_error(fmt::format("Failed to attach iSCSI target: {}", url));
     if (!iscsi_login(_session)) throw std::runtime_error("Could not login to target");
 
