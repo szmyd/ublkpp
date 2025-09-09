@@ -12,7 +12,6 @@ namespace ublkpp {
 struct iscsi_session;
 class iSCSIDisk : public UblkDisk {
     std::unique_ptr< iscsi_session > _session;
-    int _iscsi_evfd{-1};
 
     std::mutex pending_results_lck;
     std::list< async_result > pending_results;

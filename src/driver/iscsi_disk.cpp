@@ -26,13 +26,16 @@ constexpr auto k_physical_block_size = 4 * Ki;
 struct iscsi_session {
     ~iscsi_session() {
         if (url) iscsi_destroy_url(url);
-        if (ctx) {
-            if (0 != iscsi_is_logged_in(ctx)) iscsi_logout_sync(ctx);
-            iscsi_disconnect(ctx);
-            iscsi_destroy_context(ctx);
+        if (0 <= evfd) {
+            // Write a very large value to signal to the event loop that we wish to shutdown
+            uint64_t data = UINT32_MAX;
+            write(evfd, &data, sizeof(uint64_t));
         }
+        if (ev_loop.joinable()) ev_loop.join();
     }
 
+    std::thread ev_loop;
+    int evfd{-1};
     iscsi_context* ctx{nullptr};
     iscsi_url* url{nullptr};
 };
@@ -126,8 +129,8 @@ iSCSIDisk::iSCSIDisk(std::string const& url) {
     our_params.types |= ~UBLK_PARAM_TYPE_DISCARD;
 
     // Start an eventfd file so our target thread can wake up this iscsi service thread
-    _iscsi_evfd = eventfd(0, 0);
-    if (0 > _iscsi_evfd) throw std::runtime_error(fmt::format("Could not initialize eventfd: {}", strerror(errno)));
+    _session->evfd = eventfd(0, 0);
+    if (0 > _session->evfd) throw std::runtime_error(fmt::format("Could not initialize eventfd: {}", strerror(errno)));
 
     DLOGD("iSCSI device [{}:{}:{}]!", _session->url->target, lba_size, k_physical_block_size)
 }
@@ -139,10 +142,11 @@ std::string iSCSIDisk::id() const { return _session->url->target; }
 // Initialize our event loop before we start getting I/O
 std::list< int > iSCSIDisk::open_for_uring(int const) {
     using namespace std::chrono_literals;
-    std::thread([ctx = _session->ctx, evfd = _iscsi_evfd] {
+    _session->ev_loop = std::thread([ctx = _session->ctx, evfd = _session->evfd] {
         pollfd ev_pfd[2] = {{.fd = evfd, .events = POLLIN, .revents = 0},
                             {.fd = iscsi_get_fd(ctx), .events = 0, .revents = 0}};
-        while (true) {
+        auto stopping = false;
+        while (!stopping) {
             ev_pfd[1].fd = iscsi_get_fd(ctx);
             ev_pfd[1].events = iscsi_which_events(ctx);
             if (0 == ev_pfd[1].events) {
@@ -152,20 +156,24 @@ std::list< int > iSCSIDisk::open_for_uring(int const) {
             if (auto res = poll(ev_pfd, 2, -1); 0 > res) {
                 if (EINTR == errno) continue;
                 DLOGE("Poll failed: {}", strerror(errno))
-                break;
-            }
-            if ((ev_pfd[1].revents & (POLLIN | POLLOUT)) && iscsi_service(ctx, ev_pfd[1].revents) < 0) {
-                DLOGE("iSCSI failed: {}", iscsi_get_error(ctx))
-                break;
+                stopping = true;
             }
             if (ev_pfd[0].revents & POLLIN) {
                 uint64_t data;
                 if (auto ret = read(evfd, &data, sizeof(uint64_t)); sizeof(uint64_t) != ret) {
                     DLOGE("Could not read from eventfd: {}", strerror(errno));
                 }
+                // We will not have more than 4GiB of events, so this means shutdown
+                if (UINT32_MAX <= data) stopping = true;
+            }
+            if (stopping) iscsi_logout_sync(ctx);
+            if ((ev_pfd[1].revents & (POLLIN | POLLOUT)) || stopping) {
+                if (iscsi_service(ctx, ev_pfd[1].revents) < 0) { DLOGE("iSCSI failed: {}", iscsi_get_error(ctx)) }
             }
         }
-    }).detach();
+        iscsi_destroy_context(ctx);
+        close(evfd);
+    });
     return {};
 }
 
@@ -257,7 +265,7 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_
     }
 
     uint64_t data = 1;
-    if (auto ret = write(_iscsi_evfd, &data, sizeof(uint64_t)); sizeof(uint64_t) != ret) {
+    if (auto ret = write(_session->evfd, &data, sizeof(uint64_t)); sizeof(uint64_t) != ret) {
         DLOGE("Could not write to eventfd: {}", strerror(errno));
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
@@ -278,16 +286,18 @@ io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         : iscsi_write16_iov_sync(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
                                  reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
     if (!task) return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
+    io_result res = len;
     if (SCSI_STATUS_GOOD != task->status) {
         DLOGW("iSCSI cmd returned error: [status:{}] iscsi_err: ", task->status, iscsi_get_error(_session->ctx));
         if (SCSI_SENSE_ILLEGAL_REQUEST == task->sense.key) {
             // The LUN is offline but the target still exists, drive reset?
             if (SCSI_SENSE_ASCQ_LOGICAL_UNIT_NOT_SUPPORTED == task->sense.ascq) {
-                return folly::makeUnexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
+                res = folly::makeUnexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
             }
         }
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        res = folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
-    return len;
+    scsi_free_scsi_task(task);
+    return res;
 }
 } // namespace ublkpp
