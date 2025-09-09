@@ -27,20 +27,19 @@ public:
 
 static raid0::SuperBlock* read_superblock(UblkDisk& device);
 static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb);
-static folly::Expected< raid0::SuperBlock*, std::error_condition > load_superblock(UblkDisk& device,
-                                                                                   boost::uuids::uuid const& uuid,
-                                                                                   uint32_t const stripe_size,
-                                                                                   uint16_t const stripe_off);
+static folly::Expected< raid0::SuperBlock*, std::error_condition >
+load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off);
 
 Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
                      std::vector< std::shared_ptr< UblkDisk > >&& disks) :
-        UblkDisk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
+        UblkDisk(), _stripe_size(stripe_size_bytes) {
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
     our_params.basic.dev_sectors = UINT64_MAX;
     direct_io = true;
 
+    auto alt_stripe = false;
     for (auto&& device : disks) {
         auto const& dev_params = *device->params();
         // We'll use dev_sectors to track the smallest array device we have
@@ -49,17 +48,27 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
             std::max(our_params.basic.logical_bs_shift, dev_params.basic.logical_bs_shift);
         our_params.basic.physical_bs_shift =
             std::max(our_params.basic.physical_bs_shift, dev_params.basic.physical_bs_shift);
-        our_params.basic.max_sectors = std::min(our_params.basic.max_sectors,
-                                                static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
+        our_params.basic.max_sectors =
+            std::min(our_params.basic.max_sectors, static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
         if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
 
         direct_io = direct_io ? device->direct_io : false;
-        auto sb = load_superblock(*device, uuid, _stripe_size, _stripe_array.size());
+
+        auto this_alt_stripe = _stripe_size;
+        auto sb = load_superblock(*device, uuid, this_alt_stripe, _stripe_array.size());
+        if (_stripe_size != this_alt_stripe) {
+            if (!alt_stripe) {
+                alt_stripe = true;
+                _stripe_size = this_alt_stripe;
+            } else
+                throw std::runtime_error(fmt::format("Could not read superblock! Mismatched Stripe Sizes!"));
+        }
         if (!sb) throw std::runtime_error(fmt::format("Could not read superblock! {}", sb.error().message()));
         _stripe_array.emplace_back(std::make_unique< StripeDevice >(std::move(device), sb.value()));
     }
+    _stride_width = _stripe_size * disks.size();
 
     // Finally we'll calculate the volume size as a multiple of the smallest array device
     // and adjust to account for the superblock we will write at the HEAD of each array device.
@@ -205,7 +214,6 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
 
         // Last sub_cmd for this device, issue now
         if ((_stride_width - _stripe_size) >= (len - off)) {
-            DEBUG_ASSERT_LE(io_addr, UINT32_MAX) // LCOV_EXCL_LINE
             sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
             DEBUG_ASSERT_LE(alive_cmds, UINT32_MAX) // LCOV_EXCL_LINE
             auto res = func(stripe_off, new_sub_cmd, io_array.data(), alive_cmds, (uint32_t)io_addr);
@@ -302,10 +310,8 @@ static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb) {
 
 // Read and load the RAID0 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
-static folly::Expected< raid0::SuperBlock*, std::error_condition > load_superblock(UblkDisk& device,
-                                                                                   boost::uuids::uuid const& uuid,
-                                                                                   uint32_t const stripe_size,
-                                                                                   uint16_t const stripe_off) {
+static folly::Expected< raid0::SuperBlock*, std::error_condition >
+load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off) {
     auto sb = read_superblock(device);
     if (!sb) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
 
@@ -328,12 +334,17 @@ static folly::Expected< raid0::SuperBlock*, std::error_condition > load_superblo
         free(sb);
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
     }
-    if ((stripe_size != be32toh(sb->fields.stripe_size)) || (stripe_off != be16toh(sb->fields.stripe_off))) {
-        RLOGE("Superblock does not match given array parameters: Expected [stripe_sz:{:0x},stripe_off:{}] != Found "
-              "[stripe_sz:{:0x},stripe_off:{}]",
-              stripe_size, stripe_off, be32toh(sb->fields.stripe_size), be16toh(sb->fields.stripe_off))
+    if (stripe_off != be16toh(sb->fields.stripe_off)) {
+        RLOGE("Superblock does not match given array parameters: Expected [stripe_off:{}] != Found [stripe_off:{}]",
+              stripe_off, be16toh(sb->fields.stripe_off))
         free(sb);
         return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
+    auto const read_stripe_size = be32toh(sb->fields.stripe_size);
+    if (stripe_size != read_stripe_size) {
+        RLOGW("Superblock does not match given array parameters: Expected [stripe_sz:{:0x}] != Found [stripe_sz:{:0x}]",
+              stripe_size, read_stripe_size)
+        stripe_size = read_stripe_size;
     }
     RLOGD("Device has v{:0x} superblock [stripe_sz:{:0x},stripe_off:{}]", be16toh(sb->header.version), stripe_size,
           stripe_off)

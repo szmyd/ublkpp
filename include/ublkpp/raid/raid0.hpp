@@ -14,8 +14,8 @@ constexpr uint32_t _max_stripe_cnt{16};
 class Raid0Disk : public UblkDisk {
     std::vector< std::unique_ptr< StripeDevice > > _stripe_array;
 
-    uint32_t const _stripe_size{0};
-    uint32_t const _stride_width{0};
+    uint32_t _stripe_size{0};
+    uint32_t _stride_width{0};
 
     io_result __distribute(iovec* iov, uint64_t addr, auto&& func, bool retry = false, sub_cmd_t sub_cmd = 0) const;
 
