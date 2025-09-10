@@ -29,7 +29,9 @@ struct iscsi_session {
         if (0 <= evfd) {
             // Write a very large value to signal to the event loop that we wish to shutdown
             uint64_t data = UINT32_MAX;
-            write(evfd, &data, sizeof(uint64_t));
+            if (auto err = write(evfd, &data, sizeof(uint64_t)); 0 != err) {
+                DLOGE("Failed to write to eventfd! {}", strerror(errno))
+            }
         }
         if (ev_loop.joinable()) ev_loop.join();
     }
