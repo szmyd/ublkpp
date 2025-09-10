@@ -1,6 +1,5 @@
 #pragma once
 
-#include <list>
 #include <mutex>
 
 #include <ublkpp/lib/ublk_disk.hpp>

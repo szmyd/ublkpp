@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+
+#include <fmt/format.h>
 #include <sisl/utility/enum.hpp>
 
 namespace ublkpp {

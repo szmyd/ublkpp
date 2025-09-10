@@ -3,8 +3,6 @@
 #include <boost/uuid/uuid.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
-struct io_uring;
-
 namespace ublkpp {
 
 struct StripeDevice;
