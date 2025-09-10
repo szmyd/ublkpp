@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.10.4
 - Cleanup Public API headers
+- iscsi: Name thread
+- libiscsi: Update to 1.20.3
 
 ## 0.10.3
 - iscsi_disk : Fix iscsi session teardown

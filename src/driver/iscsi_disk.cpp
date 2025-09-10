@@ -2,6 +2,7 @@
 
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
+#include <sisl/utility/thread_factory.hpp>
 #include <ublksrv.h>
 
 extern "C" {
@@ -144,7 +145,7 @@ std::string iSCSIDisk::id() const { return _session->url->target; }
 // Initialize our event loop before we start getting I/O
 std::list< int > iSCSIDisk::open_for_uring(int const) {
     using namespace std::chrono_literals;
-    _session->ev_loop = std::thread([ctx = _session->ctx, evfd = _session->evfd] {
+    _session->ev_loop = sisl::named_thread("iscsi_evloop", [ctx = _session->ctx, evfd = _session->evfd] {
         pollfd ev_pfd[2] = {{.fd = evfd, .events = POLLIN, .revents = 0},
                             {.fd = iscsi_get_fd(ctx), .events = 0, .revents = 0}};
         auto stopping = false;

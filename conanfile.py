@@ -78,7 +78,7 @@ class UBlkPPConan(ConanFile):
             self.requires("homeblocks/[^3.0]@oss/main")
         self.requires("ublksrv/nbi.1.5.0")
         if (self.options.get_safe("iscsi")):
-            self.requires("libiscsi/1.20.2")
+            self.requires("libiscsi/1.20.3")
 
     def layout(self):
         self.folders.source = "."
