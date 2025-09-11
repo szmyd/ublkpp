@@ -4,22 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.10.4
+## 0.11.0
+- raid1: Provide ability to gather replica states
+
+## 0.10.x
 - Cleanup Public API headers
 - iscsi: Name thread
 - libiscsi: Update to 1.20.3
-
-## 0.10.3
 - iscsi_disk : Fix iscsi session teardown
 - iscsi_disk : Fix memleak in sync_iov
-
-## 0.10.2
 - ublkpp_tgt: Fix multi-device attach
-
-## 0.10.1
 - Fix shutdown
-
-## 0.10.0
 - Start device mgmt logic
 
 ## 0.9.x
