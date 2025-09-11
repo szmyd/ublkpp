@@ -6,7 +6,8 @@
 namespace ublkpp {
 namespace raid1 {
 class Raid1DiskImpl;
-}
+ENUM(replica_state, uint8_t, CLEAN = 0, SYNCING = 1, ERROR = 2);
+} // namespace raid1
 class Raid1Disk : public UblkDisk {
 public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);
@@ -15,6 +16,7 @@ public:
     /// Raid1Disk API
     /// =============
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
+    std::pair< raid1::replica_state, raid1::replica_state > replica_states() const;
     /// =============
 
     /// UBlkDisk Interface Overrides

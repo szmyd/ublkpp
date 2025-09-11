@@ -436,12 +436,12 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 }
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
-ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::unique_ptr< UblkDisk > device) {
-    auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, std::move(device));
+ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device) {
+    auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
         .tgt_io_done = tgt_io_done,
-        .handle_event = tgt->device->uses_ublk_iouring
+        .handle_event = device->uses_ublk_iouring
             ? nullptr
             : handle_event, // Device specific, determines *if* ublksrv_complete_io() will be called by device
         .handle_io_background = nullptr, // Not Implemented
@@ -453,8 +453,8 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .idle_fn = idle_transition, // Called when I/O has stopped
         .type = 0,                  // Deprecated
         .ublk_flags = 0,            // Currently Clear
-        .ublksrv_flags = (tgt->device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
-        .pad = 0,                                                                                  // Currently Clear
+        .ublksrv_flags = (device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
+        .pad = 0,                                                                             // Currently Clear
         .name = "ublkpp",
         .recovery_tgt = nullptr,    // Deprecated
         .init_queue = nullptr,      // Not Implemented
@@ -462,7 +462,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .reserved = {0, 0, 0, 0, 0} // Reserved
     });
 
-    TLOGD("Starting {} {} evfd", static_pointer_cast< UblkDisk >(tgt->device),
+    TLOGD("Starting {} {} evfd", static_pointer_cast< UblkDisk >(device),
           (nullptr == tgt->tgt_type->handle_event) ? "WITHOUT" : "WITH")
     tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
         .dev_id = -1,
@@ -491,6 +491,7 @@ ublkpp_tgt::ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p) : _p(p) {}
 ublkpp_tgt::~ublkpp_tgt() = default;
 
 std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; }
+std::shared_ptr< UblkDisk > ublkpp_tgt::device() const { return _p->device; }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     TLOGI("Stopping {}", device)

@@ -262,6 +262,22 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     return new_mirror->disk;
 }
 
+std::pair< replica_state, replica_state > Raid1DiskImpl::replica_states() const {
+    auto const cur_sync_state = static_cast< uint8_t >(resync_state::ACTIVE) == _resync_state.load()
+        ? replica_state::SYNCING
+        : replica_state::ERROR;
+
+    switch (READ_ROUTE) {
+    case read_route::DEVA:
+        return std::make_pair(replica_state::CLEAN, cur_sync_state);
+    case read_route::DEVB:
+        return std::make_pair(cur_sync_state, replica_state::CLEAN);
+    case read_route::EITHER:
+    default:
+        return std::make_pair(replica_state::CLEAN, replica_state::CLEAN);
+    }
+}
+
 std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
     auto fds = (_device_a->disk->open_for_uring(iouring_device_start));
     fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
@@ -653,7 +669,7 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     // Stop any on-going resync
     if (static_cast< uint8_t >(resync_state::IDLE) != _resync_state.load()) idle_transition(q, false);
 
-    // READs are a specisub_cmd that just go to one side we'll do explicitly
+    // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
         return __failover_read(
             sub_cmd,
@@ -681,7 +697,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     // Stop any on-going resync
     if (static_cast< uint8_t >(resync_state::IDLE) != _resync_state.load()) idle_transition(nullptr, false);
 
-    // READs are a specisub_cmd that just go to one side we'll do explicitly
+    // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
         return __failover_read(
             0U,
@@ -812,10 +828,13 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
                                                    std::shared_ptr< UblkDisk > new_device) {
     return _impl->swap_device(old_device_id, new_device);
 }
+std::pair< raid1::replica_state, raid1::replica_state > Raid1Disk::replica_states() const {
+    return _impl->replica_states();
+}
+
 uint32_t Raid1Disk::block_size() const { return _impl->block_size(); }
 bool Raid1Disk::can_discard() const { return _impl->can_discard(); }
 uint64_t Raid1Disk::capacity() const { return _impl->capacity(); }
-// ================
 
 ublk_params* Raid1Disk::params() { return _impl->params(); }
 ublk_params const* Raid1Disk::params() const { return _impl->params(); }
@@ -845,5 +864,6 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept {
     return _impl->sync_iov(op, iovecs, nr_vecs, offset);
 }
+// ================
 
 } // namespace ublkpp

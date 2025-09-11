@@ -48,8 +48,8 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
             std::max(our_params.basic.logical_bs_shift, dev_params.basic.logical_bs_shift);
         our_params.basic.physical_bs_shift =
             std::max(our_params.basic.physical_bs_shift, dev_params.basic.physical_bs_shift);
-        our_params.basic.max_sectors =
-            std::min(our_params.basic.max_sectors, static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
+        our_params.basic.max_sectors = std::min(our_params.basic.max_sectors,
+                                                static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
         if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
@@ -86,7 +86,7 @@ Raid0Disk::~Raid0Disk() = default;
 
 std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const {
     if (auto const width = _stripe_array.size(); width <= stripe_offset) {
-        RLOGW("Stripe offset [{}] large than array width [{}]", stripe_offset, width)
+        RLOGW("Stripe offset [{}] larger than array width [{}]", stripe_offset, width)
         return nullptr;
     }
     return _stripe_array[stripe_offset]->disk;
