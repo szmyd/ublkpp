@@ -58,6 +58,7 @@ public:
     /// Raid1Disk API
     /// =============
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
+    std::pair< replica_state, replica_state > replica_states() const;
     /// =============
 
     /// UBlkDisk Interface Overrides
