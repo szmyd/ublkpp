@@ -321,7 +321,13 @@ void Raid1DiskImpl::__resync_task() {
         RLOGT("Resync Task Sleeping...")
         std::this_thread::sleep_for(250ms);
     }
-    RLOGW("Resync Task started for [vol:{}] dirty_pgs: {}", _str_uuid, _dirty_bitmap->dirty_pages())
+    if (auto const nr_dirty = _dirty_bitmap->dirty_pages(); 0 == nr_dirty) {
+        __become_clean();
+        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
+            ;
+        return;
+    } else
+        RLOGW("Resync Task started for [vol:{}] dirty_pgs: {}", _str_uuid, nr_dirty)
 
     auto total_cleaned = 0UL;
     auto cnt = 0;
