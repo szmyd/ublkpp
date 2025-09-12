@@ -8,6 +8,10 @@ TEST(Raid1, CleanBitmap) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
+    auto cur_replica_start = raid_device.replica_states();
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.second);
+
     {
         EXPECT_TO_WRITE_SB(device_a);
         EXPECT_TO_WRITE_SB_ASYNC(device_a); // Dirty bitmap
@@ -21,6 +25,10 @@ TEST(Raid1, CleanBitmap) {
         ASSERT_TRUE(res);
         EXPECT_EQ(1, res.value()); // Only one here since failing command was replicated
     }
+
+    cur_replica_start = raid_device.replica_states();
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);
+    EXPECT_EQ(ublkpp::raid1::replica_state::ERROR, cur_replica_start.second);
 
     {
         // Make Device B avail again
@@ -89,6 +97,9 @@ TEST(Raid1, CleanBitmap) {
         EXPECT_TRUE(res);
         remove_io_data(ublk_data);
     }
+    cur_replica_start = raid_device.replica_states();
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.second);
 
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
