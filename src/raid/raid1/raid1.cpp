@@ -375,6 +375,7 @@ void Raid1DiskImpl::__resync_task() {
                 break;
             }
         }
+        cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
     }
     free(iov.iov_base);
     if (cur_state == static_cast< uint8_t >(resync_state::ACTIVE)) {
