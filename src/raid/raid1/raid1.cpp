@@ -179,7 +179,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
     _sb->fields.device_b = 0;
-    _resync_state.store(static_cast< uint8_t >(resync_state::IDLE));
+    _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
 
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
