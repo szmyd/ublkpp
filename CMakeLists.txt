@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.15)
+cmake_minimum_required(VERSION 3.11)
 project(ublkpp CXX)
 enable_testing()
 
@@ -26,6 +26,14 @@ find_package(ublksrv REQUIRED)
 find_package(isa-l REQUIRED)
 find_package(libiscsi QUIET)
 find_package(homeblocks QUIET)
+
+if(${libiscsi_FOUND})
+    add_compile_options(-DHAVE_ISCSI)
+endif()
+if(${homeblocks_FOUND})
+    add_compile_options(-DHAVE_HOMEBLOCKS)
+endif()
+
 
 add_subdirectory (src)
 add_subdirectory (example)
