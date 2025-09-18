@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - main
+      - use_ubuntu_24
       - feature/*
 
 jobs:
@@ -12,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ["ubuntu-22.04"]
+        platform: ["ubuntu-24.04"]
         build-type: ["Debug", "Release"]
         malloc-impl: ["libc", "tcmalloc"]
         prerelease: ["True", "False"]
