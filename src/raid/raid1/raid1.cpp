@@ -341,7 +341,7 @@ void Raid1DiskImpl::__resync_task() {
         if (0 == sz) break;
         iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
         auto const lba = (logical_off + raid1::reserved_size) >> params()->basic.logical_bs_shift;
-        if (0 == cnt++ % 64) {
+        if (0 < cnt && 0 == cnt % 64) {
             RLOGD("Resync Task #{} will clear [sz:{}KiB|lba:{:0x}] [total:{}KiB] from [vol:{}]", cnt, iov.iov_len / Ki,
                   lba, total_cleaned / Ki, _str_uuid)
         }
@@ -353,6 +353,7 @@ void Raid1DiskImpl::__resync_task() {
             } else {
                 DIRTY_DEVICE->unavail.clear(std::memory_order_release);
                 __clean_pages(0, logical_off, iov.iov_len, nullptr, nullptr);
+                ++cnt;
                 total_cleaned += iov.iov_len;
             }
         } else {
@@ -370,14 +371,13 @@ void Raid1DiskImpl::__resync_task() {
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
             if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                 cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                RLOGT("Resync Task Sleeping...")
-                std::this_thread::sleep_for(1s);
+                std::this_thread::sleep_for(500ms);
             } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
                 RLOGD("Resync Task Stopped for [vol:{}]", _str_uuid)
                 break;
             }
         }
-        cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
     }
     free(iov.iov_base);
     RLOGW("Resync completed after {} copy operations for {}KiB [vol:{}]", cnt, total_cleaned / Ki, _str_uuid)
