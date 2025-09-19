@@ -27,13 +27,5 @@ find_package(isa-l REQUIRED)
 find_package(libiscsi QUIET)
 find_package(homeblocks QUIET)
 
-if(${libiscsi_FOUND})
-    add_compile_options(-DHAVE_ISCSI)
-endif()
-if(${homeblocks_FOUND})
-    add_compile_options(-DHAVE_HOMEBLOCKS)
-endif()
-
-
 add_subdirectory (src)
 add_subdirectory (example)
