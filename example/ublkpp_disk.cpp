@@ -252,7 +252,9 @@ int main(int argc, char* argv[]) {
 
     exit_future.wait();
     k_target.reset();
+#ifdef HAVE_HOMEBLOCKS
     if (_app) _app.reset();
+#endif
     return exit_future.get();
 }
 
