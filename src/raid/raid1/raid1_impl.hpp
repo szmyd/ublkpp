@@ -40,7 +40,7 @@ class Raid1DiskImpl : public UblkDisk {
     io_result __become_degraded(sub_cmd_t sub_cmd);
     io_result __clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                             ublk_io_data const* data);
-    io_result __dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+    io_result __dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint64_t len, ublksrv_queue const* q,
                             ublk_io_data const* data);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len);
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
