@@ -187,7 +187,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     auto it = _page_map.begin();
     // Find the first dirty word
     if (_page_map.end() == it) return std::make_pair(0, 0);
-    uint64_t logical_off = _page_width * it->first;
+    uint64_t logical_off = static_cast< uint64_t >(_page_width) * it->first;
 
     // Find the first dirty word
     auto word = 0UL;

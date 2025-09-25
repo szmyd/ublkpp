@@ -7,7 +7,7 @@ using ublkpp::Ki;
 
 // Test the iteration through dirty pages
 TEST(Raid1, NextDirty) {
-    auto bitmap = ublkpp::raid1::Bitmap(2 * ublkpp::Gi, 32 * Ki, 4 * Ki);
+    auto bitmap = ublkpp::raid1::Bitmap(100 * ublkpp::Gi, 32 * Ki, 4 * Ki);
     {
         auto [pg, pg_off, sz] = bitmap.dirty_page(0x4096, 512 * Ki);
         EXPECT_TRUE(pg != nullptr);
@@ -38,7 +38,13 @@ TEST(Raid1, NextDirty) {
         EXPECT_EQ(1U, pg_off);
         EXPECT_EQ(4 * Ki, sz);
     }
-    EXPECT_EQ(2, bitmap.dirty_pages());
+    {
+        auto [pg, pg_off, sz] = bitmap.dirty_page(5 * ublkpp::Gi, 4 * Ki);
+        EXPECT_TRUE(pg != nullptr);
+        EXPECT_EQ(5U, pg_off);
+        EXPECT_EQ(4 * Ki, sz);
+    }
+    EXPECT_EQ(3, bitmap.dirty_pages());
     {
         auto [off, len] = bitmap.next_dirty();
         EXPECT_EQ(0, off);                      // Chunk aligned
@@ -63,13 +69,21 @@ TEST(Raid1, NextDirty) {
         EXPECT_EQ(32 * Ki, len); // Split dirty
         bitmap.clean_page(off, len);
     }
-    EXPECT_EQ(1, bitmap.dirty_pages());
+    EXPECT_EQ(2, bitmap.dirty_pages());
     {
         auto [off, len] = bitmap.next_dirty();
         EXPECT_EQ(ublkpp::Gi, off);
         EXPECT_EQ(32 * Ki, len);
         bitmap.clean_page(off, len);
     }
+    EXPECT_EQ(1, bitmap.dirty_pages());
+    {
+        auto [off, len] = bitmap.next_dirty();
+        EXPECT_EQ(5 * ublkpp::Gi, off);
+        EXPECT_EQ(32 * Ki, len);
+        bitmap.clean_page(off, len);
+    }
+    EXPECT_EQ(0, bitmap.dirty_pages());
     {
         auto [off, len] = bitmap.next_dirty();
         EXPECT_EQ(0U, len);
