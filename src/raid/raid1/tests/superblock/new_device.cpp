@@ -4,8 +4,8 @@
 
 // If we initialize with one clean device and one new one; we should enter degraded mode immediately
 TEST(Raid1, NewDeviceB) {
-    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
-    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 100 * Gi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 100 * Gi});
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
@@ -17,15 +17,7 @@ TEST(Raid1, NewDeviceB) {
             return ublkpp::raid1::k_page_size;
         });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
-            EXPECT_LT(addr, ublkpp::raid1::reserved_size);                                // Expect write to bitmap!
-            EXPECT_NE(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All ones
-            return ublkpp::raid1::k_page_size;
-        })
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
@@ -36,6 +28,17 @@ TEST(Raid1, NewDeviceB) {
             EXPECT_EQ(0UL, addr);
             return ublkpp::raid1::k_page_size;
         });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(100)
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
+            EXPECT_LT(addr, ublkpp::raid1::reserved_size);                                // Expect write to bitmap!
+            EXPECT_NE(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All ones
+            return ublkpp::raid1::k_page_size;
+        })
+        .RetiresOnSaturation();
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
@@ -47,15 +50,7 @@ TEST(Raid1, NewDeviceB) {
             return ublkpp::raid1::k_page_size;
         });
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
-            EXPECT_LT(addr, ublkpp::raid1::reserved_size);                                // Expect write to bitmap!
-            EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
-            return ublkpp::raid1::k_page_size;
-        })
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
@@ -63,6 +58,17 @@ TEST(Raid1, NewDeviceB) {
             EXPECT_EQ(0, memcmp(&normal_superblock, iovecs->iov_base, sizeof(ublkpp::raid1::SuperBlock::header)));
             return ublkpp::raid1::k_page_size;
         });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(100)
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
+            EXPECT_LT(addr, ublkpp::raid1::reserved_size);                                // Expect write to bitmap!
+            EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
+            return ublkpp::raid1::k_page_size;
+        })
+        .RetiresOnSaturation();
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     EXPECT_TO_WRITE_SB(device_a);
