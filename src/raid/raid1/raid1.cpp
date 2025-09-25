@@ -203,6 +203,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 }
 
 Raid1DiskImpl::~Raid1DiskImpl() {
+    RLOGD("Shutting down; [vol:{}]", _str_uuid)
     auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
         if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
@@ -214,16 +215,13 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     // Only update the superblock to clean devices
     if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !res) {
         if (IS_DEGRADED) {
-            RLOGE("failed to clear clean bit...full sync required upon next assembly [vol:{}]", _str_uuid)
+            RLOGE("Failed to clear clean bit...full sync required upon next assembly [vol:{}]", _str_uuid)
         } else {
-            RLOGW("failed to clear clean bit [vol:{}]", _str_uuid)
+            RLOGW("Failed to clear clean bit [vol:{}] dev: {}", _str_uuid, *CLEAN_DEVICE->disk)
         }
     }
-    RLOGD("shutting down array; clean bit set [vol:{}]", _str_uuid)
-    if (!IS_DEGRADED) {
-        if (!write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE)) {
-            RLOGW("Write clean_unmount failed [vol:{}]", _str_uuid)
-        }
+    if (!IS_DEGRADED && !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE)) {
+        RLOGW("Failed to clear clean bit [vol:{}] dev: {}", _str_uuid, *DIRTY_DEVICE->disk)
     }
 }
 
@@ -454,7 +452,7 @@ io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_
 // that we shift into the next word to set the remaining bits. That's handled here as well, but it is not expected
 // that this is unbounded as the bits each represent a significant amount of data. With 32KiB chunks (the minimum) a
 // word represents: (64 * 32 * 1024) == 2MiB which is larger than our max I/O for an operation.
-io_result Raid1DiskImpl::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+io_result Raid1DiskImpl::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint64_t len, ublksrv_queue const* q,
                                        ublk_io_data const* data) {
     // Flag this operation as a required dependencies for the original sub_cmd
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::DEPENDENT);

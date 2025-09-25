@@ -31,14 +31,14 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
 //      * shift_offset : The bits to begin setting within the word indicated
 //      * nr_bits      : The number of bits fit in this word
 //      * sz           : The number of bytes to represent as "dirty" from this index
-std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint32_t len,
+std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint64_t len,
                                                                                           uint32_t chunk_size) {
     auto const page_width_bits =
         chunk_size * k_page_size * k_bits_in_byte;  // Number of bytes represented by a single page (block)
     auto const page = addr / page_width_bits;       // Which page does this address land in
     auto const page_off = (addr % page_width_bits); // Bytes within the page
     auto const page_bit = (page_off / chunk_size);  // Bit within the page
-    auto const sz = std::min((uint64_t)len, (page_width_bits - page_off));
+    auto const sz = std::min(len, (page_width_bits - page_off));
 
     // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
     // next word, it's unexpected that this will require writing into a third word
@@ -187,7 +187,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     auto it = _page_map.begin();
     // Find the first dirty word
     if (_page_map.end() == it) return std::make_pair(0, 0);
-    uint64_t logical_off = _page_width * it->first;
+    uint64_t logical_off = static_cast< uint64_t >(_page_width) * it->first;
 
     // Find the first dirty word
     auto word = 0UL;
@@ -216,7 +216,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
 //      * page         : Pointer to the page
 //      * page_offset  : Page index
 //      * sz           : The number of bytes from the provided `len` that fit in this page
-std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, uint32_t len) {
+std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, uint64_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
