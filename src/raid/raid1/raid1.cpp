@@ -262,10 +262,6 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
     }
     if (_resync_task.joinable()) _resync_task.join();
-    // Prevent new I/O
-    cur_state = static_cast< uint8_t >(resync_state::IDLE);
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE)))
-        ;
     _is_degraded.clear(std::memory_order_release);
 
     if (_device_a->disk->id() == old_device_id) {
@@ -673,6 +669,8 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
             break;
         else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+        else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
+            cur_state = static_cast< uint8_t >(resync_state::IDLE);
         else if (static_cast< uint8_t >(resync_state::IDLE) == cur_state)
             break;
         std::this_thread::sleep_for(10us);
