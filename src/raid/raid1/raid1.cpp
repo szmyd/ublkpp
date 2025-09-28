@@ -341,17 +341,12 @@ void Raid1DiskImpl::__resync_task() {
             return;
         }
         cur_state = static_cast< uint8_t >(resync_state::IDLE);
-        std::this_thread::sleep_for(500ms);
+        std::this_thread::sleep_for(1s);
     }
     cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
 
-    if (auto const nr_dirty = _dirty_bitmap->dirty_pages(); 0 == nr_dirty) {
-        if (IS_DEGRADED) __become_clean();
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
-            ;
-        return;
-    } else
-        RLOGW("Resync Task started for [vol:{}] dirty_pgs: {}", _str_uuid, nr_dirty)
+    auto nr_dirty = _dirty_bitmap->dirty_pages();
+    RLOGW("Resync Task started for [vol:{}] dirty_pgs: {}", _str_uuid, nr_dirty)
 
     // Set ourselves up with a buffer to do all the read/write operations from
     auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
@@ -394,13 +389,13 @@ void Raid1DiskImpl::__resync_task() {
             ;
         }
         cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-        std::this_thread::sleep_for(res ? 5us : 2s);
+        std::this_thread::sleep_for(res ? 5us : 5s);
 
         // Resume resync after short delay
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
             if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                 cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                std::this_thread::sleep_for(500ms);
+                std::this_thread::sleep_for(1s);
             } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
                 RLOGD("Resync Task Stopped for [vol:{}]", _str_uuid)
                 break;
@@ -409,10 +404,12 @@ void Raid1DiskImpl::__resync_task() {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
     }
     free(iov.iov_base);
-    if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) return;
-    RLOGW("Resync completed after {} copy operations for {}KiB [vol:{}]", cnt, total_cleaned / Ki, _str_uuid)
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
-        ;
+    if (static_cast< uint8_t >(resync_state::STOPPED) != cur_state) {
+        if (nr_dirty = _dirty_bitmap->dirty_pages(); IS_DEGRADED && (0 == nr_dirty)) __become_clean();
+        RLOGW("Resync completed after {} copy operations for {}KiB [vol:{}]", cnt, total_cleaned / Ki, _str_uuid)
+        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
+            ;
+    }
 }
 
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd) {
