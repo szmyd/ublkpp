@@ -261,15 +261,11 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
         else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
     }
-    if (_resync_task.joinable()) {
-        std::this_thread::sleep_for(500ms);
-        _resync_task.join();
-    }
+    if (_resync_task.joinable()) _resync_task.join();
     // Prevent new I/O
     cur_state = static_cast< uint8_t >(resync_state::IDLE);
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
-        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) return new_device;
-    }
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE)))
+        ;
     _is_degraded.clear(std::memory_order_release);
 
     if (_device_a->disk->id() == old_device_id) {
@@ -413,6 +409,7 @@ void Raid1DiskImpl::__resync_task() {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
     }
     free(iov.iov_base);
+    if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) return;
     RLOGW("Resync completed after {} copy operations for {}KiB [vol:{}]", cnt, total_cleaned / Ki, _str_uuid)
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
         ;
