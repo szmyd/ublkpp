@@ -4,22 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.11.5
+## 0.12.0
+- raid1: Retrieve underlying devices with `::replicas()`
+- raid1: Fixed race with `::swap_device` and `__resync_task`
+
+## 0.11.x
 - raid1: Fix Bitmap bugs when representing > 4Gi
-
-## 0.11.4
 - ublkpp_disk: Support for HomeBlkDisk type
-
-## 0.11.3
 - raid1: Another resync_task termination fix
-
-## 0.11.2
 - raid1: Fix resync_task termination
-
-## 0.11.1
 - raid1: Resync task handles no-dirty pages
-
-## 0.11.0
 - raid1: Provide ability to gather replica states
 
 ## 0.10.x
