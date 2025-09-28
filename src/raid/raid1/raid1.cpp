@@ -20,6 +20,8 @@ SISL_OPTION_GROUP(raid1,
                   (no_write_to_dirty, "", "no_write_to_dirty", "Allow writes to a Dirty device",
                    cxxopts::value< bool >(), ""))
 
+using namespace std::chrono_literals;
+
 namespace ublkpp {
 using raid1::read_route;
 
@@ -248,6 +250,20 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
         _dirty_bitmap->init_to(*new_mirror->disk);
     } catch (std::runtime_error const& e) { return new_device; }
 
+    // Terminate any ongoing resync task
+    auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+    auto old_state = cur_state;
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
+            return new_device;
+        else if (static_cast< uint8_t >(resync_state::IDLE) == cur_state)
+            old_state = cur_state;
+        else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
+            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+    }
+    if (_resync_task.joinable()) _resync_task.join();
+    _is_degraded.clear(std::memory_order_release);
+
     if (_device_a->disk->id() == old_device_id) {
         _device_a.swap(new_mirror);
         __become_degraded(0U);
@@ -256,8 +272,16 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
         __become_degraded(1U << _device_b->disk->route_size());
     }
     write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE);
+
     // TODO what's the right thing to do here if this fails?
     __dirty_pages(0U, 0, capacity(), nullptr, nullptr);
+
+    // Now set back to original state and kick a resync task off
+    while (!_resync_state.compare_exchange_weak(cur_state, old_state)) {
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
+    }
+    if (_resync_task.joinable()) _resync_task.join();
+    _resync_task = std::thread([this] { __resync_task(); });
 
     return new_mirror->disk;
 }
@@ -273,6 +297,10 @@ std::pair< replica_state, replica_state > Raid1DiskImpl::replica_states() const 
     default:
         return std::make_pair(replica_state::CLEAN, replica_state::CLEAN);
     }
+}
+
+std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskImpl::replicas() const {
+    return std::make_pair(_device_a->disk, _device_b->disk);
 }
 
 std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
@@ -296,7 +324,6 @@ io_result Raid1DiskImpl::__become_clean() {
 }
 
 void Raid1DiskImpl::__resync_task() {
-    using namespace std::chrono_literals;
     RLOGD("Resync Task created for [vol:{}]", _str_uuid)
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
     // Wait to become IDLE
@@ -310,17 +337,12 @@ void Raid1DiskImpl::__resync_task() {
             return;
         }
         cur_state = static_cast< uint8_t >(resync_state::IDLE);
-        std::this_thread::sleep_for(500ms);
+        std::this_thread::sleep_for(1s);
     }
     cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
 
-    if (auto const nr_dirty = _dirty_bitmap->dirty_pages(); 0 == nr_dirty) {
-        if (IS_DEGRADED) __become_clean();
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
-            ;
-        return;
-    } else
-        RLOGW("Resync Task started for [vol:{}] dirty_pgs: {}", _str_uuid, nr_dirty)
+    auto nr_dirty = _dirty_bitmap->dirty_pages();
+    RLOGW("Resync Task started for [vol:{}] dirty_pgs: {}", _str_uuid, nr_dirty)
 
     // Set ourselves up with a buffer to do all the read/write operations from
     auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
@@ -363,13 +385,13 @@ void Raid1DiskImpl::__resync_task() {
             ;
         }
         cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-        std::this_thread::sleep_for(res ? 5us : 2s);
+        std::this_thread::sleep_for(res ? 5us : 5s);
 
         // Resume resync after short delay
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
             if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                 cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                std::this_thread::sleep_for(500ms);
+                std::this_thread::sleep_for(1s);
             } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
                 RLOGD("Resync Task Stopped for [vol:{}]", _str_uuid)
                 break;
@@ -378,9 +400,12 @@ void Raid1DiskImpl::__resync_task() {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
     }
     free(iov.iov_base);
-    RLOGW("Resync completed after {} copy operations for {}KiB [vol:{}]", cnt, total_cleaned / Ki, _str_uuid)
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
-        ;
+    if (static_cast< uint8_t >(resync_state::STOPPED) != cur_state) {
+        if (nr_dirty = _dirty_bitmap->dirty_pages(); IS_DEGRADED && (0 == nr_dirty)) __become_clean();
+        RLOGW("Resync completed after {} copy operations for {}KiB [vol:{}]", cnt, total_cleaned / Ki, _str_uuid)
+        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
+            ;
+    }
 }
 
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd) {
@@ -644,6 +669,10 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
             break;
         else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+        else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
+            cur_state = static_cast< uint8_t >(resync_state::IDLE);
+        else if (static_cast< uint8_t >(resync_state::IDLE) == cur_state)
+            break;
         std::this_thread::sleep_for(10us);
     }
 }
@@ -847,6 +876,9 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
 }
 std::pair< raid1::replica_state, raid1::replica_state > Raid1Disk::replica_states() const {
     return _impl->replica_states();
+}
+std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk::replicas() const {
+    return _impl->replicas();
 }
 
 uint32_t Raid1Disk::block_size() const { return _impl->block_size(); }

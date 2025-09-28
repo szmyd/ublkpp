@@ -98,11 +98,12 @@ FSDisk::~FSDisk() {
     }
 }
 
-std::list< int > FSDisk::open_for_uring(int const iouring_device_start) {
+std::list< int > FSDisk::open_for_uring(int const ) {
     RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
-    _uring_device = iouring_device_start;
+    //_uring_device = iouring_device_start;
     // We duplicate the FD here so ublksrv doesn't close it before we're ready
-    return {dup(_fd)};
+    return {};
+    //return {dup(_fd)};
 }
 
 static inline auto next_sqe(ublksrv_queue const* q) {
@@ -110,8 +111,8 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     if (0 == io_uring_sq_space_left(r)) [[unlikely]]
         io_uring_submit(r);
     auto sqe = io_uring_get_sqe(r);
-    if (sqe) [[likely]]
-        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+//    if (sqe) [[likely]]
+//        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
     return sqe;
 }
 
@@ -122,7 +123,7 @@ io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data,
     DLOGT("Flush {} : [tag:{:0x}] ublk io [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
     if (direct_io) return 0;
     auto sqe = next_sqe(q);
-    io_uring_prep_fsync(sqe, _uring_device, IORING_FSYNC_DATASYNC);
+    io_uring_prep_fsync(sqe, _fd, IORING_FSYNC_DATASYNC);
 
     sqe->user_data = build_tgt_sqe_data(data->tag, ublksrv_get_op(data->iod), sub_cmd);
     return 1;
@@ -135,7 +136,7 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
           ublkpp::to_string(sub_cmd))
     if (!_block_device) {
         auto sqe = next_sqe(q);
-        io_uring_prep_fallocate(sqe, _uring_device, discard_to_fallocate(data->iod), addr, len);
+        io_uring_prep_fallocate(sqe, _fd, discard_to_fallocate(data->iod), addr, len);
 
         sqe->user_data = build_tgt_sqe_data(data->tag, ublksrv_get_op(data->iod), sub_cmd);
         return 1;
@@ -145,7 +146,7 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
     io_uring_submit(q->ring_ptr);
 
     uint64_t r[2]{addr, len};
-    auto res = ioctl(q->dev->tgt.fds[_uring_device], BLKDISCARD, &r);
+    auto res = ioctl(_fd, BLKDISCARD, &r);
     if (0 == res) [[likely]]
         return 0;
     DEBUG_ASSERT_LT(res, 0, "Positive ioctl")
@@ -176,14 +177,14 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
 
     if (UBLK_IO_OP_READ == op) {
         if (1 == nr_vecs)
-            io_uring_prep_rw(IORING_OP_READ, sqe, _uring_device, iovecs->iov_base, iovecs->iov_len, addr);
+            io_uring_prep_rw(IORING_OP_READ, sqe, _fd, iovecs->iov_base, iovecs->iov_len, addr);
         else
-            io_uring_prep_readv(sqe, _uring_device, iovecs, nr_vecs, addr);
+            io_uring_prep_readv(sqe, _fd, iovecs, nr_vecs, addr);
     } else {
         if (1 == nr_vecs)
-            io_uring_prep_rw(IORING_OP_WRITE, sqe, _uring_device, iovecs->iov_base, iovecs->iov_len, addr);
+            io_uring_prep_rw(IORING_OP_WRITE, sqe, _fd, iovecs->iov_base, iovecs->iov_len, addr);
         else
-            io_uring_prep_writev(sqe, _uring_device, iovecs, nr_vecs, addr);
+            io_uring_prep_writev(sqe, _fd, iovecs, nr_vecs, addr);
     }
 
     // Set ForceUnitAccess bit to bypass caches
