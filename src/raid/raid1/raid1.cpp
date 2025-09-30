@@ -277,7 +277,10 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE));
     if (_resync_task.joinable()) _resync_task.join();
-    _resync_task = std::thread([this] { __resync_task(); });
+    _resync_task = std::thread([this] {
+        std::this_thread::sleep_for(1s); // This makes unit testing more deterministic
+        __resync_task();
+    });
 
     return new_mirror->disk;
 }
