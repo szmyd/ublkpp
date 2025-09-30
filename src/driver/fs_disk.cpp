@@ -59,8 +59,6 @@ FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
             throw std::runtime_error("ioctl Failed!");
         if (block_has_unmap(_path))
             our_params.types |= UBLK_PARAM_TYPE_DISCARD;
-        else
-            DLOGW("Block Device does not support DISCARD! Will fall back to fallocate() calls.")
         our_params.basic.logical_bs_shift = static_cast< uint8_t >(ilog2(lbs));
         our_params.basic.physical_bs_shift = static_cast< uint8_t >(ilog2(pbs));
         DLOGD("Backing is a block device [{}:{}:{}]!", str_path, lbs, pbs)

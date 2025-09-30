@@ -494,7 +494,7 @@ std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; 
 std::shared_ptr< UblkDisk > ublkpp_tgt::device() const { return _p->device; }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    TLOGI("Stopping {}", device)
+    TLOGD("Stopping {}", device)
     if (ublk_dev) {
         ublksrv_ctrl_stop_dev(ctrl_dev);
         ublksrv_dev_deinit(ublk_dev);
