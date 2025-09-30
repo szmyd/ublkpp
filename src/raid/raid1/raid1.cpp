@@ -264,10 +264,10 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
 
     if (_device_a->disk->id() == old_device_id) {
         _device_a.swap(new_mirror);
-        __become_degraded(0U);
+        __become_degraded(0U, false);
     } else if (_device_b->disk->id() == old_device_id) {
         _device_b.swap(new_mirror);
-        __become_degraded(1U << _device_b->disk->route_size());
+        __become_degraded(1U << _device_b->disk->route_size(), false);
     }
     write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE);
 
@@ -276,7 +276,6 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
 
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-    if (_resync_task.joinable()) _resync_task.join();
     _resync_task = std::thread([this] {
         std::this_thread::sleep_for(1s); // This makes unit testing more deterministic
         __resync_task();
@@ -409,7 +408,7 @@ void Raid1DiskImpl::__resync_task() {
         RLOGD("Resync Task Stopped for [vol:{}]", _str_uuid)
 }
 
-io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd) {
+io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
     auto const orig_route = _sb->fields.read_route;
@@ -430,8 +429,10 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd) {
         return sync_res;
     }
     DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
-    if (_resync_task.joinable()) _resync_task.join();
-    _resync_task = std::thread([this] { __resync_task(); });
+    if (spawn_resync) {
+        if (_resync_task.joinable()) _resync_task.join();
+        _resync_task = std::thread([this] { __resync_task(); });
+    }
     return 0;
 }
 
