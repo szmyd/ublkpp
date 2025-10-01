@@ -90,7 +90,7 @@ FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
 }
 
 FSDisk::~FSDisk() {
-    if (0 >= _fd) {
+    if (0 <= _fd) {
         if (!direct_io) fdatasync(_fd);
         close(_fd);
     }
