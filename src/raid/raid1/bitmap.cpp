@@ -209,6 +209,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
             sz += _chunk_size;
         }
     }
+    if (_data_size < (logical_off + sz)) sz = (_data_size - logical_off);
     return std::make_pair(logical_off, sz);
 }
 
