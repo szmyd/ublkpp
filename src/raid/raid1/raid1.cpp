@@ -127,9 +127,17 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         throw std::runtime_error("Devices do not belong to the same RAID-1 device.");
     }
 
-    // We only keep the latest or if match and A unclean take B
+    // We only keep the latest or if match and A unclean take B, if age diff is > 1 consider new
     if (auto sb_res = pick_superblock(_device_a->sb.get(), _device_b->sb.get()); sb_res) {
-        _sb = (sb_res == _device_a->sb.get() ? std::move(_device_a->sb) : std::move(_device_b->sb));
+        if (sb_res == _device_a->sb.get()) {
+            _sb = std::move(_device_a->sb);
+            if (1 < (be64toh(_sb->fields.bitmap.age) - be64toh(_device_b->sb->fields.bitmap.age)))
+                _device_b->new_device = true;
+        } else {
+            _sb = std::move(_device_b->sb);
+            if (1 < (be64toh(_sb->fields.bitmap.age) - be64toh(_device_a->sb->fields.bitmap.age)))
+                _device_a->new_device = true;
+        }
     } else
         throw std::runtime_error("Could not find reasonable superblock!"); // LCOV_EXCL_LINE
 
@@ -157,7 +165,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     sub_cmd_t const sub_cmd = 0U;
     if (_device_a->new_device xor _device_b->new_device) {
         // Bump the bitmap age
-        _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
+        _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Device is new [{}], dirty all of device [{}]",
               *(_device_a->new_device ? _device_a->disk : _device_b->disk),
               *(_device_a->new_device ? _device_b->disk : _device_a->disk))
@@ -254,14 +262,23 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     if (_resync_task.joinable()) _resync_task.join();
     _is_degraded.clear(std::memory_order_release);
 
+    // Write the superblock to the new device and advance the age to make the old device invalid
+    auto const old_age = _sb->fields.bitmap.age;
+    _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == old_device_id) {
+        if (auto res = write_superblock(*new_mirror->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
+            _sb->fields.bitmap.age = old_age;
+            return new_device;
+        }
         _device_a.swap(new_mirror);
-        __become_degraded(0U, false);
     } else if (_device_b->disk->id() == old_device_id) {
+        if (auto res = write_superblock(*new_mirror->disk, _sb.get(), true);
+            !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
+            _sb->fields.bitmap.age = old_age;
+            return new_device;
+        }
         _device_b.swap(new_mirror);
-        __become_degraded(1U << _device_b->disk->route_size(), false);
     }
-    write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE);
 
     // TODO what's the right thing to do here if this fails?
     __dirty_pages(0U, 0, capacity(), nullptr, nullptr);
@@ -844,8 +861,9 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
               "[vol:{}] ",
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
-    RLOGD("device has v{:0x} superblock [chunk_sz:{:0x},{}] [vol:{}] ", be16toh(sb->header.version), chunk_size,
-          (1 == sb->fields.clean_unmount) ? "Clean" : "Dirty", to_string(uuid))
+    RLOGD("device has v{:0x} superblock [age:{},chunk_sz:{:0x},{}] [vol:{}] ", be16toh(sb->header.version),
+          be64toh(sb->fields.bitmap.age), chunk_size, (1 == sb->fields.clean_unmount) ? "Clean" : "Dirty",
+          to_string(uuid))
 
     if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
     return std::make_pair(sb, was_new);
