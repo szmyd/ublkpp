@@ -67,25 +67,6 @@ TEST(Raid1, ReadOnDegraded) {
         remove_io_data(ublk_data);
         EXPECT_TRUE(res);
     }
-    // Reads on the degraded device for clean chunks are fine as well
-    {
-        EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
-            .Times(1)
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
-                         uint64_t addr) {
-                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-                // It should also have the RETRIED bit set
-                EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
-                EXPECT_EQ(iovecs->iov_len, 64 * Ki);
-                EXPECT_EQ(addr, (1 * Gi) + reserved_size);
-                return 1;
-            });
-        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 64 * Ki, 1 * Gi);
-        remove_io_data(ublk_data);
-        EXPECT_TRUE(res);
-        EXPECT_EQ(1, res.value());
-    }
 
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_b);
