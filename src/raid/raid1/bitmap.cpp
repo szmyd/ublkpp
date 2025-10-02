@@ -58,21 +58,25 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitm
 void Bitmap::init_to(UblkDisk& device) {
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
     RLOGD("Initializing RAID-1 Bitmaps on: [{}]", device);
-    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
-    if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
-        0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
-        if (EINVAL == err) RLOGE("Invalid Argument while initializing superblock!")
-        throw std::runtime_error("OutOfMemory");
-    } // LCOV_EXCL_STOP
-    memset(iov.iov_base, 0, k_page_size);
+    auto iov = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
     for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
         auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
         if (!res) {
-            free(iov.iov_base);
             throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message()));
         }
     }
-    free(iov.iov_base);
+}
+
+io_result Bitmap::sync_to(UblkDisk& device) {
+    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
+    for (auto& [pg_offset, page] : _page_map) {
+        if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
+        RLOGD("Syncing Bitmap page: {} to [{}]", pg_offset, device)
+        iov.iov_base = page.get();
+        auto page_addr = (k_page_size * pg_offset) + k_page_size;
+        if (auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) return res;
+    }
+    return 0;
 }
 
 void Bitmap::load_from(UblkDisk& device) {

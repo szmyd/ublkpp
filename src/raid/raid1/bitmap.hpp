@@ -45,6 +45,7 @@ public:
     calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size);
 
     void init_to(UblkDisk& device);
+    io_result sync_to(UblkDisk& device);
     void load_from(UblkDisk& device);
 };
 } // namespace ublkpp::raid1
