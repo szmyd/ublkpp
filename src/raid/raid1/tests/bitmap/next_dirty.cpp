@@ -8,42 +8,12 @@ using ublkpp::Ki;
 // Test the iteration through dirty pages
 TEST(Raid1, NextDirty) {
     auto bitmap = ublkpp::raid1::Bitmap(100 * ublkpp::Gi, 32 * Ki, 4 * Ki);
-    {
-        auto [pg, pg_off, sz] = bitmap.dirty_page(0x4096, 512 * Ki);
-        EXPECT_TRUE(pg != nullptr);
-        EXPECT_EQ(0U, pg_off);
-        EXPECT_EQ(512 * Ki, sz);
-    }
-    {
-        auto [pg, pg_off, sz] = bitmap.dirty_page(0x23f1000, 16 * Ki);
-        EXPECT_TRUE(pg != nullptr);
-        EXPECT_EQ(0U, pg_off);
-        EXPECT_EQ(16 * Ki, sz);
-    }
-    {
-        auto [pg, pg_off, sz] = bitmap.dirty_page(0x23f8000, 64 * Ki);
-        EXPECT_TRUE(pg != nullptr);
-        EXPECT_EQ(0U, pg_off);
-        EXPECT_EQ(64 * Ki, sz);
-    }
-    {
-        auto [pg, pg_off, sz] = bitmap.dirty_page(ublkpp::Gi - (4 * Ki), 8 * Ki);
-        EXPECT_TRUE(pg != nullptr);
-        EXPECT_EQ(0U, pg_off);
-        EXPECT_EQ(4 * Ki, sz);
-    }
-    {
-        auto [pg, pg_off, sz] = bitmap.dirty_page(ublkpp::Gi, 4 * Ki);
-        EXPECT_TRUE(pg != nullptr);
-        EXPECT_EQ(1U, pg_off);
-        EXPECT_EQ(4 * Ki, sz);
-    }
-    {
-        auto [pg, pg_off, sz] = bitmap.dirty_page(5 * ublkpp::Gi, 4 * Ki);
-        EXPECT_TRUE(pg != nullptr);
-        EXPECT_EQ(5U, pg_off);
-        EXPECT_EQ(4 * Ki, sz);
-    }
+    EXPECT_EQ(512 * Ki, bitmap.dirty_page(0x4096, 512 * Ki));
+    EXPECT_EQ(16 * Ki, bitmap.dirty_page(0x23f1000, 16 * Ki));
+    EXPECT_EQ(64 * Ki, bitmap.dirty_page(0x23f8000, 64 * Ki));
+    EXPECT_EQ(4 * Ki, bitmap.dirty_page(ublkpp::Gi - (4 * Ki), 8 * Ki));
+    EXPECT_EQ(4 * Ki, bitmap.dirty_page(ublkpp::Gi, 4 * Ki));
+    EXPECT_EQ(4 * Ki, bitmap.dirty_page(5 * ublkpp::Gi, 4 * Ki));
     EXPECT_EQ(3, bitmap.dirty_pages());
     {
         auto [off, len] = bitmap.next_dirty();

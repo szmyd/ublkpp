@@ -498,7 +498,7 @@ io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_
 // word represents: (64 * 32 * 1024) == 2MiB which is larger than our max I/O for an operation.
 void Raid1DiskImpl::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint64_t len, ublksrv_queue const* q,
                                   ublk_io_data const* data) {
-    auto [p, off, sz] = _dirty_bitmap->dirty_page(addr, len);
+    auto sz = _dirty_bitmap->dirty_page(addr, len);
     RLOGT("Dirty lba: {:0x} for {}KiB cap:{}", addr >> params()->basic.logical_bs_shift, sz / Ki, capacity())
 
     // We can write across a page boundary; if we detect that we did not consume all the bytes, we need to

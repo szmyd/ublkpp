@@ -15,15 +15,6 @@ TEST(Raid1, WriteFailImmediateDevA) {
                     return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
                 });
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
-            .Times(2)
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
-                         uint64_t addr) {
-                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
-                return 1;
-            })
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -37,7 +28,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value());
     }
 
     {
@@ -45,7 +36,6 @@ TEST(Raid1, WriteFailImmediateDevA) {
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
-            .Times(2)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -53,19 +43,11 @@ TEST(Raid1, WriteFailImmediateDevA) {
                 EXPECT_EQ(iovecs->iov_len, 4 * Ki);
                 EXPECT_EQ(addr, (180 * Ki) + reserved_size);
                 return 1;
-            })
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
-                         uint64_t addr) {
-                EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
-                return 1;
             });
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 180 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value());
     }
 
     {
@@ -173,7 +155,7 @@ TEST(Raid1, WriteFailImmediateDevB) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
-// Immediate Write Fail
+//// Immediate Write Fail
 TEST(Raid1, WriteFailImmediateBoth) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
@@ -199,5 +181,10 @@ TEST(Raid1, WriteFailImmediateBoth) {
         remove_io_data(ublk_data);
         ASSERT_FALSE(res);
     }
-    EXPECT_TO_WRITE_SB_F(device_b, true);
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
 }

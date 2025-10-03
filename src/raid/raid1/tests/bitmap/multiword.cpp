@@ -10,7 +10,7 @@ TEST(Raid1, BITMAPMultiWordUpdate) {
     auto const test_sz = (32 * Ki) * 5;
 
     EXPECT_CALL(*device_a, sync_iov(test_op, _, _, _))
-        .Times(3)
+        .Times(2)
         .WillOnce([test_off, test_sz](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
             EXPECT_EQ(test_sz, iov->iov_len);
             EXPECT_EQ(test_off + reserved_size, addr);
@@ -19,11 +19,6 @@ TEST(Raid1, BITMAPMultiWordUpdate) {
         .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
             EXPECT_EQ(ublkpp::raid1::k_page_size, iov->iov_len);
             EXPECT_EQ(0UL, addr);
-            return iov->iov_len;
-        })
-        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
             return iov->iov_len;
         });
     EXPECT_SYNC_OP(test_op, device_b, true, true, test_sz, test_off + reserved_size);
@@ -35,4 +30,12 @@ TEST(Raid1, BITMAPMultiWordUpdate) {
 
     // expect unmount_clean on Device A
     EXPECT_TO_WRITE_SB(device_a);
+
+    EXPECT_CALL(*device_a, sync_iov(test_op, _, _, _))
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+            return iov->iov_len;
+        })
+        .RetiresOnSaturation();
 }

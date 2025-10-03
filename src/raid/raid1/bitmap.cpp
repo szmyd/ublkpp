@@ -61,9 +61,7 @@ void Bitmap::init_to(UblkDisk& device) {
     auto iov = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
     for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
         auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
-        if (!res) {
-            throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message()));
-        }
+        if (!res) { throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message())); }
     }
 }
 
@@ -221,14 +219,14 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
 //      * page         : Pointer to the page
 //      * page_offset  : Page index
 //      * sz           : The number of bytes from the provided `len` that fit in this page
-std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t addr, uint64_t len) {
+uint64_t Bitmap::dirty_page(uint64_t addr, uint64_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Get/Create a Page
     auto cur_page = __get_page(page_offset, true);
-    if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
+    if (!cur_page) throw std::runtime_error("Could not insert new page");
     auto cur_word = cur_page + word_offset;
     // Handle update crossing multiple words (optimization potential?)
     bool updated{false};
@@ -245,6 +243,6 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::dirty_page(uint64_t ad
         updated = true;
     }
     if (!updated) cur_page = nullptr;
-    return std::make_tuple(cur_page, page_offset, sz);
+    return sz;
 }
 } // namespace ublkpp::raid1
