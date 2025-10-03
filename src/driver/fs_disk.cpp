@@ -57,8 +57,7 @@ FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
         if (ioctl(_fd, BLKGETSIZE64, &bytes) != 0 || ioctl(_fd, BLKSSZGET, &lbs) != 0 ||
             ioctl(_fd, BLKPBSZGET, &pbs) != 0)
             throw std::runtime_error("ioctl Failed!");
-        if (block_has_unmap(_path))
-            our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+        if (block_has_unmap(_path)) our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         our_params.basic.logical_bs_shift = static_cast< uint8_t >(ilog2(lbs));
         our_params.basic.physical_bs_shift = static_cast< uint8_t >(ilog2(pbs));
         DLOGD("Backing is a block device [{}:{}:{}]!", str_path, lbs, pbs)
@@ -96,12 +95,12 @@ FSDisk::~FSDisk() {
     }
 }
 
-std::list< int > FSDisk::open_for_uring(int const ) {
+std::list< int > FSDisk::open_for_uring(int const) {
     RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
     //_uring_device = iouring_device_start;
     // We duplicate the FD here so ublksrv doesn't close it before we're ready
     return {};
-    //return {dup(_fd)};
+    // return {dup(_fd)};
 }
 
 static inline auto next_sqe(ublksrv_queue const* q) {
@@ -109,8 +108,8 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     if (0 == io_uring_sq_space_left(r)) [[unlikely]]
         io_uring_submit(r);
     auto sqe = io_uring_get_sqe(r);
-//    if (sqe) [[likely]]
-//        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+    //    if (sqe) [[likely]]
+    //        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
     return sqe;
 }
 
@@ -173,6 +172,8 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     }
     auto sqe = next_sqe(q);
 
+    DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!");
+
     if (UBLK_IO_OP_READ == op) {
         if (1 == nr_vecs)
             io_uring_prep_rw(IORING_OP_READ, sqe, _fd, iovecs->iov_base, iovecs->iov_len, addr);
@@ -198,8 +199,10 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
     }
     auto const lba = addr >> params()->basic.logical_bs_shift;
+    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     DLOGT("{} {} : [INTERNAL] ublk io [lba:{:0x}|len:{:0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(),
-          lba, __iovec_len(iovecs, iovecs + nr_vecs))
+          lba, len)
+    DEBUG_ASSERT_GE(capacity(), len + addr, "Access beyond device bounds!");
     auto res = ssize_t{-1};
     switch (op) {
     case UBLK_IO_OP_READ: {

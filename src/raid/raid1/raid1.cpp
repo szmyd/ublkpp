@@ -377,6 +377,8 @@ void Raid1DiskImpl::__resync_task() {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
 
+            RLOGT("Copying lba: {:0x} for {}KiB cap:{}", logical_off >> params()->basic.logical_bs_shift,
+                  iov.iov_len / Ki, capacity())
             // Copy Chunk from CLEAN to DIRTY
             if (auto res = __copy_chunks(&iov, 1, logical_off + raid1::reserved_size, *CLEAN_DEVICE->disk,
                                          *DIRTY_DEVICE->disk);
@@ -493,6 +495,7 @@ io_result Raid1DiskImpl::__dirty_pages(sub_cmd_t sub_cmd, uint64_t addr, uint64_
     auto new_cmd = set_flags(CLEAN_SUBCMD, sub_cmd_flags::DEPENDENT);
 
     auto [page, pg_offset, sz] = _dirty_bitmap->dirty_page(addr, len);
+    RLOGT("Dirty lba: {:0x} for {}KiB cap:{}", addr >> params()->basic.logical_bs_shift, sz / Ki, capacity())
     auto res = io_result(0);
     if (page) {
         auto const pg_size = _dirty_bitmap->page_size();
@@ -715,10 +718,9 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
 io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                    uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [tag:{:0x}] [lba:{:0x}|len:{:0x}] [sub_cmd:{}] [vol:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, len,
-          ublkpp::to_string(sub_cmd), _str_uuid)
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
+          addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
 
     // Stop any on-going resync
     if (static_cast< uint8_t >(resync_state::PAUSE) != _resync_state.load()) idle_transition(q, false);
