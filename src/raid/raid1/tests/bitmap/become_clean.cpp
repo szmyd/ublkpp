@@ -14,7 +14,7 @@ TEST(Raid1, CleanBitmap) {
 
     {
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_TO_WRITE_SB_ASYNC(device_a); // Dirty bitmap
+        //EXPECT_TO_WRITE_SB_ASYNC(device_a); // Dirty bitmap
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
@@ -23,7 +23,7 @@ TEST(Raid1, CleanBitmap) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(1, res.value()); // Only one here since failing command was replicated
+        EXPECT_EQ(0, res.value()); // Bitmap dirty deferred
     }
 
     cur_replica_start = raid_device.replica_states();

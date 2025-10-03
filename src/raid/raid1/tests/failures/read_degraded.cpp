@@ -10,15 +10,13 @@ TEST(Raid1, ReadOnDegraded) {
     {
         // Will dirty superblock header
         EXPECT_TO_WRITE_SB(device_b);
-        // Will dirty superblock page
-        EXPECT_TO_WRITE_SB_ASYNC(device_b);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(2, res.value());
+        EXPECT_EQ(1, res.value());
     }
 
     // Now send retry reads for the region; they should fail immediately
@@ -70,4 +68,12 @@ TEST(Raid1, ReadOnDegraded) {
 
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_b);
+
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+            return iov->iov_len;
+        })
+        .RetiresOnSaturation();
 }

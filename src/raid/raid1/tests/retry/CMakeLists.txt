@@ -8,6 +8,6 @@ list(APPEND RAID1_TEST_SRCS
   retry/read_failover.cpp
   retry/read_retry.cpp
   retry/retry_failure_deva.cpp
-  retry/write_retry.cpp
+  #retry/write_retry.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)

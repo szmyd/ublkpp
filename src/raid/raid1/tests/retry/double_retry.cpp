@@ -8,7 +8,6 @@ TEST(Raid1, WriteDoubleFailure) {
 
     {
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_TO_WRITE_SB_ASYNC(device_a);
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
@@ -17,7 +16,7 @@ TEST(Raid1, WriteDoubleFailure) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
-        EXPECT_EQ(1, res.value());
+        EXPECT_EQ(0, res.value());
     }
 
     // Follow up retry on device A fails without operations on B
@@ -46,23 +45,11 @@ TEST(Raid1, WriteDoubleFailure) {
         ASSERT_FALSE(res);
     }
 
-    // Failure to dirty pages
-    {
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
-            .Times(2)
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-                return 1;
-            })
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-            });
-
-        auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 12 * Ki, 256 * Ki);
-        remove_io_data(ublk_data);
-        ASSERT_FALSE(res);
-    }
-    // expect unmount_clean on last working device
-    EXPECT_TO_WRITE_SB_F(device_a, true);
+    // expect attempt to flush bitmap
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
 }

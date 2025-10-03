@@ -8,7 +8,6 @@ TEST(Raid1, DiscardRetry) {
 
     {
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_TO_WRITE_SB_ASYNC(device_a);
         EXPECT_CALL(*device_a, handle_discard(_, _, _, _, _)).Times(0);
         EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _)).Times(0);
 
@@ -19,7 +18,7 @@ TEST(Raid1, DiscardRetry) {
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         // No need to re-write on A side
-        EXPECT_EQ(1, res.value());
+        EXPECT_EQ(0, res.value());
     }
     auto compls = std::list< ublkpp::async_result >();
     raid_device.collect_async(nullptr, compls);
@@ -45,4 +44,11 @@ TEST(Raid1, DiscardRetry) {
     EXPECT_EQ(1, res.value());
     // expect unmount_clean on Device A
     EXPECT_TO_WRITE_SB(device_a);
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+            return iov->iov_len;
+        })
+        .RetiresOnSaturation();
 }

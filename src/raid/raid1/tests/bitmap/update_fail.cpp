@@ -19,14 +19,14 @@ TEST(Raid1, BITMAPUpdateFail) {
                 EXPECT_EQ(0UL, addr);
                 return iov->iov_len;
             })
-            .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
-                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            .WillOnce([test_sz, test_off](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+                EXPECT_EQ(test_sz, iov->iov_len);
+                EXPECT_EQ(test_off + reserved_size, addr);
+                return iov->iov_len;
             });
 
         auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
-        ASSERT_FALSE(res);
+        EXPECT_TRUE(res);
     }
 
     // Subsequent reads should not go to device A
@@ -47,5 +47,10 @@ TEST(Raid1, BITMAPUpdateFail) {
     ASSERT_TRUE(res);
     EXPECT_EQ(1, res.value());
 
-    EXPECT_TO_WRITE_SB(device_b);
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        });
 }
