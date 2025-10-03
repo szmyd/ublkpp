@@ -7,6 +7,7 @@ list(APPEND RAID1_TEST_SRCS
   bitmap/init_bitmap.cpp
   bitmap/is_dirty.cpp
   bitmap/load_bitmap.cpp
+  #bitmap/load_fail.cpp
   bitmap/mismatched.cpp
   bitmap/multiword.cpp
   bitmap/next_dirty.cpp

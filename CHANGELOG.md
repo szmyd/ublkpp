@@ -4,25 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.12.6
+## 0.13.0
 - raid1: Buffered BITMAP
 
-## 0.12.5
+## 0.12.x
 - raid1: Fix bug in Bitmap::load_pages where we used `&` instead of `*` for arithmetic
-
-## 0.12.4
 - raid1: Improve reading from degraded disk on startup
-
-## 0.12.3
 - raid1: Bitmap fix due to superblock mis-alignment
-
-## 0.12.2
 - fs_disk: Fix conditional on close
-
-## 0.12.1
 - raid1: Resync/Swap interaction fixes
-
-## 0.12.0
 - raid1: Retrieve underlying devices with `::replicas()`
 - raid1: Fixed race with `::swap_device` and `__resync_task`
 
