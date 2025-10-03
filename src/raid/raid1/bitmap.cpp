@@ -87,7 +87,7 @@ void Bitmap::load_from(UblkDisk& device) {
                 throw std::runtime_error("OutOfMemory");
             } // LCOV_EXCL_STOP
         }
-        if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx & k_page_size)); !res) {
+        if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx * k_page_size)); !res) {
             free(iov.iov_base);
             throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
         }
