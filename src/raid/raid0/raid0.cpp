@@ -218,7 +218,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
         if ((_stride_width - _stripe_size) >= (len - off)) {
             sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
             DEBUG_ASSERT_LE(alive_cmds, UINT32_MAX) // LCOV_EXCL_LINE
-            auto res = func(stripe_off, new_sub_cmd, io_array.data(), alive_cmds, (uint32_t)io_addr);
+            auto res = func(stripe_off, new_sub_cmd, io_array.data(), alive_cmds, io_addr);
             // Set this back to zero so the next command can reuse
             alive_cmds = 0;
             if (!res) return res;
@@ -246,7 +246,7 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     return __distribute(
         iovecs, addr,
         [q, data, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
-                        uint32_t logical_off) {
+                        uint64_t logical_off) {
             auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
             RLOGT("Perform {}: [tag:{:0x}] ublk aysnc_io -> "
                   "[stripe_off:{}|logical_lba:{:0x}|logical_len:{:0x}|sub_cmd:{}]",
@@ -265,7 +265,7 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     addr += _stride_width;
 
     return __distribute(iovecs, addr,
-                        [op, this](uint32_t stripe_off, sub_cmd_t, iovec* iov, uint32_t nr_iovs, uint32_t logical_off) {
+                        [op, this](uint32_t stripe_off, sub_cmd_t, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
                                   "[stripe_off:{}|logical_sector:{}|logical_len:{:0x}]",
                                   op == UBLK_IO_OP_READ ? "READ" : "WRITE", stripe_off, logical_off >> SECTOR_SHIFT,
