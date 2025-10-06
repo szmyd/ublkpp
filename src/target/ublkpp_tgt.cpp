@@ -182,6 +182,7 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
         sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt, i, &queue_sem).detach();
     }
+    auto const dev_name = fmt::format("{}", *tgt->device);
     tgt.reset();
 
     // Wait for Queues to start
@@ -196,7 +197,7 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
 
     static auto const sys_path = std::filesystem::path{"/"} / "dev";
     auto const res = sys_path / fmt::format("ublkb{}", dev_id);
-    TLOGI("Device exposed as UBD device: [{}]", res.native());
+    TLOGI("{} exposed as UBD device: [{}]", dev_name, res.native());
     return res;
 }
 

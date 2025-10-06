@@ -82,6 +82,8 @@ FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
     else
         DLOGD("Unable to support DIRECT I/O, using BUFFERED.")
     our_params.basic.dev_sectors = bytes >> SECTOR_SHIFT;
+    // Align size to max_sector size
+    our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
     if (UINT32_MAX == our_params.discard.discard_granularity) {
         our_params.discard.discard_granularity = 0;
         our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;

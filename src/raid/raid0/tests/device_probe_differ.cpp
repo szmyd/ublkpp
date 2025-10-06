@@ -13,7 +13,7 @@ TEST(Raid0, DiffereingDeviceProbing) {
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
     // Smallest disk was 3GiB, so 2 * 3GiB
-    EXPECT_EQ(raid_device.capacity(), (6 * Gi) - (32 * 2 * Ki));
+    EXPECT_EQ(raid_device.capacity(), (6 * Gi) - (512*Ki));
 
     // LBS/PBS represent by shift size, not raw byte count
     EXPECT_EQ(raid_device.block_size(), 4 * Ki);

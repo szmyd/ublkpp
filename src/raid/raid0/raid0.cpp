@@ -77,6 +77,8 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
           (_stripe_size * _stripe_array.size()) >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (_stripe_size >> SECTOR_SHIFT);
     our_params.basic.dev_sectors *= _stripe_array.size();
+    // Align size to max_sector size
+    our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
@@ -317,7 +319,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
 
     // Check for MAGIC, initialize SB if missing
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        RLOGW("Device does not have a valid raid0 superblock! Initializing! [stripe_size:{}KiB, vol:{}]",
+        RLOGW("{} does not have a valid raid0 superblock! Initializing! [stripe_size:{}KiB, vol:{}]", device,
               stripe_size / Ki, to_string(uuid))
         memset(sb, 0x00, sizeof(raid0::SuperBlock));
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
@@ -346,7 +348,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
               stripe_size, read_stripe_size)
         stripe_size = read_stripe_size;
     }
-    RLOGD("Device has v{:0x} superblock [stripe_sz:{:0x},stripe_off:{}]", be16toh(sb->header.version), stripe_size,
+    RLOGD("{} has v{:0x} superblock [stripe_sz:{:0x},stripe_off:{}]", device, be16toh(sb->header.version), stripe_size,
           stripe_off)
 
     // Migrating to latest version
