@@ -36,8 +36,8 @@ public:
     bool is_dirty(uint64_t addr, uint32_t len);
 
     // Tuple of form [page*, page_offset, size_consumed (max len)]
-    uint64_t dirty_page(uint64_t addr, uint64_t len);
-    std::tuple< word_t*, uint32_t, uint32_t > clean_page(uint64_t addr, uint32_t len);
+    uint64_t dirty_region(uint64_t addr, uint64_t len);
+    std::tuple< word_t*, uint32_t, uint32_t > clean_region(uint64_t addr, uint32_t len);
     std::pair< uint64_t, uint32_t > next_dirty();
 
     // Each bit in the BITMAP represents a single "Chunk" of size chunk_size

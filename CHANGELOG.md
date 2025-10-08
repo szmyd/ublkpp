@@ -4,19 +4,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.13.4
+## 0.14.0
+- raid1: Active resync
+
+## 0.13.x
 - raid1: Bitmap optimizations.
-
-## 0.13.3
 - raid1: Buffer cleaned BITMAP regions
-
-## 0.13.2
 - raid0: UINT32 truncation bug
-
-## 0.13.1
 - ublk_disk: Align device size to max_sector
-
-## 0.13.0
 - raid1: Buffered BITMAP
 
 ## 0.12.x

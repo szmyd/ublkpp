@@ -165,7 +165,7 @@ size_t Bitmap::dirty_pages() {
     return _page_map.size();
 }
 
-std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t addr, uint32_t len) {
+std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t addr, uint32_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
@@ -223,10 +223,8 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
 }
 
 // Returns:
-//      * page         : Pointer to the page
-//      * page_offset  : Page index
 //      * sz           : The number of bytes from the provided `len` that fit in this page
-uint64_t Bitmap::dirty_page(uint64_t addr, uint64_t len) {
+uint64_t Bitmap::dirty_region(uint64_t addr, uint64_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
@@ -236,7 +234,6 @@ uint64_t Bitmap::dirty_page(uint64_t addr, uint64_t len) {
     if (!cur_page) throw std::runtime_error("Could not insert new page");
     auto cur_word = cur_page + word_offset;
     // Handle update crossing multiple words (optimization potential?)
-    bool updated{false};
     for (auto bits_left = nr_bits; 0 < bits_left;) {
         auto const bits_to_write = std::min(shift_offset + 1, bits_left);
         auto const bits_to_set = htobe64(64 == bits_to_write ? UINT64_MAX
@@ -247,9 +244,7 @@ uint64_t Bitmap::dirty_page(uint64_t addr, uint64_t len) {
         ++cur_word;
         shift_offset = bits_in_word - 1;                  // Word offset back to the beginning
         if ((was & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
-        updated = true;
     }
-    if (!updated) cur_page = nullptr;
     return sz;
 }
 } // namespace ublkpp::raid1

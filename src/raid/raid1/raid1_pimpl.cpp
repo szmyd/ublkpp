@@ -32,7 +32,6 @@ ublk_params const* Raid1Disk::params() const { return _impl->params(); }
 std::string Raid1Disk::id() const { return _impl->id(); }
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device) { return _impl->open_for_uring(iouring_device); }
 uint8_t Raid1Disk::route_size() const { return _impl->route_size(); }
-void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
 
 io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
                                      uint32_t nr_vecs, uint64_t addr, int res) {

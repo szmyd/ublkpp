@@ -14,7 +14,6 @@ TEST(Raid1, CleanBitmap) {
 
     {
         EXPECT_TO_WRITE_SB(device_a);
-        //EXPECT_TO_WRITE_SB_ASYNC(device_a); // Dirty bitmap
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);

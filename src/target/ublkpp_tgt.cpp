@@ -379,12 +379,6 @@ static void handle_event(ublksrv_queue const* q) {
     }
 }
 
-static void idle_transition(ublksrv_queue const* q, bool enter) {
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    TLOGT("Idle Trans: {}", enter)
-    tgt->device->idle_transition(q, enter);
-}
-
 // Called in the context of start by ublksrv_dev_init()
 static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     // Find the registered disk in the disk map and set the tgt_data
@@ -451,7 +445,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .deinit_tgt = nullptr,      // Not Implemented
         .alloc_io_buf = nullptr,    // Not Implemented
         .free_io_buf = nullptr,     // Not Implemented
-        .idle_fn = idle_transition, // Called when I/O has stopped
+        .idle_fn = nullptr,         // Not Implemented
         .type = 0,                  // Deprecated
         .ublk_flags = 0,            // Currently Clear
         .ublksrv_flags = (device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
