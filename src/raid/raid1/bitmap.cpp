@@ -34,26 +34,31 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
 //      * sz           : The number of bytes to represent as "dirty" from this index
 std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint64_t len,
                                                                                           uint32_t chunk_size) {
-    auto const page_width_bits =
-        chunk_size * k_page_size * k_bits_in_byte;  // Number of bytes represented by a single page (block)
-    auto const page = addr / page_width_bits;       // Which page does this address land in
-    auto const page_off = (addr % page_width_bits); // Bytes within the page
-    auto const page_bit = (page_off / chunk_size);  // Bit within the page
-    auto const sz = std::min(len, (page_width_bits - page_off));
+    // Precompute page_width_bits if constants are known
+    auto const page_width_bits = chunk_size * k_page_size * k_bits_in_byte; // Compile-time if possible
 
-    // If our offset does not align on chunk boundary, then we need to add a bit as we've written over into the
-    // next word, it's unexpected that this will require writing into a third word
-    auto const alignment = addr % chunk_size;
-    auto const left_hand = std::min(chunk_size - alignment, sz);
-    auto const right_hand = (sz - left_hand) % chunk_size;
-    auto const middle = sz - (left_hand + right_hand);
-    uint32_t const nr_bits = (left_hand ? 1 : 0) + ((middle) / chunk_size) + (right_hand ? 1 : 0);
+    // Compute page and offset in one division
+    auto const page = addr / page_width_bits;
+    auto const page_off = addr % page_width_bits;
 
-    return std::make_tuple(page,                                         // Page that address references
-                           page_bit / bits_in_word,                      // Word in the page LCOV_EXCL_LINE
-                           bits_in_word - (page_bit % bits_in_word) - 1, // Shift within the Word
-                           nr_bits,
-                           sz); // Tail size of the page
+    // Compute bit position and size
+    auto const page_bit = page_off / chunk_size;
+    auto const sz = std::min(len, page_width_bits - page_off);
+
+    // Compute number of bits (chunks) spanned
+    auto const end_bit = (page_off + sz + chunk_size - 1) / chunk_size;
+    auto const nr_bits = static_cast< uint32_t >(end_bit - (page_off / chunk_size));
+
+    // Compute word and shift
+    auto const word = page_bit / bits_in_word;
+    auto const shift = bits_in_word - (page_bit % bits_in_word) - 1;
+
+    return std::make_tuple(static_cast< uint32_t >(page), // Page index
+                           word,                          // Word in the page
+                           shift,                         // Shift within the word
+                           nr_bits,                       // Number of bits
+                           sz                             // Size of the region
+    );
 }
 
 void Bitmap::init_to(UblkDisk& device) {
