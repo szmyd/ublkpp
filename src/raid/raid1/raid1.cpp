@@ -14,11 +14,7 @@
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
-                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (no_read_from_dirty, "", "no_read_from_dirty", "Allow reads from a Dirty device",
-                   cxxopts::value< bool >(), ""),
-                  (no_write_to_dirty, "", "no_write_to_dirty", "Allow writes to a Dirty device",
-                   cxxopts::value< bool >(), ""))
+                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"))
 
 using namespace std::chrono_literals;
 
@@ -37,10 +33,6 @@ using raid1::read_route;
 #define CLEAN_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_B : SEND_TO_A)
 #define DIRTY_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_A : SEND_TO_B)
 #define DEV_SUBCMD(device) (_device_a->disk == (device) ? SEND_TO_A : SEND_TO_B)
-
-static io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b);
-static folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
-load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
 
 namespace raid1 {
 
@@ -500,13 +492,6 @@ io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_
 }
 
 // Generate and submit the BITMAP pages we need to write in order to record the incoming mutations (WRITE/DISCARD)
-//
-// After some bit-twiddling to manipulate the bits indicated above we asynchronously write that page to the
-// corresponding region of the working device. This is added to the sub_cmds that the target requires to complete
-// successfully in order to acknowledge the client. It's possible for the offset/length of the operation to require
-// that we shift into the next word to set the remaining bits. That's handled here as well, but it is not expected
-// that this is unbounded as the bits each represent a significant amount of data. With 32KiB chunks (the minimum) a
-// word represents: (64 * 32 * 1024) == 2MiB which is larger than our max I/O for an operation.
 void Raid1DiskImpl::__dirty_pages(uint64_t addr, uint64_t len) {
     auto const end = addr + len;
     auto cur_off = addr;
@@ -586,7 +571,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             dirty_unavail || _dirty_bitmap->is_dirty(addr, len)) {
             auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
             auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
-            if (dirty_unavail || !totally_aligned || (0 < SISL_OPTIONS["no_write_to_dirty"].as< bool >())) {
+            if (dirty_unavail || !totally_aligned) {
                 __dirty_pages(addr, len);
                 return res.value();
             }
@@ -616,9 +601,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     // Pick a device to read from
     auto route = read_route::DEVA;
     auto need_to_test{false};
-    if (IS_DEGRADED &&
-        ((!retry && DIRTY_DEVICE->unavail.test(std::memory_order_acquire)) ||
-         0 < SISL_OPTIONS["no_read_from_dirty"].count())) {
+    if (IS_DEGRADED && (!retry && DIRTY_DEVICE->unavail.test(std::memory_order_acquire))) {
         route = READ_ROUTE;
     } else {
         if (read_route::DEVB == _last_read) {
@@ -771,153 +754,6 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     return res;
 }
 
-raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
-    if (be64toh(dev_a->fields.bitmap.age) < be64toh(dev_b->fields.bitmap.age)) {
-        dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
-        return dev_b;
-    } else if (be64toh(dev_a->fields.bitmap.age) > be64toh(dev_b->fields.bitmap.age)) {
-        dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
-        return dev_a;
-    } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount)
-        return dev_a->fields.clean_unmount ? dev_a : dev_b;
-
-    return dev_a;
-}
-
 } // namespace raid1
-
-static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0305,
-                                        0147, 072, 0310, 027, 0111, 0256, 033, 0144};
-
-constexpr auto SB_VERSION = 1;
-
-static raid1::SuperBlock* read_superblock(UblkDisk& device) {
-    auto const sb_size = sizeof(raid1::SuperBlock);
-    RLOGT("Reading Superblock from: [{}] {}%{} == {}", device, sb_size, device.block_size(),
-          sb_size % device.block_size())
-    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
-                    device, sb_size)
-    auto iov = iovec{.iov_base = nullptr, .iov_len = sb_size};
-    if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), sb_size); 0 != err || nullptr == iov.iov_base)
-        [[unlikely]] { // LCOV_EXCL_START
-        if (EINVAL == err) RLOGE("Invalid Argument while reading superblock!")
-        RLOGE("Out of Memory while reading superblock!")
-        return nullptr;
-    } // LCOV_EXCL_STOP
-    if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 0UL); !res) {
-        RLOGE("Could not read SuperBlock of [sz:{}] [res:{}]", sb_size, res.error().message())
-        free(iov.iov_base);
-        return nullptr;
-    }
-    return static_cast< raid1::SuperBlock* >(iov.iov_base);
-}
-
-static io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b) {
-    auto const sb_size = sizeof(raid1::SuperBlock);
-    RLOGT("Writing Superblock to: [{}]", device)
-    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
-                    device, sb_size)
-    auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
-    // We temporarily set the Superblock for Device A/B based on argument
-    if (device_b) sb->fields.device_b = 1;
-    auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
-    sb->fields.device_b = 0;
-    if (!res) RLOGE("Error writing Superblock to: [{}]!", device, res.error().message())
-    return res;
-}
-
-// Read and load the RAID1 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
-// the superblock to the current version. Otherwise migrate any changes needed after version discovery.
-static folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
-load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
-    auto sb = read_superblock(device);
-    if (!sb) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
-    bool was_new{false};
-    if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        memset(sb, 0x00, raid1::k_page_size);
-        memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
-        memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
-        sb->fields.clean_unmount = 1;
-        sb->fields.bitmap.chunk_size = htobe32(chunk_size);
-        sb->fields.bitmap.age = 0;
-        sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
-        was_new = true;
-    }
-
-    // Verify some details in the superblock
-    auto read_uuid = boost::uuids::uuid();
-    memcpy(read_uuid.data, sb->header.uuid, sizeof(sb->header.uuid));
-    if (uuid != read_uuid) {
-        RLOGE("Superblock did not have a matching UUID expected: {} read: {}", to_string(uuid), to_string(read_uuid))
-        free(sb);
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
-    }
-    if (chunk_size != be32toh(sb->fields.bitmap.chunk_size)) {
-        RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B] "
-              "[vol:{}] ",
-              be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
-    }
-    RLOGD("{} has v{:0x} superblock [age:{},chunk_sz:{:0x},{}] [vol:{}] ", device, be16toh(sb->header.version),
-          be64toh(sb->fields.bitmap.age), chunk_size, (1 == sb->fields.clean_unmount) ? "Clean" : "Dirty",
-          to_string(uuid))
-
-    if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
-    return std::make_pair(sb, was_new);
-}
-
-/// Raid1Disk Public Class
-Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                     std::shared_ptr< UblkDisk > dev_b) :
-        _impl(std::make_unique< raid1::Raid1DiskImpl >(uuid, dev_a, dev_b)) {
-    direct_io = _impl->direct_io;
-    uses_ublk_iouring = _impl->uses_ublk_iouring;
-}
-
-Raid1Disk::~Raid1Disk() = default;
-
-std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device_id,
-                                                   std::shared_ptr< UblkDisk > new_device) {
-    return _impl->swap_device(old_device_id, new_device);
-}
-std::pair< raid1::replica_state, raid1::replica_state > Raid1Disk::replica_states() const {
-    return _impl->replica_states();
-}
-std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk::replicas() const {
-    return _impl->replicas();
-}
-
-uint32_t Raid1Disk::block_size() const { return _impl->block_size(); }
-bool Raid1Disk::can_discard() const { return _impl->can_discard(); }
-uint64_t Raid1Disk::capacity() const { return _impl->capacity(); }
-
-ublk_params* Raid1Disk::params() { return _impl->params(); }
-ublk_params const* Raid1Disk::params() const { return _impl->params(); }
-std::string Raid1Disk::id() const { return _impl->id(); }
-std::list< int > Raid1Disk::open_for_uring(int const iouring_device) { return _impl->open_for_uring(iouring_device); }
-uint8_t Raid1Disk::route_size() const { return _impl->route_size(); }
-void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
-
-io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
-                                     uint32_t nr_vecs, uint64_t addr, int res) {
-    return _impl->handle_internal(q, data, sub_cmd, iovec, nr_vecs, addr, res);
-}
-void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& compl_list) {
-    return _impl->collect_async(q, compl_list);
-}
-io_result Raid1Disk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    return _impl->handle_flush(q, data, sub_cmd);
-}
-io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                                    uint64_t addr) {
-    return _impl->handle_discard(q, data, sub_cmd, len, addr);
-}
-io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                               uint32_t nr_vecs, uint64_t addr) {
-    return _impl->async_iov(q, data, sub_cmd, iovecs, nr_vecs, addr);
-}
-io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept {
-    return _impl->sync_iov(op, iovecs, nr_vecs, offset);
-}
-// ================
 
 } // namespace ublkpp

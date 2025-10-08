@@ -1,12 +1,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "raid/raid1/bitmap.hpp"
+#include "raid/raid1/raid1_superblock.hpp"
 
 #define Ki 1024
 
 TEST(Raid1, CalcBitmapRegions) {
     static uint32_t chunk_size = 32 * Ki;
-    static uint32_t page_width = chunk_size * ublkpp::raid1::k_page_size *
+    static uint32_t page_width = chunk_size * ublkpp::raid1::Bitmap::page_size() *
         ublkpp::raid1::k_bits_in_byte;                              // How many user data bytes does a BITMAP page cover
     static uint32_t word_width = chunk_size * sizeof(uint64_t) * 8; // How many user data bytes does a BITMAP WORD cover
 
