@@ -163,10 +163,9 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Get/Create a Page
-    auto cur_page = __get_page(page_offset);
+    auto const cur_page = __get_page(page_offset);
     DEBUG_ASSERT_NOTNULL(cur_page, "Expected to find dirty page!")
     if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
-
     auto cur_word = cur_page + word_offset;
 
     // Handle update crossing multiple words (optimization potential?)
@@ -180,9 +179,9 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
-    // Do not return clean pages, return the static page
-    if (0 == isal_zero_detect(cur_page, k_page_size)) cur_page = _clean_page.get();
-    return std::make_tuple(cur_page, page_offset, sz);
+    // Only return clean pages
+    if (0 == isal_zero_detect(cur_page, k_page_size)) return std::make_tuple(_clean_page.get(), page_offset, sz);
+    return std::make_tuple(nullptr, page_offset, sz);
 }
 
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {

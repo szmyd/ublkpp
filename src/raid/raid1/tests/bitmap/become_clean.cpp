@@ -33,14 +33,6 @@ TEST(Raid1, CleanBitmap) {
     {
         // Make Device B avail again
         iovec iov{.iov_base = nullptr, .iov_len = 0 * Ki};
-        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(1)
-            .WillOnce([](uint8_t, iovec* iovecs, uint32_t, uint64_t addr) {
-                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
-                return iovecs->iov_len;
-            });
         auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 320 * Ki, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
