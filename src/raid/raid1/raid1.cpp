@@ -14,11 +14,7 @@
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
-                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (no_read_from_dirty, "", "no_read_from_dirty", "Allow reads from a Dirty device",
-                   cxxopts::value< bool >(), ""),
-                  (no_write_to_dirty, "", "no_write_to_dirty", "Allow writes to a Dirty device",
-                   cxxopts::value< bool >(), ""))
+                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"))
 
 using namespace std::chrono_literals;
 
@@ -579,7 +575,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             dirty_unavail || _dirty_bitmap->is_dirty(addr, len)) {
             auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
             auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
-            if (dirty_unavail || !totally_aligned || (0 < SISL_OPTIONS["no_write_to_dirty"].as< bool >())) {
+            if (dirty_unavail || !totally_aligned) {
                 __dirty_pages(addr, len);
                 return res.value();
             }
@@ -609,9 +605,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     // Pick a device to read from
     auto route = read_route::DEVA;
     auto need_to_test{false};
-    if (IS_DEGRADED &&
-        ((!retry && DIRTY_DEVICE->unavail.test(std::memory_order_acquire)) ||
-         0 < SISL_OPTIONS["no_read_from_dirty"].count())) {
+    if (IS_DEGRADED && (!retry && DIRTY_DEVICE->unavail.test(std::memory_order_acquire))) {
         route = READ_ROUTE;
     } else {
         if (read_route::DEVB == _last_read) {
@@ -857,6 +851,5 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
     if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
     return std::make_pair(sb, was_new);
 }
-
 
 } // namespace ublkpp
