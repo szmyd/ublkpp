@@ -4,6 +4,7 @@ extern "C" {
 #include <endian.h>
 }
 
+#include <boost/uuid/uuid.hpp>
 #include <sisl/logging/logging.h>
 #include <sisl/utility/enum.hpp>
 
@@ -49,5 +50,9 @@ static_assert(k_page_size == sizeof(SuperBlock), "Size of raid1::SuperBlock does
 constexpr uint64_t reserved_size = sizeof(SuperBlock) + k_max_bitmap_size;
 
 extern SuperBlock* pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
+extern io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b);
+extern folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
+load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
+
 } // namespace raid1
 } // namespace ublkpp

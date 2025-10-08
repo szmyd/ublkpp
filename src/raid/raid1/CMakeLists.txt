@@ -4,6 +4,7 @@ add_library(raid1 OBJECT)
 target_sources(raid1 PRIVATE
     raid1.cpp
     raid1_pimpl.cpp
+    raid1_superblock.cpp
     bitmap.cpp
 )
 target_link_libraries(raid1
