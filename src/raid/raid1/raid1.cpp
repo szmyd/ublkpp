@@ -199,10 +199,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 Raid1DiskImpl::~Raid1DiskImpl() {
     RLOGD("Shutting down; [vol:{}]", _str_uuid)
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
-        if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
-            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-    }
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED)))
+        ;
     if (_resync_task.joinable()) _resync_task.join();
     if (!_sb) return;
     // Write out our dirty bitmap
@@ -253,10 +251,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     // Terminate any ongoing resync task
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
-        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
-            return new_device;
-        else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
-            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) return new_device;
     }
     cur_state = static_cast< uint8_t >(resync_state::STOPPED);
     if (_resync_task.joinable()) _resync_task.join();
@@ -284,7 +279,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     __dirty_region(0, capacity());
 
     // Now set back to IDLE state and kick a resync task off
-    _resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+    _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
     _resync_task = std::thread([this] {
         std::this_thread::sleep_for(1s); // This makes unit testing more deterministic
         __resync_task();
@@ -341,15 +336,12 @@ static inline io_result __copy_chunks(iovec* iovec, int nr_vecs, uint64_t addr, 
 }
 
 resync_state Raid1DiskImpl::__clean_bitmap() {
-    auto cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
     // Set ourselves up with a buffer to do all the read/write operations from
     auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
     if (auto err = ::posix_memalign(&iov.iov_base, block_size(), params()->basic.max_sectors << SECTOR_SHIFT);
         0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
         RLOGE("Could not allocate memory for I/O: {}", strerror(err))
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE)))
-            ;
-        return static_cast< resync_state >(cur_state);
+        return resync_state::ACTIVE;
     } // LCOV_EXCL_STOP
 
     while (IS_DEGRADED) {
@@ -370,27 +362,14 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
             DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
 
         // Give I/O a chance to interrupt resync
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
-            if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
-                free(iov.iov_base);
-                return static_cast< resync_state >(cur_state);
-            }
+        if (static_cast< uint8_t >(resync_state::STOPPED) == _resync_state.load(std::memory_order_acquire)) {
+            free(iov.iov_base);
+            return resync_state::STOPPED;
         }
-        cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-        // Give time for degraded device to become available again
-        std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 10us);
-
-        // Resume resync after short delay
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
-            if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
-                free(iov.iov_base);
-                return static_cast< resync_state >(cur_state);
-            }
-        }
-        cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
+        if (DIRTY_DEVICE->unavail.test(std::memory_order_acquire)) std::this_thread::sleep_for(5s);
     }
     free(iov.iov_base);
-    return static_cast< resync_state >(cur_state);
+    return resync_state::ACTIVE;
 }
 
 void Raid1DiskImpl::__resync_task() {
@@ -401,8 +380,7 @@ void Raid1DiskImpl::__resync_task() {
            !_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
         // If we're stopped or another task was started we should exit
         if ((static_cast< uint8_t >(resync_state::STOPPED) == cur_state) ||
-            (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state) ||
-            (static_cast< uint8_t >(resync_state::SLEEPING) == cur_state)) {
+            (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)) {
             RLOGD("Resync Task aborted for [vol:{}] state: {}", _str_uuid, cur_state)
             return;
         }
@@ -411,10 +389,11 @@ void Raid1DiskImpl::__resync_task() {
     }
 
     // We are now guaranteed to be the only active re-sync task performing I/O on the device
-    cur_state = static_cast< uint8_t >(__clean_bitmap());
+    if (cur_state = static_cast< uint8_t >(__clean_bitmap());
+        static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
+        return;
 
     // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
-    if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) return;
     if (IS_DEGRADED && 0 == _dirty_bitmap->dirty_pages()) __become_clean();
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE))) {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
@@ -639,6 +618,10 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data co
 
 void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     results.splice(results.end(), std::move(_pending_results[q]));
+    // Wait for any on-going device re-assignment
+    while (static_cast< uint8_t >(resync_state::STOPPED) == _resync_state.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(50us);
+    }
     if (!_device_a->disk->uses_ublk_iouring) _device_a->disk->collect_async(q, results);
     if (!_device_b->disk->uses_ublk_iouring) _device_b->disk->collect_async(q, results);
 }
@@ -647,6 +630,11 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
                                         uint32_t len, uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("received DISCARD: [tag:{:0x}] [lba:{:0x}|len:{:0x}] [vol:{}]", data->tag, lba, len, _str_uuid)
+
+    // Wait for any on-going device re-assignment
+    while (static_cast< uint8_t >(resync_state::STOPPED) == _resync_state.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(50us);
+    }
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
@@ -667,6 +655,11 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     RLOGT("Received {}: [tag:{:0x}] [lba:{:0x}|len:{:0x}] [sub_cmd:{}] [vol:{}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
           addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
+
+    // Wait for any on-going device re-assignment
+    while (static_cast< uint8_t >(resync_state::STOPPED) == _resync_state.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(50us);
+    }
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
@@ -692,6 +685,11 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [lba:{:0x}|len:{:0x}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len, _str_uuid)
+
+    // Wait for any on-going device re-assignment
+    while (static_cast< uint8_t >(resync_state::STOPPED) == _resync_state.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(50us);
+    }
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)

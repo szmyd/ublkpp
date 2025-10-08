@@ -14,7 +14,7 @@ namespace raid1 {
 class Bitmap;
 struct MirrorDevice;
 
-ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, STOPPED = 3);
+ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, STOPPED = 2);
 
 class Raid1DiskImpl : public UblkDisk {
     boost::uuids::uuid const _uuid;
@@ -33,7 +33,7 @@ class Raid1DiskImpl : public UblkDisk {
 
     // Active Re-Sync Task
     std::thread _resync_task;
-    std::atomic< uint8_t > _resync_state;
+    std::atomic_uint8_t _resync_state;
 
     // Asynchronous replies that did not go through io_uring
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
