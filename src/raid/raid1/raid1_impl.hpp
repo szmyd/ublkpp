@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "ublkpp/raid/raid1.hpp"
+#include "raid1_superblock.hpp"
 
 namespace ublkpp {
 

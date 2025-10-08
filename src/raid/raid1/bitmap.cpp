@@ -3,6 +3,7 @@
 #include <isa-l/mem_routines.h>
 #include <ublk_cmd.h>
 
+#include "raid1_superblock.hpp"
 #include "lib/logging.hpp"
 
 namespace ublkpp::raid1 {
@@ -149,6 +150,8 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
     }
     return false;
 }
+
+uint64_t Bitmap::page_size() { return k_page_size; }
 
 size_t Bitmap::dirty_pages() {
     auto cnt =

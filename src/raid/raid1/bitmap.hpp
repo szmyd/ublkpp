@@ -5,7 +5,7 @@
 #include <memory>
 #include <tuple>
 
-#include "raid1_superblock.hpp"
+#include "ublkpp/lib/ublk_disk.hpp"
 
 namespace ublkpp::raid1 {
 
@@ -30,7 +30,7 @@ private:
 public:
     Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align);
 
-    auto page_size() const { return k_page_size; }
+    static uint64_t page_size();
     size_t dirty_pages();
 
     bool is_dirty(uint64_t addr, uint32_t len);
