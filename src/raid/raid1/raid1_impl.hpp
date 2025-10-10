@@ -34,6 +34,7 @@ class Raid1DiskImpl : public UblkDisk {
     // Active Re-Sync Task
     std::thread _resync_task;
     std::atomic< uint8_t > _resync_state;
+    std::atomic< uint8_t > _io_op_cnt;
 
     // Asynchronous replies that did not go through io_uring
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
@@ -42,8 +43,8 @@ class Raid1DiskImpl : public UblkDisk {
     io_result __become_clean();
     io_result __become_degraded(sub_cmd_t sub_cmd, bool spawn_resync = true);
     resync_state __clean_bitmap();
-    io_result __clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                            ublk_io_data const* data);
+    io_result __clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
+                            ublk_io_data const* data = nullptr);
     void __dirty_pages(uint64_t addr, uint64_t len);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len);
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
