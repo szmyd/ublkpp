@@ -44,7 +44,7 @@ struct free_page {
 struct MirrorDevice {
     MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device);
     std::shared_ptr< UblkDisk > const disk;
-    std::shared_ptr< raid1::SuperBlock > sb;
+    std::shared_ptr< SuperBlock > sb;
     std::atomic_flag unavail;
 
     bool new_device{false};
@@ -53,8 +53,8 @@ struct MirrorDevice {
 MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device) :
         disk(std::move(device)) {
     auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
-    if ((raid1::k_min_chunk_size > chunk_size) || (raid1::k_max_dev_size < chunk_size)) {
-        RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, raid1::k_min_chunk_size / Ki) // LCOV_EXCL_START
+    if ((k_min_chunk_size > chunk_size) || (k_max_dev_size < chunk_size)) {
+        RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, k_min_chunk_size / Ki) // LCOV_EXCL_START
         throw std::runtime_error("Invalid Chunk Size");
     } // LCOV_EXCL_STOP
 
@@ -62,7 +62,7 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
     if (!read_super)
         throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
     new_device = read_super.value().second;
-    sb = std::shared_ptr< raid1::SuperBlock >(read_super.value().first, free_page());
+    sb = std::shared_ptr< SuperBlock >(read_super.value().first, free_page());
 }
 
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
@@ -87,15 +87,14 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
     // Reserve space for the superblock/bitmap
-    RLOGD("RAID-1 : reserving {} blocks for SuperBlock & Bitmap",
-          raid1::reserved_size >> our_params.basic.logical_bs_shift)
-    our_params.basic.dev_sectors -= (raid1::reserved_size >> SECTOR_SHIFT);
+    RLOGD("RAID-1 : reserving {} blocks for SuperBlock & Bitmap", reserved_size >> our_params.basic.logical_bs_shift)
+    our_params.basic.dev_sectors -= (reserved_size >> SECTOR_SHIFT);
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
-    if (our_params.basic.dev_sectors > (raid1::k_max_dev_size >> SECTOR_SHIFT)) {
-        RLOGW("Device would be larger than supported, only exposing [{}Gi] sized device", raid1::k_max_dev_size / Gi)
-        our_params.basic.dev_sectors = (raid1::k_max_dev_size >> SECTOR_SHIFT);
+    if (our_params.basic.dev_sectors > (k_max_dev_size >> SECTOR_SHIFT)) {
+        RLOGW("Device would be larger than supported, only exposing [{}Gi] sized device", k_max_dev_size / Gi)
+        our_params.basic.dev_sectors = (k_max_dev_size >> SECTOR_SHIFT);
     }
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
@@ -145,7 +144,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     }
 
     // Read in existing dirty BITMAP pages
-    _dirty_bitmap = std::make_unique< raid1::Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
+    _dirty_bitmap = std::make_unique< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
     if (_device_a->new_device) {
         _dirty_bitmap->init_to(*_device_a->disk);
         if (!_device_b->new_device) _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
@@ -174,7 +173,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
     _sb->fields.device_b = 0;
-    _resync_state.store(static_cast< uint8_t >(resync_state::IDLE));
+    _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
     _io_op_cnt.store(0U);
 
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
@@ -212,7 +211,7 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     if (!_sb) return;
     // Write out our dirty bitmap
     if (IS_DEGRADED) {
-        if (auto res = _dirty_bitmap->sync_to(*CLEAN_DEVICE->disk); !res) {
+        if (auto res = _dirty_bitmap->sync_to(*CLEAN_DEVICE->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [vol:{}]",
                   _str_uuid)
             return;
@@ -335,7 +334,7 @@ io_result Raid1DiskImpl::__become_clean() {
     return 0;
 }
 
-static inline io_result __copy_chunks(iovec* iovec, int nr_vecs, uint64_t addr, auto& src, auto& dest) {
+static inline io_result __copy_region(iovec* iovec, int nr_vecs, uint64_t addr, auto& src, auto& dest) {
     auto res = src.sync_iov(UBLK_IO_OP_READ, iovec, nr_vecs, addr);
     if (res) {
         if (res = dest.sync_iov(UBLK_IO_OP_WRITE, iovec, nr_vecs, addr); !res) {
@@ -359,21 +358,28 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     } // LCOV_EXCL_STOP
 
     while (0 < _dirty_bitmap->dirty_pages()) {
+        std::this_thread::sleep_for(30ms);
+        auto copies_left = 128U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
-        if (0 == sz) break;
-        iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
+        while (0 < sz && 0U < copies_left--) {
+            if (0 == sz) break;
+            iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
 
-        RLOGD("Copying lba: {:0x} for {}KiB cap:{}", logical_off >> params()->basic.logical_bs_shift, iov.iov_len / Ki,
-              capacity())
-        // Copy Chunk from CLEAN to DIRTY
-        if (auto res =
-                __copy_chunks(&iov, 1, logical_off + raid1::reserved_size, *CLEAN_DEVICE->disk, *DIRTY_DEVICE->disk);
-            res) {
-            // Clear Bitmap and set device as available if successful
-            DIRTY_DEVICE->unavail.clear(std::memory_order_release);
-            __clean_pages(0, logical_off, iov.iov_len, nullptr, nullptr);
-        } else
-            DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
+            RLOGT("Copying lba: {:0x} for {}KiB cap:{}", logical_off >> params()->basic.logical_bs_shift,
+                  iov.iov_len / Ki, capacity())
+            // Copy Region from CLEAN to DIRTY
+            if (auto res =
+                    __copy_region(&iov, 1, logical_off + reserved_size, *CLEAN_DEVICE->disk, *DIRTY_DEVICE->disk);
+                res) {
+                // Clear Bitmap and set device as available if successful
+                DIRTY_DEVICE->unavail.clear(std::memory_order_release);
+                __clean_pages(0, logical_off, iov.iov_len);
+            } else {
+                DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
+                break;
+            }
+            std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
+        }
 
         // Give I/O a chance to interrupt resync
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
@@ -445,7 +451,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::PAUSE))) {
         if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
             auto const cnt = _io_op_cnt.fetch_add(1, std::memory_order_relaxed);
-            if (0U == (cnt % 30)) {
+            if (0U == (cnt % 512)) {
                 _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
                 RLOGD("Giving resync a chance")
                 cur_state = static_cast< uint8_t >(resync_state::IDLE);
@@ -494,34 +500,35 @@ io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Cleaning pages for [lba:{:0x}|len:{:0x}|sub_cmd:{}] [vol:{}]", lba, len, ublkpp::to_string(sub_cmd),
           _str_uuid);
-    auto [page, pg_offset, sz] = _dirty_bitmap->clean_page(addr, len);
-    auto res = io_result(0);
-    if (page) {
-        auto const pg_size = _dirty_bitmap->page_size();
-        auto iov = iovec{.iov_base = page, .iov_len = pg_size};
-        auto page_addr = (pg_size * pg_offset) + pg_size;
+
+    auto const pg_size = _dirty_bitmap->page_size();
+    auto iov = iovec{.iov_base = nullptr, .iov_len = pg_size};
+
+    auto const end = addr + len;
+    auto cur_off = addr;
+    auto ret_val = io_result(0);
+    while (end > cur_off) {
+        auto [page, pg_offset, sz] = _dirty_bitmap->clean_page(cur_off, end - cur_off);
+        cur_off += sz;
+        if (!page) continue;
+        iov.iov_base = page;
+
+        auto const page_addr = (pg_size * pg_offset) + pg_size;
 
         // These don't actually need to succeed; it's optimistic
-        res = data ? CLEAN_DEVICE->disk->async_iov(q, data, CLEAN_SUBCMD, &iov, 1, page_addr)
-                   : CLEAN_DEVICE->disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
-        if (!res) return 0;
-        if (!data) res = io_result(0); // We don't need this if sync op
-    }
-
-    // We can write across a page boundary; if we detect that we did not consume all the bytes, we need to
-    // issue another dirty_page and aggregate its result
-    if (sz < len) [[unlikely]] {
-        if (auto chained_pg_res = __clean_pages(sub_cmd, addr + sz, len - sz, q, data); chained_pg_res)
-            res = res.value() + chained_pg_res.value();
+        auto res = data ? CLEAN_DEVICE->disk->async_iov(q, data, CLEAN_SUBCMD, &iov, 1, page_addr)
+                        : CLEAN_DEVICE->disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
+        if (!res) return res;
+        if (data) ret_val = ret_val.value() + res.value(); // We don't need this if sync op
     }
 
     // MUST Submit here since iov is on the stack!
-    if (q && 0 < res.value()) io_uring_submit(q->ring_ptr);
+    if (q && 0 < ret_val.value()) io_uring_submit(q->ring_ptr);
 
     //// We've cleaned the BITMAP!
     // if (0 == _dirty_bitmap->dirty_pages()) __become_clean();
 
-    return res;
+    return ret_val;
 }
 
 // Generate and submit the BITMAP pages we need to write in order to record the incoming mutations (WRITE/DISCARD)
@@ -530,7 +537,7 @@ void Raid1DiskImpl::__dirty_pages(uint64_t addr, uint64_t len) {
     auto cur_off = addr;
     while (end > cur_off) {
         cur_off += _dirty_bitmap->dirty_page(cur_off, end - cur_off);
-        RLOGI("Dirty lba: {:0x} for {}KiB cap:{}", addr >> params()->basic.logical_bs_shift, (cur_off - addr) / Ki,
+        RLOGD("Dirty lba: {:0x} for {}KiB cap:{}", addr >> params()->basic.logical_bs_shift, (cur_off - addr) / Ki,
               capacity())
     }
 }
@@ -698,7 +705,7 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
         [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) -> io_result {
             // Discard does not support internal commands, we can safely ignore these optimistic operations
             if (is_internal(scmd)) return 0;
-            return d.handle_discard(q, data, scmd, len, addr + raid1::reserved_size);
+            return d.handle_discard(q, data, scmd, len, addr + reserved_size);
         },
         addr, len, q, data);
 }
@@ -718,7 +725,7 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
         return __failover_read(
             sub_cmd,
             [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-                return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + raid1::reserved_size);
+                return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + reserved_size);
             },
             addr, len);
 
@@ -728,7 +735,7 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     return __replicate(
         sub_cmd,
         [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + raid1::reserved_size);
+            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + reserved_size);
         },
         addr, len, q, data);
 }
@@ -746,7 +753,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
         return __failover_read(
             0U,
             [iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t) {
-                return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr + raid1::reserved_size);
+                return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr + reserved_size);
             },
             addr, len);
 
@@ -754,7 +761,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     if (auto io_res = __replicate(
             0U,
             [&res, op, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t s) {
-                auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr + raid1::reserved_size);
+                auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr + reserved_size);
                 // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
                 if (p_res && !is_replicate(s)) res += p_res.value();
                 return p_res;
