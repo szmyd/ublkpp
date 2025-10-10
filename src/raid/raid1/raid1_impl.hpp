@@ -34,6 +34,7 @@ class Raid1DiskImpl : public UblkDisk {
     // Active Re-Sync Task
     std::thread _resync_task;
     std::atomic< uint8_t > _resync_state;
+    std::atomic< uint8_t > _io_op_cnt;
 
     // Asynchronous replies that did not go through io_uring
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;

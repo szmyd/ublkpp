@@ -195,6 +195,9 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     auto it = _page_map.begin();
     // Find the first dirty word
+    for (; _page_map.end() != it; ++it) {
+        if (0 != isal_zero_detect(it->second.get(), k_page_size)) break;
+    }
     if (_page_map.end() == it) return std::make_pair(0, 0);
     uint64_t logical_off = static_cast< uint64_t >(_page_width) * it->first;
 
