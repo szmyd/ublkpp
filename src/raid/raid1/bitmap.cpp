@@ -233,30 +233,31 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
 //      * page         : Pointer to the page
 //      * page_offset  : Page index
 //      * sz           : The number of bytes from the provided `len` that fit in this page
-uint64_t Bitmap::dirty_region(uint64_t addr, uint64_t len) {
-    // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
-    // Calculate the tuple mentioned above
-    auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
+void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
+    auto const end = addr + len;
+    auto cur_off = addr;
+    while (end > cur_off) {
+        // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
+        // Calculate the tuple mentioned above
+        auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
+            calc_bitmap_region(cur_off, end - cur_off, _chunk_size);
+        cur_off += sz;
 
-    // Get/Create a Page
-    auto cur_page = __get_page(page_offset, true);
-    if (!cur_page) throw std::runtime_error("Could not insert new page");
-    auto cur_word = cur_page + word_offset;
-    // Handle update crossing multiple words (optimization potential?)
-    bool updated{false};
-    for (auto bits_left = nr_bits; 0 < bits_left;) {
-        auto const bits_to_write = std::min(shift_offset + 1, bits_left);
-        auto const bits_to_set = htobe64(64 == bits_to_write ? UINT64_MAX
-                                                             : (((uint64_t)0b1 << bits_to_write) - 1)
-                                                 << (shift_offset - (bits_to_write - 1)));
-        bits_left -= bits_to_write;
-        auto const was = cur_word->fetch_or(bits_to_set, std::memory_order_release);
-        ++cur_word;
-        shift_offset = bits_in_word - 1;                  // Word offset back to the beginning
-        if ((was & bits_to_set) == bits_to_set) continue; // These chunks are already dirty!
-        updated = true;
+        // Get/Create a Page
+        auto const cur_page = __get_page(page_offset, true);
+        if (!cur_page) throw std::runtime_error("Could not insert new page");
+        auto cur_word = cur_page + word_offset;
+        // Handle update crossing multiple words (optimization potential?)
+        for (auto bits_left = nr_bits; 0 < bits_left;) {
+            auto const bits_to_write = std::min(shift_offset + 1, bits_left);
+            auto const bits_to_set = htobe64(64 == bits_to_write ? UINT64_MAX
+                                                                 : (((uint64_t)0b1 << bits_to_write) - 1)
+                                                     << (shift_offset - (bits_to_write - 1)));
+            bits_left -= bits_to_write;
+            cur_word->fetch_or(bits_to_set, std::memory_order_release);
+            ++cur_word;
+            shift_offset = bits_in_word - 1; // Word offset back to the beginning
+        }
     }
-    if (!updated) cur_page = nullptr;
-    return sz;
 }
 } // namespace ublkpp::raid1

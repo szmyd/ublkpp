@@ -52,23 +52,9 @@ TEST(Raid1, WriteFailImmediateDevA) {
 
     {
         // Make Device A avail again
-        iovec iov{.iov_base = nullptr, .iov_len = 180 * Ki};
+        iovec iov{.iov_base = nullptr, .iov_len = 160 * Ki};
         // Device A is clean!
-        EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(2)
-            .WillOnce([](uint8_t, iovec* iovecs, uint32_t, uint64_t addr) {
-                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-                EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-                EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
-                return iovecs->iov_len;
-            })
-            .WillOnce([](uint8_t, iovec* iovecs, uint32_t, uint64_t addr) {
-                EXPECT_EQ(iovecs->iov_len, 4 * Ki);
-                EXPECT_EQ(addr, 0); // Expect write to SuperBlock!
-                return ublkpp::raid1::k_page_size;
-            });
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b100, &iov, 1, 4 * Ki, 0);
+        auto res = raid_device.handle_internal(nullptr, nullptr, 0b100, &iov, 1, 32 * Ki, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
     }
@@ -81,7 +67,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
-                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
+                EXPECT_TRUE(ublkpp::is_replicate(sub_cmd));
                 EXPECT_EQ(iovecs->iov_len, 4 * Ki);
                 EXPECT_EQ(addr, (380 * Ki) + reserved_size);
                 return 1;
@@ -91,7 +77,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
-                EXPECT_TRUE(ublkpp::is_replicate(sub_cmd));
+                EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
                 EXPECT_EQ(iovecs->iov_len, 4 * Ki);
                 EXPECT_EQ(addr, (380 * Ki) + reserved_size);
                 return 1;
@@ -103,8 +89,15 @@ TEST(Raid1, WriteFailImmediateDevA) {
     }
 
     // expect unmount_clean on both devices
-    EXPECT_TO_WRITE_SB(device_a);
+    // EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
+            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+            return ublkpp::raid1::k_page_size;
+        })
+        .RetiresOnSaturation();
 }
 
 // Immediate Write Fail

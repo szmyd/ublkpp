@@ -162,7 +162,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         RLOGW("Device is new [{}], dirty all of device [{}]",
               *(_device_a->new_device ? _device_a->disk : _device_b->disk),
               *(_device_a->new_device ? _device_b->disk : _device_a->disk))
-        __dirty_pages(0, capacity());
+        _dirty_bitmap->dirty_region(0, capacity());
         _is_degraded.test_and_set(std::memory_order_relaxed);
     } else if (read_route::EITHER != READ_ROUTE) {
         RLOGW("Raid1 is starting in degraded mode [vol:{}]! Degraded device: [{}]", _str_uuid, *DIRTY_DEVICE->disk)
@@ -285,7 +285,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     }
 
     // TODO what's the right thing to do here if this fails?
-    __dirty_pages(0, capacity());
+    _dirty_bitmap->dirty_region(0, capacity());
 
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE));
@@ -525,16 +525,6 @@ io_result Raid1DiskImpl::__clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32
     return ret_val;
 }
 
-// Generate and submit the BITMAP pages we need to write in order to record the incoming mutations (WRITE/DISCARD)
-void Raid1DiskImpl::__dirty_pages(uint64_t addr, uint64_t len) {
-    auto const end = addr + len;
-    auto cur_off = addr;
-    while (end > cur_off) {
-        cur_off += _dirty_bitmap->dirty_region(cur_off, end - cur_off);
-        RLOGT("Dirty lba: {:0x} for {}KiB", addr >> params()->basic.logical_bs_shift, (cur_off - addr) / Ki)
-    }
-}
-
 // Failed Async WRITEs all end up here and have the side-effect of dirtying the BITMAP
 // on the working device. This blocks the final result going back from the original operation
 // as we chain additional sub_cmds by returning a value > 0 including a new "result" for the
@@ -551,7 +541,7 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
     // Record this degraded operation in the bitmap, result is # of async writes enqueued
     io_result dirty_res;
     if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
-    __dirty_pages(addr, len);
+    _dirty_bitmap->dirty_region(addr, len);
 
     if (is_replicate(sub_cmd)) return dirty_res;
 
@@ -589,7 +579,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         }
         io_result dirty_res;
         if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
-        __dirty_pages(addr, len);
+        _dirty_bitmap->dirty_region(addr, len);
 
         if (replica_write) return dirty_res;
         if (res = func(*CLEAN_DEVICE->disk, CLEAN_SUBCMD); !res) return res;
@@ -605,7 +595,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
             auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
             if (dirty_unavail || !totally_aligned) {
-                __dirty_pages(addr, len);
+                _dirty_bitmap->dirty_region(addr, len);
                 return res.value();
             }
             // We will go ahead and attempt this WRITE on a known degraded device,
@@ -672,7 +662,7 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data co
         DIRTY_DEVICE->unavail.clear(std::memory_order_release);
         return __clean_region(sub_cmd, addr, len, q, data);
     }
-    __dirty_pages(addr, len);
+    _dirty_bitmap->dirty_region(addr, len);
     return io_result(0);
 }
 

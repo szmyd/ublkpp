@@ -8,12 +8,12 @@ using ublkpp::Ki;
 // Test the iteration through dirty pages
 TEST(Raid1, NextDirty) {
     auto bitmap = ublkpp::raid1::Bitmap(100 * ublkpp::Gi, 32 * Ki, 4 * Ki);
-    EXPECT_EQ(512 * Ki, bitmap.dirty_region(0x4096, 512 * Ki));
-    EXPECT_EQ(16 * Ki, bitmap.dirty_region(0x23f1000, 16 * Ki));
-    EXPECT_EQ(64 * Ki, bitmap.dirty_region(0x23f8000, 64 * Ki));
-    EXPECT_EQ(4 * Ki, bitmap.dirty_region(ublkpp::Gi - (4 * Ki), 8 * Ki));
-    EXPECT_EQ(4 * Ki, bitmap.dirty_region(ublkpp::Gi, 4 * Ki));
-    EXPECT_EQ(4 * Ki, bitmap.dirty_region(5 * ublkpp::Gi, 4 * Ki));
+    bitmap.dirty_region(0x4096, 512 * Ki);
+    bitmap.dirty_region(0x23f1000, 16 * Ki);
+    bitmap.dirty_region(0x23f8000, 64 * Ki);
+    bitmap.dirty_region(ublkpp::Gi - (4 * Ki), 8 * Ki);
+    bitmap.dirty_region(ublkpp::Gi, 4 * Ki);
+    bitmap.dirty_region(5 * ublkpp::Gi, 4 * Ki);
     EXPECT_EQ(3, bitmap.dirty_pages());
     {
         auto [off, len] = bitmap.next_dirty();
