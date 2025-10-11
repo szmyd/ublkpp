@@ -173,7 +173,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
     _sb->fields.device_b = 0;
-    _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
+    _resync_state.store(static_cast< uint8_t >(resync_state::IDLE));
     _io_op_cnt.store(0U);
 
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
@@ -358,7 +358,6 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     } // LCOV_EXCL_STOP
 
     while (0 < _dirty_bitmap->dirty_pages()) {
-        std::this_thread::sleep_for(30ms);
         auto copies_left = 128U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
@@ -390,13 +389,13 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         }
         cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
         // Give time for degraded device to become available again
-        std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 10us);
+        std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 30us);
 
         // Resume resync after short delay
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
             if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
                 cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                std::this_thread::sleep_for(10us);
+                std::this_thread::sleep_for(300us);
             } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
                 free(iov.iov_base);
                 return static_cast< resync_state >(cur_state);
@@ -422,7 +421,7 @@ void Raid1DiskImpl::__resync_task() {
             return;
         }
         cur_state = static_cast< uint8_t >(resync_state::IDLE);
-        std::this_thread::sleep_for(10us);
+        std::this_thread::sleep_for(300us);
     }
 
     // We are now guaranteed to be the only active thread performing I/O on the device
@@ -450,10 +449,10 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     // To allow I/O wait for resync task to PAUSE (if any running)
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::PAUSE))) {
         if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
+            if (!IS_DEGRADED) break;
             auto const cnt = _io_op_cnt.fetch_add(1, std::memory_order_relaxed);
             if (0U == (cnt % 512)) {
                 _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-                RLOGD("Giving resync a chance")
                 cur_state = static_cast< uint8_t >(resync_state::IDLE);
             } else
                 break;
@@ -462,7 +461,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
         else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
             cur_state = static_cast< uint8_t >(resync_state::IDLE);
         else if (static_cast< uint8_t >(resync_state::IDLE) == cur_state)
-            break;
+            continue;
         std::this_thread::sleep_for(10us);
     }
 }
