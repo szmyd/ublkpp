@@ -165,10 +165,14 @@ size_t Bitmap::dirty_pages() {
     return _page_map.size();
 }
 
-std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t addr, uint32_t len) {
+std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t addr, uint32_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
+
+    // Address and Length should be chunk aligned!
+    DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:0x{:0x}] is not aligned to 0x{:0x}", addr, _chunk_size)
+    DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:0x{:0x}] is not aligned to 0x{:0x}", len, _chunk_size)
 
     // Get/Create a Page
     auto const cur_page = __get_page(page_offset);
@@ -193,7 +197,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_page(uint64_t ad
 }
 
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
-    uint32_t sz;
+    uint32_t sz = 0;
     uint64_t logical_off = 0;
     // Find the first dirty page
     for (auto const& [pg_off, page] : _page_map) {
@@ -220,6 +224,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
             // TODO Test if IO is under load
         }
         if (_data_size < (logical_off + sz)) sz = (_data_size - logical_off);
+        break;
     }
     return std::make_pair(logical_off, sz);
 }
@@ -228,7 +233,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
 //      * page         : Pointer to the page
 //      * page_offset  : Page index
 //      * sz           : The number of bytes from the provided `len` that fit in this page
-uint64_t Bitmap::dirty_page(uint64_t addr, uint64_t len) {
+uint64_t Bitmap::dirty_region(uint64_t addr, uint64_t len) {
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);

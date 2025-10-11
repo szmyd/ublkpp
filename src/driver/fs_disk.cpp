@@ -169,7 +169,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
             // Random errors on even disks
             if ((UBLK_IO_OP_WRITE == op) && !is_internal(sub_cmd) && !is_retry(sub_cmd) && (0 == sub_cmd % 2) &&
                 (0 == (k_io_cnt++ % k_rand_error))) {
-                DLOGE("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}] [cnt:{}]", _path.native(), lba,
+                DLOGW("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}] [cnt:{}]", _path.native(), lba,
                       __iovec_len(iovecs, iovecs + nr_vecs), ++k_rand_cnt)
                 return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
             }

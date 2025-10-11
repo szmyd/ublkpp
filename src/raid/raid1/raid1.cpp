@@ -322,7 +322,7 @@ std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
 
 io_result Raid1DiskImpl::__become_clean() {
     if (!IS_DEGRADED) return 0;
-    RLOGW("Device becoming clean [{}] [vol:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
+    RLOGI("Device becoming clean [{}] [vol:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
     _sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
     if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false); !sync_res) {
         RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
@@ -364,15 +364,14 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
 
-            RLOGT("Copying lba: {:0x} for {}KiB cap:{}", logical_off >> params()->basic.logical_bs_shift,
-                  iov.iov_len / Ki, capacity())
+            RLOGT("Copying lba: {:0x} for {}KiB", logical_off >> params()->basic.logical_bs_shift, iov.iov_len / Ki)
             // Copy Region from CLEAN to DIRTY
             if (auto res =
                     __copy_region(&iov, 1, logical_off + reserved_size, *CLEAN_DEVICE->disk, *DIRTY_DEVICE->disk);
                 res) {
                 // Clear Bitmap and set device as available if successful
                 DIRTY_DEVICE->unavail.clear(std::memory_order_release);
-                __clean_pages(0, logical_off, iov.iov_len);
+                __clean_region(0, logical_off, iov.iov_len);
             } else {
                 DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
                 break;
@@ -441,7 +440,6 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     using namespace std::chrono_literals;
     auto cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
     if (enter) {
-        RLOGD("Yielding to resync")
         cur_state = static_cast< uint8_t >(resync_state::PAUSE);
         _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
         return;
@@ -494,8 +492,8 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
     return 0;
 }
 
-io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                       ublk_io_data const* data) {
+io_result Raid1DiskImpl::__clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                                        ublk_io_data const* data) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Cleaning pages for [lba:{:0x}|len:{:0x}|sub_cmd:{}] [vol:{}]", lba, len, ublkpp::to_string(sub_cmd),
           _str_uuid);
@@ -507,7 +505,7 @@ io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_
     auto cur_off = addr;
     auto ret_val = io_result(0);
     while (end > cur_off) {
-        auto [page, pg_offset, sz] = _dirty_bitmap->clean_page(cur_off, end - cur_off);
+        auto [page, pg_offset, sz] = _dirty_bitmap->clean_region(cur_off, end - cur_off);
         cur_off += sz;
         if (!page) continue;
         iov.iov_base = page;
@@ -524,9 +522,6 @@ io_result Raid1DiskImpl::__clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_
     // MUST Submit here since iov is on the stack!
     if (q && 0 < ret_val.value()) io_uring_submit(q->ring_ptr);
 
-    //// We've cleaned the BITMAP!
-    // if (0 == _dirty_bitmap->dirty_pages()) __become_clean();
-
     return ret_val;
 }
 
@@ -535,9 +530,8 @@ void Raid1DiskImpl::__dirty_pages(uint64_t addr, uint64_t len) {
     auto const end = addr + len;
     auto cur_off = addr;
     while (end > cur_off) {
-        cur_off += _dirty_bitmap->dirty_page(cur_off, end - cur_off);
-        RLOGD("Dirty lba: {:0x} for {}KiB cap:{}", addr >> params()->basic.logical_bs_shift, (cur_off - addr) / Ki,
-              capacity())
+        cur_off += _dirty_bitmap->dirty_region(cur_off, end - cur_off);
+        RLOGT("Dirty lba: {:0x} for {}KiB", addr >> params()->basic.logical_bs_shift, (cur_off - addr) / Ki)
     }
 }
 
@@ -676,7 +670,7 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data co
 
     if (0 == res) {
         DIRTY_DEVICE->unavail.clear(std::memory_order_release);
-        return __clean_pages(sub_cmd, addr, len, q, data);
+        return __clean_region(sub_cmd, addr, len, q, data);
     }
     __dirty_pages(addr, len);
     return io_result(0);

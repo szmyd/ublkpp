@@ -43,8 +43,8 @@ class Raid1DiskImpl : public UblkDisk {
     io_result __become_clean();
     io_result __become_degraded(sub_cmd_t sub_cmd, bool spawn_resync = true);
     resync_state __clean_bitmap();
-    io_result __clean_pages(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
-                            ublk_io_data const* data = nullptr);
+    io_result __clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
+                             ublk_io_data const* data = nullptr);
     void __dirty_pages(uint64_t addr, uint64_t len);
     io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len);
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
