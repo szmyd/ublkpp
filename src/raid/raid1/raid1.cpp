@@ -15,7 +15,9 @@
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
-                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"))
+                   cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
+                  (resync_level, "", "resync_level", "Resync prioritization level (0-31)",
+                   cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"))
 
 using namespace std::chrono_literals;
 
@@ -290,10 +292,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
     if (_resync_enabled)
-        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] {
-            std::this_thread::sleep_for(1s); // This makes unit testing more deterministic
-            __resync_task();
-        });
+        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 
     return new_mirror->disk;
 }
@@ -380,7 +379,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     } // LCOV_EXCL_STOP
 
     while (0 < _dirty_bitmap->dirty_pages()) {
-        auto copies_left = 128U;
+        auto copies_left = (std::min(31U, SISL_OPTIONS["resync_level"].as< uint32_t >()) / 32) * 512U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
