@@ -16,7 +16,7 @@
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (resync_level, "", "resync_level", "Resync prioritization level (0-31)",
+                  (resync_level, "", "resync_level", "Resync prioritization level (0-32)",
                    cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"))
 
 using namespace std::chrono_literals;
@@ -379,7 +379,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     } // LCOV_EXCL_STOP
 
     while (0 < _dirty_bitmap->dirty_pages()) {
-        auto copies_left = (std::min(31U, SISL_OPTIONS["resync_level"].as< uint32_t >()) / 32) * 512U;
+        auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
