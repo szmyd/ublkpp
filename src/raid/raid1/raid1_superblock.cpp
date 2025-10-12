@@ -27,8 +27,6 @@ constexpr auto SB_VERSION = 1;
 
 static raid1::SuperBlock* read_superblock(UblkDisk& device) {
     auto const sb_size = sizeof(raid1::SuperBlock);
-    RLOGT("Reading Superblock from: [{}] {}%{} == {}", device, sb_size, device.block_size(),
-          sb_size % device.block_size())
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
                     device, sb_size)
     auto iov = iovec{.iov_base = nullptr, .iov_len = sb_size};

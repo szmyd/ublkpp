@@ -8,6 +8,7 @@ TEST(Raid1, SwapDeviceB) {
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
@@ -74,6 +75,7 @@ TEST(Raid1, SwapDeviceA) {
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
@@ -141,6 +143,7 @@ TEST(Raid1, SwapFail) {
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))

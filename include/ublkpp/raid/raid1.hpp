@@ -18,6 +18,7 @@ public:
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
     std::pair< raid1::replica_state, raid1::replica_state > replica_states() const;
     std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const;
+    void toggle_resync(bool t);
     /// =============
 
     /// UBlkDisk Interface Overrides

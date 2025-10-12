@@ -21,9 +21,10 @@ extern "C" {
 
 SISL_OPTION_GROUP(fs_disk,
                   (random_errors, "", "random_errors", "Inject random errors into some devices",
-                   cxxopts::value< bool >(), ""))
+                   cxxopts::value< uint32_t >()->default_value("0"), ""))
 namespace ublkpp {
 
+static uint64_t k_rand_cnt{0};
 static uint64_t k_rand_error{0};
 static uint64_t k_io_cnt{0};
 
@@ -164,12 +165,14 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     DLOGT("{} {} : [tag:{:0x}] ublk io [lba:{:0x}|len:{:0x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), data->tag, lba, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
     if (0 != SISL_OPTIONS["random_errors"].count()) [[unlikely]] {
-        // Random errors on even disks
-        if ((UBLK_IO_OP_WRITE == op) && !is_internal(sub_cmd) && !is_retry(sub_cmd) && (0 == sub_cmd % 2) &&
-            (0 == (k_io_cnt++ % k_rand_error))) {
-            DLOGE("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}]", _path.native(), lba,
-                  __iovec_len(iovecs, iovecs + nr_vecs))
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        if (k_rand_cnt < SISL_OPTIONS["random_errors"].as< uint32_t >()) {
+            // Random errors on even disks
+            if ((UBLK_IO_OP_WRITE == op) && !is_internal(sub_cmd) && !is_retry(sub_cmd) && (0 == sub_cmd % 2) &&
+                (0 == (k_io_cnt++ % k_rand_error))) {
+                DLOGW("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}] [cnt:{}]", _path.native(), lba,
+                      __iovec_len(iovecs, iovecs + nr_vecs), ++k_rand_cnt)
+                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            }
         }
     }
     auto sqe = next_sqe(q);

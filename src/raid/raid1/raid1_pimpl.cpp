@@ -22,6 +22,7 @@ std::pair< raid1::replica_state, raid1::replica_state > Raid1Disk::replica_state
 std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk::replicas() const {
     return _impl->replicas();
 }
+void Raid1Disk::toggle_resync(bool t) { return _impl->toggle_resync(t); }
 
 uint32_t Raid1Disk::block_size() const { return _impl->block_size(); }
 bool Raid1Disk::can_discard() const { return _impl->can_discard(); }
