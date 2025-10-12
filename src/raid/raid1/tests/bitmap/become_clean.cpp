@@ -2,11 +2,14 @@
 
 #include <isa-l/mem_routines.h>
 
+using namespace std::chrono_literals;
+
 // Test the correct clearing of the bitmap
 TEST(Raid1, CleanBitmap) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     auto cur_replica_start = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);
@@ -88,6 +91,8 @@ TEST(Raid1, CleanBitmap) {
         EXPECT_EQ(1, res.value());
         EXPECT_TRUE(res);
         remove_io_data(ublk_data);
+        raid_device.toggle_resync(true);
+        std::this_thread::sleep_for(3ms);
     }
     cur_replica_start = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);

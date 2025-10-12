@@ -173,7 +173,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
     _sb->fields.device_b = 0;
-    _resync_state.store(static_cast< uint8_t >(resync_state::IDLE));
+    _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
     _io_op_cnt.store(0U);
 
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
@@ -270,34 +270,56 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == old_device_id) {
-        if (auto res = write_superblock(*new_mirror->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
+        _device_a.swap(new_mirror);
+        if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
             _sb->fields.bitmap.age = old_age;
             return new_device;
         }
-        _device_a.swap(new_mirror);
     } else if (_device_b->disk->id() == old_device_id) {
-        if (auto res = write_superblock(*new_mirror->disk, _sb.get(), true);
+        _device_b.swap(new_mirror);
+        if (auto res = write_superblock(*_device_b->disk, _sb.get(), true);
             !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
             _sb->fields.bitmap.age = old_age;
             return new_device;
         }
-        _device_b.swap(new_mirror);
     }
 
     // TODO what's the right thing to do here if this fails?
     _dirty_bitmap->dirty_region(0, capacity());
 
     // Now set back to IDLE state and kick a resync task off
-    _resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-    _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] {
-        std::this_thread::sleep_for(1s); // This makes unit testing more deterministic
-        __resync_task();
-    });
+    _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+    if (_resync_enabled)
+        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] {
+            std::this_thread::sleep_for(1s); // This makes unit testing more deterministic
+            __resync_task();
+        });
 
     return new_mirror->disk;
 }
 
+void Raid1DiskImpl::toggle_resync(bool t) {
+    // Terminate any ongoing resync task
+    auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
+            _resync_enabled = t;
+            return;
+        } else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
+            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+    }
+    cur_state = static_cast< uint8_t >(resync_state::STOPPED);
+    if (_resync_task.joinable()) _resync_task.join();
+
+    _resync_enabled = t;
+    _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+
+    if (IS_DEGRADED && t)
+        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+}
+
 std::pair< replica_state, replica_state > Raid1DiskImpl::replica_states() const {
+    if (!IS_DEGRADED) return std::make_pair(replica_state::CLEAN, replica_state::CLEAN);
     auto const cur_sync_state = replica_state::ERROR;
     switch (READ_ROUTE) {
     case read_route::DEVA:
@@ -485,7 +507,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         return sync_res;
     }
     DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
-    if (spawn_resync) {
+    if (_resync_enabled && spawn_resync) {
         if (_resync_task.joinable()) _resync_task.join();
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
     }

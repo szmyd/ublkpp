@@ -5,6 +5,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     {
         EXPECT_TO_WRITE_SB(device_b);
@@ -105,6 +106,7 @@ TEST(Raid1, WriteFailImmediateDevB) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     {
         EXPECT_TO_WRITE_SB_F(device_a, true);
@@ -153,6 +155,7 @@ TEST(Raid1, WriteFailImmediateBoth) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     {
         EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))

@@ -32,6 +32,7 @@ class Raid1DiskImpl : public UblkDisk {
     raid1::read_route _last_read{raid1::read_route::DEVB};
 
     // Active Re-Sync Task
+    bool _resync_enabled{true};
     std::thread _resync_task;
     std::atomic< uint8_t > _resync_state;
     std::atomic< uint8_t > _io_op_cnt;
@@ -52,8 +53,6 @@ class Raid1DiskImpl : public UblkDisk {
                           ublk_io_data const* async_data = nullptr);
     void __resync_task();
 
-    std::unique_ptr< Raid1DiskImpl > _impl;
-
 public:
     Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);
     ~Raid1DiskImpl() override;
@@ -62,6 +61,7 @@ public:
     /// =============
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
     std::pair< replica_state, replica_state > replica_states() const;
+    void toggle_resync(bool t);
     std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const;
     /// =============
 
