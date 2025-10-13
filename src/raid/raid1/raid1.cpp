@@ -35,7 +35,6 @@ using raid1::read_route;
 #define DIRTY_DEVICE (read_route::DEVB == READ_ROUTE ? _device_a : _device_b)
 #define CLEAN_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_B : SEND_TO_A)
 #define DIRTY_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_A : SEND_TO_B)
-#define DEV_SUBCMD(device) (_device_a->disk == (device) ? SEND_TO_A : SEND_TO_B)
 
 namespace raid1 {
 
@@ -317,17 +316,25 @@ void Raid1DiskImpl::toggle_resync(bool t) {
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 }
 
-std::pair< replica_state, replica_state > Raid1DiskImpl::replica_states() const {
-    if (!IS_DEGRADED) return std::make_pair(replica_state::CLEAN, replica_state::CLEAN);
-    auto const cur_sync_state = replica_state::ERROR;
+raid1::array_state Raid1DiskImpl::replica_states() const {
+    auto const sz_to_sync = _dirty_bitmap->dirty_data_est();
     switch (READ_ROUTE) {
     case read_route::DEVA:
-        return std::make_pair(replica_state::CLEAN, cur_sync_state);
+        return raid1::array_state{.device_a = replica_state::CLEAN,
+                                  .device_b = _device_b->unavail.test(std::memory_order_acquire)
+                                      ? replica_state::ERROR
+                                      : replica_state::SYNCING,
+                                  .bytes_to_sync = sz_to_sync};
     case read_route::DEVB:
-        return std::make_pair(cur_sync_state, replica_state::CLEAN);
+        return raid1::array_state{.device_a = _device_a->unavail.test(std::memory_order_acquire)
+                                      ? replica_state::ERROR
+                                      : replica_state::SYNCING,
+                                  .device_b = replica_state::CLEAN,
+                                  .bytes_to_sync = sz_to_sync};
     case read_route::EITHER:
     default:
-        return std::make_pair(replica_state::CLEAN, replica_state::CLEAN);
+        return raid1::array_state{
+            .device_a = replica_state::CLEAN, .device_b = replica_state::CLEAN, .bytes_to_sync = 0};
     }
 }
 
@@ -378,9 +385,11 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         return static_cast< resync_state >(cur_state);
     } // LCOV_EXCL_STOP
 
-    while (0 < _dirty_bitmap->dirty_pages()) {
+    auto nr_pages = _dirty_bitmap->dirty_pages();
+    while (0 < nr_pages) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
+        RLOGT("Data left to resync ~= {}KiB [pages:{}]", _dirty_bitmap->dirty_data_est() / Ki, nr_pages)
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
@@ -422,6 +431,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
             }
         }
         cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
+        nr_pages = _dirty_bitmap->dirty_pages();
     }
     free(iov.iov_base);
     return static_cast< resync_state >(cur_state);
@@ -667,7 +677,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
 
     // Attempt read on device; if it succeeds or we are degraded return the result
     auto device = (read_route::DEVA == route) ? _device_a->disk : _device_b->disk;
-    if (auto res = func(*device, DEV_SUBCMD(device)); res || retry) { return res; }
+    if (auto res = func(*device, _device_a->disk == (device) ? SEND_TO_A : SEND_TO_B); res || retry) { return res; }
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);

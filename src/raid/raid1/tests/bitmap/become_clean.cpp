@@ -11,13 +11,13 @@ TEST(Raid1, CleanBitmap) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
-    auto cur_replica_start = raid_device.replica_states();
-    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);
-    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.second);
+    auto cur_replica_state = raid_device.replica_states();
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_b);
+    EXPECT_EQ(0, cur_replica_state.bytes_to_sync);
 
     {
         EXPECT_TO_WRITE_SB(device_a);
-        //EXPECT_TO_WRITE_SB_ASYNC(device_a); // Dirty bitmap
         EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
@@ -29,9 +29,10 @@ TEST(Raid1, CleanBitmap) {
         EXPECT_EQ(0, res.value()); // Bitmap dirty deferred
     }
 
-    cur_replica_start = raid_device.replica_states();
-    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);
-    EXPECT_EQ(ublkpp::raid1::replica_state::ERROR, cur_replica_start.second);
+    cur_replica_state = raid_device.replica_states();
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
+    EXPECT_EQ(ublkpp::raid1::replica_state::ERROR, cur_replica_state.device_b);
+    EXPECT_EQ(32 * Ki, cur_replica_state.bytes_to_sync);
 
     {
         // Make Device B avail again
@@ -94,9 +95,10 @@ TEST(Raid1, CleanBitmap) {
         raid_device.toggle_resync(true);
         std::this_thread::sleep_for(3ms);
     }
-    cur_replica_start = raid_device.replica_states();
-    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.first);
-    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.second);
+    cur_replica_state = raid_device.replica_states();
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
+    EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_b);
+    EXPECT_EQ(0, cur_replica_state.bytes_to_sync);
 
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);

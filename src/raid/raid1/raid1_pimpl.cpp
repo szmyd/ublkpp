@@ -16,9 +16,7 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
                                                    std::shared_ptr< UblkDisk > new_device) {
     return _impl->swap_device(old_device_id, new_device);
 }
-std::pair< raid1::replica_state, raid1::replica_state > Raid1Disk::replica_states() const {
-    return _impl->replica_states();
-}
+raid1::array_state Raid1Disk::replica_states() const { return _impl->replica_states(); }
 std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk::replicas() const {
     return _impl->replicas();
 }

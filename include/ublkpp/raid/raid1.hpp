@@ -7,6 +7,11 @@ namespace ublkpp {
 namespace raid1 {
 class Raid1DiskImpl;
 ENUM(replica_state, uint8_t, CLEAN = 0, SYNCING = 1, ERROR = 2);
+struct array_state {
+    replica_state device_a;
+    replica_state device_b;
+    uint64_t bytes_to_sync;
+};
 } // namespace raid1
 class Raid1Disk : public UblkDisk {
 public:
@@ -16,7 +21,7 @@ public:
     /// Raid1Disk API
     /// =============
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
-    std::pair< raid1::replica_state, raid1::replica_state > replica_states() const;
+    raid1::array_state replica_states() const;
     std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const;
     void toggle_resync(bool t);
     /// =============

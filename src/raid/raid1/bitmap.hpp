@@ -23,7 +23,8 @@ private:
     std::shared_ptr< word_t > _clean_page;
 
     uint32_t const _page_width; // Number of bytes represented by a single page (block)
-    uint32_t const _num_pages;
+    size_t const _num_pages;
+    std::atomic_uint64_t _dirty_chunks_est{0};
 
     word_t* __get_page(uint64_t offset, bool creat = false);
 
@@ -32,6 +33,7 @@ public:
 
     static uint64_t page_size();
     size_t dirty_pages();
+    uint64_t dirty_data_est() const;
 
     bool is_dirty(uint64_t addr, uint32_t len);
 
