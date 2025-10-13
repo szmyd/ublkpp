@@ -102,6 +102,7 @@ void Bitmap::load_from(UblkDisk& device) {
         // If page is empty; leave a hole
         if (0 == isal_zero_detect(iov.iov_base, k_page_size)) continue;
         RLOGT("Page: {} is *DIRTY*!", pg_idx + 1)
+        _dirty_chunks_est += (k_page_size * k_bits_in_byte);
 
         // Insert new dirty page into page map
         auto [it, _] = _page_map.emplace(std::make_pair(pg_idx, nullptr));
@@ -162,7 +163,11 @@ size_t Bitmap::dirty_pages() {
     auto cnt =
         std::erase_if(_page_map, [](const auto& it) { return (0 == isal_zero_detect(it.second.get(), k_page_size)); });
     if (0 < cnt) { RLOGD("Dropped {} page(s) from the Bitmap", cnt); }
-    return _page_map.size();
+    auto sz = _page_map.size();
+    auto const full = (sz * (k_page_size * k_bits_in_byte));
+    if (full < _dirty_chunks_est.load(std::memory_order_relaxed))
+        _dirty_chunks_est.store(full, std::memory_order_relaxed);
+    return sz;
 }
 
 std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t addr, uint32_t len) {
@@ -184,10 +189,13 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     for (auto bits_left = nr_bits; 0 < bits_left;) {
         auto const bits_to_write = std::min(shift_offset + 1, bits_left);
         bits_left -= bits_to_write;
-        auto const bits_to_clear = htobe64(64 == bits_to_write ? UINT64_MAX
-                                                               : (((uint64_t)0b1 << bits_to_write) - 1)
-                                                   << (shift_offset - (bits_to_write - 1)));
-        cur_word->fetch_and(~bits_to_clear, std::memory_order_release);
+        auto const clear_mask = ~htobe64(64 == bits_to_write ? UINT64_MAX
+                                                             : (((uint64_t)0b1 << bits_to_write) - 1)
+                                                 << (shift_offset - (bits_to_write - 1)));
+        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_release);
+        _dirty_chunks_est.fetch_sub(std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
+                                             (uint64_t)__builtin_popcountll(old_word xor (old_word & clear_mask))),
+                                    std::memory_order_relaxed);
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
@@ -195,6 +203,8 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     if (0 == isal_zero_detect(cur_page, k_page_size)) return std::make_tuple(_clean_page.get(), page_offset, sz);
     return std::make_tuple(nullptr, page_offset, sz);
 }
+
+uint64_t Bitmap::dirty_data_est() const { return _dirty_chunks_est.load(std::memory_order_relaxed) * _chunk_size; }
 
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     uint32_t sz = 0;
@@ -254,7 +264,9 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            cur_word->fetch_or(bits_to_set, std::memory_order_release);
+            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_release);
+            _dirty_chunks_est.fetch_add(__builtin_popcountll(old_word xor (old_word | bits_to_set)),
+                                        std::memory_order_relaxed);
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
