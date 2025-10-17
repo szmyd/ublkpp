@@ -319,8 +319,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
 
     // Check for MAGIC, initialize SB if missing
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        RLOGW("{} does not have a valid raid0 superblock! Initializing! [stripe_size:{}KiB, vol:{}]", device,
-              stripe_size / Ki, to_string(uuid))
+        RLOGI("Initializing RAID-0 on [{}] [stripe_size:{}KiB, vol:{}]", device, stripe_size / Ki, to_string(uuid))
         memset(sb, 0x00, sizeof(raid0::SuperBlock));
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));

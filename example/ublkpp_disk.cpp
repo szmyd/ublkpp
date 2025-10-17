@@ -5,6 +5,7 @@
 
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/string_generator.hpp>
+#include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
@@ -221,15 +222,19 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
 
     auto dev = std::unique_ptr< ublkpp::Raid0Disk >();
     try {
-        auto cnt{0U};
         auto devices = std::vector< std::shared_ptr< ublkpp::UblkDisk > >();
         auto dev_a = std::unique_ptr< ublkpp::UblkDisk >();
+        auto name_gen = boost::uuids::name_generator(id);
+        auto partition_cnt{0U};
         for (auto const& mirror : layout) {
             auto new_dev = get_driver(mirror);
-            if (0 == cnt++ % 2)
+            if (!dev_a)
                 dev_a = std::move(new_dev);
-            else
-                devices.push_back(std::make_shared< ublkpp::Raid1Disk >(id, std::move(dev_a), std::move(new_dev)));
+            else {
+                devices.push_back(std::make_shared< ublkpp::Raid1Disk >(
+                    name_gen(fmt::format("partition_{}", partition_cnt++)), std::move(dev_a), std::move(new_dev)));
+                dev_a = nullptr;
+            }
         }
         dev =
             std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(devices));

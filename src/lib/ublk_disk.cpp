@@ -93,8 +93,10 @@ io_result UblkDisk::queue_internal_resp(ublksrv_queue const* q, ublk_io_data con
 }
 
 std::string UblkDisk::to_string() const {
-    return fmt::format("{}: params:[cap={},lbs={},pbs={},discard={},direct={}]", id(), capacity(), block_size(),
-                       1 << params()->basic.physical_bs_shift, can_discard(), direct_io);
+    auto const cap_denom = capacity() >= Ti ? Gi : Mi;
+    return fmt::format("{}: params:(cap={}{},lbs={},max_tx={}Ki,discard={}{})", id(), capacity() / cap_denom,
+                       cap_denom == Gi ? "Gi" : "Mi", block_size(), (params()->basic.max_sectors << SECTOR_SHIFT) / Ki,
+                       can_discard(), direct_io ? "" : ", BUFFERED");
 }
 uint32_t UblkDisk::block_size() const { return 1 << _params->basic.logical_bs_shift; }
 bool UblkDisk::can_discard() const { return _params->types & UBLK_PARAM_TYPE_DISCARD; }

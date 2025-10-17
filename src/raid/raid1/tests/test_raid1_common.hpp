@@ -34,10 +34,7 @@ static const ublkpp::raid1::SuperBlock normal_superblock = {
     .fields = {.clean_unmount = 1,
                .read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::EITHER),
                .device_b = 0,
-               .bitmap = {.uuid = {0xa7, 0x59, 0x97, 0x84, 0xd0, 0xae, 0x45, 0x5c, 0x91, 0x3c, 0x86, 0x50, 0x21, 0x01,
-                                   0xd9, 0xd3},
-                          .chunk_size = htobe32(32 * Ki),
-                          .age = 0}},
+               .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = 0}},
     ._reserved = {0x00}};
 
 static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
