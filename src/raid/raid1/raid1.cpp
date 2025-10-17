@@ -112,15 +112,6 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         if (_device_a->sb->fields.device_b) _device_a.swap(_device_b);
     }
 
-    // Let's check the BITMAP uuids if either device is new
-    if ((!_device_a->new_device && !_device_b->new_device) &&
-        (0 !=
-         memcmp(_device_a->sb->fields.bitmap.uuid, _device_b->sb->fields.bitmap.uuid,
-                sizeof(_sb->fields.bitmap.uuid)))) {
-        RLOGE("Devices do not belong to the same RAID-1 device!");
-        throw std::runtime_error("Devices do not belong to the same RAID-1 device.");
-    }
-
     // We only keep the latest or if match and A unclean take B, if age diff is > 1 consider new
     if (auto sb_res = pick_superblock(_device_a->sb.get(), _device_b->sb.get()); sb_res) {
         if (sb_res == _device_a->sb.get()) {
@@ -135,14 +126,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     } else
         throw std::runtime_error("Could not find reasonable superblock!"); // LCOV_EXCL_LINE
 
-    // Initialize those that are new
-    if (_device_a->new_device && _device_b->new_device) {
-        // Generate a new random UUID for the BITMAP that we'll use to protected ourselves on re-assembly
-        auto const bitmap_uuid = boost::uuids::random_generator()();
-        RLOGD("Generated new BITMAP: {} [vol:{}]", boost::uuids::to_string(bitmap_uuid), _str_uuid);
-        memcpy(_sb->fields.bitmap.uuid, bitmap_uuid.data, sizeof(_sb->fields.bitmap.uuid));
-        _sb->fields.bitmap.age = htobe64(1);
-    }
+    // Initialize Age if New
+    if (_device_a->new_device && _device_b->new_device) _sb->fields.bitmap.age = htobe64(1);
 
     // Read in existing dirty BITMAP pages
     _dirty_bitmap = std::make_unique< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
@@ -247,6 +232,10 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
         RLOGE("Refusing to replace working mirror from degraded device!")
         return new_device;
     }
+    if ((_device_a->disk->id() != old_device_id) && (_device_b->disk->id() != old_device_id)) {
+        RLOGE("Refusing to replace unrecognized mirror!")
+        return new_device;
+    }
 
     // Write the superblock and clear the BITMAP region of the new device before usage
     std::shared_ptr< MirrorDevice > new_mirror;
@@ -267,26 +256,23 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     if (_resync_task.joinable()) _resync_task.join();
     _is_degraded.clear(std::memory_order_release);
 
+    // Dirty the entire bitmap
+    _dirty_bitmap->dirty_region(0, capacity());
+
     // Write the superblock to the new device and advance the age to make the old device invalid
-    auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == old_device_id) {
         _device_a.swap(new_mirror);
         if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
-            _sb->fields.bitmap.age = old_age;
             return new_device;
         }
-    } else if (_device_b->disk->id() == old_device_id) {
+    } else {
         _device_b.swap(new_mirror);
         if (auto res = write_superblock(*_device_b->disk, _sb.get(), true);
             !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
-            _sb->fields.bitmap.age = old_age;
             return new_device;
         }
     }
-
-    // TODO what's the right thing to do here if this fails?
-    _dirty_bitmap->dirty_region(0, capacity());
 
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));

@@ -35,8 +35,8 @@ struct __attribute__((__packed__)) SuperBlock {
         // was cleanly unmounted, position in RAID1 and current Healthy device
         uint8_t clean_unmount : 1, read_route : 2, device_b : 1, : 0;
         struct {
-            uint8_t uuid[16];    // This is a BITMAP UUID that is assigned when the array is created
-            uint32_t chunk_size; // Number of bytes each bit represents
+            uint8_t _reserved[16]; // Unused
+            uint32_t chunk_size;   // Number of bytes each bit represents
             uint64_t age;
         } bitmap;
     } fields;
