@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - sisl_13
       - main
 
 jobs:
