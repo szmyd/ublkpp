@@ -98,7 +98,7 @@ pipeline {
                         }
                         steps {
                             script {
-                                def BUILD_OPTIONS = "-o ${PROJECT}/*:sanitize=${SANITIZE} -o sisl/*:prerelease=False -s:h build_type=${BUILD_TYPE}"
+                                def BUILD_OPTIONS = "-o ${PROJECT}/*:sanitize=${SANITIZE} -s:h build_type=${BUILD_TYPE}"
                                 sh "conan create -c tools.build:skip_test=True --build missing ${BUILD_OPTIONS} ${CONAN_FLAGS} ."
                             }
                         }

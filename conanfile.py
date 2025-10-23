@@ -68,10 +68,10 @@ class UBlkPPConan(ConanFile):
             self.options['sisl/*'].malloc_impl = 'tcmalloc'
 
     def build_requirements(self):
-        self.test_requires("gtest/1.15.0")
+        self.test_requires("gtest/1.17.0")
 
     def requirements(self):
-        self.requires("sisl/[^12.3]@oss/master", transitive_headers=True)
+        self.requires("sisl/[^13]@oss/master", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
         if (self.options.get_safe("homeblocks")):
