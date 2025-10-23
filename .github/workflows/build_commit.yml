@@ -20,7 +20,7 @@ jobs:
   SislDeps:
     uses: szmyd/sisl/.github/workflows/build_dependencies.yml@dev/v13.x
     with:
-      branch: master
+      branch: dev/v13.x
       platform: ${{ inputs.platform }}
       build-type: ${{ inputs.build-type }}
       malloc-impl: ${{ inputs.malloc-impl }}
