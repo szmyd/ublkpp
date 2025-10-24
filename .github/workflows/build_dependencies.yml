@@ -118,7 +118,7 @@ jobs:
 
     - name: Prepare Recipes
       run: |
-        conan export --user oss --channel master import/sisl
+        conan export --user oss --channel dev import/sisl
         ./prepare_v2.sh
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
