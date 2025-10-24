@@ -118,7 +118,7 @@ jobs:
 
     - name: Prepare Recipes
       run: |
-        conan export import/sisl oss/master
+        conan export --user oss --channel master import/sisl
         ./prepare_v2.sh
         #cached_pkgs=$(ls -1d ~/.conan/data/*/*/*/*/package | sed 's,.*data/,,' | cut -d'/' -f1,2 | paste -sd',' - -)
         #echo "::info:: Pre-cached: ${cached_pkgs}"
@@ -127,9 +127,9 @@ jobs:
     - name: Build Cache
       run: |
         conan install \
-            -o sisl:malloc_impl=${{ inputs.malloc-impl }} \
-            -o homeblocks=False \
-            -s build_type=${{ inputs.build-type }} \
+            -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
+            -o ublkpp/*:homeblocks=False \
+            -s:h build_type=${{ inputs.build-type }} \
             -c tools.build:skip_test=True \
             --build missing \
             .
@@ -154,24 +154,23 @@ jobs:
       run: |
         sanitize=$([[ "${{ inputs.tooling }}" == "Sanitize" ]] && echo "True" || echo "False")
         conan create \
-            -o sisl:malloc_impl=${{ inputs.malloc-impl }} \
-            -o ublkpp:homeblocks=False \
-            -o ublkpp:sanitize=${sanitize} \
-            -s build_type=${{ inputs.build-type }} \
+            -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
+            -o ublkpp/*:homeblocks=False \
+            -o ublkpp/*:sanitize=${sanitize} \
+            -s:h build_type=${{ inputs.build-type }} \
             --build missing \
             .
       if: ${{ inputs.testing == 'True' && inputs.tooling != 'Coverage' }}
 
     - name: Code Coverage Run
       run: |
-        conan install \
-            -o sisl:malloc_impl=${{ inputs.malloc-impl }} \
-            -o homeblocks=False \
-            -o coverage=True \
-            -s build_type=${{ inputs.build-type }} \
+        conan build \
+            -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
+            -o ublkpp/*:homeblocks=False \
+            -o ublkpp/*:coverage=True \
+            -s:h build_type=${{ inputs.build-type }} \
             --build missing \
             .
-        conan build .
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
 
     - name: Upload coverage reports to Codecov
