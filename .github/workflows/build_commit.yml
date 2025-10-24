@@ -18,7 +18,7 @@ on:
 
 jobs:
   SislDeps:
-    uses: szmyd/sisl/.github/workflows/build_dependencies.yml@dev/v13.x
+    uses: ebay/sisl/.github/workflows/build_dependencies.yml@dev/v13.x
     with:
       branch: dev/v13.x
       platform: ${{ inputs.platform }}

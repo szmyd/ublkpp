@@ -87,14 +87,14 @@ jobs:
       if: ${{ inputs.testing == 'False' }}
 
     - name: Setup Conan
-      uses: szmyd/sisl/.github/actions/setup_conan2@dev/v13.x
+      uses: ebay/sisl/.github/actions/setup_conan2@dev/v13.x
       with:
         platform: ${{ inputs.platform }}
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Load UblkPP Cache
       id: restore-cache
-      uses: szmyd/sisl/.github/actions/load_conan2@dev/v13.x
+      uses: ebay/sisl/.github/actions/load_conan2@dev/v13.x
       with:
         testing: ${{ inputs.testing }}
         key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
@@ -102,13 +102,13 @@ jobs:
     - name: Retrieve Dependencies
       uses: actions/checkout@main
       with:
-        repository: szmyd/sisl
+        repository: ebay/sisl
         path: import/sisl
         ref: dev/v13.x
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Load Sisl Cache
-      uses: szmyd/sisl/.github/actions/load_conan2@dev/v13.x
+      uses: ebay/sisl/.github/actions/load_conan2@dev/v13.x
       with:
         testing: 'False'
         path: import/sisl
@@ -136,13 +136,13 @@ jobs:
       if: ${{ steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Save Conan Cache
-      uses: szmyd/sisl/.github/actions/store_conan2@dev/v13.x
+      uses: ebay/sisl/.github/actions/store_conan2@dev/v13.x
       with:
         key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
       if: ${{ github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Reload Sisl Cache
-      uses: szmyd/sisl/.github/actions/load_conan2@dev/v13.x
+      uses: ebay/sisl/.github/actions/load_conan2@dev/v13.x
       with:
         testing: 'False'
         path: import/sisl
