@@ -5,7 +5,7 @@ on:
     inputs:
       platform:
         required: false
-        default: 'ubuntu-22.04'
+        default: 'ubuntu-24.04'
         type: string
       branch:
         required: true
@@ -30,11 +30,8 @@ on:
         required: true
         type: choice
         options:
-          - ubuntu-22.04
-          - ubuntu-20.04
-          - macos-13
-          - macos-12
-        default: 'ubuntu-22.04'
+          - ubuntu-24.04
+        default: 'ubuntu-24.04'
       branch:
         required: true
         type: string
@@ -87,14 +84,14 @@ jobs:
       if: ${{ inputs.testing == 'False' }}
 
     - name: Setup Conan
-      uses: ebay/sisl/.github/actions/setup_conan2@dev/v13.x
+      uses: szmyd/sisl/.github/actions/setup_conan2@dev/v13.x
       with:
         platform: ${{ inputs.platform }}
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Load UblkPP Cache
       id: restore-cache
-      uses: ebay/sisl/.github/actions/load_conan2@dev/v13.x
+      uses: szmyd/sisl/.github/actions/load_conan2@dev/v13.x
       with:
         testing: ${{ inputs.testing }}
         key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
@@ -102,13 +99,13 @@ jobs:
     - name: Retrieve Dependencies
       uses: actions/checkout@main
       with:
-        repository: ebay/sisl
+        repository: szmyd/sisl
         path: import/sisl
         ref: dev/v13.x
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Load Sisl Cache
-      uses: ebay/sisl/.github/actions/load_conan2@dev/v13.x
+      uses: szmyd/sisl/.github/actions/load_conan2@dev/v13.x
       with:
         testing: 'False'
         path: import/sisl
@@ -136,13 +133,13 @@ jobs:
       if: ${{ steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Save Conan Cache
-      uses: ebay/sisl/.github/actions/store_conan2@dev/v13.x
+      uses: szmyd/sisl/.github/actions/store_conan2@dev/v13.x
       with:
         key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
       if: ${{ github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Reload Sisl Cache
-      uses: ebay/sisl/.github/actions/load_conan2@dev/v13.x
+      uses: szmyd/sisl/.github/actions/load_conan2@dev/v13.x
       with:
         testing: 'False'
         path: import/sisl

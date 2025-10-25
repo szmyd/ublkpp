@@ -34,7 +34,7 @@ class UBlkPPConan(ConanFile):
                 'coverage': False,
                 'sanitize': False,
                 'homeblocks': False,
-                'iscsi': True,
+                'iscsi': False,
             }
 
     exports_sources = (
