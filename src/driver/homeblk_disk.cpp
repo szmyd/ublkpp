@@ -3,7 +3,6 @@
 #include <boost/uuid/string_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <homeblks/volume_mgr.hpp>
-#include <sisl/fds/obj_allocator.hpp>
 #include <sisl/logging/logging.h>
 #include <ublksrv.h>
 
@@ -51,10 +50,9 @@ io_result HomeBlkDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, s
 struct ublk_vol_req : homeblocks::vol_interface_req {
     static boost::intrusive_ptr< ublk_vol_req > make(void* write_buffer, uint64_t lba_in, uint32_t nblks,
                                                      homeblocks::VolumePtr& vol_ptr) {
-        return boost::intrusive_ptr< ublk_vol_req >(
-            sisl::ObjectAllocator< ublk_vol_req >::make_object((uint8_t*)write_buffer, lba_in, nblks, vol_ptr));
+        return boost::intrusive_ptr< ublk_vol_req >(new ublk_vol_req((uint8_t*)write_buffer, lba_in, nblks, vol_ptr));
     }
-    void free_yourself() override { sisl::ObjectAllocator< ublk_vol_req >::deallocate(this); }
+    void free_yourself() override { delete this; }
 
     ublk_vol_req(uint8_t* write_buffer, uint64_t lba_in, uint32_t nblks, homeblocks::VolumePtr vol_ptr) :
             homeblocks::vol_interface_req(write_buffer, lba_in, nblks, vol_ptr) {}
