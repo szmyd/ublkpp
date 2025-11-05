@@ -125,8 +125,8 @@ jobs:
             -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
             -o ublkpp/*:homeblocks=False \
             -s:h build_type=${{ inputs.build-type }} \
+            -s:a compiler.cppstd=23 \
             -c tools.build:skip_test=True \
-            -c compiler.cppstd=23 \
             --format=json \
             --build missing \
             . > ~/build.json
@@ -156,7 +156,7 @@ jobs:
             -o ublkpp/*:homeblocks=False \
             -o ublkpp/*:sanitize=${sanitize} \
             -s:h build_type=${{ inputs.build-type }} \
-            -c compiler.cppstd=23 \
+            -s:a compiler.cppstd=23 \
             --build missing \
             .
       if: ${{ inputs.testing == 'True' && inputs.tooling != 'Coverage' }}
@@ -168,7 +168,7 @@ jobs:
             -o ublkpp/*:homeblocks=False \
             -o ublkpp/*:coverage=True \
             -s:h build_type=${{ inputs.build-type }} \
-            -c compiler.cppstd=23 \
+            -s:a compiler.cppstd=23 \
             --build missing \
             .
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}

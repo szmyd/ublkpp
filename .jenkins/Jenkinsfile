@@ -99,7 +99,7 @@ pipeline {
                         steps {
                             script {
                                 def BUILD_OPTIONS = "-o ${PROJECT}/*:sanitize=${SANITIZE} -s:h build_type=${BUILD_TYPE}"
-                                sh "conan create -c compiler.cppstd=23 -c tools.build:skip_test=True --build missing ${BUILD_OPTIONS} ${CONAN_FLAGS} ."
+                                sh "conan create -s:a compiler.cppstd=23 -c tools.build:skip_test=True --build missing ${BUILD_OPTIONS} ${CONAN_FLAGS} ."
                             }
                         }
                     }
@@ -114,8 +114,8 @@ pipeline {
                              steps {
                                 slackSend channel: '#sds-ci', message: "*${PROJECT}:${TAG}* is undergoing Code Coverage."
                                 sh "echo \"sonar.branch.name=${BRANCH_NAME}\" >> sonar-project.properties"
-                                sh "conan install -c compiler.cppstd=23 -c tools.build:skip_test=True --build missing -o ${PROJECT}/*:coverage=True -s:h build_type=${BUILD_TYPE} ."
-                                sh "build-wrapper-linux-x86-64 --out-dir /tmp/sonar conan build -c compiler.cppstd=23 -o ${PROJECT}/*:coverage=True -s:h build_type=${BUILD_TYPE} ."
+                                sh "conan install -s:a compiler.cppstd=23 -c tools.build:skip_test=True --build missing -o ${PROJECT}/*:coverage=True -s:h build_type=${BUILD_TYPE} ."
+                                sh "build-wrapper-linux-x86-64 --out-dir /tmp/sonar conan build -s:a compiler.cppstd=23 -o ${PROJECT}/*:coverage=True -s:h build_type=${BUILD_TYPE} ."
                                 sh "gcovr --exclude-throw-branches --exclude-lines-by-pattern '.*(LOG|ASSERT).*' --sonarqube coverage.xml -r ."
                                 withSonarQubeEnv('sds-sonar')  {
                                    sh "sonar-scanner -Dsonar.projectBaseDir=. -Dsonar.projectVersion=\"${VER}\""
