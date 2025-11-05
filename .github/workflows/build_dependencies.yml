@@ -119,34 +119,6 @@ jobs:
         ./prepare_v2.sh
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
-    - name: Build Cache
-      run: |
-        conan install \
-            -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
-            -o ublkpp/*:homeblocks=False \
-            -s:h build_type=${{ inputs.build-type }} \
-            -c tools.build:skip_test=True \
-            --format=json \
-            --build missing \
-            . > ~/build.json
-        conan list --graph ~/build.json --graph-binaries=build --format=json > ~/pkglist.json
-      if: ${{ steps.restore-cache.outputs.cache-hit != 'true' }}
-
-    - name: Save Conan Cache
-      uses: ebay/sisl/.github/actions/store_conan2@master
-      with:
-        key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
-      if: ${{ github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' }}
-
-    - name: Reload Sisl Cache
-      uses: ebay/sisl/.github/actions/load_conan2@master
-      with:
-        testing: 'False'
-        path: import/sisl
-        key_prefix: SislDeps13-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
-        fail_on_cache_miss: true
-      if: ${{ inputs.testing == 'True' && github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' }}
-
     - name: Create and Test Package
       run: |
         sanitize=$([[ "${{ inputs.tooling }}" == "Sanitize" ]] && echo "True" || echo "False")
@@ -156,8 +128,10 @@ jobs:
             -o ublkpp/*:sanitize=${sanitize} \
             -s:h build_type=${{ inputs.build-type }} \
             -s:a compiler.cppstd=23 \
+            --format=json \
             --build missing \
-            .
+            . > ~/build.json
+        conan list --graph ~/build.json --graph-binaries=build --format=json > ~/pkglist.json
       if: ${{ inputs.testing == 'True' && inputs.tooling != 'Coverage' }}
 
     - name: Code Coverage Run
@@ -178,3 +152,9 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         verbose: true
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
+
+    - name: Save Conan Cache
+      uses: ebay/sisl/.github/actions/store_conan2@master
+      with:
+        key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
+      if: ${{ github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' }}
