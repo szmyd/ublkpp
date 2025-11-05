@@ -9,7 +9,6 @@ namespace ublkpp {
 class FSDisk : public UblkDisk {
     std::filesystem::path _path;
     int _fd{-1};
-    int _uring_device{-1};
     bool _block_device{false};
 
 public:
@@ -17,9 +16,7 @@ public:
     ~FSDisk() override;
 
     std::string id() const override { return _path.native(); }
-    std::list< int > open_for_uring(int const iouring_device) override;
 
-    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                              uint64_t addr) override;

@@ -40,8 +40,6 @@ HomeBlkDisk::HomeBlkDisk(boost::uuids::uuid const& homeblk_vol_id, uint64_t capa
 
 HomeBlkDisk::~HomeBlkDisk() = default;
 
-std::list< int > HomeBlkDisk::open_for_uring(int const) { return {}; }
-
 io_result HomeBlkDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
     DEBUG_ASSERT(direct_io, "DirectIO not enabled and received FLUSH!");
     return 0;

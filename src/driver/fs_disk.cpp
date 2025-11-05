@@ -98,13 +98,16 @@ FSDisk::~FSDisk() {
     }
 }
 
-std::list< int > FSDisk::open_for_uring(int const) {
-    RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
-    //_uring_device = iouring_device_start;
-    // We duplicate the FD here so ublksrv doesn't close it before we're ready
-    return {};
-    // return {dup(_fd)};
-}
+// TODO:
+// This is an optimization to register the Linux FDs in the kernel, currently it is disabled
+// as we don't support unregistering an FD during RAID1::swap_devcice, re-enable if this is fixed. and
+// enable IOSQE_FIXED_FILE below.
+// std::list< int > FSDisk::open_for_uring(int const) {
+//    RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
+//    _uring_device = iouring_device_start;
+//    // We duplicate the FD here so ublksrv doesn't close it before we're ready
+//    return {dup(_fd)};
+//}
 
 static inline auto next_sqe(ublksrv_queue const* q) {
     auto r = q->ring_ptr;
@@ -115,8 +118,6 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     //        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
     return sqe;
 }
-
-void FSDisk::collect_async(ublksrv_queue const*, std::list< async_result >&) {}
 
 io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
