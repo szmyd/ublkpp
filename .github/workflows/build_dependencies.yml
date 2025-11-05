@@ -122,7 +122,7 @@ jobs:
     - name: Create and Test Package
       run: |
         sanitize=$([[ "${{ inputs.tooling }}" == "Sanitize" ]] && echo "True" || echo "False")
-        conan create \
+        conan build \
             -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
             -o ublkpp/*:homeblocks=False \
             -o ublkpp/*:sanitize=${sanitize} \
@@ -142,8 +142,9 @@ jobs:
             -o ublkpp/*:coverage=True \
             -s:h build_type=${{ inputs.build-type }} \
             -s:a compiler.cppstd=23 \
+            --format=json \
             --build missing \
-            .
+            . > ~/build.json
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
 
     - name: Upload coverage reports to Codecov
