@@ -152,10 +152,10 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
     DEBUG_ASSERT_LT(res, 0, "Positive ioctl")
     if (0 < res) {
         DLOGE("ioctl BLKDISCARD on {} returned postive result: {}", _path.native(), res)
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     DLOGE("ioctl BLKDISCARD on {} returned error: {}", _path.native(), strerror(errno))
-    return folly::makeUnexpected(std::make_error_condition(static_cast< std::errc >(errno)));
+    return std::unexpected(std::make_error_condition(static_cast< std::errc >(errno)));
 }
 
 io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
@@ -171,7 +171,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
                 (0 == (k_io_cnt++ % k_rand_error))) {
                 DLOGW("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}] [cnt:{}]", _path.native(), lba,
                       __iovec_len(iovecs, iovecs + nr_vecs), ++k_rand_cnt)
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
             }
         }
     }
@@ -201,7 +201,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
 io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     if (0 > _fd) {
         DLOGE("Direct read on un-opened device!")
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     auto const lba = addr >> params()->basic.logical_bs_shift;
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
@@ -217,11 +217,11 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         res = pwritev2(_fd, iovecs, nr_vecs, addr, RWF_DSYNC | RWF_HIPRI);
     } break;
     default:
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (0 > res) {
         DLOGE("{} {} : {}", op == UBLK_IO_OP_READ ? "preadv" : "pwritev", _path.native(), strerror(errno))
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return res;
 }

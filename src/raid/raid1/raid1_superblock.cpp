@@ -60,10 +60,10 @@ io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_
 
 // Read and load the RAID1 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
-folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
+std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
     auto sb = read_superblock(device);
-    if (!sb) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    if (!sb) return std::unexpected(std::make_error_condition(std::errc::io_error));
     bool was_new{false};
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
         memset(sb, 0x00, raid1::k_page_size);
@@ -82,7 +82,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
     if (uuid != read_uuid) {
         RLOGE("Superblock did not have a matching UUID expected: {} read: {}", to_string(uuid), to_string(read_uuid))
         free(sb);
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (chunk_size != be32toh(sb->fields.bitmap.chunk_size)) {
         RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B] "

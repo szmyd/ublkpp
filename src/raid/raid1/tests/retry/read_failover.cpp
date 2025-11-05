@@ -15,7 +15,7 @@ TEST(Raid1, ReadFailover) {
             EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (12 * Ki) + reserved_size);
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)

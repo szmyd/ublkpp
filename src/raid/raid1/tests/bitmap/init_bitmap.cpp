@@ -45,7 +45,7 @@ TEST(Raid1, InitBitmapFailure) {
     EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(1)
         .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
     EXPECT_THROW(bitmap.init_to(*device), std::runtime_error);

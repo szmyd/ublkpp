@@ -1,11 +1,11 @@
 #pragma once
 
+#include <expected>
 #include <memory>
 #include <filesystem>
 #include <system_error>
 
 #include <boost/uuid/uuid.hpp>
-#include <folly/Expected.h>
 
 #define UBLK_LOG_MODS ublksrv, ublk_tgt, ublk_raid, ublk_drivers, libiscsi
 
@@ -15,7 +15,7 @@ class UblkDisk;
 struct ublkpp_tgt_impl;
 
 struct ublkpp_tgt {
-    using run_result_t = folly::Expected< std::unique_ptr< ublkpp_tgt >, std::error_condition >;
+    using run_result_t = std::expected< std::unique_ptr< ublkpp_tgt >, std::error_condition >;
 
     ~ublkpp_tgt();
 

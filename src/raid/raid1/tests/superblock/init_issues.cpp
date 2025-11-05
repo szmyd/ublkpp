@@ -72,7 +72,7 @@ TEST(Raid1, ReadingSBProblems) {
                 EXPECT_EQ(1, nr_vecs);
                 EXPECT_EQ(ublkpp::raid1::k_page_size, iov->iov_len);
                 EXPECT_EQ(0UL, addr);
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
             });
         EXPECT_THROW(auto raid_device =
                          ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),

@@ -47,7 +47,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
-            if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
+            if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);                              \
                 if (side_b) static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;          \
@@ -63,7 +63,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
-            if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
+            if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);                              \
                 if (side_b) static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;          \
@@ -89,7 +89,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); /* Expect write to bitmap!*/                                  \
             EXPECT_LT(addr, reserved_size);              /* Expect write to bitmap!*/                                  \
-            if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
+            if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
             auto const op = ublksrv_get_op(data->iod);                                                                 \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
             return 1;                                                                                                  \

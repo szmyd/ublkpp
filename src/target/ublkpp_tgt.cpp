@@ -123,16 +123,16 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     return NULL;
 }
 
-static folly::Expected< std::filesystem::path, std::error_condition > start(std::shared_ptr< ublkpp_tgt_impl > tgt) {
+static std::expected< std::filesystem::path, std::error_condition > start(std::shared_ptr< ublkpp_tgt_impl > tgt) {
     TLOGD("Initializing Ctrl Device")
     if (tgt->ctrl_dev = ublksrv_ctrl_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
         TLOGE("Cannot init disk {}", tgt->device)
-        return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     }
 
     if (auto ret = ublksrv_ctrl_add_dev(tgt->ctrl_dev); 0 > ret) {
         TLOGE("Cannot add disk {}: {}", tgt->device, ret)
-        return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     }
     tgt->device_added = true;
     {
@@ -151,7 +151,7 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
 
     if (auto ret = ublksrv_ctrl_get_affinity(ctrl_dev); 0 > ret) {
         TLOGE("dev {} get affinity failed {}", dev_id, ret)
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
 
     TLOGD("Start ublksrv io daemon {}-{}", "ublkpp", dev_id)
@@ -170,7 +170,7 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
     }
     if (!tgt->ublk_dev) {
         TLOGE("dev-{} start ubsrv failed", dev_id)
-        return folly::makeUnexpected(std::make_error_condition(std::errc::no_such_device));
+        return std::unexpected(std::make_error_condition(std::errc::no_such_device));
     }
 
     // Unprivileged device support
@@ -191,9 +191,9 @@ static folly::Expected< std::filesystem::path, std::error_condition > start(std:
 
     // Start processing I/Os
     if (auto err = ublksrv_ctrl_set_params(ctrl_dev, dev_ptr->params()); err)
-        return folly::makeUnexpected(std::error_condition(err, std::system_category()));
+        return std::unexpected(std::error_condition(err, std::system_category()));
     if (auto err = ublksrv_ctrl_start_dev(ctrl_dev, getpid()); 0 > err)
-        return folly::makeUnexpected(std::error_condition(err, std::system_category()));
+        return std::unexpected(std::error_condition(err, std::system_category()));
 
     static auto const sys_path = std::filesystem::path{"/"} / "dev";
     auto const res = sys_path / fmt::format("ublkb{}", dev_id);
@@ -480,7 +480,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .reserved = {0, 0, 0, 0, 0, 0, 0},
     });
     auto res = start(tgt);
-    if (!res) return folly::makeUnexpected(res.error());
+    if (!res) return std::unexpected(res.error());
     tgt->device_path = res.value();
 
     auto new_tgt = new ublkpp_tgt(tgt);

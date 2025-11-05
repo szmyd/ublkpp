@@ -80,7 +80,7 @@ io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* dat
         return async_iov(q, data, sub_cmd, &iov, 1, (iod->start_sector << SECTOR_SHIFT));
     }
     default:
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
 }
 

@@ -1,10 +1,9 @@
 #pragma once
 
+#include <expected>
 #include <list>
 #include <memory>
 #include <string>
-
-#include <folly/Expected.h>
 
 #include "common.hpp"
 #include "sub_cmd.hpp"
@@ -22,7 +21,7 @@ struct async_result {
     int result;
 };
 
-using io_result = folly::Expected< size_t, std::error_condition >;
+using io_result = std::expected< size_t, std::error_condition >;
 class UblkDisk : public std::enable_shared_from_this< UblkDisk > {
     std::unique_ptr< ublk_params > _params;
 

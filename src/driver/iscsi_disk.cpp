@@ -196,7 +196,7 @@ void iSCSIDisk::async_complete(ublksrv_queue const* q, async_result&& result) {
 io_result iSCSIDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd) {
     DLOGT("Flush : [tag:{:0x}] ublk io [sub_cmd:{}]", ublk_io->tag, ublkpp::to_string(sub_cmd))
     if (direct_io) return 0;
-    return folly::makeUnexpected(std::make_error_condition(std::errc::not_supported));
+    return std::unexpected(std::make_error_condition(std::errc::not_supported));
 }
 
 io_result iSCSIDisk::handle_discard(ublksrv_queue const*, ublk_io_data const* ublk_io, sub_cmd_t sub_cmd, uint32_t len,
@@ -204,7 +204,7 @@ io_result iSCSIDisk::handle_discard(ublksrv_queue const*, ublk_io_data const* ub
     auto const lba = addr >> params()->basic.logical_bs_shift;
     DLOGD("DISCARD : [tag:{:0x}] ublk io [lba:{:0x}|len:{:0x}|sub_cmd:{}]", ublk_io->tag, lba, len,
           ublkpp::to_string(sub_cmd))
-    return folly::makeUnexpected(std::make_error_condition(std::errc::not_supported));
+    return std::unexpected(std::make_error_condition(std::errc::not_supported));
 }
 
 struct iscsi_cb_data {
@@ -250,7 +250,7 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_
     // We copy the iovec here since libiscsi does not make it stable
     auto cb_data = new iscsi_cb_data(ublk_io, ublk_io->tag, sub_cmd,
                                      dynamic_pointer_cast< iSCSIDisk >(shared_from_this()), q, len);
-    if (!cb_data) return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
+    if (!cb_data) return std::unexpected(std::make_error_condition(std::errc::not_enough_memory));
     for (auto i = 0U; nr_vecs > i; ++i) {
         cb_data->io_vec[i].iov_base = iovecs[i].iov_base;
         cb_data->io_vec[i].iov_len = iovecs[i].iov_len;
@@ -264,13 +264,13 @@ io_result iSCSIDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* ublk_
 
     if (!task) {
         DLOGE("Failed {} to iSCSI LUN. {}", op == UBLK_IO_OP_READ ? "READ" : "WRITE", iscsi_get_error(_session->ctx));
-        return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
+        return std::unexpected(std::make_error_condition(std::errc::not_enough_memory));
     }
 
     uint64_t data = 1;
     if (auto ret = write(_session->evfd, &data, sizeof(uint64_t)); sizeof(uint64_t) != ret) {
         DLOGE("Could not write to eventfd: {}", strerror(errno));
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return 1;
 }
@@ -288,17 +288,17 @@ io_result iSCSIDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                                 reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs)
         : iscsi_write16_iov_sync(_session->ctx, _session->url->lun, lba, NULL, len, block_size(), 0, 0, 0, 0, 0,
                                  reinterpret_cast< scsi_iovec* >(iovecs), nr_vecs);
-    if (!task) return folly::makeUnexpected(std::make_error_condition(std::errc::not_enough_memory));
+    if (!task) return std::unexpected(std::make_error_condition(std::errc::not_enough_memory));
     io_result res = len;
     if (SCSI_STATUS_GOOD != task->status) {
         DLOGW("iSCSI cmd returned error: [status:{}] iscsi_err: ", task->status, iscsi_get_error(_session->ctx));
         if (SCSI_SENSE_ILLEGAL_REQUEST == task->sense.key) {
             // The LUN is offline but the target still exists, drive reset?
             if (SCSI_SENSE_ASCQ_LOGICAL_UNIT_NOT_SUPPORTED == task->sense.ascq) {
-                res = folly::makeUnexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
+                res = std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
             }
         }
-        res = folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        res = std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     scsi_free_scsi_task(task);
     return res;

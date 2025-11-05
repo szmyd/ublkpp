@@ -76,7 +76,7 @@ static std::promise< int > s_stop_code;
 static void handle(int signal);
 ///
 
-using Result = folly::Expected< std::filesystem::path, std::error_condition >;
+using Result = std::expected< std::filesystem::path, std::error_condition >;
 static auto k_target = std::unique_ptr< ublkpp::ublkpp_tgt >();
 
 template < typename D >
@@ -84,7 +84,7 @@ Result _run_target(boost::uuids::uuid const& vol_id, std::unique_ptr< D >&& dev)
 
     // Wait for initialization to complete
     auto res = ublkpp::ublkpp_tgt::run(vol_id, std::move(dev));
-    if (!res) { return folly::makeUnexpected(res.error()); }
+    if (!res) { return std::unexpected(res.error()); }
     k_target = std::move(res.value());
     return k_target->device_path();
 }
@@ -186,7 +186,7 @@ Result create_loop(boost::uuids::uuid const& id, std::string const& path) {
     try {
         dev = get_driver(path);
     } catch (std::runtime_error const& e) {}
-    if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
 }
 
@@ -201,7 +201,7 @@ Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > con
             dev = std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(),
                                                         std::move(devices));
     } catch (std::runtime_error const& e) {}
-    if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
 }
 
@@ -210,14 +210,14 @@ Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > con
     try {
         dev = std::make_unique< ublkpp::Raid1Disk >(id, get_driver(*layout.begin()), get_driver(*(layout.begin() + 1)));
     } catch (std::runtime_error const& e) {}
-    if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
 }
 
 Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
     if (1 > layout.size()) {
         LOGERROR("Zero mirrors in Array [uuid:{}]!", to_string(id))
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
 
     auto dev = std::unique_ptr< ublkpp::Raid0Disk >();
@@ -239,7 +239,7 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
         dev =
             std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(devices));
     } catch (std::runtime_error const& e) {}
-    if (!dev) return folly::makeUnexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
 }
 

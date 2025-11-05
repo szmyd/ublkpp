@@ -153,7 +153,7 @@ TEST(Raid1, SwapFail) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memset(iovecs->iov_base, 000, iovecs->iov_len);
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
     EXPECT_EQ(raid_device.swap_device("DiskA", new_device), new_device);
 

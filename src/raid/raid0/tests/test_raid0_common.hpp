@@ -40,7 +40,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
             EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
             EXPECT_EQ(o, addr);                                                                                        \
-            if (f) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));                       \
+            if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
             return s;                                                                                                  \
         });
