@@ -47,7 +47,7 @@ TEST(Raid1, FailLoadOnInit) {
             return ublkpp::raid1::k_page_size;
         })
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
     EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),

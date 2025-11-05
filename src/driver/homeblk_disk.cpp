@@ -40,8 +40,6 @@ HomeBlkDisk::HomeBlkDisk(boost::uuids::uuid const& homeblk_vol_id, uint64_t capa
 
 HomeBlkDisk::~HomeBlkDisk() = default;
 
-std::list< int > HomeBlkDisk::open_for_uring(int const) { return {}; }
-
 io_result HomeBlkDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
     DEBUG_ASSERT(direct_io, "DirectIO not enabled and received FLUSH!");
     return 0;
@@ -68,13 +66,13 @@ io_result HomeBlkDisk::handle_discard(ublksrv_queue const*, ublk_io_data const* 
     // TODO Implement discard
     DLOGD("DISCARD [vol_id:{}]: [tag:{:0x}] ublk io [sector:{}|len:{}|sub_cmd:{}]", boost::uuids::to_string(_vol_id),
           data->tag, addr >> SECTOR_SHIFT, len, ublkpp::to_string(sub_cmd))
-    return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
 }
 
 io_result HomeBlkDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                  uint32_t nr_vecs, uint64_t addr) {
     // HomeBlks does not support vectorized I/O
-    if (1 != nr_vecs) return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    if (1 != nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
 
     auto const op = ublksrv_get_op(data->iod);
     auto const nr_lbas = __iovec_len(iovecs, iovecs + nr_vecs) >> params()->basic.logical_bs_shift;
@@ -102,12 +100,12 @@ io_result HomeBlkDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* dat
 
 io_result HomeBlkDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     // HomeBlks does not support vectorized I/O
-    if (1 != nr_vecs) return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    if (1 != nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
 
     DLOGT("{} [vol_id:{}] : [INTERNAL] ublk io [sector:{}|len:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           boost::uuids::to_string(_vol_id), addr >> SECTOR_SHIFT, __iovec_len(iovecs, iovecs + nr_vecs))
     // TODO
-    return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
 }
 
 } // namespace ublkpp

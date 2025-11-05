@@ -553,7 +553,7 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
 
     if (IS_DEGRADED && CLEAN_SUBCMD == sub_cmd)
         // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
 
     // Record this degraded operation in the bitmap, result is # of async writes enqueued
     io_result dirty_res;
@@ -567,7 +567,7 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
     if (q) {
         if (0 != ublksrv_queue_send_event(q)) { // LCOV_EXCL_START
             RLOGE("Failed to send event!");
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         } // LCOV_EXCL_STOP
     }
     return dirty_res.value() + 1;
@@ -657,7 +657,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
         route = (read_route::DEVA == route) ? read_route::DEVB : read_route::DEVA;
 
     // We've already attempted this device...we don't want to re-attempt
-    if (retry && (_last_read == route)) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    if (retry && (_last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
 
     _last_read = route;
 

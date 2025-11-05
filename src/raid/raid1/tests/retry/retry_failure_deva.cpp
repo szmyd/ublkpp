@@ -36,7 +36,7 @@ TEST(Raid1, WriteRetryAFailure) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
     // The primary device has not been rotated to B from the retries above since updating the SB failed
     // and have not successfully become degraded yet

@@ -51,7 +51,7 @@ constexpr uint64_t reserved_size = sizeof(SuperBlock) + k_max_bitmap_size;
 
 extern SuperBlock* pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
 extern io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b);
-extern folly::Expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
+extern std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
 
 } // namespace raid1

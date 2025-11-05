@@ -1,10 +1,9 @@
 #pragma once
 
+#include <expected>
 #include <list>
 #include <memory>
 #include <string>
-
-#include <folly/Expected.h>
 
 #include "common.hpp"
 #include "sub_cmd.hpp"
@@ -22,7 +21,7 @@ struct async_result {
     int result;
 };
 
-using io_result = folly::Expected< size_t, std::error_condition >;
+using io_result = std::expected< size_t, std::error_condition >;
 class UblkDisk : public std::enable_shared_from_this< UblkDisk > {
     std::unique_ptr< ublk_params > _params;
 
@@ -56,13 +55,13 @@ public:
     virtual std::string id() const = 0;
 
     /// Device Specific I/O Handlers
-    virtual std::list< int > open_for_uring(int const iouring_device_start) = 0;
+    virtual std::list< int > open_for_uring(int const) { return {}; }
 
     // Number of bits for sub_cmd routing in the sqe user_data
     virtual uint8_t route_size() const { return 0; }
 
     // Async replies collected here
-    virtual void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) = 0;
+    virtual void collect_async(ublksrv_queue const*, std::list< async_result >&) {}
 
     virtual void idle_transition(ublksrv_queue const*, bool) {};
 

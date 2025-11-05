@@ -1,7 +1,6 @@
 #include "ublkpp/raid/raid0.hpp"
 
 #include <boost/uuid/uuid_io.hpp>
-#include <folly/Expected.h>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
 
@@ -27,7 +26,7 @@ public:
 
 static raid0::SuperBlock* read_superblock(UblkDisk& device);
 static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb);
-static folly::Expected< raid0::SuperBlock*, std::error_condition >
+static std::expected< raid0::SuperBlock*, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off);
 
 Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
@@ -104,7 +103,7 @@ std::list< int > Raid0Disk::open_for_uring(int const iouring_device_start) {
 
 io_result Raid0Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                      uint32_t nr_vecs, uint64_t addr, int res) {
-    if (1 > nr_vecs) return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    if (1 > nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     addr += _stride_width;
     return __distribute(
         iovecs, addr,
@@ -231,7 +230,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
 io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                uint32_t nr_vecs, uint64_t addr) {
     // RAID-0 only supports not-scattered I/O currently!
-    if (1 > nr_vecs) return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    if (1 > nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
 
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
@@ -259,7 +258,7 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 
 io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     // RAID-0 only supports not-scattered I/O currently!
-    if (1 > nr_vecs) return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+    if (1 > nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
 
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     addr += _stride_width;
@@ -312,10 +311,10 @@ static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb) {
 
 // Read and load the RAID0 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
-static folly::Expected< raid0::SuperBlock*, std::error_condition >
+static std::expected< raid0::SuperBlock*, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off) {
     auto sb = read_superblock(device);
-    if (!sb) return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+    if (!sb) return std::unexpected(std::make_error_condition(std::errc::io_error));
 
     // Check for MAGIC, initialize SB if missing
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
@@ -333,13 +332,13 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
     if (uuid != read_uuid) {
         RLOGE("Superblock did not have a matching UUID expected: {} read: {}", to_string(uuid), to_string(read_uuid))
         free(sb);
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (stripe_off != be16toh(sb->fields.stripe_off)) {
         RLOGE("Superblock does not match given array parameters: Expected [stripe_off:{}] != Found [stripe_off:{}]",
               stripe_off, be16toh(sb->fields.stripe_off))
         free(sb);
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     auto const read_stripe_size = be32toh(sb->fields.stripe_size);
     if (stripe_size != read_stripe_size) {
@@ -355,7 +354,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
         sb->header.version = htobe16(SB_VERSION);
         if (!write_superblock(device, sb)) {
             free(sb);
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         }
     }
     return sb;

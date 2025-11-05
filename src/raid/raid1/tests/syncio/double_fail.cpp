@@ -27,7 +27,7 @@ TEST(Raid1, SyncIoWriteFailBoth) {
         .WillOnce([test_off, test_sz](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
             EXPECT_EQ(test_sz, iov->iov_len);
             EXPECT_EQ(test_off + reserved_size, addr);
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
     ASSERT_FALSE(raid_device.sync_io(UBLK_IO_OP_WRITE, nullptr, test_sz, test_off));

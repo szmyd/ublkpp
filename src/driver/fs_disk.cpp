@@ -98,13 +98,16 @@ FSDisk::~FSDisk() {
     }
 }
 
-std::list< int > FSDisk::open_for_uring(int const) {
-    RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
-    //_uring_device = iouring_device_start;
-    // We duplicate the FD here so ublksrv doesn't close it before we're ready
-    return {};
-    // return {dup(_fd)};
-}
+// TODO:
+// This is an optimization to register the Linux FDs in the kernel, currently it is disabled
+// as we don't support unregistering an FD during RAID1::swap_devcice, re-enable if this is fixed. and
+// enable IOSQE_FIXED_FILE below.
+// std::list< int > FSDisk::open_for_uring(int const) {
+//    RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
+//    _uring_device = iouring_device_start;
+//    // We duplicate the FD here so ublksrv doesn't close it before we're ready
+//    return {dup(_fd)};
+//}
 
 static inline auto next_sqe(ublksrv_queue const* q) {
     auto r = q->ring_ptr;
@@ -115,8 +118,6 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     //        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
     return sqe;
 }
-
-void FSDisk::collect_async(ublksrv_queue const*, std::list< async_result >&) {}
 
 io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
@@ -152,10 +153,10 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
     DEBUG_ASSERT_LT(res, 0, "Positive ioctl")
     if (0 < res) {
         DLOGE("ioctl BLKDISCARD on {} returned postive result: {}", _path.native(), res)
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     DLOGE("ioctl BLKDISCARD on {} returned error: {}", _path.native(), strerror(errno))
-    return folly::makeUnexpected(std::make_error_condition(static_cast< std::errc >(errno)));
+    return std::unexpected(std::make_error_condition(static_cast< std::errc >(errno)));
 }
 
 io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
@@ -171,7 +172,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
                 (0 == (k_io_cnt++ % k_rand_error))) {
                 DLOGW("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}] [cnt:{}]", _path.native(), lba,
                       __iovec_len(iovecs, iovecs + nr_vecs), ++k_rand_cnt)
-                return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
             }
         }
     }
@@ -201,7 +202,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
 io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     if (0 > _fd) {
         DLOGE("Direct read on un-opened device!")
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     auto const lba = addr >> params()->basic.logical_bs_shift;
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
@@ -217,11 +218,11 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         res = pwritev2(_fd, iovecs, nr_vecs, addr, RWF_DSYNC | RWF_HIPRI);
     } break;
     default:
-        return folly::makeUnexpected(std::make_error_condition(std::errc::invalid_argument));
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (0 > res) {
         DLOGE("{} {} : {}", op == UBLK_IO_OP_READ ? "preadv" : "pwritev", _path.native(), strerror(errno))
-        return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return res;
 }

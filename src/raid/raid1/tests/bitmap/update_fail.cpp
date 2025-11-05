@@ -52,6 +52,6 @@ TEST(Raid1, BITMAPUpdateFail) {
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
             EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
-            return folly::makeUnexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 }

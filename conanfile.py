@@ -6,11 +6,11 @@ from conan.tools.files import copy
 from conan.tools.files import copy
 from os.path import join
 
-required_conan_version = ">=1.60.0"
+required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.14.3"
+    version = "0.15.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -47,7 +47,7 @@ class UBlkPPConan(ConanFile):
                         )
 
     def _min_cppstd(self):
-        return 20
+        return 23
 
     def validate(self):
         if self.settings.compiler.get_safe("cppstd"):
