@@ -134,6 +134,12 @@ jobs:
         conan list --graph ~/build.json --graph-binaries=build --format=json > ~/pkglist.json
       if: ${{ inputs.testing == 'True' && inputs.tooling != 'Coverage' }}
 
+    - name: Save Conan Cache
+      uses: ebay/sisl/.github/actions/store_conan2@master
+      with:
+        key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
+      if: ${{ github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' && inputs.tooling != 'Coverage'}}
+
     - name: Code Coverage Run
       run: |
         conan build \
@@ -142,9 +148,8 @@ jobs:
             -o ublkpp/*:coverage=True \
             -s:h build_type=${{ inputs.build-type }} \
             -s:a compiler.cppstd=23 \
-            --format=json \
             --build missing \
-            . > ~/build.json
+            .
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
 
     - name: Upload coverage reports to Codecov
@@ -153,9 +158,3 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         verbose: true
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
-
-    - name: Save Conan Cache
-      uses: ebay/sisl/.github/actions/store_conan2@master
-      with:
-        key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
-      if: ${{ github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' }}
