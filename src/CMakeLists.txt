@@ -24,7 +24,7 @@ list(APPEND LIBRARY_LINKS
 
 if(${homeblocks_FOUND})
     list(APPEND LIBRARY_OBJECTS $<TARGET_OBJECTS:homeblk_disk>)
-    list(APPEND LIBRARY_LINKS homeblocks::homestore)
+    list(APPEND LIBRARY_LINKS homeblocks::homeblocks)
 endif()
 
 if(${libiscsi_FOUND})

@@ -29,7 +29,7 @@ if (${homeblocks_FOUND})
   target_link_libraries(homeblk_disk
       sisl::sisl
       ublksrv::ublksrv
-      homeblocks::homestore
+      homeblocks::homeblocks
   )
 endif()
 
