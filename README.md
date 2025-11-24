@@ -16,8 +16,8 @@ based on [ublksrv](https://github.com/ublk-org/ublksrv) IO_URING implementation.
     $ conan build -s:h build_type=Debug --build missing ublkpp
 
 ## Example App
-An example application lives under the `test_package` directory. It can be used to try out basic RAID1/0/10 capabilities
-with a single Target. The lifetime of the ublk device is tied to the lifetime of the process itself.
+An `ublkpp_disk` application can be used to try out basic RAID1/0/10 capabilities with a single Target. The lifetime of
+the ublk device is tied to the lifetime of the process itself.
 
 ### Build and Run Example Application
 
@@ -31,7 +31,7 @@ with a single Target. The lifetime of the ublk device is tied to the lifetime of
         0000000 0000 0000 0000 0000 0000 0000 0000 0000
         *
         0000100
-    $ sudo ublkpp/build/Release/example/ublkpp_disk -cv 2 --raid10 file1.dat,file2.dat,file3.dat,file4.dat
+    $ sudo ublkpp/build/Release/example/ublkpp_disk -scv 2 --raid10 file1.dat,file2.dat,file3.dat,file4.dat
         ... // SuperBlock Initialization
         [07/06/25 18:01:50] [info] [build/Release/example/ublkpp_disk] [223787] [ublkpp_tgt.cpp:178:start] Device exposed as UBD device: [/dev/ublkb0]
 
@@ -58,7 +58,7 @@ In another session we should find the exposed BLOCK device.
         *
         0000100
 
-If we dump the first 256B of any backing device we'll find the RAID-1 SuperBlock for the first Stripe.
+If we dump the first 4KiB of any backing device we'll find the RAID-1 SuperBlock for the first Stripe.
 
 ## License Information
 Primary Author: [Brian Szmyd](https://github.com/szmyd)
