@@ -1,21 +1,22 @@
-#Changelog
+# Changelog
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.14.3
+## 0.15.1
+- Fix homeblock_disk linkage
+
+## 0.15.0
+- Enable C++23 extensions
+- Replace usage of folly::Expected with std::expected
+
+## 0.14.x
 - Update 3rd party libs (sisl, boost, folly)
 - CI to build with GCC-13
-
-## 0.14.2
 - raid1: Remove UUID from Bitmap (found redundant)
 - raid: Cleanup logging
-
-## 0.14.1
 - raid1: Track the amount of dirty data left in the bitmap
-
-## 0.14.0
 - raid1: I/O sharing between re-sync and user path
 
 ## 0.13.x
