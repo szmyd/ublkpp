@@ -158,4 +158,5 @@ jobs:
       uses: codecov/codecov-action@v5
       with:
         files: ./coverage.xml
+        disable_search: true
       if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
