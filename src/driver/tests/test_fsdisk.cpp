@@ -105,7 +105,7 @@ TEST(FSDiskConstructor, NonExistentFile) {
 }
 
 // Test: Capacity calculation for regular files
-TEST_F(FSDiskTest, CapacityCalculation)
+TEST_F(FSDiskTest, CapacityCalculation) {
     auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
 
     // Capacity should be aligned to max_sectors
