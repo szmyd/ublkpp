@@ -143,7 +143,7 @@ static auto create_hb_volume(UblkPPApplication& app, boost::uuids::uuid const& v
         ->create_volume(std::move(vol_info))
         .via(&folly::InlineExecutor::instance())
         .thenValue([](auto&& e) {
-            if (e.hasError()) { return std::make_error_condition(std::errc::io_error); }
+            if (!e.has_value()) { return std::make_error_condition(std::errc::io_error); }
             return std::error_condition();
         })
         .get();
