@@ -90,7 +90,7 @@ io_result HomeBlkDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* dat
             {
                 auto lck = std::scoped_lock< std::mutex >(pending_results_lck);
                 pending_results.emplace_back(async_result{
-                    data, sub_cmd, (e.hasError() ? -EIO : (int)nr_lbas << params()->basic.logical_bs_shift)});
+                    data, sub_cmd, (!e.has_value() ? -EIO : (int)nr_lbas << params()->basic.logical_bs_shift)});
             }
             ublksrv_queue_send_event(q);
             new_request.reset();
