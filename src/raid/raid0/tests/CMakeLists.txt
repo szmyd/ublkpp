@@ -12,6 +12,7 @@ list(APPEND RAID0_TEST_SRCS
     discard_merge.cpp
     discard_retry.cpp
     open_devices.cpp
+    raid0_impl_tests.cpp
     split_retry.cpp
     split_write.cpp
     tuple_tests.cpp

@@ -5,7 +5,7 @@ find_package(GTest QUIET REQUIRED)
 
 add_executable(test_fsdisk)
 target_sources(test_fsdisk PRIVATE
-   test_fsdisk.cpp
+   test_fsdisk.cpp test_fs_disk_impl.cpp
   $<TARGET_OBJECTS:fs_disk>
   $<TARGET_OBJECTS:ublk_disk>
   $<TARGET_OBJECTS:logging>
