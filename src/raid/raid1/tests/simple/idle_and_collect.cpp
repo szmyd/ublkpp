@@ -1,15 +1,13 @@
 #include "../test_raid1_common.hpp"
 
-// Test: idle_transition enter
+// Test: idle_transition enter (manages resync state, doesn't propagate to devices)
 TEST(Raid1, IdleTransitionEnter) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    EXPECT_CALL(*device_a, idle_transition(_, true)).Times(1);
-    EXPECT_CALL(*device_b, idle_transition(_, true)).Times(1);
-
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
+    // Should not crash - manages internal resync state
     raid_device.idle_transition(nullptr, true);
 
     // Expect unmount_clean update
@@ -17,16 +15,14 @@ TEST(Raid1, IdleTransitionEnter) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
-// Test: idle_transition exit
+// Test: idle_transition exit (manages resync state, doesn't propagate to devices)
 TEST(Raid1, IdleTransitionExit) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    EXPECT_CALL(*device_a, idle_transition(_, false)).Times(1);
-    EXPECT_CALL(*device_b, idle_transition(_, false)).Times(1);
-
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
+    // Should not crash - manages internal resync state
     raid_device.idle_transition(nullptr, false);
 
     // Expect unmount_clean update

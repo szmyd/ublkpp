@@ -36,8 +36,11 @@ TEST(Raid0, CollectAsync) {
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
 
-    // Set one device to use ublk_iouring (should NOT be called)
-    device_b->uses_ublk_iouring = true;
+    // By default, TestDisk has uses_ublk_iouring = true
+    // Set A and C to NOT use ublk_iouring (they should be called)
+    device_a->uses_ublk_iouring = false;
+    device_c->uses_ublk_iouring = false;
+    // Leave B with uses_ublk_iouring = true (should NOT be called)
 
     // Only devices A and C should be called
     EXPECT_CALL(*device_a, collect_async(_, _)).Times(1);

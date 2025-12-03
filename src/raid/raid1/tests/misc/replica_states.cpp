@@ -9,9 +9,10 @@ TEST(Raid1, ReplicaStatesHealthy) {
 
     auto states = raid_device.replica_states();
 
-    // Both should be available
-    EXPECT_EQ(states.device_a, ublkpp::raid1::device_state::AVAILABLE);
-    EXPECT_EQ(states.device_b, ublkpp::raid1::device_state::AVAILABLE);
+    // Both should be clean (no errors, not syncing)
+    EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);
+    EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::CLEAN);
+    EXPECT_EQ(states.bytes_to_sync, 0);
 
     // Expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
