@@ -515,8 +515,9 @@ TEST(FSDiskConstructor, SmallFile) {
     ASSERT_GE(fd, 0);
     auto test_path = std::filesystem::path(std::string(temp_chars.data()));
 
-    // Create very small file (1KB)
-    ASSERT_EQ(ftruncate(fd, 1024), 0);
+    // Create small file (1MB)
+    // Note: Can't be too small or capacity will be 0 after sector alignment
+    ASSERT_EQ(ftruncate(fd, 1024 * 1024), 0);
     close(fd);
 
     // Should still work
