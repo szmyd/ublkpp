@@ -122,6 +122,7 @@ jobs:
 
     - name: Prepare Recipes
       run: |
+        sudo apt-get install -y python3-pyelftools libaio-dev
         conan export --user oss --channel master import/iomgr
         ./prepare_v2.sh
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
