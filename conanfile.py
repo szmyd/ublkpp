@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.15.2"
+    version = "0.16.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -72,6 +72,7 @@ class UBlkPPConan(ConanFile):
 
     def requirements(self):
         self.requires("sisl/[^13]@oss/master", transitive_headers=True)
+        self.requires("iomgr/[^12]@oss/master")
 
         self.requires("isa-l/2.30.0")
         if (self.options.get_safe("homeblocks")):

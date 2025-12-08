@@ -2,11 +2,14 @@
 #include <future>
 #include <ostream>
 #include <system_error>
+#include <vector>
 
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/string_generator.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
+#include <iomgr/io_environment.hpp>
+#include <iomgr/http_server.hpp>
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
 
@@ -243,11 +246,16 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
     return _run_target(id, std::move(dev));
 }
 
+static void get_prometheus_metrics(const Pistache::Rest::Request&, Pistache::Http::ResponseWriter response) {
+    response.send(Pistache::Http::Code::Ok, sisl::MetricsFarm::getInstance().report(sisl::ReportFormat::kTextFormat));
+}
+
 int main(int argc, char* argv[]) {
     SISL_OPTIONS_LOAD(argc, argv, ENABLED_OPTIONS);
     sisl::logging::SetLogger(std::string(argv[0]),
                              BOOST_PP_STRINGIZE(PACKAGE_NAME), BOOST_PP_STRINGIZE(PACKAGE_VERSION));
     spdlog::set_pattern("[%D %T] [%^%l%$] [%n] [%t] %v");
+    ioenvironment.with_iomgr(iomgr::iomgr_params{.num_threads = 1}).with_http_server();
 
     signal(SIGINT, handle);
     signal(SIGTERM, handle);
@@ -270,6 +278,17 @@ int main(int argc, char* argv[]) {
         std::cout << SISL_PARSER.help({}) << std::endl;
 
     if (!res) return -1;
+
+    // start the metrics server
+    auto http_server_ptr = ioenvironment.get_http_server();
+    try {
+        auto routes = std::vector< iomgr::http_route >{{Pistache::Http::Method::Get, "/metrics",
+                                                        Pistache::Rest::Routes::bind(get_prometheus_metrics),
+                                                        iomgr::url_t::safe}};
+        http_server_ptr->setup_routes(routes);
+        LOGINFO("Started http server ");
+    } catch (std::runtime_error const& e) { LOGERROR("setup routes failed, {}", e.what()) }
+    http_server_ptr->start();
 
     exit_future.wait();
     k_target.reset();

@@ -6,6 +6,7 @@ target_sources(ublkpp_tgt PRIVATE
 )
 target_link_libraries(ublkpp_tgt
     sisl::sisl
+    iomgr::iomgr
     ublksrv::ublksrv
 )
 

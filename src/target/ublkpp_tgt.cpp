@@ -7,6 +7,7 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
+#include <sisl/metrics/metrics.hpp>
 #include <sisl/utility/thread_factory.hpp>
 #include <ublksrv_utils.h>
 #include <ublksrv.h>
@@ -26,6 +27,19 @@ using namespace std::chrono_literals;
 
 namespace ublkpp {
 
+struct UblkDiskMetrics : public sisl::MetricsGroupWrapper {
+    explicit UblkDiskMetrics(std::string const& device_name) : sisl::MetricsGroup("UblkDisk", device_name.c_str()) {
+        REGISTER_HISTOGRAM(ublk_write_queue_distribution, "Distribution of volume read queue depths",
+                           HistogramBucketsType(SteppedUpto32Buckets));
+        REGISTER_HISTOGRAM(ublk_read_queue_distribution, "Distribution of volume read queue depths",
+                           HistogramBucketsType(SteppedUpto32Buckets));
+
+        register_me_to_farm();
+    }
+
+    ~UblkDiskMetrics() { deregister_me_from_farm(); }
+};
+
 struct ublkpp_tgt_impl {
     bool device_added{false};
     boost::uuids::uuid volume_uuid;
@@ -38,11 +52,18 @@ struct ublkpp_tgt_impl {
     ublksrv_ctrl_dev* ctrl_dev{nullptr};
     ublksrv_dev const* ublk_dev{nullptr};
 
+    // == Metrics ==
+    UblkDiskMetrics metrics;
+
+    std::atomic_uint32_t _queued_reads;
+    std::atomic_uint32_t _queued_writes;
+    // == ======= ==
+
     // Owned by us
     std::unique_ptr< ublksrv_dev_data > dev_data;
 
     ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d) :
-            volume_uuid(vol_id), device(std::move(d)) {}
+            volume_uuid(vol_id), device(std::move(d)), metrics(UblkDiskMetrics(to_string(vol_id))) {}
 
     ~ublkpp_tgt_impl();
 };
@@ -307,6 +328,21 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     ublkpp_io->tgt_io_cqe = nullptr;
     ublkpp_io->async_completion = nullptr;
 
+    auto const op = ublksrv_get_op(data->iod);
+    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
+    switch (op) {
+    case UBLK_IO_OP_READ: {
+        HISTOGRAM_OBSERVE(tgt->metrics, ublk_read_queue_distribution,
+                          tgt->_queued_reads.fetch_add(1, std::memory_order_relaxed) + 1);
+    } break;
+    case UBLK_IO_OP_WRITE: {
+        HISTOGRAM_OBSERVE(tgt->metrics, ublk_write_queue_distribution,
+                          tgt->_queued_writes.fetch_add(1, std::memory_order_relaxed) + 1);
+    } break;
+    default: {
+    }
+    }
+
     // First we submit the IO to the UblkDisk device. It in turn will return the number
     // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
     // cause this amplification of operations.
@@ -326,6 +362,17 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     while (0 < ublkpp_io->sub_cmds) {
         { co_await std::suspend_always(); }
         process_result(q, data);
+    }
+
+    switch (op) {
+    case UBLK_IO_OP_READ: {
+        tgt->_queued_reads.fetch_sub(1, std::memory_order_relaxed);
+    } break;
+    case UBLK_IO_OP_WRITE: {
+        tgt->_queued_writes.fetch_sub(1, std::memory_order_relaxed);
+    } break;
+    default: {
+    }
     }
 
     // Operation is complete, result is in io_res
