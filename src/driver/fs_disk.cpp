@@ -150,7 +150,7 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
     auto res = ioctl(_fd, BLKDISCARD, &r);
     if (0 == res) [[likely]]
         return 0;
-    DEBUG_ASSERT_LT(res, 0, "Positive ioctl")
+    DEBUG_ASSERT_LT(res, 0, "Positive ioctl") // LCOV_EXCL_LINE
     if (0 < res) {
         DLOGE("ioctl BLKDISCARD on {} returned postive result: {}", _path.native(), res)
         return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -178,7 +178,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     }
     auto sqe = next_sqe(q);
 
-    DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!");
+    DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!"); // LCOV_EXCL_LINE
 
     if (UBLK_IO_OP_READ == op) {
         if (1 == nr_vecs)
@@ -208,7 +208,7 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     DLOGT("{} {} : [INTERNAL] ublk io [lba:{:0x}|len:{:0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(),
           lba, len)
-    DEBUG_ASSERT_GE(capacity(), len + addr, "Access beyond device bounds!");
+    DEBUG_ASSERT_GE(capacity(), len + addr, "Access beyond device bounds!"); // LCOV_EXCL_LINE
     auto res = ssize_t{-1};
     switch (op) {
     case UBLK_IO_OP_READ: {

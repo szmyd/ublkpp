@@ -61,7 +61,7 @@ struct __attribute__((__packed__)) SuperBlock {
     } fields;
     uint8_t _reserved[k_page_size - (sizeof(header) + sizeof(fields))];
 };
-static_assert(k_page_size == sizeof(SuperBlock), "Size of raid0::SuperBlock does not match SIZE!");
+static_assert(k_page_size == sizeof(SuperBlock), "Size of raid0::SuperBlock does not match SIZE!"); // LCOV_EXCL_LINE
 #else
 #error "Big Endian not supported!"
 #endif

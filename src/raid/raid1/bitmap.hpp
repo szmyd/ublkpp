@@ -9,7 +9,7 @@
 
 namespace ublkpp::raid1 {
 
-static_assert(sizeof(uint64_t) == sizeof(std::atomic_uint64_t), "BITMAP Cannot be ATOMIC!");
+static_assert(sizeof(uint64_t) == sizeof(std::atomic_uint64_t), "BITMAP Cannot be ATOMIC!"); // LCOV_EXCL_LINE
 class Bitmap {
 public:
     using word_t = std::atomic_uint64_t;

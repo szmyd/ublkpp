@@ -281,7 +281,7 @@ static raid0::SuperBlock* read_superblock(UblkDisk& device) {
     auto const sb_size = sizeof(raid0::SuperBlock);
     RLOGT("Reading Superblock from: [{}] {}%{} == {}", device, sb_size, device.block_size(),
           sb_size % device.block_size())
-    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
+    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]", // LCOV_EXCL_LINE
                     device, sb_size)
     auto iov = iovec{.iov_base = nullptr, .iov_len = sb_size};
     if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), sb_size); 0 != err || nullptr == iov.iov_base)
@@ -301,7 +301,7 @@ static raid0::SuperBlock* read_superblock(UblkDisk& device) {
 static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb) {
     auto const sb_size = sizeof(raid0::SuperBlock);
     RLOGT("Writing Superblock to: [{}]", device)
-    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
+    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]", // LCOV_EXCL_LINE
                     device, sb_size)
     auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
     auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
