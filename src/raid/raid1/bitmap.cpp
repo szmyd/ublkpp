@@ -176,12 +176,12 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Address and Length should be chunk aligned!
-    DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:0x{:0x}] is not aligned to 0x{:0x}", addr, _chunk_size) // LCOV_EXCL_LINE
-    DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:0x{:0x}] is not aligned to 0x{:0x}", len, _chunk_size) // LCOV_EXCL_LINE
+    DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:0x{:0x}] is not aligned to 0x{:0x}", addr, _chunk_size)
+    DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:0x{:0x}] is not aligned to 0x{:0x}", len, _chunk_size)
 
     // Get/Create a Page
     auto const cur_page = __get_page(page_offset);
-    DEBUG_ASSERT_NOTNULL(cur_page, "Expected to find dirty page!") // LCOV_EXCL_LINE
+    DEBUG_ASSERT_NOTNULL(cur_page, "Expected to find dirty page!")
     if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
     auto cur_word = cur_page + word_offset;
 

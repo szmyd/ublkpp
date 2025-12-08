@@ -57,7 +57,7 @@ static void iscsi_log(int level, const char* message) {
 
 static std::unique_ptr< iscsi_session > create_iscsi_session(std::string const& url) {
     auto session = std::make_unique< iscsi_session >();
-    DEBUG_ASSERT(session, "Failed to allocate iSCSI session!"); // LCOV_EXCL_LINE
+    DEBUG_ASSERT(session, "Failed to allocate iSCSI session!");
 
     if (session->ctx = iscsi_create_context("iqn.2002-10.com.ublkpp:client"); !session->ctx) {
         DLOGE("failed to init context")

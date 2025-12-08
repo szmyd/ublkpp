@@ -31,9 +31,9 @@ inline bool block_has_unmap(std::filesystem::path const& name) {
 
 // High bit indicates this is a driver (e.g. FSDisk) I/O
 inline uint64_t build_tgt_sqe_data(uint64_t tag, uint64_t op, uint64_t sub_cmd) {
-    DEBUG_ASSERT_LE(tag, UINT16_MAX, "Tag too big: [{:0x}]", tag) // LCOV_EXCL_LINE
-    DEBUG_ASSERT_LE(op, UINT8_MAX, "Tag too big: [{:0x}]", tag) // LCOV_EXCL_LINE
-    DEBUG_ASSERT_LE(sub_cmd, UINT16_MAX, "Tag too big: [{:0x}]", tag) // LCOV_EXCL_LINE
+    DEBUG_ASSERT_LE(tag, UINT16_MAX, "Tag too big: [{:0x}]", tag)
+    DEBUG_ASSERT_LE(op, UINT8_MAX, "Tag too big: [{:0x}]", tag)
+    DEBUG_ASSERT_LE(sub_cmd, UINT16_MAX, "Tag too big: [{:0x}]", tag)
     return tag | (op << sqe_tag_width) | (sub_cmd << (sqe_tag_width + sqe_op_width)) |
         (static_cast< uint64_t >(0b1) << (sqe_tag_width + sqe_op_width + sqe_tgt_data_width + sqe_reserved_width));
 }

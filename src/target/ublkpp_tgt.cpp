@@ -232,7 +232,7 @@ static inline int retrieve_result(sub_cmd_t cmd, async_io* io) {
     if (auto cqe = io->tgt_io_cqe; cqe) {
         res = cqe->res;
     } else {
-        DEBUG_ASSERT_NOTNULL(io->async_completion, "No completion to process!"); // LCOV_EXCL_LINE
+        DEBUG_ASSERT_NOTNULL(io->async_completion, "No completion to process!");
         auto a_result = *io->async_completion;
         res = a_result.result;
     }
