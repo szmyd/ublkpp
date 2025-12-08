@@ -35,7 +35,7 @@ jobs:
       platform: ${{ inputs.platform }}
       build-type: ${{ inputs.build-type }}
       malloc-impl: ${{ inputs.malloc-impl }}
-      prerelease: ${{ inputs.prerelease }}
+      prerelease: False
       tooling: None
     if: ${{ github.event_name != 'pull_request' }}
 
