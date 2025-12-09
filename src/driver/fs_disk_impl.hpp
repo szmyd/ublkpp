@@ -11,7 +11,7 @@
 
 namespace ublkpp {
 
-bool block_has_unmap(std::filesystem::path const& name) {
+inline bool block_has_unmap(std::filesystem::path const& name) {
     static auto const sys_path = std::filesystem::path{"/"} / "sys" / "block";
     static auto const discard_path = std::filesystem::path{"queue"} / "discard_max_hw_bytes";
 
