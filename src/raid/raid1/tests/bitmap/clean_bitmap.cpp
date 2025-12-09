@@ -87,6 +87,7 @@ TEST(Raid1, CleanBitmapSingleRegion) {
 
     // Enable resync and wait for completion
     raid_device.toggle_resync(true);
+    std::this_thread::sleep_for(100ms);
 
     cur_replica_state = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
@@ -160,6 +161,7 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
     }
 
     raid_device.toggle_resync(true);
+    std::this_thread::sleep_for(150ms);
 
     cur_replica_state = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
@@ -228,6 +230,7 @@ TEST(Raid1, CleanBitmapReadFailure) {
         });
 
     raid_device.toggle_resync(true);
+    std::this_thread::sleep_for(100ms);
 
     // Device should still be dirty due to read failure
     auto cur_replica_state = raid_device.replica_states();
@@ -299,6 +302,7 @@ TEST(Raid1, CleanBitmapWriteFailure) {
         });
 
     raid_device.toggle_resync(true);
+    std::this_thread::sleep_for(100ms);
 
     // Device should still be dirty due to write failure
     auto cur_replica_state = raid_device.replica_states();
@@ -374,9 +378,12 @@ TEST(Raid1, CleanBitmapStoppedState) {
     // Start resync
     raid_device.toggle_resync(true);
 
+    // Let it run for a short time
+    std::this_thread::sleep_for(10ms);
 
     // Stop resync
     raid_device.toggle_resync(false);
+    std::this_thread::sleep_for(10ms);
 
     // May still have dirty pages depending on timing
     cur_replica_state = raid_device.replica_states();
@@ -447,6 +454,7 @@ TEST(Raid1, CleanBitmapLargeRegion) {
         });
 
     raid_device.toggle_resync(true);
+    std::this_thread::sleep_for(150ms);
 
     cur_replica_state = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
