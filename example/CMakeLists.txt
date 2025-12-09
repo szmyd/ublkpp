@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.11)
 
+find_package(iomgr REQUIRED)
+
 if(${libiscsi_FOUND})
     add_compile_options(-DHAVE_ISCSI)
 endif()

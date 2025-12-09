@@ -69,10 +69,10 @@ class UBlkPPConan(ConanFile):
 
     def build_requirements(self):
         self.test_requires("gtest/1.17.0")
+        self.test_requires("iomgr/[^12]@oss/master")
 
     def requirements(self):
         self.requires("sisl/[^13]@oss/master", transitive_headers=True)
-        self.requires("iomgr/[^12]@oss/master")
 
         self.requires("isa-l/2.30.0")
         if (self.options.get_safe("homeblocks")):
