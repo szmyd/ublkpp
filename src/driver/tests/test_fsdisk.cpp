@@ -28,28 +28,25 @@ namespace {
 // Helper to allocate aligned memory for O_DIRECT
 void* aligned_alloc_helper(size_t alignment, size_t size) {
     void* ptr = nullptr;
-    if (posix_memalign(&ptr, alignment, size) != 0) {
-        return nullptr;
-    }
+    if (posix_memalign(&ptr, alignment, size) != 0) { return nullptr; }
     return ptr;
 }
 
 class AlignedBuffer {
     void* ptr_;
     size_t size_;
+
 public:
     AlignedBuffer(size_t size, size_t alignment = 512) : ptr_(nullptr), size_(size) {
         ptr_ = aligned_alloc_helper(alignment, size);
-        if (ptr_) {
-            memset(ptr_, 0, size);
-        }
+        if (ptr_) { memset(ptr_, 0, size); }
     }
     ~AlignedBuffer() {
         if (ptr_) free(ptr_);
     }
     void* get() { return ptr_; }
     size_t size() const { return size_; }
-    uint8_t* data() { return static_cast<uint8_t*>(ptr_); }
+    uint8_t* data() { return static_cast< uint8_t* >(ptr_); }
 
     AlignedBuffer(const AlignedBuffer&) = delete;
     AlignedBuffer& operator=(const AlignedBuffer&) = delete;
@@ -66,7 +63,7 @@ protected:
         std::string temp_str = temp_template.string();
 
         // mkstemp requires a mutable C string
-        std::vector<char> temp_chars(temp_str.begin(), temp_str.end());
+        std::vector< char > temp_chars(temp_str.begin(), temp_str.end());
         temp_chars.push_back('\0');
 
         int fd = mkstemp(temp_chars.data());
@@ -80,16 +77,14 @@ protected:
 
     void TearDown() override {
         // Clean up the temporary file
-        if (std::filesystem::exists(test_file_path)) {
-            std::filesystem::remove(test_file_path);
-        }
+        if (std::filesystem::exists(test_file_path)) { std::filesystem::remove(test_file_path); }
     }
 };
 
 // Test: Constructor with valid regular file
 TEST_F(FSDiskTest, ConstructorValidFile) {
     ASSERT_NO_THROW({
-        auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+        auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
         EXPECT_EQ(disk->id(), test_file_path.native());
         EXPECT_GT(disk->capacity(), 0);
         EXPECT_GT(disk->block_size(), 0);
@@ -99,14 +94,12 @@ TEST_F(FSDiskTest, ConstructorValidFile) {
 // Test: Constructor with non-existent file
 TEST(FSDiskConstructor, NonExistentFile) {
     auto non_existent_path = std::filesystem::temp_directory_path() / "non_existent_file_that_does_not_exist_12345";
-    EXPECT_THROW({
-        auto disk = std::make_unique<ublkpp::FSDisk>(non_existent_path);
-    }, std::runtime_error);
+    EXPECT_THROW({ auto disk = std::make_unique< ublkpp::FSDisk >(non_existent_path); }, std::runtime_error);
 }
 
 // Test: Capacity calculation for regular files
 TEST_F(FSDiskTest, CapacityCalculation) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     // Capacity should be aligned to max_sectors
     uint64_t expected_sectors = TEST_FILE_SIZE >> ublkpp::SECTOR_SHIFT;
@@ -119,7 +112,7 @@ TEST_F(FSDiskTest, CapacityCalculation) {
 
 // Test: Block size parameters
 TEST_F(FSDiskTest, BlockSizeParameters) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     auto params = disk->params();
     uint32_t logical_bs = 1U << params->basic.logical_bs_shift;
@@ -132,7 +125,7 @@ TEST_F(FSDiskTest, BlockSizeParameters) {
 
 // Test: Discard capability for regular files
 TEST_F(FSDiskTest, DiscardCapability) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     // Regular files should support discard
     EXPECT_TRUE(disk->can_discard());
@@ -141,7 +134,7 @@ TEST_F(FSDiskTest, DiscardCapability) {
 
 // Test: sync_iov read operation
 TEST_F(FSDiskTest, SyncReadOperation) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     // Use aligned buffer and size for O_DIRECT compatibility
     size_t block_size = disk->block_size();
@@ -149,7 +142,7 @@ TEST_F(FSDiskTest, SyncReadOperation) {
 
     // Fill with test pattern
     for (size_t i = 0; i < block_size; ++i) {
-        write_buf.data()[i] = static_cast<uint8_t>(i & 0xFF);
+        write_buf.data()[i] = static_cast< uint8_t >(i & 0xFF);
     }
 
     iovec write_iov;
@@ -174,7 +167,7 @@ TEST_F(FSDiskTest, SyncReadOperation) {
 
 // Test: sync_iov write operation
 TEST_F(FSDiskTest, SyncWriteOperation) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     size_t block_size = disk->block_size();
     AlignedBuffer write_buf(block_size);
@@ -203,7 +196,7 @@ TEST_F(FSDiskTest, SyncWriteOperation) {
 
 // Test: sync_iov with multiple iovecs (vectored I/O)
 TEST_F(FSDiskTest, SyncVectoredRead) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     size_t block_size = disk->block_size();
     // Use two blocks for vectored I/O
@@ -243,9 +236,9 @@ TEST_F(FSDiskTest, SyncVectoredRead) {
 
 // Test: sync_iov with invalid operation
 TEST_F(FSDiskTest, SyncInvalidOperation) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
-    std::vector<uint8_t> buffer(8);
+    std::vector< uint8_t > buffer(8);
     iovec iov;
     iov.iov_base = buffer.data();
     iov.iov_len = buffer.size();
@@ -259,23 +252,18 @@ TEST_F(FSDiskTest, SyncInvalidOperation) {
 
 // Test: Reading/writing at various alignments
 TEST_F(FSDiskTest, UnalignedAccess) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     size_t block_size = disk->block_size();
 
     // Test multiple block-aligned offsets
-    std::vector<off_t> offsets = {
-        0,
-        static_cast<off_t>(block_size),
-        static_cast<off_t>(2 * block_size),
-        static_cast<off_t>(4 * block_size),
-        static_cast<off_t>(8 * block_size)
-    };
+    std::vector< off_t > offsets = {0, static_cast< off_t >(block_size), static_cast< off_t >(2 * block_size),
+                                    static_cast< off_t >(4 * block_size), static_cast< off_t >(8 * block_size)};
 
     for (off_t offset : offsets) {
         AlignedBuffer write_buf(block_size);
         // Fill with pattern based on offset
-        memset(write_buf.get(), static_cast<int>(offset / block_size), block_size);
+        memset(write_buf.get(), static_cast< int >(offset / block_size), block_size);
 
         iovec iov;
         iov.iov_base = write_buf.get();
@@ -289,14 +277,13 @@ TEST_F(FSDiskTest, UnalignedAccess) {
         auto read_result = disk->sync_iov(UBLK_IO_OP_READ, &iov, 1, offset);
         ASSERT_TRUE(read_result.has_value()) << "Failed to read at offset " << offset;
 
-        EXPECT_EQ(0, memcmp(write_buf.get(), read_buf.get(), block_size))
-            << "Data mismatch at offset " << offset;
+        EXPECT_EQ(0, memcmp(write_buf.get(), read_buf.get(), block_size)) << "Data mismatch at offset " << offset;
     }
 }
 
 // Test: Large I/O operations
 TEST_F(FSDiskTest, LargeIO) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     // Write 1MB of data
     size_t large_size = 1024 * 1024;
@@ -304,7 +291,7 @@ TEST_F(FSDiskTest, LargeIO) {
 
     // Fill with pattern
     for (size_t i = 0; i < large_size; ++i) {
-        write_buf.data()[i] = static_cast<uint8_t>(i & 0xFF);
+        write_buf.data()[i] = static_cast< uint8_t >(i & 0xFF);
     }
 
     iovec iov;
@@ -325,13 +312,13 @@ TEST_F(FSDiskTest, LargeIO) {
 
 // Test: ID returns correct path
 TEST_F(FSDiskTest, IDMethod) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
     EXPECT_EQ(disk->id(), test_file_path.native());
 }
 
 // Test: Multiple read/write cycles
 TEST_F(FSDiskTest, MultipleReadWriteCycles) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     size_t block_size = disk->block_size();
 
@@ -339,7 +326,7 @@ TEST_F(FSDiskTest, MultipleReadWriteCycles) {
         AlignedBuffer write_buf(block_size);
 
         for (size_t i = 0; i < block_size; ++i) {
-            write_buf.data()[i] = static_cast<uint8_t>((cycle + i) & 0xFF);
+            write_buf.data()[i] = static_cast< uint8_t >((cycle + i) & 0xFF);
         }
 
         off_t offset = cycle * block_size;
@@ -361,7 +348,7 @@ TEST_F(FSDiskTest, MultipleReadWriteCycles) {
 
 // Test: Zero-length I/O
 TEST_F(FSDiskTest, ZeroLengthIO) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     iovec iov;
     iov.iov_base = nullptr;
@@ -371,29 +358,23 @@ TEST_F(FSDiskTest, ZeroLengthIO) {
 
     // The behavior may vary, but it should not crash
     // Typically returns 0 bytes read
-    if (result.has_value()) {
-        EXPECT_EQ(result.value(), 0);
-    }
+    if (result.has_value()) { EXPECT_EQ(result.value(), 0); }
 }
 
 // Test: Constructor with empty path
 TEST(FSDiskConstructor, EmptyPath) {
-    EXPECT_THROW({
-        auto disk = std::make_unique<ublkpp::FSDisk>("");
-    }, std::runtime_error);
+    EXPECT_THROW({ auto disk = std::make_unique< ublkpp::FSDisk >(""); }, std::runtime_error);
 }
 
 // Test: Constructor with directory instead of file
 TEST(FSDiskConstructor, DirectoryPath) {
     auto temp_dir = std::filesystem::temp_directory_path();
-    EXPECT_THROW({
-        auto disk = std::make_unique<ublkpp::FSDisk>(temp_dir);
-    }, std::runtime_error);
+    EXPECT_THROW({ auto disk = std::make_unique< ublkpp::FSDisk >(temp_dir); }, std::runtime_error);
 }
 
 // Test: Verify params are correctly set
 TEST_F(FSDiskTest, ParamsValidation) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
     auto params = disk->params();
 
     ASSERT_NE(params, nullptr);
@@ -404,7 +385,7 @@ TEST_F(FSDiskTest, ParamsValidation) {
 
 // Test: Capacity is sector-aligned
 TEST_F(FSDiskTest, CapacityAlignment) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
     uint64_t capacity = disk->capacity();
 
     // Capacity should be a multiple of sector size
@@ -413,7 +394,7 @@ TEST_F(FSDiskTest, CapacityAlignment) {
 
 // Test: Block size is power of 2
 TEST_F(FSDiskTest, BlockSizePowerOfTwo) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
     uint32_t block_size = disk->block_size();
 
     // Block size should be a power of 2
@@ -421,11 +402,10 @@ TEST_F(FSDiskTest, BlockSizePowerOfTwo) {
     EXPECT_EQ(block_size & (block_size - 1), 0);
 }
 
-
 TEST(FSDiskSyncIOV, WriteToReadOnlyFile) {
     auto temp_template = std::filesystem::temp_directory_path() / "test_readonly_XXXXXX";
     std::string temp_str = temp_template.string();
-    std::vector<char> temp_chars(temp_str.begin(), temp_str.end());
+    std::vector< char > temp_chars(temp_str.begin(), temp_str.end());
     temp_chars.push_back('\0');
 
     int fd = mkstemp(temp_chars.data());
@@ -438,12 +418,11 @@ TEST(FSDiskSyncIOV, WriteToReadOnlyFile) {
 
     // Make file read-only
     std::filesystem::permissions(test_path,
-        std::filesystem::perms::owner_read | std::filesystem::perms::group_read | std::filesystem::perms::others_read);
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::group_read |
+                                     std::filesystem::perms::others_read);
 
     // Try to open with FSDisk (should fail since it opens with O_RDWR)
-    EXPECT_THROW({
-        auto disk = std::make_unique<ublkpp::FSDisk>(test_path);
-    }, std::runtime_error);
+    EXPECT_THROW({ auto disk = std::make_unique< ublkpp::FSDisk >(test_path); }, std::runtime_error);
 
     // Cleanup
     std::filesystem::permissions(test_path, std::filesystem::perms::owner_all);
@@ -452,16 +431,14 @@ TEST(FSDiskSyncIOV, WriteToReadOnlyFile) {
 
 // Test: Write and read pattern at end of device
 TEST_F(FSDiskTest, IONearDeviceEnd) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     size_t block_size = disk->block_size();
     uint64_t capacity = disk->capacity();
 
     // Calculate last valid offset
     off_t last_offset = capacity - block_size;
-    if (last_offset < 0) {
-        GTEST_SKIP() << "File too small for this test";
-    }
+    if (last_offset < 0) { GTEST_SKIP() << "File too small for this test"; }
 
     AlignedBuffer write_buf(block_size);
     memset(write_buf.get(), 0xEE, block_size);
@@ -483,7 +460,7 @@ TEST_F(FSDiskTest, IONearDeviceEnd) {
 
 // Test: Verify discard_granularity is set correctly
 TEST_F(FSDiskTest, DiscardGranularity) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
     auto params = disk->params();
 
     if (disk->can_discard()) {
@@ -496,10 +473,10 @@ TEST_F(FSDiskTest, DiscardGranularity) {
 // Test: Multiple FSDisk instances on same file
 TEST_F(FSDiskTest, MultipleInstancesSameFile) {
     // Create first instance
-    auto disk1 = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk1 = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     // Create second instance (should succeed - file can be opened multiple times)
-    auto disk2 = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk2 = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     EXPECT_EQ(disk1->capacity(), disk2->capacity());
     EXPECT_EQ(disk1->block_size(), disk2->block_size());
@@ -508,7 +485,7 @@ TEST_F(FSDiskTest, MultipleInstancesSameFile) {
 TEST(FSDiskConstructor, SmallFile) {
     auto temp_template = std::filesystem::temp_directory_path() / "test_small_XXXXXX";
     std::string temp_str = temp_template.string();
-    std::vector<char> temp_chars(temp_str.begin(), temp_str.end());
+    std::vector< char > temp_chars(temp_str.begin(), temp_str.end());
     temp_chars.push_back('\0');
 
     int fd = mkstemp(temp_chars.data());
@@ -522,7 +499,7 @@ TEST(FSDiskConstructor, SmallFile) {
 
     // Should still work
     ASSERT_NO_THROW({
-        auto disk = std::make_unique<ublkpp::FSDisk>(test_path);
+        auto disk = std::make_unique< ublkpp::FSDisk >(test_path);
         EXPECT_GT(disk->capacity(), 0);
     });
 
@@ -533,7 +510,7 @@ TEST(FSDiskConstructor, SmallFile) {
 TEST(FSDiskConstructor, LargeFile) {
     auto temp_template = std::filesystem::temp_directory_path() / "test_large_XXXXXX";
     std::string temp_str = temp_template.string();
-    std::vector<char> temp_chars(temp_str.begin(), temp_str.end());
+    std::vector< char > temp_chars(temp_str.begin(), temp_str.end());
     temp_chars.push_back('\0');
 
     int fd = mkstemp(temp_chars.data());
@@ -546,7 +523,7 @@ TEST(FSDiskConstructor, LargeFile) {
     close(fd);
 
     ASSERT_NO_THROW({
-        auto disk = std::make_unique<ublkpp::FSDisk>(test_path);
+        auto disk = std::make_unique< ublkpp::FSDisk >(test_path);
         EXPECT_GT(disk->capacity(), 0);
 
         // Verify capacity calculation
@@ -563,7 +540,7 @@ TEST(FSDiskConstructor, LargeFile) {
 
 // Test: handle_flush with direct I/O
 TEST_F(FSDiskTest, HandleFlushDirectIO) {
-    auto disk = std::make_unique<ublkpp::FSDisk>(test_file_path);
+    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
     // For direct I/O, handle_flush returns 0 immediately without using the queue
     // So we can pass nullptr for queue and data

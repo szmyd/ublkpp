@@ -17,8 +17,8 @@ TEST(Raid1, LoadBitmap) {
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::Bitmap::page_size(), ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::Bitmap::page_size()); // Expect write to bitmap!
-            EXPECT_LT(addr, ublkpp::raid1::reserved_size);       // Expect write to bitmap!
+            EXPECT_GE(addr, ublkpp::raid1::Bitmap::page_size());     // Expect write to bitmap!
+            EXPECT_LE(addr, 3 * ublkpp::raid1::Bitmap::page_size()); // Expect write to bitmap!
             memset(iovecs->iov_base, 0xff, iovecs->iov_len);
             return ublkpp::raid1::Bitmap::page_size();
         });
@@ -36,8 +36,8 @@ TEST(Raid1, LoadBitmapFailure) {
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::Bitmap::page_size(), ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::Bitmap::page_size()); // Expect write to bitmap!
-            EXPECT_LT(addr, ublkpp::raid1::reserved_size);       // Expect write to bitmap!
+            EXPECT_GE(addr, ublkpp::raid1::Bitmap::page_size());     // Expect write to bitmap!
+            EXPECT_LT(addr, 2 * ublkpp::raid1::Bitmap::page_size()); // Expect write to bitmap!
             memset(iovecs->iov_base, 0xff, iovecs->iov_len);
             return ublkpp::raid1::Bitmap::page_size();
         })
