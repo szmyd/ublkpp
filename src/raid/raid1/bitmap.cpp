@@ -19,7 +19,7 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
         _align(align),
         _page_width(_chunk_size * k_page_size * k_bits_in_byte),
         _num_pages(_data_size / _page_width + ((0 == _data_size % _page_width) ? 0 : 1)) {
-    RLOGI("Initializing RAID-1 BITMAP [pgs:{},sz:{}Ki]", _num_pages, _num_pages * k_page_size / Ki)
+    RLOGD("Initializing RAID-1 BITMAP [pgs:{},sz:{}Ki]", _num_pages, _num_pages * k_page_size / Ki)
     void* new_page{nullptr};
     if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
         throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
@@ -124,7 +124,6 @@ Bitmap::word_t* Bitmap::__get_page(uint64_t offset, bool creat) {
 
     auto [it, happened] = _page_map.emplace(std::make_pair(offset, nullptr));
     if (happened) {
-        RLOGT("New Bitmap Page: {}", offset)
         void* new_page{nullptr};
         if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
         memset(new_page, 0, k_page_size);
