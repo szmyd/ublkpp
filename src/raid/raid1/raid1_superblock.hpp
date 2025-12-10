@@ -15,7 +15,6 @@ namespace ublkpp {
 namespace raid1 {
 constexpr auto const k_bits_in_byte = 8UL;
 //  Cap some array parameters so we can make simple assumptions later
-constexpr auto k_max_dev_size = 32 * Ti;
 constexpr auto k_min_chunk_size = 32 * Ki;
 // Use a single bit to represent each chunk
 constexpr auto k_page_size = 4 * Ki;

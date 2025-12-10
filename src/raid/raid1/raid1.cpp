@@ -54,7 +54,7 @@ struct MirrorDevice {
 MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device) :
         disk(std::move(device)) {
     auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
-    if ((k_min_chunk_size > chunk_size) || (k_max_dev_size < chunk_size)) {
+    if (k_min_chunk_size > chunk_size) {
         RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, k_min_chunk_size / Ki) // LCOV_EXCL_START
         throw std::runtime_error("Invalid Chunk Size");
     } // LCOV_EXCL_STOP
@@ -78,9 +78,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
 
-    // Calculate largest underlying size we support
-    our_params.basic.dev_sectors = our_params.basic.max_sectors + // We always align to this below, so adjust here
-        ((k_max_dev_size + ((k_max_dev_size / k_min_chunk_size) / k_bits_in_byte)) >> SECTOR_SHIFT); // add max bitmap
+    // Calculate largest underlying size we support which is 4/5th's the largest addressable size
+    our_params.basic.dev_sectors = (((UINT64_MAX - sizeof(SuperBlock)) >> (SECTOR_SHIFT >> 2)) / 5);
 
     // Now find the what size we should actually set based on the smallest provided device
     for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
