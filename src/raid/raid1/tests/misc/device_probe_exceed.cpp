@@ -7,7 +7,7 @@ TEST(Raid1, DevicesLargerThanAllowed) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = UINT64_MAX});
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-    EXPECT_EQ(raid_device.capacity(), 0xFFFFBFFFFFF80000);
+    EXPECT_EQ(raid_device.capacity(), 0xFFFF80000FF80000);
     EXPECT_STREQ(raid_device.id().c_str(), "RAID1");
 
     // CanDiscard and DirectIO `true` be default.

@@ -38,6 +38,13 @@ using raid1::read_route;
 
 namespace raid1 {
 
+// Min page-resolution (how much does the smallest page cover?)
+constexpr auto k_min_page_depth = k_min_chunk_size * k_page_size * k_bits_in_byte; // 1GiB from above
+
+// Max user-data size
+constexpr uint64_t k_max_user_data =
+    (unsigned __int128)(k_min_page_depth - k_page_size) * (UINT64_MAX - sizeof(SuperBlock)) / k_min_page_depth;
+
 struct free_page {
     void operator()(void* x) { free(x); }
 };
@@ -78,8 +85,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
 
-    // Calculate largest underlying size we support which is 4/5th's the largest addressable size
-    our_params.basic.dev_sectors = (((UINT64_MAX - sizeof(SuperBlock)) >> (SECTOR_SHIFT >> 2)) / 5);
+    // Set largest underlying size we support which is 4/5th's the largest addressable size
+    our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
 
     // Now find the what size we should actually set based on the smallest provided device
     for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
