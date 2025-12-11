@@ -73,7 +73,7 @@ TEST(Raid1, CleanBitmapSingleRegion) {
             EXPECT_EQ(1U, nr_vecs);
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-                static_cast<ublkpp::raid1::SuperBlock*>(iovecs->iov_base)->fields.device_b = 1;
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -81,9 +81,7 @@ TEST(Raid1, CleanBitmapSingleRegion) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     // Enable resync and wait for completion
     raid_device.toggle_resync(true);
@@ -120,7 +118,7 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
             EXPECT_EQ(1U, nr_vecs);
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-                static_cast<ublkpp::raid1::SuperBlock*>(iovecs->iov_base)->fields.device_b = 1;
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -128,16 +126,12 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     // Create multiple dirty regions at different offsets
     for (uint64_t offset : {64 * Ki, 128 * Ki, 256 * Ki}) {
@@ -217,7 +211,7 @@ TEST(Raid1, CleanBitmapReadFailure) {
             EXPECT_EQ(1U, nr_vecs);
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-                static_cast<ublkpp::raid1::SuperBlock*>(iovecs->iov_base)->fields.device_b = 1;
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -225,9 +219,7 @@ TEST(Raid1, CleanBitmapReadFailure) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     raid_device.toggle_resync(true);
     std::this_thread::sleep_for(100ms);
@@ -289,7 +281,7 @@ TEST(Raid1, CleanBitmapWriteFailure) {
             EXPECT_EQ(1U, nr_vecs);
             if (nullptr != iovecs->iov_base) {
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-                static_cast<ublkpp::raid1::SuperBlock*>(iovecs->iov_base)->fields.device_b = 1;
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -297,9 +289,7 @@ TEST(Raid1, CleanBitmapWriteFailure) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     raid_device.toggle_resync(true);
     std::this_thread::sleep_for(100ms);
@@ -335,7 +325,7 @@ TEST(Raid1, CleanBitmapStoppedState) {
             EXPECT_EQ(1U, nr_vecs);
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-                static_cast<ublkpp::raid1::SuperBlock*>(iovecs->iov_base)->fields.device_b = 1;
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -343,16 +333,12 @@ TEST(Raid1, CleanBitmapStoppedState) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     // Create multiple dirty regions
     for (uint64_t offset : {64 * Ki, 128 * Ki, 256 * Ki, 512 * Ki, 1 * Mi}) {
@@ -441,7 +427,7 @@ TEST(Raid1, CleanBitmapLargeRegion) {
             EXPECT_EQ(1U, nr_vecs);
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {
                 memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-                static_cast<ublkpp::raid1::SuperBlock*>(iovecs->iov_base)->fields.device_b = 1;
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -449,9 +435,7 @@ TEST(Raid1, CleanBitmapLargeRegion) {
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
-                          uint64_t) -> io_result {
-            return 1;
-        });
+                           uint64_t) -> io_result { return 1; });
 
     raid_device.toggle_resync(true);
     std::this_thread::sleep_for(150ms);

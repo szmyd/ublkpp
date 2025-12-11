@@ -50,12 +50,7 @@ TEST(BlockHasUnmap, InvalidOrEmptyPaths) {
 
 TEST(BlockHasUnmap, VariousInvalidDeviceNames) {
     // Test various device names that don't exist on the system
-    std::vector<std::string> invalid_devices = {
-        "nonexistent_disk",
-        "fake_device_123",
-        "invalid",
-        "test_disk_xyz"
-    };
+    std::vector< std::string > invalid_devices = {"nonexistent_disk", "fake_device_123", "invalid", "test_disk_xyz"};
 
     for (const auto& device : invalid_devices) {
         bool result = ublkpp::block_has_unmap(device);
@@ -75,9 +70,8 @@ TEST(BuildTgtSqeData, BasicEncoding) {
     uint64_t result = ublkpp::build_tgt_sqe_data(tag, op, sub_cmd);
 
     // Verify that the high bit is set (driver I/O marker)
-    uint64_t high_bit_mask = static_cast<uint64_t>(0b1) <<
-        (ublkpp::sqe_tag_width + ublkpp::sqe_op_width +
-         ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width);
+    uint64_t high_bit_mask = static_cast< uint64_t >(0b1)
+        << (ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width);
 
     EXPECT_NE(result & high_bit_mask, 0);
 }
@@ -186,17 +180,11 @@ TEST(BuildTgtSqeData, AllFieldsCombined) {
 
 TEST(BuildTgtSqeData, HighBitAlwaysSet) {
     // Test that the high bit (driver I/O marker) is always set
-    std::vector<std::tuple<uint64_t, uint64_t, uint64_t>> test_cases = {
-        {0, 0, 0},
-        {100, 5, 200},
-        {UINT16_MAX, UINT8_MAX, UINT16_MAX},
-        {1, 1, 1},
-        {12345, 123, 54321}
-    };
+    std::vector< std::tuple< uint64_t, uint64_t, uint64_t > > test_cases = {
+        {0, 0, 0}, {100, 5, 200}, {UINT16_MAX, UINT8_MAX, UINT16_MAX}, {1, 1, 1}, {12345, 123, 54321}};
 
-    uint64_t high_bit_mask = static_cast<uint64_t>(0b1) <<
-        (ublkpp::sqe_tag_width + ublkpp::sqe_op_width +
-         ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width);
+    uint64_t high_bit_mask = static_cast< uint64_t >(0b1)
+        << (ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width);
 
     for (const auto& [tag, op, sub_cmd] : test_cases) {
         uint64_t result = ublkpp::build_tgt_sqe_data(tag, op, sub_cmd);
@@ -209,9 +197,8 @@ TEST(BuildTgtSqeData, ZeroValues) {
     uint64_t result = ublkpp::build_tgt_sqe_data(0, 0, 0);
 
     // High bit should still be set
-    uint64_t high_bit_mask = static_cast<uint64_t>(0b1) <<
-        (ublkpp::sqe_tag_width + ublkpp::sqe_op_width +
-         ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width);
+    uint64_t high_bit_mask = static_cast< uint64_t >(0b1)
+        << (ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width);
 
     EXPECT_NE(result & high_bit_mask, 0);
 
@@ -254,8 +241,8 @@ TEST(BuildTgtSqeData, BitFieldSizes) {
     EXPECT_GT(ublkpp::sqe_tgt_data_width, 0);
 
     // Total should not exceed 64 bits
-    int total_bits = ublkpp::sqe_tag_width + ublkpp::sqe_op_width +
-                     ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width + 1; // +1 for high bit
+    int total_bits = ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width +
+        ublkpp::sqe_reserved_width + 1; // +1 for high bit
     EXPECT_LE(total_bits, 64);
 }
 
@@ -281,15 +268,15 @@ TEST(BuildTgtSqeData, SequentialOpValues) {
 
 TEST(BuildTgtSqeData, BoundaryValues) {
     // Test boundary values together
-    std::vector<std::tuple<uint64_t, uint64_t, uint64_t>> boundary_cases = {
-        {0, 0, 0},                              // All minimum
-        {UINT16_MAX, UINT8_MAX, UINT16_MAX},    // All maximum
-        {UINT16_MAX, 0, 0},                     // Max tag only
-        {0, UINT8_MAX, 0},                      // Max op only
-        {0, 0, UINT16_MAX},                     // Max sub_cmd only
-        {UINT16_MAX, UINT8_MAX, 0},             // Max tag and op
-        {UINT16_MAX, 0, UINT16_MAX},            // Max tag and sub_cmd
-        {0, UINT8_MAX, UINT16_MAX},             // Max op and sub_cmd
+    std::vector< std::tuple< uint64_t, uint64_t, uint64_t > > boundary_cases = {
+        {0, 0, 0},                           // All minimum
+        {UINT16_MAX, UINT8_MAX, UINT16_MAX}, // All maximum
+        {UINT16_MAX, 0, 0},                  // Max tag only
+        {0, UINT8_MAX, 0},                   // Max op only
+        {0, 0, UINT16_MAX},                  // Max sub_cmd only
+        {UINT16_MAX, UINT8_MAX, 0},          // Max tag and op
+        {UINT16_MAX, 0, UINT16_MAX},         // Max tag and sub_cmd
+        {0, UINT8_MAX, UINT16_MAX},          // Max op and sub_cmd
     };
 
     for (const auto& [tag, op, sub_cmd] : boundary_cases) {
@@ -427,11 +414,10 @@ TEST(FsDiskImpl, SubCmdTypeSize) {
 
 TEST(FsDiskImpl, ReservedWidthCalculation) {
     // Verify reserved width calculation
-    unsigned expected_reserved = 64U - (ublkpp::sqe_tag_width + ublkpp::sqe_op_width +
-                                        ublkpp::sqe_tgt_data_width + 1); // 1 for is_tgt bit
+    unsigned expected_reserved =
+        64U - (ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width + 1); // 1 for is_tgt bit
     EXPECT_EQ(ublkpp::sqe_reserved_width, expected_reserved);
 }
-
 
 TEST(FsDiskImpl, UblkOperationValues) {
     // Document the expected UBLK operation values
@@ -448,8 +434,8 @@ TEST(FsDiskImpl, UblkOperationValues) {
 
 TEST(FsDiskImpl, HighBitPosition) {
     // Verify the high bit is at the correct position
-    unsigned high_bit_pos = ublkpp::sqe_tag_width + ublkpp::sqe_op_width +
-                           ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width;
+    unsigned high_bit_pos =
+        ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width;
 
     EXPECT_LT(high_bit_pos, 64) << "High bit position exceeds 64 bits";
     EXPECT_EQ(high_bit_pos, 63) << "High bit should be at position 63 (MSB of uint64_t)";

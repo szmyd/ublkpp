@@ -37,7 +37,7 @@ TEST(Raid1, CollectAsyncEmpty) {
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
-    std::list<ublkpp::async_result> results;
+    std::list< ublkpp::async_result > results;
     raid_device.collect_async(nullptr, results);
 
     EXPECT_TRUE(results.empty());

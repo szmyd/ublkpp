@@ -2,8 +2,8 @@
 
 // Fail a write that crosses pages on the bitmap dirtying two pages
 TEST(Raid1, WriteFailAcrossPages) {
-    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = 2 * Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = 2 * Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     {
@@ -11,17 +11,18 @@ TEST(Raid1, WriteFailAcrossPages) {
         auto const test_off = (1 * Gi) - (4 * Ki);
         auto const test_sz = 40 * Ki;
 
-        EXPECT_SYNC_OP(test_op, device_a, false, true, test_sz, test_off + reserved_size); // Fail this write
+        EXPECT_SYNC_OP(test_op, device_a, false, true, test_sz,
+                       test_off + raid_device.reserved_size()); // Fail this write
         EXPECT_CALL(*device_b, sync_iov(test_op, _, _, _))
             .Times(2)
-            .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            .WillOnce([&raid_device](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
                 EXPECT_EQ(ublkpp::raid1::k_page_size, iov->iov_len);
                 EXPECT_EQ(0UL, addr);
                 return iov->iov_len;
             })
-            .WillOnce([test_sz](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            .WillOnce([test_sz, &raid_device](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
                 EXPECT_EQ(test_sz, iov->iov_len);
-                EXPECT_EQ(test_off + reserved_size, addr);
+                EXPECT_EQ(test_off + raid_device.reserved_size(), addr);
                 return iov->iov_len;
             });
 
@@ -37,14 +38,14 @@ TEST(Raid1, WriteFailAcrossPages) {
     // Flush dirty bitmap
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(2)
-        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+        .WillOnce([&raid_device](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
+            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
             return iov->iov_len;
         })
-        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+        .WillOnce([&raid_device](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
+            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
             return iov->iov_len;
         })
         .RetiresOnSaturation();

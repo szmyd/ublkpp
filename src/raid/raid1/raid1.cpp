@@ -38,6 +38,13 @@ using raid1::read_route;
 
 namespace raid1 {
 
+// Min page-resolution (how much does the smallest page cover?)
+constexpr auto k_min_page_depth = k_min_chunk_size * k_page_size * k_bits_in_byte; // 1GiB from above
+
+// Max user-data size
+constexpr uint64_t k_max_user_data =
+    (unsigned __int128)(k_min_page_depth - k_page_size) * (UINT64_MAX - sizeof(SuperBlock)) / k_min_page_depth;
+
 struct free_page {
     void operator()(void* x) { free(x); }
 };
@@ -54,7 +61,7 @@ struct MirrorDevice {
 MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device) :
         disk(std::move(device)) {
     auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
-    if ((k_min_chunk_size > chunk_size) || (k_max_dev_size < chunk_size)) {
+    if (k_min_chunk_size > chunk_size) {
         RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, k_min_chunk_size / Ki) // LCOV_EXCL_START
         throw std::runtime_error("Invalid Chunk Size");
     } // LCOV_EXCL_STOP
@@ -77,6 +84,11 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+
+    // Set largest underlying user-data size we support as starting point
+    our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
+
+    // Now find the what size we should actually set based on the smallest provided device
     for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
         if (!device->direct_io) throw std::runtime_error(fmt::format("Device does not support O_DIRECT! {}", device));
         our_params.basic.dev_sectors = std::min(our_params.basic.dev_sectors, device->params()->basic.dev_sectors);
@@ -87,16 +99,19 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
+
+    // Calculate required reservation size of SuperBlock and BitMap
+    auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
+    reserved_size = sizeof(SuperBlock) + bitmap_size;
+
+    // Align user-data to max_sector size
+    reserved_size += ((our_params.basic.dev_sectors - (reserved_size >> SECTOR_SHIFT)) % our_params.basic.max_sectors)
+        << SECTOR_SHIFT;
+
     // Reserve space for the superblock/bitmap
     RLOGD("RAID-1 : reserving {} blocks for SuperBlock & Bitmap", reserved_size >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (reserved_size >> SECTOR_SHIFT);
-    // Align size to max_sector size
-    our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
-    if (our_params.basic.dev_sectors > (k_max_dev_size >> SECTOR_SHIFT)) {
-        RLOGW("Device would be larger than supported, only exposing [{}Gi] sized device", k_max_dev_size / Gi)
-        our_params.basic.dev_sectors = (k_max_dev_size >> SECTOR_SHIFT);
-    }
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 
@@ -702,10 +717,10 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
 
     return __replicate(
         sub_cmd,
-        [q, data, len, addr](UblkDisk& d, sub_cmd_t scmd) -> io_result {
+        [q, data, len, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) -> io_result {
             // Discard does not support internal commands, we can safely ignore these optimistic operations
             if (is_internal(scmd)) return 0;
-            return d.handle_discard(q, data, scmd, len, addr + reserved_size);
+            return d.handle_discard(q, data, scmd, len, a);
         },
         addr, len, q, data);
 }
@@ -724,8 +739,8 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
         return __failover_read(
             sub_cmd,
-            [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-                return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + reserved_size);
+            [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
+                return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
             },
             addr, len);
 
@@ -734,8 +749,8 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
 
     return __replicate(
         sub_cmd,
-        [q, data, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t scmd) {
-            return d.async_iov(q, data, scmd, iovecs, nr_vecs, addr + reserved_size);
+        [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
+            return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
         },
         addr, len, q, data);
 }
@@ -752,16 +767,16 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     if (UBLK_IO_OP_READ == op)
         return __failover_read(
             0U,
-            [iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t) {
-                return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, addr + reserved_size);
+            [iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t) {
+                return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, a);
             },
             addr, len);
 
     size_t res{0};
     if (auto io_res = __replicate(
             0U,
-            [&res, op, iovecs, nr_vecs, addr](UblkDisk& d, sub_cmd_t s) {
-                auto p_res = d.sync_iov(op, iovecs, nr_vecs, addr + reserved_size);
+            [&res, op, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t s) {
+                auto p_res = d.sync_iov(op, iovecs, nr_vecs, a);
                 // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
                 if (p_res && !is_replicate(s)) res += p_res.value();
                 return p_res;
