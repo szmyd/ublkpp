@@ -85,7 +85,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
 
-    // Set largest underlying size we support which is 4/5th's the largest addressable size
+    // Set largest underlying user-data size we support as starting point
     our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
 
     // Now find the what size we should actually set based on the smallest provided device
