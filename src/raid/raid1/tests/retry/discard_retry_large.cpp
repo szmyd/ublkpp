@@ -20,9 +20,9 @@ TEST(Raid1, LargeDiscardRetry) {
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(2)
-        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // Expect write to bitmap!
-            EXPECT_LT(addr, reserved_size);              // Expect write to bitmap!
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
+            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
             return iov->iov_len;
         })
         .RetiresOnSaturation();

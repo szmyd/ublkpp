@@ -6,13 +6,9 @@ TEST(Raid1, OpenForUring) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
     // Set up expectations for open_for_uring
-    EXPECT_CALL(*device_a, open_for_uring(0))
-        .Times(1)
-        .WillOnce(::testing::Return(std::list<int>{10, 11}));
+    EXPECT_CALL(*device_a, open_for_uring(0)).Times(1).WillOnce(::testing::Return(std::list< int >{10, 11}));
 
-    EXPECT_CALL(*device_b, open_for_uring(2))
-        .Times(1)
-        .WillOnce(::testing::Return(std::list<int>{12}));
+    EXPECT_CALL(*device_b, open_for_uring(2)).Times(1).WillOnce(::testing::Return(std::list< int >{12}));
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
@@ -37,13 +33,9 @@ TEST(Raid1, OpenForUringEmpty) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
     // Both devices return empty lists
-    EXPECT_CALL(*device_a, open_for_uring(0))
-        .Times(1)
-        .WillOnce(::testing::Return(std::list<int>{}));
+    EXPECT_CALL(*device_a, open_for_uring(0)).Times(1).WillOnce(::testing::Return(std::list< int >{}));
 
-    EXPECT_CALL(*device_b, open_for_uring(0))
-        .Times(1)
-        .WillOnce(::testing::Return(std::list<int>{}));
+    EXPECT_CALL(*device_b, open_for_uring(0)).Times(1).WillOnce(::testing::Return(std::list< int >{}));
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
@@ -62,13 +54,9 @@ TEST(Raid1, OpenForUringOffsetCalculation) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
     // Device A returns 3 FDs, so device B should get offset of 103 (100 + 3)
-    EXPECT_CALL(*device_a, open_for_uring(100))
-        .Times(1)
-        .WillOnce(::testing::Return(std::list<int>{5, 6, 7}));
+    EXPECT_CALL(*device_a, open_for_uring(100)).Times(1).WillOnce(::testing::Return(std::list< int >{5, 6, 7}));
 
-    EXPECT_CALL(*device_b, open_for_uring(103))
-        .Times(1)
-        .WillOnce(::testing::Return(std::list<int>{8, 9}));
+    EXPECT_CALL(*device_b, open_for_uring(103)).Times(1).WillOnce(::testing::Return(std::list< int >{8, 9}));
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 

@@ -19,6 +19,7 @@ ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPP
 class Raid1DiskImpl : public UblkDisk {
     boost::uuids::uuid const _uuid;
     std::string const _str_uuid;
+    uint64_t reserved_size{0UL};
 
     std::shared_ptr< MirrorDevice > _device_a;
     std::shared_ptr< MirrorDevice > _device_b;
@@ -61,6 +62,7 @@ public:
     /// =============
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
     raid1::array_state replica_states() const;
+    uint64_t get_reserved_size() const { return reserved_size; }
     void toggle_resync(bool t);
     std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const;
     /// =============

@@ -3,11 +3,11 @@
 // Brief: Test that RAID1 array maintains a self-imposing limit to restrict the reserved size
 //
 TEST(Raid1, DevicesLargerThanAllowed) {
-    auto device_a = CREATE_DISK_A(TestParams{.capacity = ublkpp::raid1::k_max_dev_size + ublkpp::Ti});
-    auto device_b = CREATE_DISK_B(TestParams{.capacity = ublkpp::raid1::k_max_dev_size * 2});
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = UINT64_MAX});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = UINT64_MAX});
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-    EXPECT_EQ(raid_device.capacity(), ublkpp::raid1::k_max_dev_size);
+    EXPECT_EQ(raid_device.capacity(), 0xFFFF80000FF80000);
     EXPECT_STREQ(raid_device.id().c_str(), "RAID1");
 
     // CanDiscard and DirectIO `true` be default.

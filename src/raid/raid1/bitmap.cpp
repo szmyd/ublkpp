@@ -19,6 +19,7 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
         _align(align),
         _page_width(_chunk_size * k_page_size * k_bits_in_byte),
         _num_pages(_data_size / _page_width + ((0 == _data_size % _page_width) ? 0 : 1)) {
+    RLOGD("Initializing RAID-1 BITMAP [pgs:{},sz:{}Ki]", _num_pages, _num_pages * k_page_size / Ki)
     void* new_page{nullptr};
     if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
         throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
@@ -63,7 +64,7 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitm
 
 void Bitmap::init_to(UblkDisk& device) {
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
-    RLOGI("Initializing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: [{}]", _num_pages, _num_pages * k_page_size / Ki, device);
+    RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: [{}]", _num_pages, _num_pages * k_page_size / Ki, device)
     auto iov = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
     for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
         auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
