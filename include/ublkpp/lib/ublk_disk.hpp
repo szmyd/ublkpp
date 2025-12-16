@@ -78,6 +78,11 @@ public:
 
     virtual io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept = 0;
 
+    /// Device latency tracking
+    static void record_io_start(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint8_t device_id);
+    static void record_io_complete(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
+    ///
+
     /// Deprecated Sync I/O calls
     io_result handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
                         uint32_t const len, uint64_t const addr);

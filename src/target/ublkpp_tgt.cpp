@@ -40,6 +40,11 @@ struct UblkDiskMetrics : public sisl::MetricsGroupWrapper {
     ~UblkDiskMetrics() { deregister_me_from_farm(); }
 };
 
+struct io_timing {
+    std::chrono::steady_clock::time_point start_time;
+    uint8_t device_id;
+};
+
 struct ublkpp_tgt_impl {
     bool device_added{false};
     boost::uuids::uuid volume_uuid;
@@ -57,6 +62,10 @@ struct ublkpp_tgt_impl {
 
     std::atomic_uint32_t _queued_reads;
     std::atomic_uint32_t _queued_writes;
+
+    // Device latency tracking: map from (queue, tag, sub_cmd) to timing info
+    std::map<std::tuple<ublksrv_queue const*, uint16_t, uint16_t>, io_timing> _io_timings;
+    std::mutex _timing_mutex;
     // == ======= ==
 
     // Owned by us
@@ -268,6 +277,10 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     --ublkpp_io->sub_cmds;
     sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
                                                      : ublkpp_io->async_completion->sub_cmd);
+
+    // Record I/O completion for device latency tracking
+    UblkDisk::record_io_complete(q, data, old_cmd);
+
     // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
     auto sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
 
@@ -550,6 +563,39 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     if (device_added) ublksrv_ctrl_del_dev(ctrl_dev);
     if (ctrl_dev) ublksrv_ctrl_deinit(ctrl_dev);
     TLOGD("Stopped {}", device)
+}
+
+void UblkDisk::record_io_start(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint8_t device_id) {
+    if (!q || !q->private_data || !data) return;
+
+    auto tgt = static_cast<ublkpp_tgt_impl*>(q->private_data);
+    auto key = std::make_tuple(q, static_cast<uint16_t>(data->tag), static_cast<uint16_t>(sub_cmd));
+
+    auto lock = std::scoped_lock{tgt->_timing_mutex};
+    tgt->_io_timings[key] = io_timing{std::chrono::steady_clock::now(), device_id};
+}
+
+void UblkDisk::record_io_complete(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    if (!q || !q->private_data || !data) return;
+
+    auto tgt = static_cast<ublkpp_tgt_impl*>(q->private_data);
+    auto key = std::make_tuple(q, static_cast<uint16_t>(data->tag), static_cast<uint16_t>(sub_cmd));
+
+    auto lock = std::scoped_lock{tgt->_timing_mutex};
+    if (auto it = tgt->_io_timings.find(key); it != tgt->_io_timings.end()) {
+        auto const& timing = it->second;
+        auto const end_time = std::chrono::steady_clock::now();
+        auto const latency_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - timing.start_time).count();
+
+        // Record to appropriate histogram
+        if (timing.device_id == 0) {
+            HISTOGRAM_OBSERVE(tgt->metrics, device0_latency_us, latency_us);
+        } else if (timing.device_id == 1) {
+            HISTOGRAM_OBSERVE(tgt->metrics, device1_latency_us, latency_us);
+        }
+
+        tgt->_io_timings.erase(it);
+    }
 }
 
 } // namespace ublkpp

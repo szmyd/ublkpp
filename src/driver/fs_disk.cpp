@@ -196,6 +196,12 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     if (UBLK_IO_OP_READ != op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
 
     sqe->user_data = build_tgt_sqe_data(data->tag, op, sub_cmd);
+
+    // Record I/O start for device latency tracking
+    // For RAID1: sub_cmd lowest bit indicates device (0=A, 1=B)
+    auto const device_id = static_cast<uint8_t>(sub_cmd & 0x1);
+    UblkDisk::record_io_start(q, data, sub_cmd, device_id);
+
     return 1;
 }
 
