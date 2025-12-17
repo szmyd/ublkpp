@@ -7,7 +7,6 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
-#include <sisl/metrics/metrics.hpp>
 #include <sisl/utility/thread_factory.hpp>
 #include <ublksrv_utils.h>
 #include <ublksrv.h>
@@ -298,18 +297,9 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
 
     auto const op = ublksrv_get_op(data->iod);
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    switch (op) {
-    case UBLK_IO_OP_READ: {
-        HISTOGRAM_OBSERVE(tgt->metrics, ublk_read_queue_distribution,
-                          tgt->_queued_reads.fetch_add(1, std::memory_order_relaxed) + 1);
-    } break;
-    case UBLK_IO_OP_WRITE: {
-        HISTOGRAM_OBSERVE(tgt->metrics, ublk_write_queue_distribution,
-                          tgt->_queued_writes.fetch_add(1, std::memory_order_relaxed) + 1);
-    } break;
-    default: {
-    }
-    }
+
+    // Record queue depth increment
+    record_queue_depth_change(q, op, true);
 
     // First we submit the IO to the UblkDisk device. It in turn will return the number
     // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
@@ -332,16 +322,8 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
         process_result(q, data);
     }
 
-    switch (op) {
-    case UBLK_IO_OP_READ: {
-        tgt->_queued_reads.fetch_sub(1, std::memory_order_relaxed);
-    } break;
-    case UBLK_IO_OP_WRITE: {
-        tgt->_queued_writes.fetch_sub(1, std::memory_order_relaxed);
-    } break;
-    default: {
-    }
-    }
+    // Record queue depth decrement
+    record_queue_depth_change(q, op, false);
 
     // Operation is complete, result is in io_res
     if (0 > ublkpp_io->ret_val) [[unlikely]] {

@@ -51,4 +51,27 @@ void record_device_degraded(ublksrv_queue const* q, uint8_t device_id) {
     }
 }
 
+void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment) {
+    if (!q || !q->private_data) return;
+
+    auto tgt = static_cast<ublkpp_tgt_impl*>(q->private_data);
+
+    // UBLK_IO_OP_READ = 0, UBLK_IO_OP_WRITE = 1
+    if (op == 0) { // UBLK_IO_OP_READ
+        if (is_increment) {
+            auto const depth = tgt->_queued_reads.fetch_add(1, std::memory_order_relaxed) + 1;
+            HISTOGRAM_OBSERVE(tgt->metrics, ublk_read_queue_distribution, depth);
+        } else {
+            tgt->_queued_reads.fetch_sub(1, std::memory_order_relaxed);
+        }
+    } else if (op == 1) { // UBLK_IO_OP_WRITE
+        if (is_increment) {
+            auto const depth = tgt->_queued_writes.fetch_add(1, std::memory_order_relaxed) + 1;
+            HISTOGRAM_OBSERVE(tgt->metrics, ublk_write_queue_distribution, depth);
+        } else {
+            tgt->_queued_writes.fetch_sub(1, std::memory_order_relaxed);
+        }
+    }
+}
+
 } // namespace ublkpp

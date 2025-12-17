@@ -23,5 +23,6 @@ extern thread_local std::map<std::pair<uint16_t, uint16_t>, io_timing> t_io_timi
 void record_io_start(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint8_t device_id);
 void record_io_complete(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
 void record_device_degraded(ublksrv_queue const* q, uint8_t device_id);
+void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment);
 
 } // namespace ublkpp
