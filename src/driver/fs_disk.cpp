@@ -18,6 +18,7 @@ extern "C" {
 
 #include "fs_disk_impl.hpp"
 #include "lib/logging.hpp"
+#include "lib/ublkpp_metrics_utilities.hpp"
 
 SISL_OPTION_GROUP(fs_disk,
                   (random_errors, "", "random_errors", "Inject random errors into some devices",
@@ -200,7 +201,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     // Record I/O start for device latency tracking
     // For RAID1: sub_cmd lowest bit indicates device (0=A, 1=B)
     auto const device_id = static_cast<uint8_t>(sub_cmd & 0x1);
-    UblkDisk::record_io_start(q, data, sub_cmd, device_id);
+    record_io_start(q, data, sub_cmd, device_id);
 
     return 1;
 }

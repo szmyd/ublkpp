@@ -11,6 +11,8 @@ target_link_libraries(logging
 add_library(ublk_disk OBJECT)
 target_sources(ublk_disk PRIVATE
     ublk_disk.cpp
+    ublk_disk_metrics.cpp
+    ublkpp_metrics_utilities.cpp
 )
 target_link_libraries(ublk_disk
     sisl::sisl

@@ -12,6 +12,7 @@
 #include "bitmap.hpp"
 #include "raid1_impl.hpp"
 #include "lib/logging.hpp"
+#include "lib/ublkpp_metrics_utilities.hpp"
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
@@ -499,7 +500,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, ublksrv_queue cons
 
     // Record degradation event in metrics
     if (q) {
-        UblkDisk::record_device_degraded(q, device_id);
+        record_device_degraded(q, device_id);
     }
 
     // Must update age first; we do this synchronously to gate pending retry results
