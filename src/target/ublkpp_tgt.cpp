@@ -29,10 +29,14 @@ namespace ublkpp {
 
 struct UblkDiskMetrics : public sisl::MetricsGroupWrapper {
     explicit UblkDiskMetrics(std::string const& device_name) : sisl::MetricsGroup("UblkDisk", device_name.c_str()) {
-        REGISTER_HISTOGRAM(ublk_write_queue_distribution, "Distribution of volume read queue depths",
+        REGISTER_HISTOGRAM(ublk_write_queue_distribution, "Distribution of volume write queue depths",
                            HistogramBucketsType(SteppedUpto32Buckets));
         REGISTER_HISTOGRAM(ublk_read_queue_distribution, "Distribution of volume read queue depths",
                            HistogramBucketsType(SteppedUpto32Buckets));
+        REGISTER_HISTOGRAM(device0_latency_us, "Device 0 I/O latency in microseconds",
+                           HistogramBucketsType(ExponentialOfTwoBuckets));
+        REGISTER_HISTOGRAM(device1_latency_us, "Device 1 I/O latency in microseconds",
+                           HistogramBucketsType(ExponentialOfTwoBuckets));
 
         register_me_to_farm();
     }
@@ -62,10 +66,6 @@ struct ublkpp_tgt_impl {
 
     std::atomic_uint32_t _queued_reads;
     std::atomic_uint32_t _queued_writes;
-
-    // Device latency tracking: map from (queue, tag, sub_cmd) to timing info
-    std::map<std::tuple<ublksrv_queue const*, uint16_t, uint16_t>, io_timing> _io_timings;
-    std::mutex _timing_mutex;
     // == ======= ==
 
     // Owned by us
@@ -568,21 +568,17 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
 void UblkDisk::record_io_start(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint8_t device_id) {
     if (!q || !q->private_data || !data) return;
 
-    auto tgt = static_cast<ublkpp_tgt_impl*>(q->private_data);
-    auto key = std::make_tuple(q, static_cast<uint16_t>(data->tag), static_cast<uint16_t>(sub_cmd));
-
-    auto lock = std::scoped_lock{tgt->_timing_mutex};
-    tgt->_io_timings[key] = io_timing{std::chrono::steady_clock::now(), device_id};
+    auto key = std::make_pair(static_cast<uint16_t>(data->tag), static_cast<uint16_t>(sub_cmd));
+    t_io_timings[key] = io_timing{std::chrono::steady_clock::now(), device_id};
 }
 
 void UblkDisk::record_io_complete(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
     if (!q || !q->private_data || !data) return;
 
     auto tgt = static_cast<ublkpp_tgt_impl*>(q->private_data);
-    auto key = std::make_tuple(q, static_cast<uint16_t>(data->tag), static_cast<uint16_t>(sub_cmd));
+    auto key = std::make_pair(static_cast<uint16_t>(data->tag), static_cast<uint16_t>(sub_cmd));
 
-    auto lock = std::scoped_lock{tgt->_timing_mutex};
-    if (auto it = tgt->_io_timings.find(key); it != tgt->_io_timings.end()) {
+    if (auto it = t_io_timings.find(key); it != t_io_timings.end()) {
         auto const& timing = it->second;
         auto const end_time = std::chrono::steady_clock::now();
         auto const latency_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - timing.start_time).count();
@@ -594,7 +590,7 @@ void UblkDisk::record_io_complete(ublksrv_queue const* q, ublk_io_data const* da
             HISTOGRAM_OBSERVE(tgt->metrics, device1_latency_us, latency_us);
         }
 
-        tgt->_io_timings.erase(it);
+        t_io_timings.erase(it);
     }
 }
 
