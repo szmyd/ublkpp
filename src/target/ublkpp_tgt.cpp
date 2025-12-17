@@ -37,6 +37,10 @@ struct UblkDiskMetrics : public sisl::MetricsGroupWrapper {
                            HistogramBucketsType(ExponentialOfTwoBuckets));
         REGISTER_HISTOGRAM(device1_latency_us, "Device 1 I/O latency in microseconds",
                            HistogramBucketsType(ExponentialOfTwoBuckets));
+        REGISTER_HISTOGRAM(device0_degraded_count, "Device 0 degradation events",
+                           HistogramBucketsType(ExponentialOfTwoBuckets));
+        REGISTER_HISTOGRAM(device1_degraded_count, "Device 1 degradation events",
+                           HistogramBucketsType(ExponentialOfTwoBuckets));
 
         register_me_to_farm();
     }
@@ -591,6 +595,18 @@ void UblkDisk::record_io_complete(ublksrv_queue const* q, ublk_io_data const* da
         }
 
         t_io_timings.erase(it);
+    }
+}
+
+void UblkDisk::record_device_degraded(ublksrv_queue const* q, uint8_t device_id) {
+    if (!q || !q->private_data) return;
+
+    auto tgt = static_cast<ublkpp_tgt_impl*>(q->private_data);
+
+    if (device_id == 0) {
+        HISTOGRAM_OBSERVE(tgt->metrics, device0_degraded_count, 1);
+    } else if (device_id == 1) {
+        HISTOGRAM_OBSERVE(tgt->metrics, device1_degraded_count, 1);
     }
 }
 

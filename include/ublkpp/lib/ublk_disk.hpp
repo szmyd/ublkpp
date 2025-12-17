@@ -83,6 +83,10 @@ public:
     static void record_io_complete(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
     ///
 
+    /// Device degradation tracking
+    static void record_device_degraded(ublksrv_queue const* q, uint8_t device_id);
+    ///
+
     /// Deprecated Sync I/O calls
     io_result handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
                         uint32_t const len, uint64_t const addr);

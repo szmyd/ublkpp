@@ -42,7 +42,7 @@ class Raid1DiskImpl : public UblkDisk {
 
     // Internal routines
     io_result __become_clean();
-    io_result __become_degraded(sub_cmd_t sub_cmd, bool spawn_resync = true);
+    io_result __become_degraded(sub_cmd_t sub_cmd, ublksrv_queue const* q = nullptr, bool spawn_resync = true);
     resync_state __clean_bitmap();
     io_result __clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
                              ublk_io_data const* data = nullptr);
