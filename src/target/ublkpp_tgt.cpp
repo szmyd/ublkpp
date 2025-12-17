@@ -53,6 +53,10 @@ struct io_timing {
     uint8_t device_id;
 };
 
+// Thread-local timing map: each queue handler thread tracks its own I/Os
+// Key: (tag, sub_cmd) uniquely identifies an I/O within this thread
+thread_local std::map<std::pair<uint16_t, uint16_t>, io_timing> t_io_timings;
+
 struct ublkpp_tgt_impl {
     bool device_added{false};
     boost::uuids::uuid volume_uuid;
