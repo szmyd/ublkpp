@@ -9,6 +9,7 @@ target_sources(test_fsdisk PRIVATE
   $<TARGET_OBJECTS:fs_disk>
   $<TARGET_OBJECTS:ublk_disk>
   $<TARGET_OBJECTS:logging>
+  $<TARGET_OBJECTS:ublkpp_tgt>
 )
 target_link_libraries (test_fsdisk
   GTest::gmock
