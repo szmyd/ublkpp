@@ -169,7 +169,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
         // This will write the SB to DIRTY so we can skip this down below
-        if (!__become_degraded(CLEAN_SUBCMD)) {
+        if (!__become_degraded(CLEAN_SUBCMD, nullptr)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
         return;
@@ -181,7 +181,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
             _resync_task =
                 sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 
-    } else if (!__become_degraded(DIRTY_SUBCMD)) {
+    } else if (!__become_degraded(DIRTY_SUBCMD, nullptr)) {
         throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
     }
 }
@@ -263,13 +263,13 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == old_device_id) {
         _device_a.swap(new_mirror);
-        if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
+        if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, nullptr, false)) {
             return new_device;
         }
     } else {
         _device_b.swap(new_mirror);
         if (auto res = write_superblock(*_device_b->disk, _sb.get(), true);
-            !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
+            !res || !__become_degraded(1U << _device_b->disk->route_size(), nullptr, false)) {
             return new_device;
         }
     }
