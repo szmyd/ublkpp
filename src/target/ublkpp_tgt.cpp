@@ -296,7 +296,6 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     ublkpp_io->async_completion = nullptr;
 
     auto const op = ublksrv_get_op(data->iod);
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
 
     // Record queue depth increment
     record_queue_depth_change(q, op, true);
