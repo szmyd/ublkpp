@@ -76,7 +76,7 @@ class UBlkPPConan(ConanFile):
 
         self.requires("isa-l/2.30.0")
         if (self.options.get_safe("homeblocks")):
-            self.requires("homeblocks/[^4.0]@oss/main")
+            self.requires("homeblocks/[^5.0]@oss/main")
         self.requires("ublksrv/nbi.1.5.0")
         if (self.options.get_safe("iscsi")):
             self.requires("libiscsi/1.20.3")
