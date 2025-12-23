@@ -12,6 +12,7 @@
 #include "bitmap.hpp"
 #include "raid1_impl.hpp"
 #include "lib/logging.hpp"
+#include "lib/ublkpp_metrics_utilities.hpp"
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
@@ -184,7 +185,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
         // This will write the SB to DIRTY so we can skip this down below
-        if (!__become_degraded(CLEAN_SUBCMD)) {
+        if (!__become_degraded(CLEAN_SUBCMD, nullptr)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
         return;
@@ -196,7 +197,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
             _resync_task =
                 sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 
-    } else if (!__become_degraded(DIRTY_SUBCMD)) {
+    } else if (!__become_degraded(DIRTY_SUBCMD, nullptr)) {
         throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
     }
 }
@@ -278,13 +279,13 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == old_device_id) {
         _device_a.swap(new_mirror);
-        if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
+        if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, nullptr, false)) {
             return new_device;
         }
     } else {
         _device_b.swap(new_mirror);
         if (auto res = write_superblock(*_device_b->disk, _sb.get(), true);
-            !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
+            !res || !__become_degraded(1U << _device_b->disk->route_size(), nullptr, false)) {
             return new_device;
         }
     }
@@ -496,7 +497,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     }
 }
 
-io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync) {
+io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, ublksrv_queue const* q, bool spawn_resync) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
     auto const orig_route = _sb->fields.read_route;
@@ -505,8 +506,18 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         : static_cast< uint8_t >(read_route::DEVB);
     auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
+
+    // Determine which device became degraded (DIRTY_DEVICE is the one that failed)
+    auto const device_id = (read_route::DEVB == READ_ROUTE) ? static_cast<uint8_t>(0) : static_cast<uint8_t>(1);
+
     RLOGW("Device became degraded [{}] [age:{}] [vol:{}] ", *DIRTY_DEVICE->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
+
+    // Record degradation event in metrics
+    if (q) {
+        record_device_degraded(q, device_id);
+    }
+
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !sync_res) {
         // Rollback the failure to update the header
@@ -572,7 +583,7 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
 
     // Record this degraded operation in the bitmap, result is # of async writes enqueued
     io_result dirty_res;
-    if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
+    if (dirty_res = __become_degraded(sub_cmd, q); !dirty_res) return dirty_res;
     _dirty_bitmap->dirty_region(addr, len);
 
     if (is_replicate(sub_cmd)) return dirty_res;
@@ -610,7 +621,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             return res;
         }
         io_result dirty_res;
-        if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
+        if (dirty_res = __become_degraded(sub_cmd, q); !dirty_res) return dirty_res;
         _dirty_bitmap->dirty_region(addr, len);
 
         if (replica_write) return dirty_res;
