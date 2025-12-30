@@ -177,8 +177,8 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Address and Length should be chunk aligned!
-    DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:0x{:0x}] is not aligned to 0x{:0x}", addr, _chunk_size)
-    DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:0x{:0x}] is not aligned to 0x{:0x}", len, _chunk_size)
+    DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:{:#0x}] is not aligned to {:#0x}", addr, _chunk_size)
+    DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:{:#0x}] is not aligned to {:#0x}", len, _chunk_size)
 
     // Get/Create a Page
     auto const cur_page = __get_page(page_offset);
@@ -226,7 +226,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
             // How long does the dirt stretch?
             auto set_bit = __builtin_clzl(word);
             logical_off += set_bit * _chunk_size; // Adjust for bit within word
-            RLOGT("addr: {:0x} word: {:064b}", logical_off, word);
+            RLOGT("addr: {:#0x} word: {:#064b}", logical_off, word);
             // Consume as many consecutive set-bits as we can in the rest of the word
             while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
                 sz += _chunk_size;

@@ -105,11 +105,12 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     reserved_size = sizeof(SuperBlock) + bitmap_size;
 
     // Align user-data to max_sector size
-    reserved_size += ((our_params.basic.dev_sectors - (reserved_size >> SECTOR_SHIFT)) % our_params.basic.max_sectors)
-        << SECTOR_SHIFT;
+    //
+    reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - reserved_size) %
+        (our_params.basic.max_sectors << SECTOR_SHIFT);
 
     // Reserve space for the superblock/bitmap
-    RLOGD("RAID-1 : reserving {} blocks for SuperBlock & Bitmap", reserved_size >> our_params.basic.logical_bs_shift)
+    RLOGD("RAID-1 : reserving {:#0x} blocks for SuperBlock & Bitmap", reserved_size >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (reserved_size >> SECTOR_SHIFT);
 
     if (can_discard())
@@ -395,7 +396,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
 
-            RLOGT("Copying lba: {:0x} for {}KiB", logical_off >> params()->basic.logical_bs_shift, iov.iov_len / Ki)
+            RLOGT("Copying lba: {:#0x} for {}KiB", logical_off >> params()->basic.logical_bs_shift, iov.iov_len / Ki)
             // Copy Region from CLEAN to DIRTY
             if (auto res =
                     __copy_region(&iov, 1, logical_off + reserved_size, *CLEAN_DEVICE->disk, *DIRTY_DEVICE->disk);
@@ -527,7 +528,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
 io_result Raid1DiskImpl::__clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                         ublk_io_data const* data) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Cleaning pages for [lba:{:0x}|len:{:0x}|sub_cmd:{}] [vol:{}]", lba, len, ublkpp::to_string(sub_cmd),
+    RLOGT("Cleaning pages for [lba:{:#0x}|len:{:#0x}|sub_cmd:{}] [vol:{}]", lba, len, ublkpp::to_string(sub_cmd),
           _str_uuid);
 
     auto const pg_size = _dirty_bitmap->page_size();
@@ -606,7 +607,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
         if (IS_DEGRADED && !replica_write) {
-            RLOGE("Double failure! [tag:{:0x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
+            RLOGE("Double failure! [tag:{:#0x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return res;
         }
         io_result dirty_res;
@@ -707,7 +708,7 @@ void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_resul
 io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                         uint32_t len, uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("received DISCARD: [tag:{:0x}] [lba:{:0x}|len:{:0x}] [vol:{}]", data->tag, lba, len, _str_uuid)
+    RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [vol:{}]", data->tag, lba, len, _str_uuid)
 
     // Stop any on-going resync
     idle_transition(q, false);
@@ -728,7 +729,7 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
 io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                    uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    RLOGT("Received {}: [tag:{:0x}] [lba:{:0x}|len:{:0x}] [sub_cmd:{}] [vol:{}]",
+    RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}] [vol:{}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
           addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
 
@@ -758,7 +759,8 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
 io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Received {}: [lba:{:0x}|len:{:0x}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len, _str_uuid)
+    RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
+          _str_uuid)
 
     // Stop any on-going resync
     idle_transition(nullptr, false);

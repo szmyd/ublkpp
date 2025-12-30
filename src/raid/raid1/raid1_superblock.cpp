@@ -89,7 +89,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
               "[vol:{}] ",
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
-    RLOGD("{} has v{:0x} superblock [age:{},chunk_sz:{:0x},{}] [vol:{}] ", device, be16toh(sb->header.version),
+    RLOGD("{} has v{:#0x} superblock [age:{},chunk_sz:{:#0x},{}] [vol:{}] ", device, be16toh(sb->header.version),
           be64toh(sb->fields.bitmap.age), chunk_size, (1 == sb->fields.clean_unmount) ? "Clean" : "Dirty",
           to_string(uuid))
 
