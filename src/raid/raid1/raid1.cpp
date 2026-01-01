@@ -110,7 +110,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         (our_params.basic.max_sectors << SECTOR_SHIFT);
 
     // Reserve space for the superblock/bitmap
-    RLOGD("RAID-1 : reserving {:#0x} blocks for SuperBlock & Bitmap", reserved_size >> our_params.basic.logical_bs_shift)
+    RLOGD("RAID-1 : reserving {:#0x} blocks for SuperBlock & Bitmap",
+          reserved_size >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (reserved_size >> SECTOR_SHIFT);
 
     if (can_discard())
