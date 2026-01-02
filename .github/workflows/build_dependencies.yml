@@ -124,12 +124,12 @@ jobs:
         conan install \
             -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
             -s:h build_type=${{ inputs.build-type }} \
+            -s:a compiler.cppstd=23 \
             -c tools.build:skip_test=True \
             --format=json \
             --build missing \
             . > ~/build.json
         conan list --graph ~/build.json --graph-binaries=build --format=json > ~/pkglist.json
-      if: ${{ steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Save Conan Cache
       uses: ebay/sisl/.github/actions/store_conan2@master

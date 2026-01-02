@@ -84,6 +84,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+    our_params.basic.io_opt_shift = ilog2(k_min_chunk_size);
 
     // Set largest underlying user-data size we support as starting point
     our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
@@ -110,7 +111,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         (our_params.basic.max_sectors << SECTOR_SHIFT);
 
     // Reserve space for the superblock/bitmap
-    RLOGD("RAID-1 : reserving {:#0x} blocks for SuperBlock & Bitmap", reserved_size >> our_params.basic.logical_bs_shift)
+    RLOGD("RAID-1 : reserving {:#0x} blocks for SuperBlock & Bitmap",
+          reserved_size >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (reserved_size >> SECTOR_SHIFT);
 
     if (can_discard())
