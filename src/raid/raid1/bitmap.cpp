@@ -199,6 +199,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
+
     // Only return clean pages
     if (0 == isal_zero_detect(cur_page, k_page_size)) return std::make_tuple(_clean_page.get(), page_offset, sz);
     return std::make_tuple(nullptr, page_offset, sz);

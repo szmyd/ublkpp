@@ -38,6 +38,7 @@ target_sources(test_raid0 PRIVATE
   $<TARGET_OBJECTS:logging>
   $<TARGET_OBJECTS:raid0>
   $<TARGET_OBJECTS:ublk_disk>
+  $<TARGET_OBJECTS:ublk_metrics>
 )
 target_link_libraries (test_raid0
   GTest::gmock

@@ -6,7 +6,7 @@
 
 #include <boost/uuid/uuid.hpp>
 
-#include "lib/ublk_disk_metrics.hpp"
+#include "ublkpp/metrics/ublk_io_metrics.hpp"
 
 struct ublksrv_ctrl_dev;
 struct ublksrv_dev;
@@ -30,7 +30,7 @@ struct ublkpp_tgt_impl {
     ublksrv_dev const* ublk_dev{nullptr};
 
     // == Metrics ==
-    UblkDiskMetrics metrics;
+    UblkIOMetrics metrics;
 
     std::atomic_uint32_t _queued_reads;
     std::atomic_uint32_t _queued_writes;

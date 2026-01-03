@@ -18,7 +18,8 @@ extern "C" {
 
 #include "fs_disk_impl.hpp"
 #include "lib/logging.hpp"
-#include "lib/ublkpp_metrics_utilities.hpp"
+#include "ublkpp/metrics/ublk_fsdisk_metrics.hpp"
+#include "target/ublkpp_tgt_impl.hpp"
 
 SISL_OPTION_GROUP(fs_disk,
                   (random_errors, "", "random_errors", "Inject random errors into some devices",
@@ -29,7 +30,8 @@ static uint64_t k_rand_cnt{0};
 static uint64_t k_rand_error{0};
 static uint64_t k_io_cnt{0};
 
-FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
+FSDisk::FSDisk(std::filesystem::path const& path, std::unique_ptr<UblkFSDiskMetrics> metrics)
+    : UblkDisk(), _path(path), _metrics(std::move(metrics)) {
     if (0 != SISL_OPTIONS["random_errors"].count()) {
         std::random_device r;
         std::default_random_engine e1(r());
@@ -198,10 +200,12 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
 
     sqe->user_data = build_tgt_sqe_data(data->tag, op, sub_cmd);
 
-    // Record I/O start for device latency tracking
-    // For RAID1: sub_cmd lowest bit indicates device (0=A, 1=B)
-    auto const device_id = static_cast<uint8_t>(sub_cmd & 0x1);
-    record_io_start(q, data, sub_cmd, device_id);
+    // Record I/O start for individual disk metrics
+    // This tracks I/O latency for this specific FSDisk instance (identified by path in metrics labels)
+	if(_metrics)
+	{
+   		_metrics->record_io_start(data, sub_cmd);
+	}
 
     return 1;
 }
@@ -232,6 +236,14 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return res;
+}
+
+void FSDisk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    // Record I/O completion for this individual disk
+	if(_metrics)
+	{
+    	_metrics->record_io_complete(data, sub_cmd);
+	}
 }
 
 } // namespace ublkpp

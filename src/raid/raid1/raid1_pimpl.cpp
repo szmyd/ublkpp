@@ -1,11 +1,12 @@
 #include "raid1_impl.hpp"
+#include "ublkpp/metrics/ublk_raid_metrics.hpp"
 
 namespace ublkpp {
 
 /// Raid1Disk Public Class
 Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                     std::shared_ptr< UblkDisk > dev_b) :
-        _impl(std::make_unique< raid1::Raid1DiskImpl >(uuid, dev_a, dev_b)) {
+                     std::shared_ptr< UblkDisk > dev_b, std::unique_ptr<UblkRaidMetrics> metrics) :
+        _impl(std::make_unique< raid1::Raid1DiskImpl >(uuid, dev_a, dev_b, std::move(metrics))) {
     direct_io = _impl->direct_io;
     uses_ublk_iouring = _impl->uses_ublk_iouring;
 }
@@ -32,6 +33,7 @@ std::string Raid1Disk::id() const { return _impl->id(); }
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device) { return _impl->open_for_uring(iouring_device); }
 uint8_t Raid1Disk::route_size() const { return _impl->route_size(); }
 void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
+void Raid1Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) { return _impl->on_io_complete(data, sub_cmd); }
 
 io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
                                      uint32_t nr_vecs, uint64_t addr, int res) {

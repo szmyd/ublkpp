@@ -49,6 +49,10 @@ io_result UblkDisk::handle_internal(ublksrv_queue const*, ublk_io_data const*, s
     return 0;
 }
 
+void UblkDisk::on_io_complete(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
+    // Default implementation does nothing
+}
+
 io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
                               uint32_t const len, uint64_t const addr) {
     DLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")

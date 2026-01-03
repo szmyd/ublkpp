@@ -21,9 +21,9 @@ add_executable(test_raid1)
 target_sources(test_raid1 PRIVATE
   ${RAID1_TEST_SRCS}
   $<TARGET_OBJECTS:ublk_disk>
+  $<TARGET_OBJECTS:ublk_metrics>
   $<TARGET_OBJECTS:logging>
   $<TARGET_OBJECTS:raid1>
-  $<TARGET_OBJECTS:ublk_disk>
 )
 target_link_libraries (test_raid1
   GTest::gmock

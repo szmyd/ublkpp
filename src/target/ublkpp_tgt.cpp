@@ -13,7 +13,6 @@
 
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "lib/logging.hpp"
-#include "lib/ublkpp_metrics_utilities.hpp"
 #include "ublkpp_tgt_impl.hpp"
 
 SISL_OPTION_GROUP(ublkpp_tgt,
@@ -29,7 +28,7 @@ using namespace std::chrono_literals;
 namespace ublkpp {
 
 ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d) :
-        volume_uuid(vol_id), device(std::move(d)), metrics(UblkDiskMetrics(to_string(vol_id))) {}
+        volume_uuid(vol_id), device(std::move(d)), metrics(UblkIOMetrics(to_string(vol_id))) {}
 
 static std::mutex _map_lock;
 static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt_impl > > _init_map;
@@ -233,7 +232,8 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
                                                      : ublkpp_io->async_completion->sub_cmd);
 
     // Record I/O completion for device latency tracking
-    record_io_complete(q, data, old_cmd);
+    // Notify the device about I/O completion for device-specific metrics
+    device->on_io_complete(data, old_cmd);
 
     // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
     auto sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
@@ -298,7 +298,8 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     auto const op = ublksrv_get_op(data->iod);
 
     // Record queue depth increment
-    record_queue_depth_change(q, op, true);
+    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
+    tgt->metrics.record_queue_depth_change(q, op, true);
 
     // First we submit the IO to the UblkDisk device. It in turn will return the number
     // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
@@ -322,7 +323,7 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     }
 
     // Record queue depth decrement
-    record_queue_depth_change(q, op, false);
+    tgt->metrics.record_queue_depth_change(q, op, false);
 
     // Operation is complete, result is in io_res
     if (0 > ublkpp_io->ret_val) [[unlikely]] {
