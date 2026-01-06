@@ -19,9 +19,9 @@ struct io_timing {
 };
 
 // FSDisk-level metrics - tracks individual disk operations
-// Labels: uuid, raid_device_id, disk_path
+// Labels: raid_device_id, disk_path
 struct UblkFSDiskMetrics : public sisl::MetricsGroupWrapper {
-    UblkFSDiskMetrics(std::string const& uuid, std::string const& raid_device_id, std::string const& disk_path);
+    UblkFSDiskMetrics(std::string const& raid_device_id, std::string const& disk_path);
     ~UblkFSDiskMetrics();
 
     static inline thread_local std::map<std::pair<uint16_t, uint16_t>, io_timing> t_disk_io_timings;

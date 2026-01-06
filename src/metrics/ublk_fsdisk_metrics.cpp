@@ -1,22 +1,21 @@
 #include "ublkpp/metrics/ublk_fsdisk_metrics.hpp"
 
+#include <iostream>
 #include <ublksrv.h>
 
 namespace ublkpp {
 
-UblkFSDiskMetrics::UblkFSDiskMetrics(std::string const& uuid, std::string const& raid_uuid, std::string const& disk_path)
+UblkFSDiskMetrics::UblkFSDiskMetrics(std::string const& raid_uuid, std::string const& disk_path)
     : sisl::MetricsGroup{"ublk_fsdisk_metrics", disk_path} {
-    REGISTER_HISTOGRAM(fake, "Disk I/O latency in microseconds", "ublk_disk_io_latency_us",
-                   {"blabla", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
-
     // Use disk_path as entity name to ensure each disk has unique metrics
     // Use raid_uuid as label so you can filter by RAID in Sherlock/Prometheus
-    // The uuid (app UUID) can be accessed via the entity hierarchy if needed
+
+    std::cout << "[UblkFSDiskMetrics] disk_path=" << disk_path << ", raid_uuid=" << raid_uuid << std::endl;
+    REGISTER_HISTOGRAM(disk_io_latency_us, "Disk I/O latency in microseconds", "ublk_disk_io_latency_us",
+                       {"raid_uuid", raid_uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
 
     REGISTER_COUNTER(disk_io_ops_total, "Total disk I/O operations", "ublk_disk_io_ops_total",
                      {"raid_uuid", raid_uuid});
-    REGISTER_HISTOGRAM(disk_io_latency_us, "Disk I/O latency in microseconds", "ublk_disk_io_latency_us",
-                       {"raid_uuid", raid_uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
     register_me_to_farm();
 }
 
