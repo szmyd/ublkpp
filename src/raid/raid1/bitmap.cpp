@@ -63,12 +63,21 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitm
 }
 
 void Bitmap::init_to(UblkDisk& device) {
+    auto proto = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
+
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
+    // For now, create a scatter-gather of the MaxI/O size to clear synchronously erase the bitmap region.
     RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: [{}]", _num_pages, _num_pages * k_page_size / Ki, device)
-    auto iov = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
-    for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
-        auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
+    auto const max_pages = device.max_tx() / k_page_size;
+    auto iov = new iovec[max_pages];
+    if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
+    std::fill_n(iov, max_pages, proto);
+
+    for (auto pg_idx = 0UL; _num_pages > pg_idx;) {
+        auto res = device.sync_iov(UBLK_IO_OP_WRITE, iov, std::min(_num_pages - pg_idx, max_pages),
+                                   k_page_size + (pg_idx * k_page_size));
         if (!res) { throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message())); }
+        pg_idx += max_pages;
     }
 }
 

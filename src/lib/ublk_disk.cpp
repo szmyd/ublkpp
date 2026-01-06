@@ -101,6 +101,7 @@ std::string UblkDisk::to_string() const {
         (params()->basic.max_sectors << SECTOR_SHIFT) / Ki, can_discard(), direct_io ? "" : ", BUFFERED");
 }
 uint32_t UblkDisk::block_size() const { return 1 << _params->basic.logical_bs_shift; }
+uint32_t UblkDisk::max_tx() const { return _params->basic.max_sectors << SECTOR_SHIFT; }
 bool UblkDisk::can_discard() const { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
 uint64_t UblkDisk::capacity() const { return _params->basic.dev_sectors << SECTOR_SHIFT; }
 
