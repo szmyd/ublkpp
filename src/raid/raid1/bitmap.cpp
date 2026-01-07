@@ -89,6 +89,10 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
     auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
     if (!iovs) return std::make_error_condition(std::errc::not_enough_memory); // LCOV_EXCL_LINE
 
+    // Track which pages are in current batch
+    std::vector< PageData* > batch_pages;
+    batch_pages.reserve(max_batch);
+
     size_t iov_cnt = 0;
     uint32_t batch_start = 0;
     uint64_t batch_addr = 0;
@@ -98,11 +102,16 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
         RLOGD("Syncing {} consecutive Bitmap page(s) from page {} to [{}]", iov_cnt, batch_start, device)
         auto res = device.sync_iov(UBLK_IO_OP_WRITE, iovs.get(), iov_cnt, batch_addr);
         iov_cnt = 0;
+        batch_pages.clear();
         return res;
     };
 
-    for (auto& [pg_off, page] : _page_map) {
-        if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
+    for (auto& [pg_off, page_data] : _page_map) {
+        // Skip pages loaded from disk that haven't been modified
+        if (page_data.loaded_from_disk) continue;
+
+        // Skip zero pages (shouldn't happen after dirty_pages cleanup)
+        if (0 == isal_zero_detect(page_data.page.get(), k_page_size)) continue;
 
         bool consecutive = (iov_cnt > 0) && (pg_off == batch_start + iov_cnt);
         if (iov_cnt >= max_batch || (iov_cnt > 0 && !consecutive)) {
@@ -114,7 +123,8 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
             batch_addr = (k_page_size * pg_off) + offset;
         }
 
-        iovs[iov_cnt++] = {.iov_base = page.get(), .iov_len = k_page_size};
+        iovs[iov_cnt++] = {.iov_base = page_data.page.get(), .iov_len = k_page_size};
+        batch_pages.push_back(&page_data);
     }
 
     return flush();
@@ -141,31 +151,36 @@ void Bitmap::load_from(UblkDisk& device) {
         RLOGT("Page: {} is *DIRTY*!", pg_idx + 1)
         _dirty_chunks_est += (k_page_size * k_bits_in_byte);
 
-        // Insert new dirty page into page map
-        auto [it, _] = _page_map.emplace(std::make_pair(pg_idx, nullptr));
+        // Insert new dirty page into page map (mark as loaded from disk, not modified)
+        auto [it, _] =
+            _page_map.emplace(pg_idx, PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(iov.iov_base),
+                                                                          free_page()),
+                                               true});
         if (_page_map.end() == it) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
-        it->second.reset(reinterpret_cast< word_t* >(iov.iov_base), free_page());
         iov.iov_base = nullptr;
     }
     if (nullptr != iov.iov_base) free(iov.iov_base);
 }
 
-Bitmap::word_t* Bitmap::__get_page(uint64_t offset, bool creat) {
-    if (!creat) {
-        if (auto it = _page_map.find(offset); _page_map.end() == it)
-            return nullptr;
-        else
-            return it->second.get();
-    }
+Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
+    auto it = _page_map.find(offset);
+    if (it == _page_map.end()) {
+        if (!creat) return nullptr;
 
-    auto [it, happened] = _page_map.emplace(std::make_pair(offset, nullptr));
-    if (happened) {
+        // Allocate new page
         void* new_page{nullptr};
         if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
         memset(new_page, 0, k_page_size);
-        it->second.reset(reinterpret_cast< word_t* >(new_page), free_page());
+
+        // Insert with loaded_from_disk = false (newly created, needs sync)
+        auto [inserted_it, happened] =
+            _page_map.emplace(offset, PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(new_page),
+                                                                          free_page()),
+                                               false});
+        return &inserted_it->second;
     }
-    return it->second.get();
+
+    return &it->second;
 }
 
 bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
@@ -174,10 +189,10 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
             calc_bitmap_region(addr + off, len - off, _chunk_size);
         off += sz;
         // Check for a dirty page
-        auto cur_page = __get_page(page_offset);
-        if (!cur_page) continue;
+        auto page_data = __get_page(page_offset);
+        if (!page_data) continue;
 
-        auto cur_word = cur_page + word_offset;
+        auto cur_word = page_data->page.get() + word_offset;
 
         // Handle update crossing multiple words (optimization potential?)
         for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -197,8 +212,9 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 uint64_t Bitmap::page_size() { return k_page_size; }
 
 size_t Bitmap::dirty_pages() {
-    auto cnt =
-        std::erase_if(_page_map, [](const auto& it) { return (0 == isal_zero_detect(it.second.get(), k_page_size)); });
+    auto cnt = std::erase_if(_page_map, [](const auto& it) {
+        return (0 == isal_zero_detect(it.second.page.get(), k_page_size));
+    });
     if (0 < cnt) { RLOGD("Dropped {} page(s) from the Bitmap", cnt); }
     auto sz = _page_map.size();
     auto const full = (sz * (k_page_size * k_bits_in_byte));
@@ -217,10 +233,14 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:{:#0x}] is not aligned to {:#0x}", len, _chunk_size)
 
     // Get/Create a Page
-    auto const cur_page = __get_page(page_offset);
-    DEBUG_ASSERT_NOTNULL(cur_page, "Expected to find dirty page!")
-    if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
-    auto cur_word = cur_page + word_offset;
+    auto page_data = __get_page(page_offset);
+    DEBUG_ASSERT_NOTNULL(page_data, "Expected to find dirty page!")
+    if (!page_data) return std::make_tuple(nullptr, page_offset, sz);
+
+    // Mark as modified (clearing bits = modification)
+    page_data->loaded_from_disk = false;
+
+    auto cur_word = page_data->page.get() + word_offset;
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -237,7 +257,8 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
     // Only return clean pages
-    if (0 == isal_zero_detect(cur_page, k_page_size)) return std::make_tuple(_clean_page.get(), page_offset, sz);
+    if (0 == isal_zero_detect(page_data->page.get(), k_page_size))
+        return std::make_tuple(_clean_page.get(), page_offset, sz);
     return std::make_tuple(nullptr, page_offset, sz);
 }
 
@@ -247,15 +268,15 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     uint32_t sz = 0;
     uint64_t logical_off = 0;
     // Find the first dirty page
-    for (auto const& [pg_off, page] : _page_map) {
+    for (auto const& [pg_off, page_data] : _page_map) {
         sz = 0;
-        if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
+        if (0 == isal_zero_detect(page_data.page.get(), k_page_size)) continue;
         logical_off = static_cast< uint64_t >(_page_width) * pg_off;
 
         // Find the first dirty word
         auto word = 0UL;
         for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
-            word = be64toh((page.get() + word_off)->load(std::memory_order_relaxed));
+            word = be64toh((page_data.page.get() + word_off)->load(std::memory_order_relaxed));
             if (0 == word) continue;
             logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
 
@@ -291,9 +312,13 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
         cur_off += sz;
 
         // Get/Create a Page
-        auto const cur_page = __get_page(page_offset, true);
-        if (!cur_page) throw std::runtime_error("Could not insert new page");
-        auto cur_word = cur_page + word_offset;
+        auto page_data = __get_page(page_offset, true);
+        if (!page_data) throw std::runtime_error("Could not insert new page");
+
+        // Mark as modified (setting bits = modification)
+        page_data->loaded_from_disk = false;
+
+        auto cur_word = page_data->page.get() + word_offset;
         // Handle update crossing multiple words (optimization potential?)
         for (auto bits_left = nr_bits; 0 < bits_left;) {
             auto const bits_to_write = std::min(shift_offset + 1, bits_left);
