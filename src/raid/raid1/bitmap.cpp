@@ -82,15 +82,42 @@ void Bitmap::init_to(UblkDisk& device) {
 }
 
 io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
-    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
-    for (auto& [pg_offset, page] : _page_map) {
+    if (_page_map.empty()) return 0;
+
+    // Allocate iovec array for batching consecutive pages
+    auto const max_batch = device.max_tx() / k_page_size;
+    auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
+    if (!iovs) return std::make_error_condition(std::errc::not_enough_memory); // LCOV_EXCL_LINE
+
+    size_t iov_cnt = 0;
+    uint32_t batch_start = 0;
+    uint64_t batch_addr = 0;
+
+    auto flush = [&]() -> io_result {
+        if (0 == iov_cnt) return 0;
+        RLOGD("Syncing {} consecutive Bitmap page(s) from page {} to [{}]", iov_cnt, batch_start, device)
+        auto res = device.sync_iov(UBLK_IO_OP_WRITE, iovs.get(), iov_cnt, batch_addr);
+        iov_cnt = 0;
+        return res;
+    };
+
+    for (auto& [pg_off, page] : _page_map) {
         if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
-        RLOGD("Syncing Bitmap page: {} to [{}]", pg_offset, device)
-        iov.iov_base = page.get();
-        auto page_addr = (k_page_size * pg_offset) + offset;
-        if (auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) return res;
+
+        bool consecutive = (iov_cnt > 0) && (pg_off == batch_start + iov_cnt);
+        if (iov_cnt >= max_batch || (iov_cnt > 0 && !consecutive)) {
+            if (auto res = flush(); !res) return res;
+        }
+
+        if (0 == iov_cnt) {
+            batch_start = pg_off;
+            batch_addr = (k_page_size * pg_off) + offset;
+        }
+
+        iovs[iov_cnt++] = {.iov_base = page.get(), .iov_len = k_page_size};
     }
-    return 0;
+
+    return flush();
 }
 
 void Bitmap::load_from(UblkDisk& device) {
