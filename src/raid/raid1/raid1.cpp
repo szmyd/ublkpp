@@ -381,6 +381,9 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     } // LCOV_EXCL_STOP
 
     auto nr_pages = _dirty_bitmap->dirty_pages();
+    if (_raid_metrics) {
+        _raid_metrics->record_dirty_pages(nr_pages);
+    }
     while (0 < nr_pages) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
@@ -824,6 +827,8 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) 
     // 0 = device A, 1 = device B
     auto const device_bit = static_cast<uint8_t>(sub_cmd & 0x1);
     auto* device = (device_bit == 0) ? _device_a->disk.get() : _device_b->disk.get();
+
+    DLOGT("Raid1DiskImpl::on_io_complete [tag:{:0x}] [sub_cmd:{}] device_bit:{}", data->tag, ublkpp::to_string(sub_cmd), device_bit)
 
     // Pass completion notification to the underlying device for its metrics
     device->on_io_complete(data, sub_cmd);

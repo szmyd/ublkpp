@@ -6,7 +6,7 @@
 namespace ublkpp {
 
 UblkFSDiskMetrics::UblkFSDiskMetrics(std::string const& raid_uuid, std::string const& disk_path)
-    : sisl::MetricsGroup{"ublk_fsdisk_metrics", disk_path} {
+    : sisl::MetricsGroup{disk_path, disk_path} {
     // Use disk_path as entity name to ensure each disk has unique metrics
     // Use raid_uuid as label so you can filter by RAID in Sherlock/Prometheus
 

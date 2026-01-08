@@ -5,7 +5,7 @@
 namespace ublkpp {
 
 UblkRaidMetrics::UblkRaidMetrics(std::string const& uuid, std::string const& raid_device_id)
-    : sisl::MetricsGroup{"ublk_raid_metrics", raid_device_id} {
+    : sisl::MetricsGroup{raid_device_id, raid_device_id} {
     // Use raid_device_id as entity name to ensure each RAID has unique metrics
     // Use uuid (app UUID) as label so you can filter by application in Sherlock/Prometheus
 
