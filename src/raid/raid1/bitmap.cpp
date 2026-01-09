@@ -85,7 +85,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
     for (auto& [pg_offset, page] : _page_map) {
         if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
-        RLOGD("Syncing Bitmap page: {} to [{}]", pg_offset, device)
+        RLOGD("Syncing Bitmap page: {} to {}", pg_offset, device)
         iov.iov_base = page.get();
         auto page_addr = (k_page_size * pg_offset) + offset;
         if (auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) return res;

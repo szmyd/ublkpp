@@ -163,13 +163,13 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     if ((_device_a->new_device xor _device_b->new_device) || 0 == _sb->fields.clean_unmount) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
-        RLOGW("Device is new [{}], dirty all of device [{}]",
+        RLOGW("Device is new {}, dirty all of device {}",
               *(_device_a->new_device ? _device_a->disk : _device_b->disk),
               *(_device_a->new_device ? _device_b->disk : _device_a->disk))
         _dirty_bitmap->dirty_region(0, capacity());
         _is_degraded.test_and_set(std::memory_order_relaxed);
     } else if (read_route::EITHER != READ_ROUTE) {
-        RLOGW("Raid1 is starting in degraded mode [vol:{}]! Degraded device: [{}]", _str_uuid, *DIRTY_DEVICE->disk)
+        RLOGW("Raid1 is starting in degraded mode [vol:{}]! Degraded device: {}", _str_uuid, *DIRTY_DEVICE->disk)
         _is_degraded.test_and_set(std::memory_order_relaxed);
         _dirty_bitmap->load_from(*CLEAN_DEVICE->disk);
     }
@@ -183,7 +183,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
     if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE)) {
-        RLOGE("Failed writing SuperBlock to: [{}] becoming degraded. [vol:{}]", *CLEAN_DEVICE->disk, _str_uuid)
+        RLOGE("Failed writing SuperBlock to: {} becoming degraded. [vol:{}]", *CLEAN_DEVICE->disk, _str_uuid)
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
         // This will write the SB to DIRTY so we can skip this down below
