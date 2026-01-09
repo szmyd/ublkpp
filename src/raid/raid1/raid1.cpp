@@ -259,7 +259,12 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     std::shared_ptr< MirrorDevice > new_mirror;
     try {
         new_mirror = std::make_shared< MirrorDevice >(_uuid, new_device);
-        _dirty_bitmap->init_to(*new_mirror->disk);
+        if (be64toh(new_mirror->sb->fields.bitmap.age) + 1 < be64toh(_sb->fields.bitmap.age)) {
+           RLOGD("Age read: {} Current: {}", be64toh(new_mirror->sb->fields.bitmap.age), be64toh(_sb->fields.bitmap.age))
+           new_mirror->new_device = true;
+        }
+        if (new_mirror->new_device)
+           _dirty_bitmap->init_to(*new_mirror->disk);
     } catch (std::runtime_error const& e) { return new_device; }
 
     // Terminate any ongoing resync task
@@ -274,8 +279,9 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
     if (_resync_task.joinable()) _resync_task.join();
     _is_degraded.clear(std::memory_order_release);
 
-    // Dirty the entire bitmap
-    _dirty_bitmap->dirty_region(0, capacity());
+    // Dirty the entire bitmap if new disk
+    if (new_mirror->new_device)
+       _dirty_bitmap->dirty_region(0, capacity());
 
     // Write the superblock to the new device and advance the age to make the old device invalid
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
@@ -393,7 +399,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     while (0 < nr_pages) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
-        RLOGT("Data left to resync ~= {}KiB [pages:{}]", _dirty_bitmap->dirty_data_est() / Ki, nr_pages)
+        RLOGD("Data left to resync ~= {}KiB [pages:{}]", _dirty_bitmap->dirty_data_est() / Ki, nr_pages)
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
