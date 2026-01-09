@@ -130,7 +130,6 @@ class UBlkPPConan(ConanFile):
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 
     def package_info(self):
-
         self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
         if (self.options.get_safe("iscsi")):
             self.cpp_info.requires.extend(["libiscsi::libiscsi"])
