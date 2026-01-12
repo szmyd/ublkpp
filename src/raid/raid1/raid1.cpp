@@ -284,15 +284,15 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     }
 
     // Write the superblock and clear the BITMAP region of the new device before usage
-    std::shared_ptr< MirrorDevice > new_mirror;
+    std::shared_ptr< MirrorDevice > incomming_mirror;
     try {
-        new_mirror = std::make_shared< MirrorDevice >(_uuid, incomming_device);
-        if (be64toh(new_mirror->sb->fields.bitmap.age) + 1 < be64toh(_sb->fields.bitmap.age)) {
-            RLOGD("Age read: {} Current: {}", be64toh(new_mirror->sb->fields.bitmap.age),
+        incomming_mirror = std::make_shared< MirrorDevice >(_uuid, incomming_device);
+        if (be64toh(incomming_mirror->sb->fields.bitmap.age) + 1 < be64toh(_sb->fields.bitmap.age)) {
+            RLOGD("Age read: {} Current: {}", be64toh(incomming_mirror->sb->fields.bitmap.age),
                   be64toh(_sb->fields.bitmap.age))
-            new_mirror->new_device = true;
+            incomming_mirror->new_device = true;
         }
-        if (new_mirror->new_device) _dirty_bitmap->init_to(*new_mirror->disk);
+        if (incomming_mirror->new_device) _dirty_bitmap->init_to(*incomming_mirror->disk);
     } catch (std::runtime_error const& e) { return incomming_device; }
 
     // Terminate any ongoing resync task
@@ -308,17 +308,17 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     _is_degraded.clear(std::memory_order_release);
 
     // Dirty the entire bitmap if new disk
-    if (new_mirror->new_device) _dirty_bitmap->dirty_region(0, capacity());
+    if (incomming_mirror->new_device) _dirty_bitmap->dirty_region(0, capacity());
 
     // Write the superblock to the new device and advance the age to make the outgoint device invalid
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == outgoing_device_id) {
-        _device_a.swap(new_mirror);
+        _device_a.swap(incomming_mirror);
         if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
             return incomming_device;
         }
     } else {
-        _device_b.swap(new_mirror);
+        _device_b.swap(incomming_mirror);
         if (auto res = write_superblock(*_device_b->disk, _sb.get(), true);
             !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
             return incomming_device;
@@ -330,7 +330,8 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     if (_resync_enabled)
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 
-    return new_mirror->disk;
+    // incomming_mirror now holds the outgoing device
+    return incomming_mirror->disk;
 }
 
 void Raid1DiskImpl::toggle_resync(bool t) {
