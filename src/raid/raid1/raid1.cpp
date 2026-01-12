@@ -542,7 +542,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         : static_cast< uint8_t >(read_route::DEVB);
     auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
-    RLOGW("Device became degraded [{}] [age:{}] [vol:{}] ", *DIRTY_DEVICE->disk,
+    RLOGW("Device became degraded {} [age:{}] [vol:{}] ", *DIRTY_DEVICE->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !sync_res) {

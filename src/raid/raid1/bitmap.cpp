@@ -67,7 +67,7 @@ void Bitmap::init_to(UblkDisk& device) {
 
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
     // For now, create a scatter-gather of the MaxI/O size to clear synchronously erase the bitmap region.
-    RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: [{}]", _num_pages, _num_pages * k_page_size / Ki, device)
+    RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: {}", _num_pages, _num_pages * k_page_size / Ki, device)
     auto const max_pages = device.max_tx() / k_page_size;
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
