@@ -238,17 +238,17 @@ Raid1DiskImpl::~Raid1DiskImpl() {
 // consistency due to the fact that the data is replicated. Swapping a device
 // may occur for a multitude of _reasons_ but the following RULES apply when
 // attemtping to service a given swap_request. We will refer to the *new* device
-// being added to the array as the _incomming_ device and the one being replaced
+// being added to the array as the _incoming_ device and the one being replaced
 // as the _outgoing_ device.
 //
-// * _Incomming_ device must support DirectI/O w/o volatile caching
-// * _Incomming_ device must be >= the (capacity() + reserved_size) of the Array
-// * _Incomming_ device lbs must be <= the lbs of the Array (k_page_size)
+// * _incoming_ device must support DirectI/O w/o volatile caching
+// * _incoming_ device must be >= the (capacity() + reserved_size) of the Array
+// * _incoming_ device lbs must be <= the lbs of the Array (k_page_size)
 // * _Outgoing_ device is part of a Clean array *OR* the dirty device in a
 //   Degraded arrary
 //
 // Once these checks have been made we are free to replace the _Outgoing_
-// device. We first attempt to load the _Incomming_ device in case it has
+// device. We first attempt to load the _incoming_ device in case it has
 // already been part of this or another Array. The following decision is made
 // if:
 //
@@ -263,43 +263,43 @@ Raid1DiskImpl::~Raid1DiskImpl() {
 // Anytime we determine that a replacement disk is *new* we must dirty _every_
 // bit in the Bitmap and do a FULL resync.
 std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoing_device_id,
-                                                       std::shared_ptr< UblkDisk > incomming_device) {
-    if (!incomming_device->direct_io) return incomming_device;
+                                                       std::shared_ptr< UblkDisk > incoming_device) {
+    if (!incoming_device->direct_io) return incoming_device;
     auto& our_params = *params();
     if ((our_params.basic.dev_sectors + (reserved_size >> SECTOR_SHIFT)) >
-            incomming_device->params()->basic.dev_sectors ||
-        (our_params.basic.logical_bs_shift < incomming_device->params()->basic.logical_bs_shift)) {
+            incoming_device->params()->basic.dev_sectors ||
+        (our_params.basic.logical_bs_shift < incoming_device->params()->basic.logical_bs_shift)) {
         RLOGE("Refusing to use device, requires: [lbs<={} && cap>={}Ki]!", 1 << our_params.basic.logical_bs_shift,
               (our_params.basic.dev_sectors << SECTOR_SHIFT) / Ki)
-        return incomming_device;
+        return incoming_device;
     }
 
     if (IS_DEGRADED && CLEAN_DEVICE->disk->id() == outgoing_device_id) {
         RLOGE("Refusing to replace working mirror from degraded device!")
-        return incomming_device;
+        return incoming_device;
     }
     if ((_device_a->disk->id() != outgoing_device_id) && (_device_b->disk->id() != outgoing_device_id)) {
         RLOGE("Refusing to replace unrecognized mirror!")
-        return incomming_device;
+        return incoming_device;
     }
 
     // Write the superblock and clear the BITMAP region of the new device before usage
-    std::shared_ptr< MirrorDevice > incomming_mirror;
+    std::shared_ptr< MirrorDevice > incoming_mirror;
     try {
-        incomming_mirror = std::make_shared< MirrorDevice >(_uuid, incomming_device);
-        if (be64toh(incomming_mirror->sb->fields.bitmap.age) + 1 < be64toh(_sb->fields.bitmap.age)) {
-            RLOGD("Age read: {} Current: {}", be64toh(incomming_mirror->sb->fields.bitmap.age),
+        incoming_mirror = std::make_shared< MirrorDevice >(_uuid, incoming_device);
+        if (be64toh(incoming_mirror->sb->fields.bitmap.age) + 1 < be64toh(_sb->fields.bitmap.age)) {
+            RLOGD("Age read: {} Current: {}", be64toh(incoming_mirror->sb->fields.bitmap.age),
                   be64toh(_sb->fields.bitmap.age))
-            incomming_mirror->new_device = true;
+            incoming_mirror->new_device = true;
         }
-        if (incomming_mirror->new_device) _dirty_bitmap->init_to(*incomming_mirror->disk);
-    } catch (std::runtime_error const& e) { return incomming_device; }
+        if (incoming_mirror->new_device) _dirty_bitmap->init_to(*incoming_mirror->disk);
+    } catch (std::runtime_error const& e) { return incoming_device; }
 
     // Terminate any ongoing resync task
     auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
-            return incomming_device;
+            return incoming_device;
         else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
     }
@@ -308,20 +308,20 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     _is_degraded.clear(std::memory_order_release);
 
     // Dirty the entire bitmap if new disk
-    if (incomming_mirror->new_device) _dirty_bitmap->dirty_region(0, capacity());
+    if (incoming_mirror->new_device) _dirty_bitmap->dirty_region(0, capacity());
 
     // Write the superblock to the new device and advance the age to make the outgoint device invalid
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == outgoing_device_id) {
-        _device_a.swap(incomming_mirror);
+        _device_a.swap(incoming_mirror);
         if (auto res = write_superblock(*_device_a->disk, _sb.get(), false); !res || !__become_degraded(0U, false)) {
-            return incomming_device;
+            return incoming_device;
         }
     } else {
-        _device_b.swap(incomming_mirror);
+        _device_b.swap(incoming_mirror);
         if (auto res = write_superblock(*_device_b->disk, _sb.get(), true);
             !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
-            return incomming_device;
+            return incoming_device;
         }
     }
 
@@ -330,8 +330,8 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     if (_resync_enabled)
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 
-    // incomming_mirror now holds the outgoing device
-    return incomming_mirror->disk;
+    // incoming_mirror now holds the outgoing device
+    return incoming_mirror->disk;
 }
 
 void Raid1DiskImpl::toggle_resync(bool t) {
