@@ -27,7 +27,7 @@ constexpr auto SB_VERSION = 1;
 
 static raid1::SuperBlock* read_superblock(UblkDisk& device) {
     auto const sb_size = sizeof(raid1::SuperBlock);
-    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
+    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]",
                     device, sb_size)
     auto iov = iovec{.iov_base = nullptr, .iov_len = sb_size};
     if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), sb_size); 0 != err || nullptr == iov.iov_base)
@@ -46,15 +46,15 @@ static raid1::SuperBlock* read_superblock(UblkDisk& device) {
 
 io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b) {
     auto const sb_size = sizeof(raid1::SuperBlock);
-    RLOGT("Writing Superblock to: [{}]", device)
-    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
+    RLOGT("Writing Superblock to: {}", device)
+    DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]",
                     device, sb_size)
     auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
     // We temporarily set the Superblock for Device A/B based on argument
     if (device_b) sb->fields.device_b = 1;
     auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
     sb->fields.device_b = 0;
-    if (!res) RLOGE("Error writing Superblock to: [{}]!", device, res.error().message())
+    if (!res) RLOGE("Error writing Superblock to: {}: {}", device, res.error().message())
     return res;
 }
 
@@ -89,7 +89,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
               "[vol:{}] ",
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
-    RLOGD("{} has v{:0x} superblock [age:{},chunk_sz:{:0x},{}] [vol:{}] ", device, be16toh(sb->header.version),
+    RLOGD("{} has v{:#0x} superblock [age:{},chunk_sz:{:#0x},{}] [vol:{}] ", device, be16toh(sb->header.version),
           be64toh(sb->fields.bitmap.age), chunk_size, (1 == sb->fields.clean_unmount) ? "Clean" : "Dirty",
           to_string(uuid))
 

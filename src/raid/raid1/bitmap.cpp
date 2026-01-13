@@ -63,12 +63,21 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitm
 }
 
 void Bitmap::init_to(UblkDisk& device) {
+    auto proto = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
+
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
-    RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: [{}]", _num_pages, _num_pages * k_page_size / Ki, device)
-    auto iov = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
-    for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
-        auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, k_page_size + (pg_idx * k_page_size));
+    // For now, create a scatter-gather of the MaxI/O size to clear synchronously erase the bitmap region.
+    RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: {}", _num_pages, _num_pages * k_page_size / Ki, device)
+    auto const max_pages = device.max_tx() / k_page_size;
+    auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
+    if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
+    std::fill_n(iov.get(), max_pages, proto);
+
+    for (auto pg_idx = 0UL; _num_pages > pg_idx;) {
+        auto res = device.sync_iov(UBLK_IO_OP_WRITE, iov.get(), std::min(_num_pages - pg_idx, max_pages),
+                                   k_page_size + (pg_idx * k_page_size));
         if (!res) { throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message())); }
+        pg_idx += max_pages;
     }
 }
 
@@ -76,7 +85,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
     for (auto& [pg_offset, page] : _page_map) {
         if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
-        RLOGD("Syncing Bitmap page: {} to [{}]", pg_offset, device)
+        RLOGD("Syncing Bitmap page: {} to {}", pg_offset, device)
         iov.iov_base = page.get();
         auto page_addr = (k_page_size * pg_offset) + offset;
         if (auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) return res;
@@ -177,8 +186,8 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Address and Length should be chunk aligned!
-    DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:0x{:0x}] is not aligned to 0x{:0x}", addr, _chunk_size)
-    DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:0x{:0x}] is not aligned to 0x{:0x}", len, _chunk_size)
+    DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:{:#0x}] is not aligned to {:#0x}", addr, _chunk_size)
+    DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:{:#0x}] is not aligned to {:#0x}", len, _chunk_size)
 
     // Get/Create a Page
     auto const cur_page = __get_page(page_offset);
@@ -226,7 +235,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
             // How long does the dirt stretch?
             auto set_bit = __builtin_clzl(word);
             logical_off += set_bit * _chunk_size; // Adjust for bit within word
-            RLOGT("addr: {:0x} word: {:064b}", logical_off, word);
+            RLOGT("addr: {:#0x} word: {:#064b}", logical_off, word);
             // Consume as many consecutive set-bits as we can in the rest of the word
             while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
                 sz += _chunk_size;

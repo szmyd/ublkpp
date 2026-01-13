@@ -27,7 +27,7 @@ target_sources(raid0_tests PRIVATE
 )
 target_link_libraries (raid0_tests
   GTest::gmock
-  sisl::sisl
+  sisl::cache
   ublksrv::ublksrv
 )
 
@@ -41,6 +41,6 @@ target_sources(test_raid0 PRIVATE
 )
 target_link_libraries (test_raid0
   GTest::gmock
-  sisl::sisl
+  sisl::cache
 )
 add_test(NAME Raid0Test COMMAND test_raid0 -cv 2)

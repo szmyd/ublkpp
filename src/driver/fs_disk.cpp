@@ -121,7 +121,7 @@ static inline auto next_sqe(ublksrv_queue const* q) {
 
 io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
-    DLOGT("Flush {} : [tag:{:0x}] ublk io [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
+    DLOGT("Flush {} : [tag:{:#0x}] ublk io [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
     if (direct_io) return 0;
     auto sqe = next_sqe(q);
     io_uring_prep_fsync(sqe, _fd, IORING_FSYNC_DATASYNC);
@@ -132,8 +132,7 @@ io_result FSDisk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data,
 
 io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
                                  uint64_t addr) {
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    DLOGD("DISCARD {}: [tag:{:0x}] ublk io [lba:{:0x}|len:{:0x}|sub_cmd:{}]", _path.native(), data->tag, lba, len,
+    DLOGD("DISCARD {}: [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]", _path.native(), data->tag, addr, len,
           ublkpp::to_string(sub_cmd))
     if (!_block_device) {
         auto sqe = next_sqe(q);
@@ -162,15 +161,14 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
 io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                             uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    DLOGT("{} {} : [tag:{:0x}] ublk io [lba:{:0x}|len:{:0x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
-          _path.native(), data->tag, lba, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
+    DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+          _path.native(), data->tag, addr, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
     if (0 != SISL_OPTIONS["random_errors"].count()) [[unlikely]] {
         if (k_rand_cnt < SISL_OPTIONS["random_errors"].as< uint32_t >()) {
             // Random errors on even disks
             if ((UBLK_IO_OP_WRITE == op) && !is_internal(sub_cmd) && !is_retry(sub_cmd) && (0 == sub_cmd % 2) &&
                 (0 == (k_io_cnt++ % k_rand_error))) {
-                DLOGW("Returning random error from: {} @ [lba:{:0x}] [len:{:0x}] [cnt:{}]", _path.native(), lba,
+                DLOGW("Returning random error from: {} @ [addr:{:#0x}] [len:{:#0x}] [cnt:{}]", _path.native(), addr,
                       __iovec_len(iovecs, iovecs + nr_vecs), ++k_rand_cnt)
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
             }
@@ -204,10 +202,9 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         DLOGE("Direct read on un-opened device!")
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
-    auto const lba = addr >> params()->basic.logical_bs_shift;
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    DLOGT("{} {} : [INTERNAL] ublk io [lba:{:0x}|len:{:0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(),
-          lba, len)
+    DLOGT("{} {} : [INTERNAL] ublk io [addr:{:#0x}|len:{:#0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+          _path.native(), addr, len)
     DEBUG_ASSERT_GE(capacity(), len + addr, "Access beyond device bounds!");
     auto res = ssize_t{-1};
     switch (op) {
