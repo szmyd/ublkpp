@@ -9,7 +9,7 @@ target_sources(raid1 PRIVATE
 )
 target_link_libraries(raid1
     isa-l::isa-l
-    sisl::sisl
+    sisl::cache
     ublksrv::ublksrv
 )
 

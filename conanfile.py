@@ -47,7 +47,7 @@ class UBlkPPConan(ConanFile):
                         )
 
     def _min_cppstd(self):
-        return 23
+        return 20
 
     def validate(self):
         if self.settings.compiler.get_safe("cppstd"):
@@ -131,6 +131,11 @@ class UBlkPPConan(ConanFile):
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 
     def package_info(self):
+        self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
+        if (self.options.get_safe("iscsi")):
+            self.cpp_info.requires.extend(["libiscsi::libiscsi"])
+        if (self.options.get_safe("homeblocks")):
+            self.cpp_info.requires.extend(["homeblocks::homeblocks"])
         if self.options.get_safe("sanitize"):
             self.cpp_info.sharedlinkflags.append("-fsanitize=address")
             self.cpp_info.exelinkflags.append("-fsanitize=address")

@@ -127,21 +127,18 @@ jobs:
         ./prepare_v2.sh
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
-    - name: Create and Test Package
+    - name: Build Cache
       run: |
-        sanitize=$([[ "${{ inputs.tooling }}" == "Sanitize" ]] && echo "True" || echo "False")
-        conan build \
+        conan install \
             -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
-            -o iomgr/*:testing=off \
             -o ublkpp/*:homeblocks=False \
-            -o ublkpp/*:sanitize=${sanitize} \
             -s:h build_type=${{ inputs.build-type }} \
             -s:a compiler.cppstd=23 \
+            -c tools.build:skip_test=True \
             --format=json \
             --build missing \
             . > ~/build.json
         conan list --graph ~/build.json --graph-binaries=build --format=json > ~/pkglist.json
-      if: ${{ inputs.testing == 'True' && inputs.tooling != 'Coverage' }}
 
     - name: Save Conan Cache
       uses: ebay/sisl/.github/actions/store_conan2@master
@@ -149,24 +146,25 @@ jobs:
         key_prefix: UblkPPDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}
       if: ${{ github.event_name != 'pull_request' && steps.restore-cache.outputs.cache-hit != 'true' && inputs.tooling != 'Coverage'}}
 
-    - name: Code Coverage Run
+    - name: Create and Test Package
       run: |
+        sanitize=$([[ "${{ inputs.tooling }}" == "Sanitize" ]] && echo "True" || echo "False")
+        coverage=$([[ "${{ inputs.tooling }}" == "Coverage" ]] && echo "True" || echo "False")
         python -m pip install gcovr
         conan build \
             -o sisl/*:malloc_impl=${{ inputs.malloc-impl }} \
-            -o iomgr/*:testing=off \
             -o ublkpp/*:homeblocks=False \
-            -o ublkpp/*:coverage=True \
+            -o ublkpp/*:sanitize=${sanitize} \
+            -o ublkpp/*:coverage=${coverage} \
             -s:h build_type=${{ inputs.build-type }} \
             -s:a compiler.cppstd=23 \
-            --build missing \
             .
         gcovr --cobertura ./coverage.xml
-      if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
+      if: ${{ inputs.testing == 'True' }}
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v5
       with:
         files: ./coverage.xml
         disable_search: true
-      if: ${{ inputs.testing == 'True' && inputs.tooling == 'Coverage' }}
+      if: ${{ inputs.tooling == 'Coverage' }}
