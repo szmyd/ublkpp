@@ -167,7 +167,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         _dirty_bitmap->dirty_region(0, capacity());
         _is_degraded.test_and_set(std::memory_order_relaxed);
     } else if (read_route::EITHER != READ_ROUTE) {
-        RLOGW("Raid1 is starting in degraded mode [vol:{}]! Degraded device: {}", _str_uuid, *DIRTY_DEVICE->disk)
+        RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *DIRTY_DEVICE->disk)
         _is_degraded.test_and_set(std::memory_order_relaxed);
         _dirty_bitmap->load_from(*CLEAN_DEVICE->disk);
     }
@@ -181,7 +181,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
     if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE)) {
-        RLOGE("Failed writing SuperBlock to: {} becoming degraded. [vol:{}]", *CLEAN_DEVICE->disk, _str_uuid)
+        RLOGE("Failed writing SuperBlock to: {} becoming degraded. [uuid:{}]", *CLEAN_DEVICE->disk, _str_uuid)
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
         // This will write the SB to DIRTY so we can skip this down below
@@ -203,7 +203,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 }
 
 Raid1DiskImpl::~Raid1DiskImpl() {
-    RLOGD("Shutting down; [vol:{}]", _str_uuid)
+    RLOGD("Shutting down; [uuid:{}]", _str_uuid)
     auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
         if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
@@ -214,7 +214,7 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     // Write out our dirty bitmap
     if (IS_DEGRADED) {
         if (auto res = _dirty_bitmap->sync_to(*CLEAN_DEVICE->disk, sizeof(SuperBlock)); !res) {
-            RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [vol:{}]",
+            RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
                   _str_uuid)
             return;
         }
@@ -223,13 +223,13 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     // Only update the superblock to clean devices
     if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !res) {
         if (IS_DEGRADED) {
-            RLOGE("Failed to clear clean bit...full sync required upon next assembly [vol:{}]", _str_uuid)
+            RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
         } else {
-            RLOGW("Failed to clear clean bit [vol:{}] dev: {}", _str_uuid, *CLEAN_DEVICE->disk)
+            RLOGW("Failed to clear clean bit [uuid:{}] dev: {}", _str_uuid, *CLEAN_DEVICE->disk)
         }
     }
     if (!IS_DEGRADED && !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE)) {
-        RLOGW("Failed to clear clean bit [vol:{}] dev: {}", _str_uuid, *DIRTY_DEVICE->disk)
+        RLOGW("Failed to clear clean bit [uuid:{}] dev: {}", _str_uuid, *DIRTY_DEVICE->disk)
     }
 }
 
@@ -387,13 +387,13 @@ std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
 
 io_result Raid1DiskImpl::__become_clean() {
     if (!IS_DEGRADED) return 0;
-    RLOGI("Device becoming clean [{}] [vol:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
+    RLOGI("Device becoming clean [{}] [uuid:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
     _sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
     if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false); !sync_res) {
-        RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
+        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
     if (auto sync_res = write_superblock(*_device_b->disk, _sb.get(), true); !sync_res) {
-        RLOGW("Could not become clean [vol:{}]: {}", _str_uuid, sync_res.error().message())
+        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
     _is_degraded.clear(std::memory_order_release);
     return 0;
@@ -426,7 +426,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     while (0 < nr_pages) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
-        RLOGD("Data left to resync ~= {}KiB [pages:{}]", _dirty_bitmap->dirty_data_est() / Ki, nr_pages)
+        RLOGD("Data left to resync ~= {}KiB [pages:{}, uuid:{}]", _dirty_bitmap->dirty_data_est() / Ki, nr_pages, _str_uuid)
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
@@ -475,7 +475,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
 }
 
 void Raid1DiskImpl::__resync_task() {
-    RLOGD("Resync Task created for [vol:{}]", _str_uuid)
+    RLOGD("Resync Task created for [uuid:{}]", _str_uuid)
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
     // Wait to become IDLE
     while (IS_DEGRADED &&
@@ -484,7 +484,7 @@ void Raid1DiskImpl::__resync_task() {
         if ((static_cast< uint8_t >(resync_state::STOPPED) == cur_state) ||
             (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state) ||
             (static_cast< uint8_t >(resync_state::SLEEPING) == cur_state)) {
-            RLOGD("Resync Task aborted for [vol:{}] state: {}", _str_uuid, cur_state)
+            RLOGD("Resync Task aborted for [uuid:{}] state: {}", _str_uuid, cur_state)
             return;
         }
         cur_state = static_cast< uint8_t >(resync_state::IDLE);
@@ -496,12 +496,12 @@ void Raid1DiskImpl::__resync_task() {
 
     // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
     if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
-        RLOGD("Resync Task Stopped for [vol:{}]", _str_uuid)
+        RLOGD("Resync Task Stopped for [uuid:{}]", _str_uuid)
         return;
     }
     if (IS_DEGRADED && 0 == _dirty_bitmap->dirty_pages()) __become_clean();
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-    RLOGD("Resync Task Finished for [vol:{}]", _str_uuid)
+    RLOGD("Resync Task Finished for [uuid:{}]", _str_uuid)
 }
 
 void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
@@ -541,7 +541,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         : static_cast< uint8_t >(read_route::DEVB);
     auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
-    RLOGW("Device became degraded {} [age:{}] [vol:{}] ", *DIRTY_DEVICE->disk,
+    RLOGW("Device became degraded {} [age:{}] [uuid:{}] ", *DIRTY_DEVICE->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !sync_res) {
@@ -549,7 +549,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         _sb->fields.read_route = static_cast< uint8_t >(orig_route);
         _sb->fields.bitmap.age = old_age;
         _is_degraded.clear(std::memory_order_release);
-        RLOGE("Could not become degraded [vol:{}]: {}", _str_uuid, sync_res.error().message())
+        RLOGE("Could not become degraded [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
     DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
@@ -563,7 +563,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
 io_result Raid1DiskImpl::__clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                         ublk_io_data const* data) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Cleaning pages for [lba:{:#0x}|len:{:#0x}|sub_cmd:{}] [vol:{}]", lba, len, ublkpp::to_string(sub_cmd),
+    RLOGT("Cleaning pages for [lba:{:#0x}|len:{:#0x}|sub_cmd:{}] [uuid:{}]", lba, len, ublkpp::to_string(sub_cmd),
           _str_uuid);
 
     auto const pg_size = _dirty_bitmap->page_size();
@@ -743,7 +743,7 @@ void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_resul
 io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                         uint32_t len, uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [vol:{}]", data->tag, lba, len, _str_uuid)
+    RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", data->tag, lba, len, _str_uuid)
 
     // Stop any on-going resync
     idle_transition(q, false);
@@ -764,7 +764,7 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
 io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                                    uint32_t nr_vecs, uint64_t addr) {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}] [vol:{}]",
+    RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}] [uuid:{}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
           addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
 
@@ -794,7 +794,7 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
 io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [vol:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
+    RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
           _str_uuid)
 
     // Stop any on-going resync
