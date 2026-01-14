@@ -408,7 +408,6 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
                 // Record resync progress
                 if (_raid_metrics) {
                     _raid_metrics->record_resync_progress(iov.iov_len);
-                    _raid_metrics->record_dirty_pages(nr_pages);
                 }
             } else {
                 DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
@@ -440,6 +439,9 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         }
         cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
         nr_pages = _dirty_bitmap->dirty_pages();
+        if (_raid_metrics) {
+            _raid_metrics->record_dirty_pages(nr_pages);
+        }
     }
     free(iov.iov_base);
     return static_cast< resync_state >(cur_state);
