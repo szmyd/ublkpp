@@ -77,18 +77,14 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
 
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                              std::shared_ptr< UblkDisk > dev_b, std::unique_ptr<UblkRaidMetrics> metrics) :
-        UblkDisk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {
+        UblkDisk(),
+        _uuid(uuid),
+        _str_uuid(boost::uuids::to_string(uuid)),
+        _raid_metrics(std::move(metrics)) {
     direct_io = true; // RAID-1 requires DIO
 
     // We enqueue async responses for RAID1 retries even if our underlying devices use uring
     uses_ublk_iouring = false;
-
-    // Use injected metrics or create default one
-    if (metrics) {
-        _raid_metrics = std::move(metrics);
-    } else {
-        _raid_metrics = std::make_unique< UblkRaidMetrics >(_str_uuid, _str_uuid);
-    }
 
     // Discover overall Device parameters
     auto& our_params = *params();
@@ -529,8 +525,8 @@ void Raid1DiskImpl::__resync_task() {
     // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
     if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
         RLOGD("Resync Task Stopped for [vol:{}]", _str_uuid)
-        auto const stopped_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
         if (_raid_metrics) {
+            auto const stopped_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
             _raid_metrics->record_active_resyncs(stopped_count);
         }
         return;
@@ -539,8 +535,8 @@ void Raid1DiskImpl::__resync_task() {
         __become_clean();
     }
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-    auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
     if (_raid_metrics) {
+        auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
         _raid_metrics->record_active_resyncs(final_count);
         auto const resync_end = std::chrono::steady_clock::now();
         auto const duration_seconds = std::chrono::duration_cast<std::chrono::seconds>(resync_end - resync_start).count();
@@ -731,7 +727,6 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::REPLICATE);
     auto replica_res = __replicate(sub_cmd, std::move(func), addr, len, q, async_data);
     if (!replica_res) return replica_res;
-
     res = res.value() += replica_res.value();
     // Assuming all was successful, return the aggregate of the results
     return res;
