@@ -18,9 +18,9 @@ UblkRaidMetrics::UblkRaidMetrics(std::string const& uuid, std::string const& rai
     // RAID1 resync metrics
     REGISTER_COUNTER(resync_started_total, "Total number of resyncs started", "ublk_resync_started_total",
                      {"parent_id", uuid});
-    REGISTER_HISTOGRAM(resync_chunk_kibibytes, "Resync chunk sizes in KiB", "ublk_resync_chunk_kibibytes",
+    REGISTER_HISTOGRAM(resync_progress_kib, "Resync chunk sizes in KiB", "ublk_resync_progress_kibibytes",
                        {"parent_id", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
-    REGISTER_HISTOGRAM(resync_duration_seconds, "Resync duration in seconds", "ublk_resync_duration_seconds",
+    REGISTER_HISTOGRAM(resync_duration_s, "Resync duration in seconds", "ublk_resync_duration_seconds",
                        {"parent_id", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_GAUGE(active_resyncs, "Number of active resyncs", "ublk_active_resyncs",
                    {"parent_id", uuid});
@@ -47,11 +47,11 @@ void UblkRaidMetrics::record_resync_progress(uint64_t bytes) {
     // Track resync chunk sizes as histogram in KiB
     // Convert to KiB (1 KiB = 1024 bytes)
     uint64_t kibibytes = bytes / 1024;
-    HISTOGRAM_OBSERVE(*this, resync_chunk_kibibytes, kibibytes);
+    HISTOGRAM_OBSERVE(*this, resync_progress_kib, kibibytes);
 }
 
 void UblkRaidMetrics::record_resync_complete(uint64_t duration_seconds) {
-    HISTOGRAM_OBSERVE(*this, resync_duration_seconds, duration_seconds);
+    HISTOGRAM_OBSERVE(*this, resync_duration_s, duration_seconds);
 }
 
 void UblkRaidMetrics::record_active_resyncs(uint64_t count) {
