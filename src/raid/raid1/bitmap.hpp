@@ -16,6 +16,7 @@ public:
     using map_type_t = std::map< uint32_t, std::shared_ptr< word_t > >;
 
 private:
+    std::string const _id;
     uint64_t _data_size;
     uint32_t _chunk_size;
     uint32_t _align;
@@ -29,7 +30,7 @@ private:
     word_t* __get_page(uint64_t offset, bool creat = false);
 
 public:
-    Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align);
+    Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, std::string const& id = "");
 
     static uint64_t page_size();
     size_t dirty_pages();
