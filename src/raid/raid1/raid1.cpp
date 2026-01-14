@@ -111,8 +111,6 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         (our_params.basic.max_sectors << SECTOR_SHIFT);
 
     // Reserve space for the superblock/bitmap
-    RLOGD("RAID-1 : reserving {:#0x} blocks for SuperBlock & Bitmap",
-          reserved_size >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (reserved_size >> SECTOR_SHIFT);
 
     if (can_discard())
@@ -148,7 +146,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     if (_device_a->new_device && _device_b->new_device) _sb->fields.bitmap.age = htobe64(1);
 
     // Read in existing dirty BITMAP pages
-    _dirty_bitmap = std::make_unique< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size());
+    _dirty_bitmap =
+        std::make_unique< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size(), _str_uuid);
     if (_device_a->new_device) {
         _dirty_bitmap->init_to(*_device_a->disk);
         if (!_device_b->new_device) _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
