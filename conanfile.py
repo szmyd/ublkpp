@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.16.0"
+    version = "0.17.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -47,7 +47,7 @@ class UBlkPPConan(ConanFile):
                         )
 
     def _min_cppstd(self):
-        return 23
+        return 20
 
     def validate(self):
         if self.settings.compiler.get_safe("cppstd"):
@@ -76,7 +76,7 @@ class UBlkPPConan(ConanFile):
 
         self.requires("isa-l/2.30.0")
         if (self.options.get_safe("homeblocks")):
-            self.requires("homeblocks/[^4.0]@oss/main")
+            self.requires("homeblocks/[^5.0]@oss/main")
         self.requires("ublksrv/nbi.1.5.0")
         if (self.options.get_safe("iscsi")):
             self.requires("libiscsi/1.20.3")
@@ -131,6 +131,11 @@ class UBlkPPConan(ConanFile):
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 
     def package_info(self):
+        self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
+        if (self.options.get_safe("iscsi")):
+            self.cpp_info.requires.extend(["libiscsi::libiscsi"])
+        if (self.options.get_safe("homeblocks")):
+            self.cpp_info.requires.extend(["homeblocks::homeblocks"])
         if self.options.get_safe("sanitize"):
             self.cpp_info.sharedlinkflags.append("-fsanitize=address")
             self.cpp_info.exelinkflags.append("-fsanitize=address")

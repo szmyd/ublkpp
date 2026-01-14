@@ -39,7 +39,7 @@ target_sources(ublkpp PRIVATE
     ${LIBRARY_OBJECTS}
   )
 target_link_libraries(ublkpp
-    INTERFACE sisl::sisl
+    INTERFACE sisl::cache
     PUBLIC
       ${LIBRARY_LINKS}
   )

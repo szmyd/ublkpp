@@ -62,7 +62,7 @@ TEST(Raid0Impl, NextSubcmdSecondStride) {
 
     auto [device_off, logical_off, sz] = ublkpp::raid0::next_subcmd(stride_width, stripe_size, addr, 4 * Ki);
 
-    EXPECT_EQ(device_off, 2); // Third device
+    EXPECT_EQ(device_off, 2);                      // Third device
     EXPECT_EQ(logical_off, (32 * Ki) + (16 * Ki)); // Second chunk + offset
     EXPECT_EQ(sz, 4 * Ki);
 }
@@ -75,7 +75,7 @@ TEST(Raid0Impl, MergedSubcmdsSingleDisk) {
     auto result = ublkpp::raid0::merged_subcmds(stride_width, stripe_size, 0, 64 * Ki);
 
     ASSERT_EQ(result.size(), 1);
-    EXPECT_EQ(result[0].first, 0); // offset
+    EXPECT_EQ(result[0].first, 0);        // offset
     EXPECT_EQ(result[0].second, 64 * Ki); // length
 }
 
@@ -142,7 +142,7 @@ TEST(Raid0Impl, MergedSubcmdsComplexWrapping) {
     uint32_t const stripe_size = 16 * Ki;
 
     // Access that wraps multiple times
-    uint64_t addr = 8 * Ki; // Middle of first stripe
+    uint64_t addr = 8 * Ki;  // Middle of first stripe
     uint64_t len = 100 * Ki; // Spans multiple strides
 
     auto result = ublkpp::raid0::merged_subcmds(stride_width, stripe_size, addr, len);

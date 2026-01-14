@@ -37,6 +37,7 @@ public:
     // Constant parameters for device
     // ================
     virtual uint32_t block_size() const;
+    virtual uint32_t max_tx() const;
     virtual bool can_discard() const;
     virtual uint64_t capacity() const;
     // ================

@@ -13,7 +13,7 @@ target_sources(test_ublkpp_tgt PRIVATE
 )
 target_link_libraries (test_ublkpp_tgt
   GTest::gmock
-  sisl::sisl
+  sisl::cache
   ublksrv::ublksrv
 )
 add_test(NAME TgtTest COMMAND test_ublkpp_tgt -cv 2)

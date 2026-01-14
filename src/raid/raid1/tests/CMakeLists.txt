@@ -28,7 +28,7 @@ target_sources(test_raid1 PRIVATE
 target_link_libraries (test_raid1
   GTest::gmock
   isa-l::isa-l
-  sisl::sisl
+  sisl::cache
   ublksrv::ublksrv
 )
 add_test(NAME Raid1Test COMMAND test_raid1 -cv 2)

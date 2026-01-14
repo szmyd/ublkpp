@@ -11,7 +11,7 @@ TEST(Raid0, IdleTransitionEnter) {
     EXPECT_CALL(*device_c, idle_transition(_, true)).Times(1);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                         std::vector<std::shared_ptr<UblkDisk>>{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
     raid_device.idle_transition(nullptr, true);
 }
@@ -25,7 +25,7 @@ TEST(Raid0, IdleTransitionExit) {
     EXPECT_CALL(*device_b, idle_transition(_, false)).Times(1);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 64 * Ki,
-                                         std::vector<std::shared_ptr<UblkDisk>>{device_a, device_b});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
 
     raid_device.idle_transition(nullptr, false);
 }
@@ -48,9 +48,9 @@ TEST(Raid0, CollectAsync) {
     EXPECT_CALL(*device_c, collect_async(_, _)).Times(1);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                         std::vector<std::shared_ptr<UblkDisk>>{device_a, device_b, device_c});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
 
-    std::list<ublkpp::async_result> results;
+    std::list< ublkpp::async_result > results;
     raid_device.collect_async(nullptr, results);
 }
 
@@ -67,8 +67,8 @@ TEST(Raid0, CollectAsyncAllUblkIouring) {
     EXPECT_CALL(*device_b, collect_async(_, _)).Times(0);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 64 * Ki,
-                                         std::vector<std::shared_ptr<UblkDisk>>{device_a, device_b});
+                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
 
-    std::list<ublkpp::async_result> results;
+    std::list< ublkpp::async_result > results;
     raid_device.collect_async(nullptr, results);
 }
