@@ -9,26 +9,34 @@ UblkRaidMetrics::UblkRaidMetrics(std::string const& uuid, std::string const& rai
     // Use raid_device_id as entity name to ensure each RAID has unique metrics
     // Use uuid (app UUID) as label so you can filter by application in Sherlock/Prometheus
 
-    REGISTER_COUNTER(raid_degraded_count, "RAID device degradation events", "ublk_raid_degraded_count",
-                     {"uuid", uuid});
+    REGISTER_COUNTER(raid_degraded_count_device_a, "RAID device A degradation events", "ublk_raid_degraded_count_device_a",
+                     {"parent_id", uuid});
+    REGISTER_COUNTER(raid_degraded_count_device_b, "RAID device B degradation events", "ublk_raid_degraded_count_device_b",
+                     {"parent_id", uuid});
+    REGISTER_COUNTER(device_swaps_total, "Total number of device swaps", "ublk_device_swaps_total",
+                     {"parent_id", uuid});
     // RAID1 resync metrics
     REGISTER_COUNTER(resync_started_total, "Total number of resyncs started", "ublk_resync_started_total",
-                     {"uuid", uuid});
-    REGISTER_COUNTER(resync_bytes_total, "Total bytes resynced", "ublk_resync_bytes_total",
-                     {"uuid", uuid});
-    REGISTER_HISTOGRAM(resync_duration_ms, "Resync duration in milliseconds", "ublk_resync_duration_ms",
-                       {"uuid", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
+                     {"parent_id", uuid});
+    REGISTER_HISTOGRAM(resync_chunk_kibibytes, "Resync chunk sizes in KiB", "ublk_resync_chunk_kibibytes",
+                       {"parent_id", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
+    REGISTER_HISTOGRAM(resync_duration_seconds, "Resync duration in seconds", "ublk_resync_duration_seconds",
+                       {"parent_id", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_GAUGE(active_resyncs, "Number of active resyncs", "ublk_active_resyncs",
-                   {"uuid", uuid});
+                   {"parent_id", uuid});
     REGISTER_GAUGE(dirty_pages, "Number of dirty bitmap pages", "ublk_dirty_pages",
-                   {"uuid", uuid});
+                   {"parent_id", uuid});
     register_me_to_farm();
 }
 
 UblkRaidMetrics::~UblkRaidMetrics() { deregister_me_from_farm(); }
 
-void UblkRaidMetrics::record_device_degraded() {
-    COUNTER_INCREMENT(*this, raid_degraded_count, 1);
+void UblkRaidMetrics::record_device_degraded(std::string const& device_name) {
+    if (device_name == "device_a") {
+        COUNTER_INCREMENT(*this, raid_degraded_count_device_a, 1);
+    } else if (device_name == "device_b") {
+        COUNTER_INCREMENT(*this, raid_degraded_count_device_b, 1);
+    }
 }
 
 void UblkRaidMetrics::record_resync_start() {
@@ -36,11 +44,14 @@ void UblkRaidMetrics::record_resync_start() {
 }
 
 void UblkRaidMetrics::record_resync_progress(uint64_t bytes) {
-    COUNTER_INCREMENT(*this, resync_bytes_total, bytes);
+    // Track resync chunk sizes as histogram in KiB
+    // Convert to KiB (1 KiB = 1024 bytes)
+    uint64_t kibibytes = bytes / 1024;
+    HISTOGRAM_OBSERVE(*this, resync_chunk_kibibytes, kibibytes);
 }
 
-void UblkRaidMetrics::record_resync_complete(uint64_t duration_ms) {
-    HISTOGRAM_OBSERVE(*this, resync_duration_ms, duration_ms);
+void UblkRaidMetrics::record_resync_complete(uint64_t duration_seconds) {
+    HISTOGRAM_OBSERVE(*this, resync_duration_seconds, duration_seconds);
 }
 
 void UblkRaidMetrics::record_active_resyncs(uint64_t count) {
@@ -49,6 +60,10 @@ void UblkRaidMetrics::record_active_resyncs(uint64_t count) {
 
 void UblkRaidMetrics::record_dirty_pages(uint64_t pages) {
     GAUGE_UPDATE(*this, dirty_pages, pages);
+}
+
+void UblkRaidMetrics::record_device_swap() {
+    COUNTER_INCREMENT(*this, device_swaps_total, 1);
 }
 
 } // namespace ublkpp

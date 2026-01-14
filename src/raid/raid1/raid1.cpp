@@ -283,6 +283,11 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& old_de
         }
     }
 
+    // Record successful device swap
+    if (_raid_metrics) {
+        _raid_metrics->record_device_swap();
+    }
+
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
     if (_resync_enabled)
@@ -403,6 +408,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
                 // Record resync progress
                 if (_raid_metrics) {
                     _raid_metrics->record_resync_progress(iov.iov_len);
+                    _raid_metrics->record_dirty_pages(nr_pages);
                 }
             } else {
                 DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
@@ -443,6 +449,12 @@ void Raid1DiskImpl::__resync_task() {
     RLOGD("Resync Task created for [vol:{}]", _str_uuid)
     auto const resync_start = std::chrono::steady_clock::now();
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
+    // Record resync start - increment global and per-device counters
+    auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (_raid_metrics) {
+        _raid_metrics->record_resync_start();
+        _raid_metrics->record_active_resyncs(active_count);
+    }
     // Wait to become IDLE
     while (IS_DEGRADED &&
            !_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
@@ -455,13 +467,6 @@ void Raid1DiskImpl::__resync_task() {
         }
         cur_state = static_cast< uint8_t >(resync_state::IDLE);
         std::this_thread::sleep_for(300us);
-    }
-
-    // Record resync start - increment global and per-device counters
-    auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (_raid_metrics) {
-        _raid_metrics->record_resync_start();
-        _raid_metrics->record_active_resyncs(active_count);
     }
 
     // We are now guaranteed to be the only active thread performing I/O on the device
@@ -478,19 +483,16 @@ void Raid1DiskImpl::__resync_task() {
     }
     if (IS_DEGRADED && 0 == _dirty_bitmap->dirty_pages()) {
         __become_clean();
-        // Record resync completion time
-        if (_raid_metrics) {
-            auto const resync_end = std::chrono::steady_clock::now();
-            auto const duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(resync_end - resync_start).count();
-            if (duration_ms > 0) {
-                _raid_metrics->record_resync_complete(duration_ms);
-            }
-        }
     }
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
     auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
     if (_raid_metrics) {
         _raid_metrics->record_active_resyncs(final_count);
+        auto const resync_end = std::chrono::steady_clock::now();
+        auto const duration_seconds = std::chrono::duration_cast<std::chrono::seconds>(resync_end - resync_start).count();
+        if (duration_seconds > 0) {
+            _raid_metrics->record_resync_complete(duration_seconds);
+        }
     }
     RLOGD("Resync Task Finished for [vol:{}]", _str_uuid)
 }
@@ -536,9 +538,10 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
     RLOGW("Device became degraded [{}] [age:{}] [vol:{}] ", *DIRTY_DEVICE->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
 
-    // Record degradation event in metrics
+    // Record degradation event in metrics with device name
     if (_raid_metrics) {
-        _raid_metrics->record_device_degraded();
+        auto device_name = (READ_ROUTE == read_route::DEVA) ? "device_b" : "device_a";
+        _raid_metrics->record_device_degraded(device_name);
     }
 
     // Must update age first; we do this synchronously to gate pending retry results
