@@ -30,8 +30,13 @@ static uint64_t k_rand_cnt{0};
 static uint64_t k_rand_error{0};
 static uint64_t k_io_cnt{0};
 
-FSDisk::FSDisk(std::filesystem::path const& path, std::unique_ptr<UblkFSDiskMetrics> metrics)
-    : UblkDisk(), _path(path), _metrics(std::move(metrics)) {
+FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id)
+    : UblkDisk(),
+      _path(path) {
+    // Create metrics with parent_id for correlation
+    if (!parent_id.empty()) {
+        _metrics = std::make_unique<UblkFSDiskMetrics>(parent_id, _path.string());
+    }
     if (0 != SISL_OPTIONS["random_errors"].count()) {
         std::random_device r;
         std::default_random_engine e1(r());

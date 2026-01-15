@@ -20,7 +20,7 @@ struct array_state {
 class Raid1Disk : public UblkDisk {
 public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
-              std::unique_ptr<UblkRaidMetrics> metrics = nullptr);
+              std::string const& parent_id = "");
     ~Raid1Disk() override;
 
     /// Raid1Disk API

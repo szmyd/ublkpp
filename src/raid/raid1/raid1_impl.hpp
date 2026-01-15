@@ -63,7 +63,7 @@ class Raid1DiskImpl : public UblkDisk {
 
 public:
     Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
-                  std::unique_ptr<ublkpp::UblkRaidMetrics> metrics = nullptr);
+                  std::string const& parent_id = "");
     ~Raid1DiskImpl() override;
 
     /// Raid1Disk API

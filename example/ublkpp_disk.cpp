@@ -178,11 +178,7 @@ static std::unique_ptr< ublkpp::UblkDisk > get_driver(std::string const& resourc
     }
 #endif
     if (auto path = std::filesystem::path(resource); std::filesystem::exists(path)) {
-        // Create metrics for FSDisk if metrics_id is provided
-        auto metrics = metrics_id.empty()
-            ? nullptr
-            : std::make_unique< ublkpp::UblkFSDiskMetrics >(metrics_id, path.native());
-        return std::make_unique< ublkpp::FSDisk >(path, std::move(metrics));
+        return std::make_unique< ublkpp::FSDisk >(path, metrics_id);
     }
 #ifdef HAVE_ISCSI
     // From libiscsi.h iSCSI URLs are in the form:
@@ -225,21 +221,13 @@ Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > con
 Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
     auto dev = std::unique_ptr< ublkpp::Raid1Disk >();
     auto raid_uuid = boost::uuids::to_string(id);
-    auto uuid = fmt::format("raid1_{}", raid_uuid.substr(0, 8));
 
     try {
         // Create FSDisk devices with RAID1 UUID for correlation
         auto dev_a = get_driver(*layout.begin(), raid_uuid);
         auto dev_b = get_driver(*(layout.begin() + 1), raid_uuid);
 
-        // Create RAID1 metrics
-        auto metrics = std::make_unique< ublkpp::UblkRaidMetrics >(
-            raid_uuid,
-            uuid
-        );
-
-        dev = std::make_unique< ublkpp::Raid1Disk >(
-            id, std::move(dev_a), std::move(dev_b), std::move(metrics));
+        dev = std::make_unique< ublkpp::Raid1Disk >(id, std::move(dev_a), std::move(dev_b), raid_uuid);
     } catch (std::runtime_error const& e) {}
     if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
@@ -266,15 +254,9 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
             auto dev_a = get_driver(layout[i], partition_uuid_str);
             auto dev_b = get_driver(layout[i + 1], partition_uuid_str);
 
-            // Create RAID1 metrics with partition UUID
-            auto metrics = std::make_unique< ublkpp::UblkRaidMetrics >(
-                raid10_uuid_str,
-                partition_uuid_str
-            );
-
             // Create RAID1 mirror and add to devices
             devices.push_back(std::make_shared< ublkpp::Raid1Disk >(
-                partition_uuid, std::move(dev_a), std::move(dev_b), std::move(metrics)));
+                partition_uuid, std::move(dev_a), std::move(dev_b), raid10_uuid_str));
         }
 
         dev =

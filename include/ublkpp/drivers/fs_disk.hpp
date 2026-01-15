@@ -15,8 +15,8 @@ class FSDisk : public UblkDisk {
     std::unique_ptr<UblkFSDiskMetrics> _metrics;
 
 public:
-    // Constructor: optionally inject metrics created externally
-    explicit FSDisk(std::filesystem::path const& path, std::unique_ptr<UblkFSDiskMetrics> metrics = nullptr);
+    // Constructor: creates metrics internally using parent_id
+    explicit FSDisk(std::filesystem::path const& path, std::string const& parent_id = "");
     ~FSDisk() override;
 
     std::string id() const override { return _path.native(); }

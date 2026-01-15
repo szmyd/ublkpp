@@ -76,11 +76,14 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
 }
 
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                             std::shared_ptr< UblkDisk > dev_b, std::unique_ptr<UblkRaidMetrics> metrics) :
+                             std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) :
         UblkDisk(),
         _uuid(uuid),
-        _str_uuid(boost::uuids::to_string(uuid)),
-        _raid_metrics(std::move(metrics)) {
+        _str_uuid(boost::uuids::to_string(uuid)) {
+    // Create metrics with parent_id for correlation
+    if (!parent_id.empty()) {
+        _raid_metrics = std::make_unique<UblkRaidMetrics>(parent_id, _str_uuid);
+    }
     direct_io = true; // RAID-1 requires DIO
 
     // We enqueue async responses for RAID1 retries even if our underlying devices use uring
