@@ -4,28 +4,28 @@
 
 namespace ublkpp {
 
-UblkRaidMetrics::UblkRaidMetrics(std::string const& uuid, std::string const& raid_device_id)
+UblkRaidMetrics::UblkRaidMetrics(std::string const& parent_id, std::string const& raid_device_id)
     : sisl::MetricsGroup{raid_device_id, raid_device_id} {
     // Use raid_device_id as entity name to ensure each RAID has unique metrics
-    // Use uuid (app UUID) as label so you can filter by application in Sherlock/Prometheus
+    // Use parent_id (app parent_id) as label so you can filter by application in Sherlock/Prometheus
 
     REGISTER_COUNTER(raid_degraded_count_device_a, "RAID device A degradation events", "ublk_raid_degraded_count_device_a",
-                     {"parent_id", uuid});
+                     {"parent_id", parent_id});
     REGISTER_COUNTER(raid_degraded_count_device_b, "RAID device B degradation events", "ublk_raid_degraded_count_device_b",
-                     {"parent_id", uuid});
+                     {"parent_id", parent_id});
     REGISTER_COUNTER(device_swaps_total, "Total number of device swaps", "ublk_device_swaps_total",
-                     {"parent_id", uuid});
+                     {"parent_id", parent_id});
     // RAID1 resync metrics
     REGISTER_COUNTER(resync_started_total, "Total number of resyncs started", "ublk_resync_started_total",
-                     {"parent_id", uuid});
+                     {"parent_id", parent_id});
     REGISTER_HISTOGRAM(resync_progress_kib, "Resync chunk sizes in KiB", "ublk_resync_progress_kibibytes",
-                       {"parent_id", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
+                       {"parent_id", parent_id}, HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_HISTOGRAM(resync_duration_s, "Resync duration in seconds", "ublk_resync_duration_seconds",
-                       {"parent_id", uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
+                       {"parent_id", parent_id}, HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_GAUGE(active_resyncs, "Number of active resyncs", "ublk_active_resyncs",
-                   {"parent_id", uuid});
+                   {"parent_id", parent_id});
     REGISTER_GAUGE(dirty_pages, "Number of dirty bitmap pages", "ublk_dirty_pages",
-                   {"parent_id", uuid});
+                   {"parent_id", parent_id});
     register_me_to_farm();
 }
 

@@ -8,9 +8,14 @@
 namespace ublkpp {
 
 // RAID-level metrics - tracks RAID device operations
-// Labels: uuid, raid_device_id
+//
+// Constructor parameters:
+//   parent_id: The ID of the parent device that contains this RAID array. This is used as a label
+//              to correlate metrics across the device hierarchy (e.g., volume -> RAID -> disks).
+//              For standalone RAID arrays, you can use the RAID's own ID.
+//   raid_device_id: The unique identifier for this specific RAID instance.
 struct UblkRaidMetrics : public sisl::MetricsGroupWrapper {
-    UblkRaidMetrics(std::string const& uuid, std::string const& raid_device_id);
+    UblkRaidMetrics(std::string const& parent_id, std::string const& raid_device_id);
     ~UblkRaidMetrics();
 
     void record_device_degraded(std::string const& device_name);

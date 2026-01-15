@@ -19,9 +19,14 @@ struct io_timing {
 };
 
 // FSDisk-level metrics - tracks individual disk operations
-// Labels: raid_device_id, disk_path
+//
+// Constructor parameters:
+//   parent_id: The ID of the parent device that contains this disk. This is used as a label
+//              to correlate metrics across the device hierarchy (e.g., RAID -> FSDisk).
+//              For standalone disks not part of a RAID, you can use the disk's own ID.
+//   disk_path: The filesystem path or identifier for this specific disk instance.
 struct UblkFSDiskMetrics : public sisl::MetricsGroupWrapper {
-    UblkFSDiskMetrics(std::string const& raid_device_id, std::string const& disk_path);
+    UblkFSDiskMetrics(std::string const& parent_id, std::string const& disk_path);
     ~UblkFSDiskMetrics();
 
     static inline thread_local std::map<std::pair<uint16_t, uint16_t>, io_timing> t_disk_io_timings;

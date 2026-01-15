@@ -5,13 +5,13 @@
 
 namespace ublkpp {
 
-UblkFSDiskMetrics::UblkFSDiskMetrics(std::string const& raid_uuid, std::string const& disk_path)
+UblkFSDiskMetrics::UblkFSDiskMetrics(std::string const& parent_id, std::string const& disk_path)
     : sisl::MetricsGroup{disk_path, disk_path} {
     // Use disk_path as entity name to ensure each disk has unique metrics
     // Use raid_uuid as label so you can filter by RAID in Sherlock/Prometheus
 
     REGISTER_HISTOGRAM(disk_io_latency_us, "Disk I/O latency in microseconds", "ublk_disk_io_latency_us",
-                       {"parent_id", raid_uuid}, HistogramBucketsType(ExponentialOfTwoBuckets));
+                       {"parent_id", parent_id}, HistogramBucketsType(ExponentialOfTwoBuckets));
 
     register_me_to_farm();
 }

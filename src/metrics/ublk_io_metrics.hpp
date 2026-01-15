@@ -10,8 +10,10 @@ struct ublksrv_queue;
 
 namespace ublkpp {
 
-// Top-level I/O metrics - tracks queue depth and operation counts
-// Labels: uuid
+// Top-level I/O metrics - tracks queue depth and operation counts at the ublkpp target layer
+//
+// Constructor parameters:
+//   uuid: The volume/target UUID for this ublkpp target instance.
 struct UblkIOMetrics : public sisl::MetricsGroupWrapper {
     explicit UblkIOMetrics(std::string const& uuid);
     ~UblkIOMetrics();
