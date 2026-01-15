@@ -4,9 +4,10 @@
 
 #include <boost/uuid/uuid.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
-#include <ublkpp/metrics/ublk_raid_metrics.hpp>
 
 namespace ublkpp {
+
+class UblkRaidMetrics;
 
 namespace raid1 {
 class Raid1DiskImpl;

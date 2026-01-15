@@ -17,8 +17,6 @@
 #include <ublkpp/drivers/fs_disk.hpp>
 #include <ublkpp/raid/raid0.hpp>
 #include <ublkpp/raid/raid1.hpp>
-#include <ublkpp/metrics/ublk_raid_metrics.hpp>
-#include <ublkpp/metrics/ublk_fsdisk_metrics.hpp>
 
 #ifdef HAVE_HOMEBLOCKS
 #include <ublkpp/drivers/homeblk_disk.hpp>

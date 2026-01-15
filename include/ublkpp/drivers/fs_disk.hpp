@@ -4,9 +4,10 @@
 #include <memory>
 
 #include <ublkpp/lib/ublk_disk.hpp>
-#include <ublkpp/metrics/ublk_fsdisk_metrics.hpp>
 
 namespace ublkpp {
+
+class UblkFSDiskMetrics;
 
 class FSDisk : public UblkDisk {
     std::filesystem::path _path;

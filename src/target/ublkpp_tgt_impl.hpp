@@ -6,7 +6,7 @@
 
 #include <boost/uuid/uuid.hpp>
 
-#include "ublkpp/metrics/ublk_io_metrics.hpp"
+#include "metrics/ublk_io_metrics.hpp"
 
 struct ublksrv_ctrl_dev;
 struct ublksrv_dev;

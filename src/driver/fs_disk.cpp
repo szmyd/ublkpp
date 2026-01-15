@@ -18,7 +18,7 @@ extern "C" {
 
 #include "fs_disk_impl.hpp"
 #include "lib/logging.hpp"
-#include "ublkpp/metrics/ublk_fsdisk_metrics.hpp"
+#include "metrics/ublk_fsdisk_metrics.hpp"
 #include "target/ublkpp_tgt_impl.hpp"
 
 SISL_OPTION_GROUP(fs_disk,

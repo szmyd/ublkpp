@@ -13,7 +13,7 @@
 #include "raid1_impl.hpp"
 #include "lib/logging.hpp"
 #include "target/ublkpp_tgt_impl.hpp"
-#include "ublkpp/metrics/ublk_raid_metrics.hpp"
+#include "metrics/ublk_raid_metrics.hpp"
 
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
