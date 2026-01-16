@@ -18,9 +18,9 @@ UblkRaidMetrics::UblkRaidMetrics(std::string const& parent_id, std::string const
     // RAID1 resync metrics
     REGISTER_COUNTER(resync_started_total, "Total number of resyncs started", "ublk_resync_started_total",
                      {"parent_id", parent_id});
-    REGISTER_HISTOGRAM(resync_progress_kib, "Resync chunk sizes in KiB", "ublk_resync_progress_kibibytes",
+    REGISTER_HISTOGRAM(resync_progress_kib, "Resync chunk sizes in KiB", "ublk_resync_progress_kib",
                        {"parent_id", parent_id}, HistogramBucketsType(ExponentialOfTwoBuckets));
-    REGISTER_HISTOGRAM(resync_duration_s, "Resync duration in seconds", "ublk_resync_duration_seconds",
+    REGISTER_HISTOGRAM(resync_duration_s, "Resync duration in seconds", "ublk_resync_duration_s",
                        {"parent_id", parent_id}, HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_GAUGE(active_resyncs, "Number of active resyncs", "ublk_active_resyncs",
                    {"parent_id", parent_id});
