@@ -50,14 +50,6 @@ TEST(Raid1, RoutePreSet) {
             superblock->fields.device_b = 1;
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(1)
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_EQ(0UL, addr);
-            return ublkpp::raid1::k_page_size;
-        });
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     EXPECT_TO_WRITE_SB(device_a);

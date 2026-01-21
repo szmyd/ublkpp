@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.16.7
+- raid1: Fix disk position identification.
+
+## 0.16.6
+- raid1: Improve disk recovery (non-new replace)
+
 ## 0.16.5
 - fs_disk: Support probing of partitions (e.g. /dev/sda1)
 

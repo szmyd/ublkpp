@@ -7,6 +7,15 @@
 
 namespace ublkpp::raid1 {
 
+auto format_as(SuperBlock const& sb) {
+    auto read_uuid = boost::uuids::uuid();
+    memcpy(read_uuid.data, sb.header.uuid, sizeof(sb.header.uuid));
+    return fmt::format("[uuid={}, ver={:#0x}, age={}, chunk_sz={}Ki, read_route={:#0x} (Side-{}:{})]",
+                       to_string(read_uuid), be16toh(sb.header.version), be64toh(sb.fields.bitmap.age),
+                       be32toh(sb.fields.bitmap.chunk_size) / Ki, sb.fields.read_route, sb.fields.device_b ? "B" : "A",
+                       sb.fields.clean_unmount ? "Clean" : "Dirty");
+}
+
 raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
     if (be64toh(dev_a->fields.bitmap.age) < be64toh(dev_b->fields.bitmap.age)) {
         dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
@@ -46,13 +55,13 @@ static raid1::SuperBlock* read_superblock(UblkDisk& device) {
 
 io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b) {
     auto const sb_size = sizeof(raid1::SuperBlock);
-    RLOGT("Writing Superblock to: {}", device)
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
     auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
     // We temporarily set the Superblock for Device A/B based on argument
     if (device_b) sb->fields.device_b = 1;
     auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
+    RLOGI("Wrote: {} to: {}", *sb, device)
     sb->fields.device_b = 0;
     if (!res) RLOGE("Error writing Superblock to: {}: {}", device, res.error().message())
     return res;
@@ -74,7 +83,9 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
         sb->fields.bitmap.age = 0;
         sb->fields.read_route = static_cast< uint8_t >(read_route::EITHER);
         was_new = true;
-    }
+        RLOGW("Missing superblock from: {}", device)
+    } else
+        RLOGI("Loaded: {} from: {}", *sb, device)
 
     // Verify some details in the superblock
     auto read_uuid = boost::uuids::uuid();
@@ -88,13 +99,6 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const
         RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B] "
               "[uuid:{}] ",
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
-    }
-    if (1 == sb->fields.clean_unmount) {
-        RLOGI("Loaded CLEAN v{:#0x} superblock [age:{}, chunk_sz:{}Ki, uuid:{}] from: {}", be16toh(sb->header.version),
-              be64toh(sb->fields.bitmap.age), chunk_size / Ki, to_string(uuid), device)
-    } else {
-        RLOGW("Loaded DIRTY v{:#0x} superblock [age:{}, chunk_sz:{}Ki, uuid:{}] from: {}", be16toh(sb->header.version),
-              be64toh(sb->fields.bitmap.age), chunk_size / Ki, to_string(uuid), device)
     }
 
     if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }

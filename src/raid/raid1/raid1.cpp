@@ -180,7 +180,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
-    if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE)) {
+    if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b)) {
         RLOGE("Failed writing SuperBlock to: {} becoming degraded. [uuid:{}]", *CLEAN_DEVICE->disk, _str_uuid)
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
@@ -191,14 +191,16 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         return;
     }
 
-    if (write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE)) {
-        // If we're starting degraded, we need to initiate a resync_task
-        if (IS_DEGRADED)
-            _resync_task =
-                sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+    // If we're starting degraded, we need to initiate a resync_task
+    if (IS_DEGRADED) {
+        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+        if (!DIRTY_DEVICE->new_device) return;
+    }
 
-    } else if (!__become_degraded(DIRTY_SUBCMD)) {
-        throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
+    if (!write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b)) {
+        if (!__become_degraded(DIRTY_SUBCMD)) {
+            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
+        }
     }
 }
 
@@ -213,22 +215,24 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     if (!_sb) return;
     // Write out our dirty bitmap
     if (IS_DEGRADED) {
+        RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *CLEAN_DEVICE->disk)
         if (auto res = _dirty_bitmap->sync_to(*CLEAN_DEVICE->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
                   _str_uuid)
             return;
         }
+        RLOGI("Synchronized: [uuid: {}]", _str_uuid)
     }
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices
-    if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !res) {
+    if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b); !res) {
         if (IS_DEGRADED) {
             RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
         } else {
             RLOGW("Failed to clear clean bit [uuid:{}] dev: {}", _str_uuid, *CLEAN_DEVICE->disk)
         }
     }
-    if (!IS_DEGRADED && !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), read_route::DEVB != READ_ROUTE)) {
+    if (!IS_DEGRADED && !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b)) {
         RLOGW("Failed to clear clean bit [uuid:{}] dev: {}", _str_uuid, *DIRTY_DEVICE->disk)
     }
 }
@@ -426,12 +430,9 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     while (0 < nr_pages) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
-        RLOGD("Data left to resync ~= {}KiB [pages:{}, uuid:{}]", _dirty_bitmap->dirty_data_est() / Ki, nr_pages, _str_uuid)
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
-
-            RLOGT("Copying lba: {:#0x} for {}KiB", logical_off >> params()->basic.logical_bs_shift, iov.iov_len / Ki)
             // Copy Region from CLEAN to DIRTY
             if (auto res =
                     __copy_region(&iov, 1, logical_off + reserved_size, *CLEAN_DEVICE->disk, *DIRTY_DEVICE->disk);
@@ -544,7 +545,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
     RLOGW("Device became degraded {} [age:{}] [uuid:{}] ", *DIRTY_DEVICE->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
     // Must update age first; we do this synchronously to gate pending retry results
-    if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), read_route::DEVB == READ_ROUTE); !sync_res) {
+    if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b); !sync_res) {
         // Rollback the failure to update the header
         _sb->fields.read_route = static_cast< uint8_t >(orig_route);
         _sb->fields.bitmap.age = old_age;
