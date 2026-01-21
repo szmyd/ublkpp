@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.16.6"
+    version = "0.16.7"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -101,6 +101,7 @@ class UBlkPPConan(ConanFile):
     def generate(self):
         # This generates "conan_toolchain.cmake" in self.generators_folder
         tc = CMakeToolchain(self)
+        tc.variables["CMAKE_EXPORT_COMPILE_COMMANDS"] = "ON"
         tc.variables["CTEST_OUTPUT_ON_FAILURE"] = "ON"
         tc.variables["PACKAGE_VERSION"] = self.version
         tc.variables["ENABLE_TESTS"] = "ON"
