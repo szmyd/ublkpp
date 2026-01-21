@@ -504,6 +504,8 @@ void Raid1DiskImpl::__resync_task() {
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
     // Record resync start - increment global and per-device counters
     auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
+    // Capture the initial size of data to resync
+    auto const initial_resync_size = _dirty_bitmap->dirty_data_est();
     if (_raid_metrics) {
         _raid_metrics->record_resync_start();
         _raid_metrics->record_active_resyncs(active_count);
@@ -546,6 +548,8 @@ void Raid1DiskImpl::__resync_task() {
         if (duration_seconds > 0) {
             _raid_metrics->record_resync_complete(duration_seconds);
         }
+        // Record the size of data that was resynced (initial size before resync started)
+        _raid_metrics->record_last_resync_size(initial_resync_size);
     }
     RLOGD("Resync Task Finished for [vol:{}]", _str_uuid)
 }

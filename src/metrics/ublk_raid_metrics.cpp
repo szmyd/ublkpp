@@ -26,6 +26,8 @@ UblkRaidMetrics::UblkRaidMetrics(std::string const& parent_id, std::string const
                    {"parent_id", parent_id});
     REGISTER_GAUGE(dirty_pages, "Number of dirty bitmap pages", "ublk_dirty_pages",
                    {"parent_id", parent_id});
+    REGISTER_GAUGE(last_resync_size_kib, "Size of last resync in KiB", "ublk_last_resync_size_kib",
+                   {"parent_id", parent_id});
     register_me_to_farm();
 }
 
@@ -64,6 +66,13 @@ void UblkRaidMetrics::record_dirty_pages(uint64_t pages) {
 
 void UblkRaidMetrics::record_device_swap() {
     COUNTER_INCREMENT(*this, device_swaps_total, 1);
+}
+
+void UblkRaidMetrics::record_last_resync_size(uint64_t bytes) {
+    // Track last resync size in KiB
+    // Convert to KiB (1 KiB = 1024 bytes)
+    uint64_t kibibytes = bytes / 1024;
+    GAUGE_UPDATE(*this, last_resync_size_kib, kibibytes);
 }
 
 } // namespace ublkpp
