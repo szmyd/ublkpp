@@ -174,7 +174,7 @@ uint64_t Bitmap::page_size() { return k_page_size; }
 size_t Bitmap::dirty_pages() {
     auto cnt =
         std::erase_if(_page_map, [](const auto& it) { return (0 == isal_zero_detect(it.second.get(), k_page_size)); });
-    if (0 < cnt) { RLOGD("Dropped {} page(s) from the Bitmap [id: {}]", cnt, _id); }
+    if (0 < cnt) { RLOGD("Dropped [{}/{}] page(s) from the Bitmap [id: {}]", cnt, _page_map.size() + cnt, _id); }
     auto sz = _page_map.size();
     auto const full = (sz * (k_page_size * k_bits_in_byte));
     if (full < _dirty_chunks_est.load(std::memory_order_relaxed))
