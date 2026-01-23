@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.16.9
 - raid1: Swap with no changes should have zero impact.
 
+## 0.16.8
+- raid1: Reduce instance where a full copy is performed.
+
 ## 0.16.7
 - raid1: Fix disk position identification.
 
