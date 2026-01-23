@@ -159,7 +159,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
     // We need to completely dirty one side if either is new when the other is not
     sub_cmd_t const sub_cmd = 0U;
-    if ((_device_a->new_device xor _device_b->new_device) || 0 == _sb->fields.clean_unmount) {
+    if (_device_a->new_device xor _device_b->new_device) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Device is new {}, dirty all of device {}", *(_device_a->new_device ? _device_a->disk : _device_b->disk),
@@ -170,6 +170,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *DIRTY_DEVICE->disk)
         _is_degraded.test_and_set(std::memory_order_relaxed);
         _dirty_bitmap->load_from(*CLEAN_DEVICE->disk);
+    } else if (0 == _sb->fields.clean_unmount) {
+        RLOGW("Raid1 was not cleanly shutdown last time [uuid:{}]!", _str_uuid)
     }
 
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
