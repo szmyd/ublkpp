@@ -277,6 +277,9 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
         return incoming_device;
     }
 
+    // We check if the outgoing device is actually part of this array first,
+    // then we ensure that the incoming device is actually a different device
+    // from what we already have. If either is not true, do nothing.
     if ((_device_a->disk->id() != outgoing_device_id) && (_device_b->disk->id() != outgoing_device_id)) {
         RLOGE("Refusing to replace unrecognized mirror!")
         return incoming_device;
