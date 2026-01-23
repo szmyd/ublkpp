@@ -159,7 +159,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
     // We need to completely dirty one side if either is new when the other is not
     sub_cmd_t const sub_cmd = 0U;
-    if (_device_a->new_device xor _device_b->new_device) {
+    if ((_device_a->new_device xor _device_b->new_device) ||
+        ((read_route::EITHER != READ_ROUTE) && (0 == _sb->fields.clean_unmount))) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Device is new {}, dirty all of device {}", *(_device_a->new_device ? _device_a->disk : _device_b->disk),
