@@ -7,13 +7,13 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
-#include <sisl/metrics/metrics.hpp>
 #include <sisl/utility/thread_factory.hpp>
 #include <ublksrv_utils.h>
 #include <ublksrv.h>
 
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "lib/logging.hpp"
+#include "ublkpp_tgt_impl.hpp"
 
 SISL_OPTION_GROUP(ublkpp_tgt,
                   (max_io_size, "", "max_io_size", "Maximum I/O size before split",
@@ -27,46 +27,8 @@ using namespace std::chrono_literals;
 
 namespace ublkpp {
 
-struct UblkDiskMetrics : public sisl::MetricsGroupWrapper {
-    explicit UblkDiskMetrics(std::string const& device_name) : sisl::MetricsGroup("UblkDisk", device_name.c_str()) {
-        REGISTER_HISTOGRAM(ublk_write_queue_distribution, "Distribution of volume read queue depths",
-                           HistogramBucketsType(SteppedUpto32Buckets));
-        REGISTER_HISTOGRAM(ublk_read_queue_distribution, "Distribution of volume read queue depths",
-                           HistogramBucketsType(SteppedUpto32Buckets));
-
-        register_me_to_farm();
-    }
-
-    ~UblkDiskMetrics() { deregister_me_from_farm(); }
-};
-
-struct ublkpp_tgt_impl {
-    bool device_added{false};
-    boost::uuids::uuid volume_uuid;
-    std::filesystem::path device_path;
-    // Owned by us
-    std::shared_ptr< UblkDisk > device;
-    std::unique_ptr< ublksrv_tgt_type const > tgt_type;
-
-    // Owned by libublksrv
-    ublksrv_ctrl_dev* ctrl_dev{nullptr};
-    ublksrv_dev const* ublk_dev{nullptr};
-
-    // == Metrics ==
-    UblkDiskMetrics metrics;
-
-    std::atomic_uint32_t _queued_reads;
-    std::atomic_uint32_t _queued_writes;
-    // == ======= ==
-
-    // Owned by us
-    std::unique_ptr< ublksrv_dev_data > dev_data;
-
-    ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d) :
-            volume_uuid(vol_id), device(std::move(d)), metrics(UblkDiskMetrics(to_string(vol_id))) {}
-
-    ~ublkpp_tgt_impl();
-};
+ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d) :
+        volume_uuid(vol_id), device(std::move(d)), metrics(UblkIOMetrics(to_string(vol_id))) {}
 
 static std::mutex _map_lock;
 static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt_impl > > _init_map;
@@ -268,6 +230,11 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     --ublkpp_io->sub_cmds;
     sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
                                                      : ublkpp_io->async_completion->sub_cmd);
+
+    // Record I/O completion for device latency tracking
+    // Notify the device about I/O completion for device-specific metrics
+    device->on_io_complete(data, old_cmd);
+
     // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
     auto sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
 
@@ -329,19 +296,10 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     ublkpp_io->async_completion = nullptr;
 
     auto const op = ublksrv_get_op(data->iod);
+
+    // Record queue depth increment
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    switch (op) {
-    case UBLK_IO_OP_READ: {
-        HISTOGRAM_OBSERVE(tgt->metrics, ublk_read_queue_distribution,
-                          tgt->_queued_reads.fetch_add(1, std::memory_order_relaxed) + 1);
-    } break;
-    case UBLK_IO_OP_WRITE: {
-        HISTOGRAM_OBSERVE(tgt->metrics, ublk_write_queue_distribution,
-                          tgt->_queued_writes.fetch_add(1, std::memory_order_relaxed) + 1);
-    } break;
-    default: {
-    }
-    }
+    tgt->metrics.record_queue_depth_change(q, op, true);
 
     // First we submit the IO to the UblkDisk device. It in turn will return the number
     // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
@@ -364,16 +322,8 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
         process_result(q, data);
     }
 
-    switch (op) {
-    case UBLK_IO_OP_READ: {
-        tgt->_queued_reads.fetch_sub(1, std::memory_order_relaxed);
-    } break;
-    case UBLK_IO_OP_WRITE: {
-        tgt->_queued_writes.fetch_sub(1, std::memory_order_relaxed);
-    } break;
-    default: {
-    }
-    }
+    // Record queue depth decrement
+    tgt->metrics.record_queue_depth_change(q, op, false);
 
     // Operation is complete, result is in io_res
     if (0 > ublkpp_io->ret_val) [[unlikely]] {

@@ -10,6 +10,7 @@ target_sources(test_logging PRIVATE
    test_logging.cpp
   $<TARGET_OBJECTS:logging>
   $<TARGET_OBJECTS:ublk_disk>
+  $<TARGET_OBJECTS:ublk_metrics>
 )
 target_link_libraries (test_logging
   GTest::gmock

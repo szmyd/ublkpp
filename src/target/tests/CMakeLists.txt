@@ -8,6 +8,7 @@ target_sources(test_ublkpp_tgt PRIVATE
    test_ublkpp_tgt.cpp
   $<TARGET_OBJECTS:ublkpp_tgt>
   $<TARGET_OBJECTS:ublk_disk>
+  $<TARGET_OBJECTS:ublk_metrics>
   $<TARGET_OBJECTS:logging>
 )
 target_link_libraries (test_ublkpp_tgt

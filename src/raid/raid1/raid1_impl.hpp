@@ -6,9 +6,12 @@
 #include <thread>
 
 #include "ublkpp/raid/raid1.hpp"
+#include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
 
 namespace ublkpp {
+
+struct UblkSystemMetrics;
 
 namespace raid1 {
 class Bitmap;
@@ -17,6 +20,8 @@ struct MirrorDevice;
 ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPED = 4);
 
 class Raid1DiskImpl : public UblkDisk {
+    // Global counter for active resyncs across all RAID1 devices
+    static inline std::atomic_uint32_t s_active_resyncs{0};
     boost::uuids::uuid const _uuid;
     std::string const _str_uuid;
     uint64_t reserved_size{0UL};
@@ -38,6 +43,8 @@ class Raid1DiskImpl : public UblkDisk {
     std::atomic< uint8_t > _resync_state;
     std::atomic< uint8_t > _io_op_cnt;
 
+	// Metrics
+	std::unique_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
     // Asynchronous replies that did not go through io_uring
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
 
@@ -55,7 +62,8 @@ class Raid1DiskImpl : public UblkDisk {
     void __resync_task();
 
 public:
-    Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b);
+    Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
+                  std::string const& parent_id = "");
     ~Raid1DiskImpl() override;
 
     /// Raid1Disk API
@@ -75,6 +83,8 @@ public:
     uint8_t route_size() const override { return 1; }
 
     void idle_transition(ublksrv_queue const*, bool) override;
+
+    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) override;
 
     io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
                               uint32_t nr_vecs, uint64_t addr, int res) override;

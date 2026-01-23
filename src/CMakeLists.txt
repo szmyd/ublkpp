@@ -5,6 +5,7 @@ add_compile_options(-Wall -Wextra -Werror)
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_subdirectory (lib)
+add_subdirectory (metrics)
 add_subdirectory (raid)
 add_subdirectory (driver)
 add_subdirectory (target)
@@ -15,6 +16,7 @@ list(APPEND LIBRARY_OBJECTS
   $<TARGET_OBJECTS:fs_disk>
   $<TARGET_OBJECTS:ublkpp_tgt>
   $<TARGET_OBJECTS:ublk_disk>
+  $<TARGET_OBJECTS:ublk_metrics>
   $<TARGET_OBJECTS:logging>
   )
 list(APPEND LIBRARY_LINKS
