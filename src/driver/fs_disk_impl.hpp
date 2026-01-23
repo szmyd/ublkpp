@@ -30,9 +30,14 @@ inline bool block_has_unmap(struct stat const& st) {
         return false;
     }
 
-    auto const str_path = (sys_path / resolved_path / ".." / discard_path).native();
+    auto str_path = (sys_path / resolved_path / discard_path).native();
     DLOGD("Probing {}", str_path)
     std::ifstream discard_max(str_path, std::ios::in);
+    if (!discard_max.is_open()) {
+        str_path = (sys_path / resolved_path / ".." / discard_path).native();
+        DLOGD("Testing for partition {}", str_path)
+        discard_max = std::ifstream(str_path, std::ios::in);
+    }
     if (!discard_max.is_open()) return false;
 
     uint64_t max_discard{0};
