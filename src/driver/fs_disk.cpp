@@ -30,13 +30,9 @@ static uint64_t k_rand_cnt{0};
 static uint64_t k_rand_error{0};
 static uint64_t k_io_cnt{0};
 
-FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id)
-    : UblkDisk(),
-      _path(path) {
+FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) : UblkDisk(), _path(path) {
     // Create metrics with parent_id for correlation
-    if (!parent_id.empty()) {
-        _metrics = std::make_unique<UblkFSDiskMetrics>(parent_id, _path.string());
-    }
+    if (!parent_id.empty()) { _metrics = std::make_unique< UblkFSDiskMetrics >(parent_id, _path.string()); }
     if (0 != SISL_OPTIONS["random_errors"].count()) {
         std::random_device r;
         std::default_random_engine e1(r());
@@ -205,10 +201,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
 
     // Record I/O start for individual disk metrics
     // This tracks I/O latency for this specific FSDisk instance (identified by path in metrics labels)
-	if(_metrics)
-	{
-   		_metrics->record_io_start(data, sub_cmd);
-	}
+    if (_metrics) { _metrics->record_io_start(data, sub_cmd); }
 
     return 1;
 }
@@ -241,12 +234,9 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
 }
 
 void FSDisk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    DLOGI("FSDisk::on_io_complete {} : [tag:{:0x}] [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
+    DLOGT("FSDisk::on_io_complete {} : [tag:{:0x}] [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
     // Record I/O completion for this individual disk
-	if(_metrics)
-	{
-    	_metrics->record_io_complete(data, sub_cmd);
-	}
+    if (_metrics) { _metrics->record_io_complete(data, sub_cmd); }
 }
 
 } // namespace ublkpp
