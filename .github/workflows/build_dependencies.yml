@@ -116,7 +116,7 @@ jobs:
       with:
         testing: 'False'
         path: import/iomgr
-        key_prefix: IOMgrDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}-${{ inputs.prerelease }}
+        key_prefix: IOMgrDeps-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}-false
         fail_on_cache_miss: true
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
