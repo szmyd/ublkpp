@@ -71,8 +71,6 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // Finally we'll calculate the volume size as a multiple of the smallest array device
     // and adjust to account for the superblock we will write at the HEAD of each array device.
     // To keep things simple, we'll just use the first chunk from each device for ourselves.
-    RLOGD("RAID-0 : reserving {} blocks for SuperBlock",
-          (_stripe_size * _stripe_array.size()) >> our_params.basic.logical_bs_shift)
     our_params.basic.dev_sectors -= (_stripe_size >> SECTOR_SHIFT);
     our_params.basic.dev_sectors *= _stripe_array.size();
     // Align size to max_sector size
@@ -317,7 +315,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
 
     // Check for MAGIC, initialize SB if missing
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        RLOGI("Initializing RAID-0 on {} [stripe_size:{}KiB, vol:{}]", device, stripe_size / Ki, to_string(uuid))
+        RLOGI("Initializing RAID-0 on {} [stripe_size:{}KiB, uuid:{}]", device, stripe_size / Ki, to_string(uuid))
         memset(sb, 0x00, sizeof(raid0::SuperBlock));
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
@@ -347,7 +345,8 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
         stripe_size = read_stripe_size;
     }
     auto const sb_ver = be16toh(sb->header.version);
-    RLOGD("{} has v{} superblock [stripe_sz:{:#0x},stripe_off:{}]", device, sb_ver, stripe_size, stripe_off)
+    RLOGI("Loaded v{:#0x} superblock [stripe_sz:{}Ki, stripe_off:{}, uuid:{}] from: {}", sb_ver, stripe_size / Ki,
+          stripe_off, to_string(uuid), device)
 
     // Migrating to latest version
     if (SB_VERSION > sb_ver) {

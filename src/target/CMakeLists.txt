@@ -6,7 +6,7 @@ target_sources(ublkpp_tgt PRIVATE
 )
 target_link_libraries(ublkpp_tgt
     ublk_metrics
-    sisl::sisl
+    sisl::cache
     ublksrv::ublksrv
 )
 

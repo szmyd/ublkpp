@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Introduce Metrics gathering
 
 ## 0.16.x
+- fs_disk: Fix probing devices w/o partition.
+- raid1: Swap with no changes should have zero impact.
+- raid1: Reduce instance where a full copy is performed.
+- raid1: Fix disk position identification.
+- raid1: Improve disk recovery (non-new replace)
+- fs_disk: Support probing of partitions (e.g. /dev/sda1)
+- logging improvements
 - raid1: Improve disk replacement logic (swap_device)
 - raid1: Speed up Bitmap initialization
 - raid0: Optimize OPT_IO and PHY_IO to match array layout.
