@@ -16,7 +16,7 @@ public:
 
     struct PageData {
         std::shared_ptr< word_t > page;
-        bool loaded_from_disk;  // true = loaded unchanged, false = modified/new
+        std::atomic< bool > loaded_from_disk;  // true = loaded unchanged, false = modified/new
 
         PageData(std::shared_ptr< word_t > p, bool from_disk) : page(std::move(p)), loaded_from_disk(from_disk) {}
     };
@@ -35,6 +35,7 @@ private:
     std::atomic_uint64_t _dirty_chunks_est{0};
 
     PageData* __get_page(uint64_t offset, bool creat = false);
+    static size_t max_pages_per_tx(const UblkDisk& device);
 
 public:
     Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align);

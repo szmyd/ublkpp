@@ -13,6 +13,10 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
+size_t Bitmap::max_pages_per_tx(const UblkDisk& device) {
+    return device.max_tx() / k_page_size;
+}
+
 Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
         _data_size(data_size),
         _chunk_size(chunk_size),
@@ -68,7 +72,7 @@ void Bitmap::init_to(UblkDisk& device) {
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
     // For now, create a scatter-gather of the MaxI/O size to clear synchronously erase the bitmap region.
     RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: [{}]", _num_pages, _num_pages * k_page_size / Ki, device)
-    auto const max_pages = device.max_tx() / k_page_size;
+    auto const max_pages = max_pages_per_tx(device);
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     std::fill_n(iov.get(), max_pages, proto);
@@ -85,13 +89,9 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
     if (_page_map.empty()) return 0;
 
     // Allocate iovec array for batching consecutive pages
-    auto const max_batch = device.max_tx() / k_page_size;
+    auto const max_batch = max_pages_per_tx(device);
     auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
     if (!iovs) return std::make_error_condition(std::errc::not_enough_memory); // LCOV_EXCL_LINE
-
-    // Track which pages are in current batch
-    std::vector< PageData* > batch_pages;
-    batch_pages.reserve(max_batch);
 
     size_t iov_cnt = 0;
     uint32_t batch_start = 0;
@@ -102,13 +102,12 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
         RLOGD("Syncing {} consecutive Bitmap page(s) from page {} to [{}]", iov_cnt, batch_start, device)
         auto res = device.sync_iov(UBLK_IO_OP_WRITE, iovs.get(), iov_cnt, batch_addr);
         iov_cnt = 0;
-        batch_pages.clear();
         return res;
     };
 
     for (auto& [pg_off, page_data] : _page_map) {
         // Skip pages loaded from disk that haven't been modified
-        if (page_data.loaded_from_disk) continue;
+        if (page_data.loaded_from_disk.load(std::memory_order_relaxed)) continue;
 
         // Skip zero pages (shouldn't happen after dirty_pages cleanup)
         if (0 == isal_zero_detect(page_data.page.get(), k_page_size)) continue;
@@ -124,7 +123,6 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
         }
 
         iovs[iov_cnt++] = {.iov_base = page_data.page.get(), .iov_len = k_page_size};
-        batch_pages.push_back(&page_data);
     }
 
     return flush();
@@ -238,7 +236,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     if (!page_data) return std::make_tuple(nullptr, page_offset, sz);
 
     // Mark as modified (clearing bits = modification)
-    page_data->loaded_from_disk = false;
+    page_data->loaded_from_disk.store(false, std::memory_order_relaxed);
 
     auto cur_word = page_data->page.get() + word_offset;
 
@@ -316,7 +314,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
         if (!page_data) throw std::runtime_error("Could not insert new page");
 
         // Mark as modified (setting bits = modification)
-        page_data->loaded_from_disk = false;
+        page_data->loaded_from_disk.store(false, std::memory_order_relaxed);
 
         auto cur_word = page_data->page.get() + word_offset;
         // Handle update crossing multiple words (optimization potential?)
