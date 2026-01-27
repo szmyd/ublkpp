@@ -91,7 +91,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
     // Allocate iovec array for batching consecutive pages
     auto const max_batch = max_pages_per_tx(device);
     auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
-    if (!iovs) return std::make_error_condition(std::errc::not_enough_memory); // LCOV_EXCL_LINE
+    if (!iovs) return std::unexpected(std::make_error_condition(std::errc::not_enough_memory)); // LCOV_EXCL_LINE
 
     size_t iov_cnt = 0;
     uint32_t batch_start = 0;
@@ -140,7 +140,7 @@ void Bitmap::load_from(UblkDisk& device) {
                 throw std::runtime_error("OutOfMemory");
             } // LCOV_EXCL_STOP
         }
-        if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx * k_page_size)); !res) {
+        if (auto res = device.wha(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx * k_page_size)); !res) {
             free(iov.iov_base);
             throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
         }
@@ -150,10 +150,9 @@ void Bitmap::load_from(UblkDisk& device) {
         _dirty_chunks_est += (k_page_size * k_bits_in_byte);
 
         // Insert new dirty page into page map (mark as loaded from disk, not modified)
-        auto [it, _] =
-            _page_map.emplace(pg_idx, PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(iov.iov_base),
-                                                                          free_page()),
-                                               true});
+        auto [it, _] = _page_map.emplace(
+            static_cast< uint32_t >(pg_idx),
+            PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(iov.iov_base), free_page()), true});
         if (_page_map.end() == it) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
         iov.iov_base = nullptr;
     }
