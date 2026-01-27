@@ -367,7 +367,7 @@ void Raid0Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
     // Extract stripe index from sub_cmd (shift past underlying device's route bits)
     auto const stripe_idx = static_cast<size_t>((sub_cmd >> _stripe_array[0]->disk->route_size()) & ((1 << route_size()) - 1));
 
-    DLOGD("Raid0Disk::on_io_complete [tag:{:#0x}] [sub_cmd:{}] stripe_idx:{}", data->tag, ublkpp::to_string(sub_cmd), stripe_idx)
+    RLOGT("Raid0Disk::on_io_complete [tag:{:#0x}] [sub_cmd:{}] stripe_idx:{}", data->tag, ublkpp::to_string(sub_cmd), stripe_idx)
 
     // Pass completion notification to the underlying device for its metrics
     if (stripe_idx < _stripe_array.size()) {
