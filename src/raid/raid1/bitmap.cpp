@@ -17,13 +17,14 @@ size_t Bitmap::max_pages_per_tx(const UblkDisk& device) {
     return device.max_tx() / k_page_size;
 }
 
-Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align) :
+Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, std::string const& id) :
+        _id(id),
         _data_size(data_size),
         _chunk_size(chunk_size),
         _align(align),
         _page_width(_chunk_size * k_page_size * k_bits_in_byte),
         _num_pages(_data_size / _page_width + ((0 == _data_size % _page_width) ? 0 : 1)) {
-    RLOGD("Initializing RAID-1 BITMAP [pgs:{},sz:{}Ki]", _num_pages, _num_pages * k_page_size / Ki)
+    RLOGT("Initializing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}]", _num_pages, _num_pages * k_page_size / Ki, _id)
     void* new_page{nullptr};
     if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
         throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
@@ -71,7 +72,7 @@ void Bitmap::init_to(UblkDisk& device) {
 
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
     // For now, create a scatter-gather of the MaxI/O size to clear synchronously erase the bitmap region.
-    RLOGI("Clearing RAID-1 BITMAP [pgs:{},sz:{}Ki] on: [{}]", _num_pages, _num_pages * k_page_size / Ki, device)
+    RLOGI("Clearing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}] on: {}", _num_pages, _num_pages * k_page_size / Ki, _id,
     auto const max_pages = max_pages_per_tx(device);
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
@@ -99,7 +100,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
 
     auto flush = [&]() -> io_result {
         if (0 == iov_cnt) return 0;
-        RLOGD("Syncing {} consecutive Bitmap page(s) from page {} to [{}]", iov_cnt, batch_start, device)
+        RLOGD("Syncing {} consecutive Bitmap page(s) from page {} to {} [id: {}]", iov_cnt, batch_start, device, _id)
         auto res = device.sync_iov(UBLK_IO_OP_WRITE, iovs.get(), iov_cnt, batch_addr);
         iov_cnt = 0;
         return res;
@@ -132,7 +133,7 @@ void Bitmap::load_from(UblkDisk& device) {
     // We read each page from the Device into memory if it is not ZERO'd out
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
     for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
-        RLOGT("Loading page: {} of {} page(s)", pg_idx + 1, _num_pages);
+        RLOGT("Loading page: {} of {} page(s) [id: {}]", pg_idx + 1, _num_pages, _id)
         if (nullptr == iov.iov_base) {
             if (auto err = ::posix_memalign(&iov.iov_base, device.block_size(), k_page_size);
                 0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
@@ -146,7 +147,7 @@ void Bitmap::load_from(UblkDisk& device) {
         }
         // If page is empty; leave a hole
         if (0 == isal_zero_detect(iov.iov_base, k_page_size)) continue;
-        RLOGT("Page: {} is *DIRTY*!", pg_idx + 1)
+        RLOGT("Page: {} is *DIRTY* [id: {}]", pg_idx + 1, _id)
         _dirty_chunks_est += (k_page_size * k_bits_in_byte);
 
         // Insert new dirty page into page map (mark as loaded from disk, not modified)
@@ -212,7 +213,7 @@ size_t Bitmap::dirty_pages() {
     auto cnt = std::erase_if(_page_map, [](const auto& it) {
         return (0 == isal_zero_detect(it.second.page.get(), k_page_size));
     });
-    if (0 < cnt) { RLOGD("Dropped {} page(s) from the Bitmap", cnt); }
+    if (0 < cnt) { RLOGD("Dropped [{}/{}] page(s) from the Bitmap [id: {}]", cnt, _page_map.size() + cnt, _id); }
     auto sz = _page_map.size();
     auto const full = (sz * (k_page_size * k_bits_in_byte));
     if (full < _dirty_chunks_est.load(std::memory_order_relaxed))
@@ -253,6 +254,8 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
+    RLOGT("Bitmap CLEANED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
+
     // Only return clean pages
     if (0 == isal_zero_detect(page_data->page.get(), k_page_size))
         return std::make_tuple(_clean_page.get(), page_offset, sz);
@@ -280,7 +283,6 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
             // How long does the dirt stretch?
             auto set_bit = __builtin_clzl(word);
             logical_off += set_bit * _chunk_size; // Adjust for bit within word
-            RLOGT("addr: {:#0x} word: {:#064b}", logical_off, word);
             // Consume as many consecutive set-bits as we can in the rest of the word
             while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
                 sz += _chunk_size;
@@ -330,5 +332,6 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
     }
+    RLOGT("Bitmap DIRTIED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
 }
 } // namespace ublkpp::raid1

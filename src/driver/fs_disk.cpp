@@ -18,6 +18,8 @@ extern "C" {
 
 #include "fs_disk_impl.hpp"
 #include "lib/logging.hpp"
+#include "metrics/ublk_fsdisk_metrics.hpp"
+#include "target/ublkpp_tgt_impl.hpp"
 
 SISL_OPTION_GROUP(fs_disk,
                   (random_errors, "", "random_errors", "Inject random errors into some devices",
@@ -28,7 +30,9 @@ static uint64_t k_rand_cnt{0};
 static uint64_t k_rand_error{0};
 static uint64_t k_io_cnt{0};
 
-FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
+FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) : UblkDisk(), _path(path) {
+    // Create metrics with parent_id for correlation
+    if (!parent_id.empty()) { _metrics = std::make_unique< UblkFSDiskMetrics >(parent_id, _path.string()); }
     if (0 != SISL_OPTIONS["random_errors"].count()) {
         std::random_device r;
         std::default_random_engine e1(r());
@@ -58,7 +62,7 @@ FSDisk::FSDisk(std::filesystem::path const& path) : UblkDisk(), _path(path) {
         if (ioctl(_fd, BLKGETSIZE64, &bytes) != 0 || ioctl(_fd, BLKSSZGET, &lbs) != 0 ||
             ioctl(_fd, BLKPBSZGET, &pbs) != 0)
             throw std::runtime_error("ioctl Failed!");
-        if (block_has_unmap(_path)) our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+        if (block_has_unmap(st)) our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         our_params.basic.logical_bs_shift = static_cast< uint8_t >(ilog2(lbs));
         our_params.basic.physical_bs_shift = static_cast< uint8_t >(ilog2(pbs));
         DLOGD("Backing is a block device [{}:{}:{}]!", str_path, lbs, pbs)
@@ -194,6 +198,11 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     if (UBLK_IO_OP_READ != op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
 
     sqe->user_data = build_tgt_sqe_data(data->tag, op, sub_cmd);
+
+    // Record I/O start for individual disk metrics
+    // This tracks I/O latency for this specific FSDisk instance (identified by path in metrics labels)
+    if (_metrics) { _metrics->record_io_start(data, sub_cmd); }
+
     return 1;
 }
 
@@ -222,6 +231,12 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return res;
+}
+
+void FSDisk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    DLOGT("FSDisk::on_io_complete {} : [tag:{:0x}] [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
+    // Record I/O completion for this individual disk
+    if (_metrics) { _metrics->record_io_complete(data, sub_cmd); }
 }
 
 } // namespace ublkpp

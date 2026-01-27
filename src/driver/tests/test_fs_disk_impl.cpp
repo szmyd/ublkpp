@@ -29,33 +29,11 @@ namespace {
 
 TEST(BlockHasUnmap, NonExistentDevice) {
     // Test with a device that doesn't exist
-    std::filesystem::path non_existent_dev = "nonexistent_device_xyz123_test";
-    bool result = ublkpp::block_has_unmap(non_existent_dev);
+    struct stat fake_stat{};
+    bool result = ublkpp::block_has_unmap(fake_stat);
 
     // Should return false for non-existent devices
     EXPECT_FALSE(result);
-}
-
-TEST(BlockHasUnmap, InvalidOrEmptyPaths) {
-    // Empty path
-    std::filesystem::path empty_path = "";
-    bool result = ublkpp::block_has_unmap(empty_path);
-    EXPECT_FALSE(result);
-
-    // Just a slash
-    std::filesystem::path slash_path = "/";
-    result = ublkpp::block_has_unmap(slash_path);
-    EXPECT_FALSE(result);
-}
-
-TEST(BlockHasUnmap, VariousInvalidDeviceNames) {
-    // Test various device names that don't exist on the system
-    std::vector< std::string > invalid_devices = {"nonexistent_disk", "fake_device_123", "invalid", "test_disk_xyz"};
-
-    for (const auto& device : invalid_devices) {
-        bool result = ublkpp::block_has_unmap(device);
-        EXPECT_FALSE(result) << "Expected false for device: " << device;
-    }
 }
 
 // ============================================================================

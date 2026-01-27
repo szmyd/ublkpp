@@ -44,6 +44,8 @@ static_assert(k_page_size == sizeof(SuperBlock), "Size of raid1::SuperBlock does
 #error "Big Endian not supported!"
 #endif
 
+auto format_as(SuperBlock const& sb);
+
 extern SuperBlock* pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
 extern io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b);
 extern std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >

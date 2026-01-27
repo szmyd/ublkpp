@@ -28,4 +28,6 @@ find_package(libiscsi QUIET)
 find_package(homeblocks QUIET)
 
 add_subdirectory (src)
+if ((DEFINED ENABLE_TESTS) AND (${ENABLE_TESTS}))
 add_subdirectory (example)
+endif ()

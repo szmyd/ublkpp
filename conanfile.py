@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.16.3"
+    version = "0.17.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -69,6 +69,7 @@ class UBlkPPConan(ConanFile):
 
     def build_requirements(self):
         self.test_requires("gtest/1.17.0")
+        self.test_requires("iomgr/[^12]@oss/master")
 
     def requirements(self):
         self.requires("sisl/[^13]@oss/master", transitive_headers=True)
@@ -101,6 +102,7 @@ class UBlkPPConan(ConanFile):
     def generate(self):
         # This generates "conan_toolchain.cmake" in self.generators_folder
         tc = CMakeToolchain(self)
+        tc.variables["CMAKE_EXPORT_COMPILE_COMMANDS"] = "ON"
         tc.variables["CTEST_OUTPUT_ON_FAILURE"] = "ON"
         tc.variables["PACKAGE_VERSION"] = self.version
         tc.variables["ENABLE_TESTS"] = "ON"
@@ -130,6 +132,11 @@ class UBlkPPConan(ConanFile):
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 
     def package_info(self):
+        self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
+        if (self.options.get_safe("iscsi")):
+            self.cpp_info.requires.extend(["libiscsi::libiscsi"])
+        if (self.options.get_safe("homeblocks")):
+            self.cpp_info.requires.extend(["homeblocks::homeblocks"])
         if self.options.get_safe("sanitize"):
             self.cpp_info.sharedlinkflags.append("-fsanitize=address")
             self.cpp_info.exelinkflags.append("-fsanitize=address")
