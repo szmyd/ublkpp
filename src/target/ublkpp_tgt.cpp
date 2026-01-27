@@ -460,8 +460,8 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .reserved = {0, 0, 0, 0, 0} // Reserved
     });
 
-    TLOGD("Starting {} {} evfd", static_pointer_cast< UblkDisk >(device),
-          (nullptr == tgt->tgt_type->handle_event) ? "WITHOUT" : "WITH")
+    TLOGD("Starting {} {} evfd [uuid:{}]", static_pointer_cast< UblkDisk >(device),
+          (nullptr == tgt->tgt_type->handle_event) ? "WITHOUT" : "WITH", to_string(vol_id))
     tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
         .dev_id = -1,
         .max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >(),
@@ -492,14 +492,21 @@ std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; 
 std::shared_ptr< UblkDisk > ublkpp_tgt::device() const { return _p->device; }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    TLOGD("Stopping {}", device)
     if (ublk_dev) {
+        TLOGD("Stopping Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
         ublksrv_ctrl_stop_dev(ctrl_dev);
         ublksrv_dev_deinit(ublk_dev);
     }
-    if (device_added) ublksrv_ctrl_del_dev(ctrl_dev);
-    if (ctrl_dev) ublksrv_ctrl_deinit(ctrl_dev);
-    TLOGD("Stopped {}", device)
+
+    if (device_added) {
+        TLOGD("Stopping Control {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+        ublksrv_ctrl_del_dev(ctrl_dev);
+    }
+    if (ctrl_dev) {
+        TLOGD("De-initializing Control {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+        ublksrv_ctrl_deinit(ctrl_dev);
+    }
+    TLOGD("Stopped {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
 }
 
 } // namespace ublkpp

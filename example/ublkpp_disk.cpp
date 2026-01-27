@@ -313,6 +313,7 @@ int main(int argc, char* argv[]) {
 #ifdef HAVE_HOMEBLOCKS
     if (_app) _app->_hb->shutdown();
 #endif
+    iomanager.stop();
     return exit_future.get();
 }
 
