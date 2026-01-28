@@ -109,7 +109,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
 
     for (auto& [pg_off, page_data] : _page_map) {
         // Skip pages loaded from disk that haven't been modified
-        if (page_data.loaded_from_disk.load(std::memory_order_relaxed)) continue;
+        if (page_data.loaded_from_disk.load(std::memory_order_acquire)) continue;
 
         // Skip zero pages (shouldn't happen after dirty_pages cleanup)
         if (0 == isal_zero_detect(page_data.page.get(), k_page_size)) continue;
@@ -162,23 +162,28 @@ void Bitmap::load_from(UblkDisk& device) {
 }
 
 Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
-    auto it = _page_map.find(offset);
-    if (it == _page_map.end()) {
-        if (!creat) return nullptr;
-
-        // Allocate new page
-        void* new_page{nullptr};
-        if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
-        memset(new_page, 0, k_page_size);
-
-        // Insert with loaded_from_disk = false (newly created, needs sync)
-        auto [inserted_it, happened] =
-            _page_map.emplace(offset, PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(new_page),
-                                                                          free_page()),
-                                               false});
-        return &inserted_it->second;
+    if (!creat) {
+        if (auto it = _page_map.find(offset); _page_map.end() == it)
+            return nullptr;
+        else
+            return &it->second;
     }
 
+    // Allocate memory first (fail fast if OOM)
+    void* new_page{nullptr};
+    if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
+    memset(new_page, 0, k_page_size);
+
+    // Only insert if allocation succeeded
+    auto [it, happened] = _page_map.emplace(static_cast< uint32_t >(offset),
+                                            PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(new_page),
+                                                                               free_page()),
+                                                     false});
+
+    if (!happened) {
+        // Entry already exists, free our allocation
+        free(new_page);
+    }
     return &it->second;
 }
 
@@ -236,9 +241,6 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     DEBUG_ASSERT_NOTNULL(page_data, "Expected to find dirty page!")
     if (!page_data) return std::make_tuple(nullptr, page_offset, sz);
 
-    // Mark as modified (clearing bits = modification)
-    page_data->loaded_from_disk.store(false, std::memory_order_relaxed);
-
     auto cur_word = page_data->page.get() + word_offset;
 
     // Handle update crossing multiple words (optimization potential?)
@@ -248,13 +250,16 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         auto const clear_mask = ~htobe64(64 == bits_to_write ? UINT64_MAX
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
-        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_release);
+        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_seq_cst);
         _dirty_chunks_est.fetch_sub(std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
                                              (uint64_t)__builtin_popcountll(old_word xor (old_word & clear_mask))),
                                     std::memory_order_relaxed);
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
+
+    // Mark as modified AFTER all modifications (release ensures visibility)
+    page_data->loaded_from_disk.store(false, std::memory_order_release);
     RLOGT("Bitmap CLEANED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
 
     // Only return clean pages
@@ -315,9 +320,6 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
         auto page_data = __get_page(page_offset, true);
         if (!page_data) throw std::runtime_error("Could not insert new page");
 
-        // Mark as modified (setting bits = modification)
-        page_data->loaded_from_disk.store(false, std::memory_order_relaxed);
-
         auto cur_word = page_data->page.get() + word_offset;
         // Handle update crossing multiple words (optimization potential?)
         for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -326,12 +328,15 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_release);
+            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_seq_cst);
             _dirty_chunks_est.fetch_add(__builtin_popcountll(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
+
+        // Mark as modified AFTER all modifications (release ensures visibility)
+        page_data->loaded_from_disk.store(false, std::memory_order_release);
     }
     RLOGT("Bitmap DIRTIED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
 }
