@@ -135,6 +135,10 @@ static std::shared_ptr< UblkPPApplication > init_homeblocks(std::string const& h
 }
 
 static auto create_hb_volume(UblkPPApplication& app, boost::uuids::uuid const& vol_uuid) {
+    auto known_vols = std::vector< homeblocks::volume_id_t >();
+    app._hb->volume_manager()->get_volume_ids(known_vols);
+    if (std::ranges::contains(known_vols, vol_uuid)) return std::error_condition();
+
     homeblocks::VolumeInfo vol_info;
     vol_info.page_size = 4 * Ki;
     vol_info.size_bytes = SISL_OPTIONS["capacity"].as< uint32_t >() * Gi;
