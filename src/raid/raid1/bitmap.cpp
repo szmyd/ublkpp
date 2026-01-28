@@ -180,10 +180,6 @@ Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
                                                                                free_page()),
                                                      false});
 
-    if (!happened) {
-        // Entry already exists, free our allocation
-        free(new_page);
-    }
     return &it->second;
 }
 
