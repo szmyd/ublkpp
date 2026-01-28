@@ -74,34 +74,32 @@ static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
 }
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
+    // Find our /dev/ublk-control file descriptor
     auto cdev = ublksrv_get_ctrl_dev(target->ublk_dev);
 
-    ublk_json_write_queue_info(cdev, q_id, ublksrv_gettid());
+    // Prevent rescheduling this thread to another CPU
+    set_queue_thread_affinity(cdev);
 
-    ublksrv_queue const* q;
-    auto dev_id = ublksrv_ctrl_get_dev_info(cdev)->dev_id;
-    if (q = ublksrv_queue_init_flags(target->ublk_dev, q_id, target.get(),
-                                     IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER |
-                                         IORING_SETUP_DEFER_TASKRUN);
-        !q) {
-        ublk_err("ublk dev %d queue %d init queue failed", dev_id, q_id);
-        sem_post(queue_sem);
-        target.reset();
+    // Initialize UBlkSrv IOUring queue and bind target pointer
+    auto q =
+        ublksrv_queue_init_flags(target->ublk_dev, q_id, target.get(),
+                                 IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+
+    // Wake up ::start() thread
+    sem_post(queue_sem);
+    target.reset();
+
+    // If queue initialization failed, exit
+    if (!q) {
+        TLOGE("ublk dev queue {} init queue failed", q_id)
         return NULL;
     }
 
-    // select one cpu
-    set_queue_thread_affinity(cdev);
-    sem_post(queue_sem);
-
-    target.reset();
-
-    TLOGD("tid {}: ublk dev {} queue {} started", ublksrv_gettid(), dev_id, q->q_id)
+    TLOGD("tid {}: ublk dev queue {} started", ublksrv_gettid(), q->q_id)
     do {
         if (ublksrv_process_io(q) < 0) break;
     } while (1);
-
-    TLOGD("ublk dev {} queue {} exited", dev_id, q->q_id)
+    TLOGD("ublk dev queue {} exited", q->q_id)
     ublksrv_queue_deinit(q);
     return NULL;
 }
@@ -376,10 +374,8 @@ static void handle_event(ublksrv_queue const* q) {
     }
 }
 
-static void idle_transition(ublksrv_queue const* q, bool enter) {
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    TLOGT("Idle Trans: {}", enter)
-    tgt->device->idle_transition(q, enter);
+static void handle_io_background(const struct ublksrv_queue*, int nr_queued_io) {
+    TLOGT("HandleIOBackground: {}", nr_queued_io)
 }
 
 // Called in the context of start by ublksrv_dev_init()
@@ -400,25 +396,9 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     auto ublk_disk = tgt->device;
     dev->tgt.tgt_data = ublk_disk.get();
 
-    // Configure the ublksrv JSON bits
-    if (!ublksrv_is_recovering(cdev)) {
-        auto tgt_json = ublksrv_tgt_base_json{
-            .name = "",
-            .type = 0,
-            .pad = 0,
-            .dev_size = 0,
-            .reserved = {0},
-        };
-
-        auto str_id = to_string(tgt->volume_uuid);
-        std::erase(str_id, '-');
-        RELEASE_ASSERT_EQ(str_id.size(), UBLKSRV_TGT_NAME_MAX_LEN, "Bad UUID length!")
-        strncpy(tgt_json.name, str_id.c_str(), UBLKSRV_TGT_NAME_MAX_LEN - 1);
-        tgt_json.dev_size = ublk_disk->params()->basic.dev_sectors << SECTOR_SHIFT;
-        ublk_json_write_dev_info(cdev);
-        ublk_json_write_target_base(cdev, &tgt_json);
-        ublk_json_write_params(cdev, ublk_disk->params());
-    }
+    // TODO Ublk Recovery
+    //if (ublksrv_is_recovering(cdev)) {
+    //}
 
     auto ublksrv_tgt = &dev->tgt;
     ublksrv_tgt->io_data_size = sizeof(struct async_io);
@@ -433,6 +413,21 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     return 0;
 }
 
+static void deinit_tgt(const struct ublksrv_dev*) { TLOGD("Deinit tgt!") }
+
+static void idle_transition(ublksrv_queue const* q, bool enter) {
+    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
+    TLOGT("Idle Trans: {}", enter)
+    tgt->device->idle_transition(q, enter);
+}
+
+static int init_queue(const struct ublksrv_queue*, void**) {
+    TLOGD("Init Queue")
+    return 0;
+}
+
+void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
+
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
 ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device) {
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
@@ -442,21 +437,21 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .handle_event = device->uses_ublk_iouring
             ? nullptr
             : handle_event, // Device specific, determines *if* ublksrv_complete_io() will be called by device
-        .handle_io_background = nullptr, // Not Implemented
-        .usage_for_add = nullptr,        // Not Implemented
+        .handle_io_background = handle_io_background,
+        .usage_for_add = nullptr, // Not Implemented
         .init_tgt = init_tgt,
-        .deinit_tgt = nullptr,      // Not Implemented
+        .deinit_tgt = deinit_tgt,
         .alloc_io_buf = nullptr,    // Not Implemented
         .free_io_buf = nullptr,     // Not Implemented
         .idle_fn = idle_transition, // Called when I/O has stopped
-        .type = 0,                  // Deprecated
+        .type = 0,                  // Deprecated *DO NOT USE*
         .ublk_flags = 0,            // Currently Clear
         .ublksrv_flags = (device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
         .pad = 0,                                                                             // Currently Clear
         .name = "ublkpp",
-        .recovery_tgt = nullptr,    // Deprecated
-        .init_queue = nullptr,      // Not Implemented
-        .deinit_queue = nullptr,    // Not Implemented
+        .recovery_tgt = nullptr, // Deprecated *DO NOT USE*
+        .init_queue = init_queue,
+        .deinit_queue = deinit_queue,
         .reserved = {0, 0, 0, 0, 0} // Reserved
     });
 
@@ -495,6 +490,7 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     if (ublk_dev) {
         TLOGD("Stopping Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
         ublksrv_ctrl_stop_dev(ctrl_dev);
+        TLOGD("Deiniting Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
         ublksrv_dev_deinit(ublk_dev);
     }
 
