@@ -11,6 +11,9 @@ list(APPEND RAID1_TEST_SRCS
   #bitmap/load_fail.cpp
   bitmap/multiword.cpp
   bitmap/next_dirty.cpp
+  bitmap/roundtrip_sync_load.cpp
+  bitmap/sync_to_batching.cpp
+  bitmap/sync_to_crash_scenarios.cpp
   bitmap/update_fail.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)
