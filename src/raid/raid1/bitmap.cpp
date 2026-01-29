@@ -168,18 +168,15 @@ Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
         else
             return &it->second;
     }
-
-    // Allocate memory first (fail fast if OOM)
-    void* new_page{nullptr};
-    if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
-    memset(new_page, 0, k_page_size);
-
-    // Only insert if allocation succeeded
     auto [it, happened] = _page_map.emplace(static_cast< uint32_t >(offset),
-                                            PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(new_page),
-                                                                               free_page()),
+                                            PageData{std::shared_ptr< word_t >{},
                                                      false});
-
+	if(happened) {
+        void* new_page{nullptr};
+    	if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) throw std::runtime_error("OutOfMemory");; // LCOV_EXCL_LINE
+        memset(new_page, 0, k_page_size);
+        it->second.page.reset(reinterpret_cast< word_t* >(new_page), free_page());
+	}
     return &it->second;
 }
 
@@ -201,7 +198,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
                                                                   : (((uint64_t)0b1 << bits_to_read) - 1)
                                                        << (shift_offset - (bits_to_read - 1)));
             bits_left -= bits_to_read;
-            if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_check)) return true;
+            if (0 != (cur_word->load(std::memory_order_relaxed) & bits_to_check)) return true;
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
@@ -246,7 +243,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         auto const clear_mask = ~htobe64(64 == bits_to_write ? UINT64_MAX
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
-        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_seq_cst);
+        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_relaxed);
         _dirty_chunks_est.fetch_sub(std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
                                              (uint64_t)__builtin_popcountll(old_word xor (old_word & clear_mask))),
                                     std::memory_order_relaxed);
@@ -324,7 +321,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_seq_cst);
+            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_relaxed);
             _dirty_chunks_est.fetch_add(__builtin_popcountll(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;
