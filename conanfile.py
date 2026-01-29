@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.17.1"
+    version = "0.17.2"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
