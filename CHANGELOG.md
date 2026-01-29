@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.18.0
 - Feature: Device Recoverability
 
+## 0.17.2
+- bitmap: Increased shutdown speed by batching sync_to requests and tracking the unchanged pages
+
 ## 0.17.1
 - iomgr: Shutdown during process termination.
 

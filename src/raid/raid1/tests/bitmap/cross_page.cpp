@@ -35,18 +35,14 @@ TEST(Raid1, WriteFailAcrossPages) {
     // expect unmount_clean on Device B
     EXPECT_TO_WRITE_SB(device_b);
 
-    // Flush dirty bitmap
+    // Flush dirty bitmap - with batching, two consecutive pages are written in one call
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
-            return iov->iov_len;
-        })
-        .WillOnce([&raid_device](uint8_t, iovec* iov, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
-            return iov->iov_len;
+        .Times(1)
+        .WillOnce([&raid_device](uint8_t, iovec*, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(2U, nr_vecs);                                // 2 consecutive pages batched
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);           // Expect write to bitmap!
+            EXPECT_LT(addr, raid_device.reserved_size());          // Expect write to bitmap!
+            return nr_vecs * ublkpp::raid1::k_page_size;          // Return total bytes written
         })
         .RetiresOnSaturation();
 }

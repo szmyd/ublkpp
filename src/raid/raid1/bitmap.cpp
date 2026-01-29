@@ -13,6 +13,10 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
+size_t Bitmap::max_pages_per_tx(const UblkDisk& device) {
+    return device.max_tx() / k_page_size;
+}
+
 Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, std::string const& id) :
         _id(id),
         _data_size(data_size),
@@ -70,7 +74,7 @@ void Bitmap::init_to(UblkDisk& device) {
     // For now, create a scatter-gather of the MaxI/O size to clear synchronously erase the bitmap region.
     RLOGI("Clearing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}] on: {}", _num_pages, _num_pages * k_page_size / Ki, _id,
           device)
-    auto const max_pages = device.max_tx() / k_page_size;
+    auto const max_pages = max_pages_per_tx(device);
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     std::fill_n(iov.get(), max_pages, proto);
@@ -84,15 +88,46 @@ void Bitmap::init_to(UblkDisk& device) {
 }
 
 io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
-    auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
-    for (auto& [pg_offset, page] : _page_map) {
-        if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
-        RLOGT("Syncing Bitmap page: {} to {} [id: {}]", pg_offset, device, _id)
-        iov.iov_base = page.get();
-        auto page_addr = (k_page_size * pg_offset) + offset;
-        if (auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) return res;
+    if (_page_map.empty()) return 0;
+
+    // Allocate iovec array for batching consecutive pages
+    auto const max_batch = max_pages_per_tx(device);
+    auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
+    if (!iovs) return std::unexpected(std::make_error_condition(std::errc::not_enough_memory)); // LCOV_EXCL_LINE
+
+    size_t iov_cnt = 0;
+    uint32_t batch_start = 0;
+    uint64_t batch_addr = 0;
+
+    auto flush = [&]() -> io_result {
+        if (0 == iov_cnt) return 0;
+        RLOGD("Syncing {} consecutive Bitmap page(s) from page {} to {} [id: {}]", iov_cnt, batch_start, device, _id)
+        auto res = device.sync_iov(UBLK_IO_OP_WRITE, iovs.get(), iov_cnt, batch_addr);
+        iov_cnt = 0;
+        return res;
+    };
+
+    for (auto& [pg_off, page_data] : _page_map) {
+        // Skip pages loaded from disk that haven't been modified
+        if (page_data.loaded_from_disk.load(std::memory_order_acquire)) continue;
+
+        // Skip zero pages (shouldn't happen after dirty_pages cleanup)
+        if (0 == isal_zero_detect(page_data.page.get(), k_page_size)) continue;
+
+        bool consecutive = (iov_cnt > 0) && (pg_off == batch_start + iov_cnt);
+        if (iov_cnt >= max_batch || (iov_cnt > 0 && !consecutive)) {
+            if (auto res = flush(); !res) return res;
+        }
+
+        if (0 == iov_cnt) {
+            batch_start = pg_off;
+            batch_addr = (k_page_size * pg_off) + offset;
+        }
+
+        iovs[iov_cnt++] = {.iov_base = page_data.page.get(), .iov_len = k_page_size};
     }
-    return 0;
+
+    return flush();
 }
 
 void Bitmap::load_from(UblkDisk& device) {
@@ -116,31 +151,33 @@ void Bitmap::load_from(UblkDisk& device) {
         RLOGT("Page: {} is *DIRTY* [id: {}]", pg_idx + 1, _id)
         _dirty_chunks_est += (k_page_size * k_bits_in_byte);
 
-        // Insert new dirty page into page map
-        auto [it, _] = _page_map.emplace(std::make_pair(pg_idx, nullptr));
+        // Insert new dirty page into page map (mark as loaded from disk, not modified)
+        auto [it, _] = _page_map.emplace(
+            static_cast< uint32_t >(pg_idx),
+            PageData{std::shared_ptr< word_t >(reinterpret_cast< word_t* >(iov.iov_base), free_page()), true});
         if (_page_map.end() == it) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
-        it->second.reset(reinterpret_cast< word_t* >(iov.iov_base), free_page());
         iov.iov_base = nullptr;
     }
     if (nullptr != iov.iov_base) free(iov.iov_base);
 }
 
-Bitmap::word_t* Bitmap::__get_page(uint64_t offset, bool creat) {
+Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
     if (!creat) {
         if (auto it = _page_map.find(offset); _page_map.end() == it)
             return nullptr;
         else
-            return it->second.get();
+            return &it->second;
     }
-
-    auto [it, happened] = _page_map.emplace(std::make_pair(offset, nullptr));
-    if (happened) {
+    auto [it, happened] = _page_map.emplace(static_cast< uint32_t >(offset),
+                                            PageData{std::shared_ptr< word_t >{},
+                                                     false});
+	if(happened) {
         void* new_page{nullptr};
-        if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) return nullptr; // LCOV_EXCL_LINE
+    	if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) throw std::runtime_error("OutOfMemory");; // LCOV_EXCL_LINE
         memset(new_page, 0, k_page_size);
-        it->second.reset(reinterpret_cast< word_t* >(new_page), free_page());
-    }
-    return it->second.get();
+        it->second.page.reset(reinterpret_cast< word_t* >(new_page), free_page());
+	}
+    return &it->second;
 }
 
 bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
@@ -149,10 +186,10 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
             calc_bitmap_region(addr + off, len - off, _chunk_size);
         off += sz;
         // Check for a dirty page
-        auto cur_page = __get_page(page_offset);
-        if (!cur_page) continue;
+        auto page_data = __get_page(page_offset);
+        if (!page_data) continue;
 
-        auto cur_word = cur_page + word_offset;
+        auto cur_word = page_data->page.get() + word_offset;
 
         // Handle update crossing multiple words (optimization potential?)
         for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -161,7 +198,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
                                                                   : (((uint64_t)0b1 << bits_to_read) - 1)
                                                        << (shift_offset - (bits_to_read - 1)));
             bits_left -= bits_to_read;
-            if (0 != (cur_word->load(std::memory_order_acquire) & bits_to_check)) return true;
+            if (0 != (cur_word->load(std::memory_order_relaxed) & bits_to_check)) return true;
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
@@ -172,8 +209,9 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 uint64_t Bitmap::page_size() { return k_page_size; }
 
 size_t Bitmap::dirty_pages() {
-    auto cnt =
-        std::erase_if(_page_map, [](const auto& it) { return (0 == isal_zero_detect(it.second.get(), k_page_size)); });
+    auto cnt = std::erase_if(_page_map, [](const auto& it) {
+        return (0 == isal_zero_detect(it.second.page.get(), k_page_size));
+    });
     if (0 < cnt) { RLOGD("Dropped [{}/{}] page(s) from the Bitmap [id: {}]", cnt, _page_map.size() + cnt, _id); }
     auto sz = _page_map.size();
     auto const full = (sz * (k_page_size * k_bits_in_byte));
@@ -192,10 +230,11 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:{:#0x}] is not aligned to {:#0x}", len, _chunk_size)
 
     // Get/Create a Page
-    auto const cur_page = __get_page(page_offset);
-    DEBUG_ASSERT_NOTNULL(cur_page, "Expected to find dirty page!")
-    if (!cur_page) return std::make_tuple(cur_page, page_offset, sz);
-    auto cur_word = cur_page + word_offset;
+    auto page_data = __get_page(page_offset);
+    DEBUG_ASSERT_NOTNULL(page_data, "Expected to find dirty page!")
+    if (!page_data) return std::make_tuple(nullptr, page_offset, sz);
+
+    auto cur_word = page_data->page.get() + word_offset;
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -204,17 +243,21 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         auto const clear_mask = ~htobe64(64 == bits_to_write ? UINT64_MAX
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
-        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_release);
+        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_relaxed);
         _dirty_chunks_est.fetch_sub(std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
                                              (uint64_t)__builtin_popcountll(old_word xor (old_word & clear_mask))),
                                     std::memory_order_relaxed);
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
+
+    // Mark as modified AFTER all modifications (release ensures visibility)
+    page_data->loaded_from_disk.store(false, std::memory_order_release);
     RLOGT("Bitmap CLEANED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
 
     // Only return clean pages
-    if (0 == isal_zero_detect(cur_page, k_page_size)) return std::make_tuple(_clean_page.get(), page_offset, sz);
+    if (0 == isal_zero_detect(page_data->page.get(), k_page_size))
+        return std::make_tuple(_clean_page.get(), page_offset, sz);
     return std::make_tuple(nullptr, page_offset, sz);
 }
 
@@ -224,15 +267,15 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     uint32_t sz = 0;
     uint64_t logical_off = 0;
     // Find the first dirty page
-    for (auto const& [pg_off, page] : _page_map) {
+    for (auto const& [pg_off, page_data] : _page_map) {
         sz = 0;
-        if (0 == isal_zero_detect(page.get(), k_page_size)) continue;
+        if (0 == isal_zero_detect(page_data.page.get(), k_page_size)) continue;
         logical_off = static_cast< uint64_t >(_page_width) * pg_off;
 
         // Find the first dirty word
         auto word = 0UL;
         for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
-            word = be64toh((page.get() + word_off)->load(std::memory_order_relaxed));
+            word = be64toh((page_data.page.get() + word_off)->load(std::memory_order_relaxed));
             if (0 == word) continue;
             logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
 
@@ -267,9 +310,10 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
         cur_off += sz;
 
         // Get/Create a Page
-        auto const cur_page = __get_page(page_offset, true);
-        if (!cur_page) throw std::runtime_error("Could not insert new page");
-        auto cur_word = cur_page + word_offset;
+        auto page_data = __get_page(page_offset, true);
+        if (!page_data) throw std::runtime_error("Could not insert new page");
+
+        auto cur_word = page_data->page.get() + word_offset;
         // Handle update crossing multiple words (optimization potential?)
         for (auto bits_left = nr_bits; 0 < bits_left;) {
             auto const bits_to_write = std::min(shift_offset + 1, bits_left);
@@ -277,12 +321,15 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_release);
+            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_relaxed);
             _dirty_chunks_est.fetch_add(__builtin_popcountll(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
+
+        // Mark as modified AFTER all modifications (release ensures visibility)
+        page_data->loaded_from_disk.store(false, std::memory_order_release);
     }
     RLOGT("Bitmap DIRTIED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
 }
