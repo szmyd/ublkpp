@@ -22,7 +22,8 @@ SISL_OPTION_GROUP(ublkpp_tgt,
                    cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
                   (qdepth, "", "qdepth", "I/O Queue Depth per target",
                    cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"),
-                  (feature_recovery, "", "feature_recovery", "Enable Recovery Feature", cxxopts::value< bool >(), ""))
+                  (feature_recovery, "", "feature_recovery", "Enable Recovery Feature", cxxopts::value< bool >(), ""),
+                  (feature_zero_copy, "", "feature_zero_copy", "Enable ZeroCopy Feature", cxxopts::value< bool >(), ""))
 
 using namespace std::chrono_literals;
 
@@ -452,6 +453,16 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
                                          int device_id) {
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
     if (0 <= device_id) tgt->device_recovering = true;
+    auto ublk_flags = unsigned(0);
+    if (0 < SISL_OPTIONS["feature_recovery"].count()) {
+        TLOGI("Starting device recovery...: {}", to_string(vol_id))
+        ublk_flags |= (unsigned)(UBLK_F_USER_RECOVERY | UBLK_F_USER_RECOVERY_REISSUE);
+    }
+    if (0 < SISL_OPTIONS["feature_zero_copy"].count()) {
+        TLOGI("Enabling zero-copy support...: {}", to_string(vol_id))
+        ublk_flags |= (unsigned)(UBLK_F_SUPPORT_ZERO_COPY);
+    }
+
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
         .tgt_io_done = tgt_io_done,
@@ -466,9 +477,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .free_io_buf = nullptr,     // Not Implemented
         .idle_fn = idle_transition, // Called when I/O has stopped
         .type = 0,                  // Deprecated *DO NOT USE*
-        .ublk_flags = (0 < SISL_OPTIONS["feature_recovery"].count())
-            ? (unsigned)(UBLK_F_USER_RECOVERY | UBLK_F_USER_RECOVERY_REISSUE)
-            : 0,
+        .ublk_flags = ublk_flags,
         .ublksrv_flags = (device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
         .pad = 0,                                                                             // Currently Clear
         .name = "ublkpp",
