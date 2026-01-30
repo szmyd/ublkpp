@@ -41,7 +41,9 @@ SISL_OPTION_GROUP(
      "<GiB>"),
     (homeblks_dev, "", "homeblks_dev", "path to the device to run HomeBlocks on", cxxopts::value< std::string >(), ""),
 #endif
-    (stripe_size, "", "stripe_size", "RAID-0 Stripe Size", ::cxxopts::value< uint32_t >()->default_value("131072"), ""))
+    (stripe_size, "", "stripe_size", "RAID-0 Stripe Size", ::cxxopts::value< uint32_t >()->default_value("131072"), ""),
+    (device_id, "", "device_id", "Recover existing device", cxxopts::value< int32_t >()->default_value("-1"),
+     "<ublkid>"))
 
 #ifdef HAVE_HOMEBLOCKS
 #define HOMEBLKS_OPTIONS , homeblocks, iomgr
@@ -80,7 +82,7 @@ template < typename D >
 Result _run_target(boost::uuids::uuid const& vol_id, std::unique_ptr< D >&& dev) {
 
     // Wait for initialization to complete
-    auto res = ublkpp::ublkpp_tgt::run(vol_id, std::move(dev));
+    auto res = ublkpp::ublkpp_tgt::run(vol_id, std::move(dev), SISL_OPTIONS["device_id"].as< int32_t >());
     if (!res) { return std::unexpected(res.error()); }
     k_target = std::move(res.value());
     return k_target->device_path();

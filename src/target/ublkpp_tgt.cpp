@@ -430,8 +430,10 @@ static int init_queue(const struct ublksrv_queue*, void**) {
 void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
-ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device) {
+ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device,
+                                         int device_id) {
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
+    if (0 <= device_id) tgt->device_recovering = true;
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
         .tgt_io_done = tgt_io_done,
@@ -461,7 +463,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
     TLOGD("Starting {} {} evfd [uuid:{}]", static_pointer_cast< UblkDisk >(device),
           (nullptr == tgt->tgt_type->handle_event) ? "WITHOUT" : "WITH", to_string(vol_id))
     tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
-        .dev_id = -1,
+        .dev_id = device_id,
         .max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >(),
         .nr_hw_queues = SISL_OPTIONS["nr_hw_queues"].as< uint16_t >(),
         .queue_depth = SISL_OPTIONS["qdepth"].as< uint16_t >(),
