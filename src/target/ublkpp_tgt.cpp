@@ -107,15 +107,28 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
 
 static std::expected< std::filesystem::path, std::error_condition > start(std::shared_ptr< ublkpp_tgt_impl > tgt) {
     TLOGD("Initializing Ctrl Device")
-    if (tgt->ctrl_dev = ublksrv_ctrl_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
-        TLOGE("Cannot init disk {}", tgt->device)
-        return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    if (!tgt->device_recovering) { // NORMAL Path
+        if (tgt->ctrl_dev = ublksrv_ctrl_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
+            TLOGE("Cannot init disk {}", tgt->device)
+            return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        }
+        if (auto ret = ublksrv_ctrl_add_dev(tgt->ctrl_dev); 0 > ret) {
+            TLOGE("Cannot add disk {}: {}", tgt->device, ret)
+            return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        }
+    } else { // RECOVERY Path
+        if (tgt->ctrl_dev = ublksrv_ctrl_recover_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
+            TLOGE("Cannot recover disk {}", tgt->device)
+            return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        }
+        if (auto ret = ublksrv_ctrl_get_info(tgt->ctrl_dev); ret < 0) {
+            TLOGE("Cannot get Ctrl Info for disk {}", tgt->device)
+            return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        } else {
+            ret = ublksrv_ctrl_start_recovery(tgt->ctrl_dev);
+        }
     }
 
-    if (auto ret = ublksrv_ctrl_add_dev(tgt->ctrl_dev); 0 > ret) {
-        TLOGE("Cannot add disk {}: {}", tgt->device, ret)
-        return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
-    }
     tgt->device_added = true;
     {
         auto info = ublksrv_ctrl_get_dev_info(tgt->ctrl_dev);
@@ -164,6 +177,7 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
         sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt, i, &queue_sem).detach();
     }
+    auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
     tgt.reset();
 
@@ -172,10 +186,14 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         sem_wait(&queue_sem);
 
     // Start processing I/Os
-    if (auto err = ublksrv_ctrl_set_params(ctrl_dev, dev_ptr->params()); err)
+    if (!recovery) {
+        if (auto err = ublksrv_ctrl_set_params(ctrl_dev, dev_ptr->params()); err)
+            return std::unexpected(std::error_condition(err, std::system_category()));
+        if (auto err = ublksrv_ctrl_start_dev(ctrl_dev, getpid()); 0 > err)
+            return std::unexpected(std::error_condition(err, std::system_category()));
+    } else if (auto err = ublksrv_ctrl_end_recovery(ctrl_dev, getpid()); 0 > err) {
         return std::unexpected(std::error_condition(err, std::system_category()));
-    if (auto err = ublksrv_ctrl_start_dev(ctrl_dev, getpid()); 0 > err)
-        return std::unexpected(std::error_condition(err, std::system_category()));
+    }
 
     static auto const sys_path = std::filesystem::path{"/"} / "dev";
     auto const res = sys_path / fmt::format("ublkb{}", dev_id);
