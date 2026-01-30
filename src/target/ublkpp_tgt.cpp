@@ -21,7 +21,8 @@ SISL_OPTION_GROUP(ublkpp_tgt,
                   (nr_hw_queues, "", "nr_hw_queues", "Number of Hardware Queues (threads) per target",
                    cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
                   (qdepth, "", "qdepth", "I/O Queue Depth per target",
-                   cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"))
+                   cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"),
+                  (feature_recovery, "", "feature_recovery", "Enable Recovery Feature", cxxopts::value< bool >(), ""))
 
 using namespace std::chrono_literals;
 
@@ -397,7 +398,7 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     dev->tgt.tgt_data = ublk_disk.get();
 
     // TODO Ublk Recovery
-    //if (ublksrv_is_recovering(cdev)) {
+    // if (ublksrv_is_recovering(cdev)) {
     //}
 
     auto ublksrv_tgt = &dev->tgt;
@@ -445,7 +446,9 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .free_io_buf = nullptr,     // Not Implemented
         .idle_fn = idle_transition, // Called when I/O has stopped
         .type = 0,                  // Deprecated *DO NOT USE*
-        .ublk_flags = 0,            // Currently Clear
+        .ublk_flags = (0 < SISL_OPTIONS["feature_recovery"].count())
+            ? (unsigned)(UBLK_F_USER_RECOVERY | UBLK_F_USER_RECOVERY_REISSUE)
+            : 0,
         .ublksrv_flags = (device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
         .pad = 0,                                                                             // Currently Clear
         .name = "ublkpp",

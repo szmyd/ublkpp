@@ -49,13 +49,7 @@ SISL_OPTION_GROUP(
 #define HOMEBLKS_OPTIONS
 #endif
 
-#ifdef HAVE_ISCSI
-#define ISCSI_OPTIONS , iscsi
-#else
-#define ISCSI_OPTIONS
-#endif
-
-#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, fs_disk, ublkpp_disk HOMEBLKS_OPTIONS ISCSI_OPTIONS
+#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, fs_disk, ublkpp_disk HOMEBLKS_OPTIONS
 
 SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
