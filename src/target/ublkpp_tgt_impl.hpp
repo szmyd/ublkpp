@@ -19,6 +19,7 @@ class UblkDisk;
 
 struct ublkpp_tgt_impl {
     bool device_added{false};
+    bool device_recovering{false};
     boost::uuids::uuid volume_uuid;
     std::filesystem::path device_path;
     // Owned by us

@@ -14,9 +14,6 @@ extern "C" {
 
 #include "lib/logging.hpp"
 
-SISL_OPTION_GROUP(iscsi,
-                  (connect_any, "", "connect_any", "Login to the first target found", cxxopts::value< bool >(), ""))
-
 SISL_LOGGING_DEF(libiscsi)
 
 namespace ublkpp {

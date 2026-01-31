@@ -41,7 +41,9 @@ SISL_OPTION_GROUP(
      "<GiB>"),
     (homeblks_dev, "", "homeblks_dev", "path to the device to run HomeBlocks on", cxxopts::value< std::string >(), ""),
 #endif
-    (stripe_size, "", "stripe_size", "RAID-0 Stripe Size", ::cxxopts::value< uint32_t >()->default_value("131072"), ""))
+    (stripe_size, "", "stripe_size", "RAID-0 Stripe Size", ::cxxopts::value< uint32_t >()->default_value("131072"), ""),
+    (device_id, "", "device_id", "Recover existing device", cxxopts::value< int32_t >()->default_value("-1"),
+     "<ublkid>"))
 
 #ifdef HAVE_HOMEBLOCKS
 #define HOMEBLKS_OPTIONS , homeblocks, iomgr
@@ -49,13 +51,7 @@ SISL_OPTION_GROUP(
 #define HOMEBLKS_OPTIONS
 #endif
 
-#ifdef HAVE_ISCSI
-#define ISCSI_OPTIONS , iscsi
-#else
-#define ISCSI_OPTIONS
-#endif
-
-#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, fs_disk, ublkpp_disk HOMEBLKS_OPTIONS ISCSI_OPTIONS
+#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, fs_disk, ublkpp_disk HOMEBLKS_OPTIONS
 
 SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
@@ -86,7 +82,7 @@ template < typename D >
 Result _run_target(boost::uuids::uuid const& vol_id, std::unique_ptr< D >&& dev) {
 
     // Wait for initialization to complete
-    auto res = ublkpp::ublkpp_tgt::run(vol_id, std::move(dev));
+    auto res = ublkpp::ublkpp_tgt::run(vol_id, std::move(dev), SISL_OPTIONS["device_id"].as< int32_t >());
     if (!res) { return std::unexpected(res.error()); }
     k_target = std::move(res.value());
     return k_target->device_path();
@@ -159,8 +155,7 @@ static auto create_hb_volume(UblkPPApplication& app, boost::uuids::uuid const& v
 
 // Return a device based on the format of the input
 // Optional: pass in a unique identifier for metrics tracking
-static std::unique_ptr< ublkpp::UblkDisk > get_driver(std::string const& resource,
-                                                       std::string const& metrics_id = "") {
+static std::unique_ptr< ublkpp::UblkDisk > get_driver(std::string const& resource, std::string const& metrics_id = "") {
 #ifdef HAVE_HOMEBLOCKS
     if (0 < SISL_OPTIONS["homeblks_dev"].count()) {
         if (0 < SISL_OPTIONS["capacity"].count()) {
@@ -257,13 +252,13 @@ Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > co
             auto dev_b = get_driver(layout[i + 1], partition_uuid_str);
 
             // Create RAID1 mirror and add to devices
-            devices.push_back(std::make_shared< ublkpp::Raid1Disk >(
-                partition_uuid, std::move(dev_a), std::move(dev_b), raid10_uuid_str));
+            devices.push_back(std::make_shared< ublkpp::Raid1Disk >(partition_uuid, std::move(dev_a), std::move(dev_b),
+                                                                    raid10_uuid_str));
         }
 
         dev =
             std::make_unique< ublkpp::Raid0Disk >(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(devices));
-   } catch (std::runtime_error const& e) {}
+    } catch (std::runtime_error const& e) {}
     if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
 }
@@ -299,21 +294,23 @@ int main(int argc, char* argv[]) {
     } else
         std::cout << SISL_PARSER.help({}) << std::endl;
 
-    if (!res) return -1;
+    if (res) {
 
-    // start the metrics server
-    auto http_server_ptr = ioenvironment.get_http_server();
-    try {
-        auto routes = std::vector< iomgr::http_route >{{Pistache::Http::Method::Get, "/metrics",
-                                                        Pistache::Rest::Routes::bind(get_prometheus_metrics),
-                                                        iomgr::url_t::safe}};
-        http_server_ptr->setup_routes(routes);
-        LOGINFO("Started http server ");
-    } catch (std::runtime_error const& e) { LOGERROR("setup routes failed, {}", e.what()) }
-    http_server_ptr->start();
+        // start the metrics server
+        auto http_server_ptr = ioenvironment.get_http_server();
+        try {
+            auto routes = std::vector< iomgr::http_route >{{Pistache::Http::Method::Get, "/metrics",
+                                                            Pistache::Rest::Routes::bind(get_prometheus_metrics),
+                                                            iomgr::url_t::safe}};
+            http_server_ptr->setup_routes(routes);
+            LOGINFO("Started http server ");
+        } catch (std::runtime_error const& e) { LOGERROR("setup routes failed, {}", e.what()) }
+        http_server_ptr->start();
 
-    exit_future.wait();
-    k_target.reset();
+        exit_future.wait();
+        k_target.reset();
+    } else
+        s_stop_code.set_value(EIO);
 #ifdef HAVE_HOMEBLOCKS
     if (_app) _app->_hb->shutdown();
 #endif
