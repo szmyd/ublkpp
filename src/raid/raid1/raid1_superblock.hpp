@@ -27,7 +27,7 @@ struct __attribute__((__packed__)) SuperBlock {
         uint8_t magic[16]; // This is a static set of 128bits to confirm existing superblock
         uint16_t version;
         uint8_t uuid[16]; // This is a user UUID that is assigned when the array is created
-    } header;
+    } header;  // 34 bytes
     struct {
         // was cleanly unmounted, position in RAID1 and current Healthy device
         uint8_t clean_unmount : 1, read_route : 2, device_b : 1, : 0;
@@ -36,10 +36,10 @@ struct __attribute__((__packed__)) SuperBlock {
             uint32_t chunk_size;   // Number of bytes each bit represents
             uint64_t age;
         } bitmap;
-    } fields;
-    uint8_t _reserved[k_page_size - (sizeof(header) + sizeof(fields))];
+    } fields;  // 29 bytes
+    uint8_t superbitmap_reserved[k_page_size - (sizeof(header) + sizeof(fields)];  // Space for SuperBitmap (completes 4KiB page)
 };
-static_assert(k_page_size == sizeof(SuperBlock), "Size of raid1::SuperBlock does not match SIZE!");
+static_assert(sizeof(SuperBlock) == 4Ki, "Size of raid1::SuperBlock must be 4096 bytes (4KiB page)!");
 #else
 #error "Big Endian not supported!"
 #endif
