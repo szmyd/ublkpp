@@ -25,19 +25,12 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t*
         _page_width(_chunk_size * k_page_size * k_bits_in_byte),
         _num_pages(_data_size / _page_width + ((0 == _data_size % _page_width) ? 0 : 1)),
         _super_bitmap(superbitmap_reserved) {
-    // SuperBitmap can track at most 32,264 bitmap pages (4033 bytes * 8 bits/byte)
-    // With minimum chunk_size of 32KiB, this gives max 31.5TB
-    // _num_pages must not exceed SuperBitmap capacity
-    constexpr auto max_superbitmap_bits = 4033UL * 8UL;  // SuperBitmap::k_size_bits
-    if (_num_pages > max_superbitmap_bits) {
-	/*
-		Initially, I was going to have assert here, but potentially we can receive another request
-		with an appropriate disk size, which we would want to serve.
-	*/
-        throw std::runtime_error(fmt::format(
-            "Disk size too large for SuperBitmap: {} pages exceeds max {} pages (max ~31.5TB with 32KiB chunks) [id: {}]",
-            _num_pages, max_superbitmap_bits, _id));
-    }
+    // SuperBitmap can track at most 32,176 bitmap pages (4022 bytes * 8 bits/byte)
+    // The RAID1 layer should ensure capacity doesn't exceed this limit
+    constexpr auto max_superbitmap_bits = 4022UL * 8UL;  // SuperBitmap::k_size_bits
+    DEBUG_ASSERT_LE(_num_pages, max_superbitmap_bits,
+                    "Disk size too large for SuperBitmap: {} pages exceeds max {} pages [id: {}]",
+                    _num_pages, max_superbitmap_bits, _id);
     RLOGT("Initializing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}]", _num_pages, _num_pages * k_page_size / Ki, _id)
     void* new_page{nullptr};
     if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
@@ -82,6 +75,9 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitm
 }
 
 void Bitmap::init_to(UblkDisk& device) {
+    // Clear the SuperBitmap when initializing a new bitmap
+    _super_bitmap.clear_all();
+
     auto proto = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
 
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
@@ -153,14 +149,15 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
     if (auto res = flush(); !res) return res;
 
     // Note: SuperBitmap is saved together with SuperBlock by the caller
-    // using save_super_bitmap() followed by write_superblock()
+    // using write_superblock() which writes the entire 4KiB SuperBlock (including SuperBitmap)
 
     return 0;
 }
 
-void Bitmap::load_from(UblkDisk& device, uint64_t offset) {
-    // Note: SuperBitmap is loaded together with SuperBlock by the caller
-    // using load_superblock() followed by load_super_bitmap()
+void Bitmap::load_from(UblkDisk& device) {
+    // Note: SuperBitmap must be loaded from SuperBlock BEFORE calling this function
+    // The caller should read the entire 4KiB SuperBlock (which includes SuperBitmap at offset 74)
+    // and pass the superbitmap_reserved pointer to the Bitmap constructor
 
     // We read each page from the Device into memory if it is not ZERO'd out
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
@@ -181,7 +178,7 @@ void Bitmap::load_from(UblkDisk& device, uint64_t offset) {
                 throw std::runtime_error("OutOfMemory");
             } // LCOV_EXCL_STOP
         }
-        if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, offset + (pg_idx * k_page_size)); !res) {
+        if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, k_page_size + (pg_idx * k_page_size)); !res) {
             free(iov.iov_base);
             throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
         }

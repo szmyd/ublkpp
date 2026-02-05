@@ -36,10 +36,14 @@ struct __attribute__((__packed__)) SuperBlock {
             uint32_t chunk_size;   // Number of bytes each bit represents
             uint64_t age;
         } bitmap;
-    } fields;  // 29 bytes
-    uint8_t superbitmap_reserved[k_page_size - (sizeof(header) + sizeof(fields)];  // Space for SuperBitmap (completes 4KiB page)
+    } fields;  // 40 bytes (with padding)
+    uint8_t superbitmap_reserved[4022];  // Space for SuperBitmap (completes 4KiB page)
 };
-static_assert(sizeof(SuperBlock) == 4Ki, "Size of raid1::SuperBlock must be 4096 bytes (4KiB page)!");
+static_assert(k_page_size == sizeof(SuperBlock), "Size of raid1::SuperBlock does not match SIZE!");
+static_assert(sizeof(SuperBlock::header) == 34, "SuperBlock::header size mismatch");
+static_assert(sizeof(((SuperBlock*)nullptr)->fields) == 40, "SuperBlock::fields size mismatch");
+static_assert(sizeof(((SuperBlock*)nullptr)->superbitmap_reserved) == 4022, "SuperBlock::superbitmap_reserved size mismatch");
+static_assert(offsetof(SuperBlock, superbitmap_reserved) == 74, "SuperBlock::superbitmap_reserved offset mismatch");
 #else
 #error "Big Endian not supported!"
 #endif

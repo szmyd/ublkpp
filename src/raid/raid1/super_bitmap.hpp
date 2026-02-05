@@ -9,13 +9,13 @@ namespace ublkpp::raid1 {
 // Stored on disk in SuperBlock.superbitmap_reserved field
 // Does NOT own memory - operates directly on the SuperBlock.superbitmap_reserved field
 //
-// LIMITATION: With 4033 bytes (32,264 bits), can track at most 32,264 bitmap pages.
-// With minimum chunk_size of 32KiB, this limits disk size to ~31.5TB.
+// LIMITATION: With 4022 bytes (32,176 bits), can track at most 32,176 bitmap pages.
+// With minimum chunk_size of 32KiB, this limits disk size to ~31.4TB.
 
 class SuperBitmap {
 private:
-    static constexpr size_t k_size_bytes = 4033;  // Size of SuperBlock.superbitmap_reserved
-    static constexpr size_t k_size_bits = k_size_bytes * 8;  // 32,264 bits max
+    static constexpr size_t k_size_bytes = 4022;  // Size of SuperBlock.superbitmap_reserved
+    static constexpr size_t k_size_bits = k_size_bytes * 8;  // 32,176 bits max
     uint8_t* _bits;  // Pointer to SuperBlock.superbitmap_reserved (NOT owned)
 
 public:

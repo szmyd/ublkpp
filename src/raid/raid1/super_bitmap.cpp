@@ -8,7 +8,9 @@ namespace ublkpp::raid1 {
 
 SuperBitmap::SuperBitmap(uint8_t* superblock_reserved_field)
     : _bits(superblock_reserved_field) {
-    if (_bits) clear_all();
+    // NOTE: We do NOT clear_all() here because the superblock may contain
+    // existing bitmap state that was loaded from disk. The caller should
+    // explicitly call clear_all() if they want to initialize a new bitmap.
 }
 
 void SuperBitmap::set_bit(uint32_t page_idx) {
