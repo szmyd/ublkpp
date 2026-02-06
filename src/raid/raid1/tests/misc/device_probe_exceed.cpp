@@ -5,14 +5,13 @@
 // With 32KiB chunks, each bitmap page covers 1 GiB, giving a max capacity of ~31.4 TiB
 //
 TEST(Raid1, DevicesLargerThanAllowed) {
-    auto device_a = CREATE_DISK_A(TestParams{.capacity = UINT64_MAX});
-    auto device_b = CREATE_DISK_B(TestParams{.capacity = UINT64_MAX});
+    // Create disks without SuperBlock read/write expectations since we'll throw before those operations
+    auto device_a = CREATE_DISK_F(TestParams{.capacity = UINT64_MAX}, false, true, false, true, false);
+    auto device_b = CREATE_DISK_F(TestParams{.capacity = UINT64_MAX}, true, true, false, true, false);
 
     // Should throw exception for devices exceeding SuperBitmap capacity
     EXPECT_THROW(
-        {
-            auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-        },
+        ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
         std::runtime_error
     );
 }
