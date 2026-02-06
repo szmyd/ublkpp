@@ -27,7 +27,7 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t*
         _super_bitmap(superbitmap_reserved) {
     // SuperBitmap can track at most 32,176 bitmap pages (4022 bytes * 8 bits/byte)
     // The RAID1 layer should ensure capacity doesn't exceed this limit
-    constexpr auto max_superbitmap_bits = 4022UL * 8UL;  // SuperBitmap::k_size_bits
+    [[maybe_unused]] constexpr auto max_superbitmap_bits = 4022UL * 8UL;  // SuperBitmap::k_size_bits
     DEBUG_ASSERT_LE(_num_pages, max_superbitmap_bits,
                     "Disk size too large for SuperBitmap: {} pages exceeds max {} pages [id: {}]",
                     _num_pages, max_superbitmap_bits, _id);
