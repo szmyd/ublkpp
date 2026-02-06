@@ -111,13 +111,12 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     auto const page_width = k_min_chunk_size * k_page_size * k_bits_in_byte;
     auto const max_data_size = max_superbitmap_pages * page_width;
 
-    // Cap device capacity at SuperBitmap maximum
+    // Validate device capacity doesn't exceed SuperBitmap maximum
     auto total_size = our_params.basic.dev_sectors << SECTOR_SHIFT;
     if (total_size > max_data_size) {
-        RLOGW("Device capacity {} exceeds SuperBitmap max capacity of {} pages (~31.4TB with 32KiB chunks), capping to {}",
-              total_size, max_superbitmap_pages, max_data_size);
-        our_params.basic.dev_sectors = max_data_size >> SECTOR_SHIFT;
-        total_size = max_data_size;
+        throw std::runtime_error(fmt::format(
+            "Device capacity {} exceeds SuperBitmap max capacity of {} pages (~31.4TB with 32KiB chunks, max {})",
+            total_size, max_superbitmap_pages, max_data_size));
     }
 
     auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
