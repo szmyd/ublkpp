@@ -3,7 +3,9 @@
 
 #include "tests/test_disk.hpp"
 #include "raid/raid1/bitmap.hpp"
+#include "raid/raid1/super_bitmap.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
+#include "raid/raid1/tests/test_raid1_common.hpp"
 
 using ::testing::_;
 using ::testing::Return;
@@ -11,7 +13,8 @@ using ::testing::Return;
 // Test that sync_to batches consecutive pages into single write operations
 TEST(Raid1Bitmap, SyncToBatchesConsecutivePages) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Dirty 4 consecutive pages worth of data
     bitmap.dirty_region(0, 4 * 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8); // 4 pages
@@ -34,7 +37,8 @@ TEST(Raid1Bitmap, SyncToBatchesConsecutivePages) {
 // Test that sync_to creates separate writes for non-consecutive pages
 TEST(Raid1Bitmap, SyncToSeparatesNonConsecutivePages) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Dirty page 0 and page 2 (non-consecutive)
     bitmap.dirty_region(0, 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8); // Page 0
@@ -66,7 +70,8 @@ TEST(Raid1Bitmap, SyncToRespectsMaxBatchSize) {
         .capacity = 16 * ublkpp::Gi,
         .max_io = 4 * ublkpp::Ki // 4 KiB = 1 page, so max_batch = 1
     });
-    auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Dirty 3 consecutive pages
     bitmap.dirty_region(0, 3 * 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8);
@@ -86,7 +91,13 @@ TEST(Raid1Bitmap, SyncToRespectsMaxBatchSize) {
 // Test that sync_to skips pages loaded from disk (not modified)
 TEST(Raid1Bitmap, SyncToSkipsUnmodifiedLoadedPages) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+
+    // Mark all 8 pages as dirty in the SuperBitmap so load_from will load them
+    auto sb = ublkpp::raid1::SuperBitmap(superbitmap_buf.get());
+    for (int i = 0; i < 8; ++i) sb.set_bit(i);
+
+    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Load bitmap from device (simulates reboot scenario)
     // 8 GiB capacity with 32 KiB chunks = 8 bitmap pages (1 GiB per page)
@@ -110,7 +121,13 @@ TEST(Raid1Bitmap, SyncToSkipsUnmodifiedLoadedPages) {
 // Test that sync_to writes pages that were loaded then modified
 TEST(Raid1Bitmap, SyncToWritesModifiedLoadedPages) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+
+    // Mark all 8 pages as dirty in the SuperBitmap so load_from will load them
+    auto sb = ublkpp::raid1::SuperBitmap(superbitmap_buf.get());
+    for (int i = 0; i < 8; ++i) sb.set_bit(i);
+
+    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Load bitmap from device
     // 8 GiB capacity with 32 KiB chunks = 8 bitmap pages (1 GiB per page)
@@ -141,7 +158,8 @@ TEST(Raid1Bitmap, SyncToWritesModifiedLoadedPages) {
 // Test that sync_to handles write failures correctly
 TEST(Raid1Bitmap, SyncToHandlesWriteFailure) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Dirty 2 consecutive pages
     bitmap.dirty_region(0, 2 * 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8);
@@ -161,7 +179,8 @@ TEST(Raid1Bitmap, SyncToHandlesWriteFailure) {
 // Test batching with mixed consecutive and non-consecutive pages
 TEST(Raid1Bitmap, SyncToBatchesMixedPages) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 16 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Dirty pages: 0, 1, 2 (consecutive), then 5, 6 (consecutive)
     auto page_width = 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8UL;
@@ -196,7 +215,8 @@ TEST(Raid1Bitmap, SyncToBatchesMixedPages) {
 // Test empty bitmap sync_to (no dirty pages)
 TEST(Raid1Bitmap, SyncToEmptyBitmap) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     // Don't dirty anything
 
@@ -211,7 +231,8 @@ TEST(Raid1Bitmap, SyncToEmptyBitmap) {
 // Test that sync_to skips zero pages (cleaned pages)
 TEST(Raid1Bitmap, SyncToSkipsZeroPages) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
     auto page_width = 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8UL;
 

@@ -6,6 +6,7 @@
 #include <tuple>
 
 #include "ublkpp/lib/ublk_disk.hpp"
+#include "super_bitmap.hpp"
 
 namespace ublkpp::raid1 {
 
@@ -51,12 +52,14 @@ private:
     uint32_t const _page_width; // Number of bytes represented by a single page (block)
     size_t const _num_pages;
     std::atomic_uint64_t _dirty_chunks_est{0};
+    SuperBitmap _super_bitmap;
 
+private:
     PageData* __get_page(uint64_t offset, bool creat = false);
     static size_t max_pages_per_tx(const UblkDisk& device);
 
 public:
-    Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, std::string const& id = "");
+    Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved, std::string const& id = "");
 
     static uint64_t page_size();
     size_t dirty_pages();
