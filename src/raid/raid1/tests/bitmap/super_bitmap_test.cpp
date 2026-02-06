@@ -14,8 +14,8 @@ class SuperBitmapTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Allocate and zero-initialize buffer
-        buffer = std::make_unique<uint8_t[]>(4022);
-        std::memset(buffer.get(), 0, 4022);
+        buffer = std::make_unique<uint8_t[]>(k_superbitmap_size);
+        std::memset(buffer.get(), 0, k_superbitmap_size);
     }
 
     std::unique_ptr<uint8_t[]> buffer;
@@ -135,9 +135,6 @@ TEST_F(SuperBitmapTest, DataPointer) {
 
     // Verify data() returns the original buffer
     EXPECT_EQ(sb.data(), buffer.get());
-
-    // Verify size
-    EXPECT_EQ(sb.size(), 4022UL);
 
     // Modify via data pointer
     sb.data()[0] = 0xFF;

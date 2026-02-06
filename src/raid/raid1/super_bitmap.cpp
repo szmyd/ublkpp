@@ -20,7 +20,7 @@ SuperBitmap::SuperBitmap(uint8_t* superblock_reserved_field)
 }
 
 void SuperBitmap::set_bit(uint32_t page_idx) {
-    DEBUG_ASSERT_LT(page_idx, k_size_bits, "SuperBitmap page_idx out of bounds");
+    DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
     // Use atomic fetch_or to safely set the bit without racing with other bit operations
@@ -28,7 +28,7 @@ void SuperBitmap::set_bit(uint32_t page_idx) {
 }
 
 void SuperBitmap::clear_bit(uint32_t page_idx) {
-    DEBUG_ASSERT_LT(page_idx, k_size_bits, "SuperBitmap page_idx out of bounds");
+    DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
     // Use atomic fetch_and to safely clear the bit without racing with other bit operations
@@ -36,7 +36,7 @@ void SuperBitmap::clear_bit(uint32_t page_idx) {
 }
 
 bool SuperBitmap::test_bit(uint32_t page_idx) const {
-    DEBUG_ASSERT_LT(page_idx, k_size_bits, "SuperBitmap page_idx out of bounds");
+    DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
     // Use atomic load to safely read the byte without seeing torn reads
@@ -49,7 +49,7 @@ void SuperBitmap::clear_all() {
     // NOTE: clear_all() should only be called during initialization (init_to) when
     // no concurrent access is happening. Using memset here is safe in that context.
     // If concurrent access is possible, the caller must provide external synchronization.
-    memset(_bits, 0x00, k_size_bytes);
+    memset(_bits, 0x00, k_superbitmap_size);
 }
 
 uint8_t* SuperBitmap::data() {
@@ -58,10 +58,6 @@ uint8_t* SuperBitmap::data() {
 
 const uint8_t* SuperBitmap::data() const {
     return _bits;
-}
-
-size_t SuperBitmap::size() const {
-    return k_size_bytes;
 }
 
 } // namespace ublkpp::raid1

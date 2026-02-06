@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -34,8 +35,8 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
 
 // Helper for tests: allocate a SuperBitmap buffer for Bitmap constructor
 inline std::unique_ptr<uint8_t[]> make_test_superbitmap() {
-    auto buf = std::make_unique<uint8_t[]>(4022);
-    memset(buf.get(), 0x00, 4022);
+    auto buf = std::make_unique<uint8_t[]>(ublkpp::raid1::k_superbitmap_size);
+    memset(buf.get(), 0x00, ublkpp::raid1::k_superbitmap_size);
     return buf;
 }
 
