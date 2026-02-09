@@ -117,7 +117,7 @@ class UBlkPPConan(ConanFile):
                 elif self.options.sanitize == "memory":
                     tc.variables['MEMORY_SANITIZER_ON'] = 'ON'
                 else:  # address or default
-                    tc.variables['MEMORY_SANITIZER_ON'] = 'ON'  # triggers ASan+UBSan
+                    tc.variables['ADDRESS_SANITIZER_ON'] = 'ON'
         tc.generate()
 
         deps = CMakeDeps(self)
