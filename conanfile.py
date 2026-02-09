@@ -24,7 +24,7 @@ class UBlkPPConan(ConanFile):
                 "shared": ['True', 'False'],
                 "fPIC": ['True', 'False'],
                 "coverage": ['True', 'False'],
-                "sanitize": ['True', 'False'],
+                "sanitize": ['address', 'thread', 'memory', 'False'],
                 "homeblocks": ['True', 'False'],
                 "iscsi": ['True', 'False'],
                 }
@@ -83,8 +83,8 @@ class UBlkPPConan(ConanFile):
 
     def layout(self):
         self.folders.source = "."
-        if self.options.get_safe("sanitize"):
-            self.folders.build = join("build", "Sanitized")
+        if self.options.get_safe("sanitize") and self.options.sanitize != "False":
+            self.folders.build = join("build", f"Sanitized-{self.options.sanitize}")
         elif self.options.get_safe("coverage"):
             self.folders.build = join("build", "Coverage")
         else:
@@ -111,8 +111,13 @@ class UBlkPPConan(ConanFile):
         if self.settings.build_type == "Debug":
             if self.options.get_safe("coverage"):
                 tc.variables['BUILD_COVERAGE'] = 'ON'
-            elif self.options.get_safe("sanitize"):
-                tc.variables['MEMORY_SANITIZER_ON'] = 'ON'
+            elif self.options.get_safe("sanitize") and self.options.sanitize != "False":
+                if self.options.sanitize == "thread":
+                    tc.variables['THREAD_SANITIZER_ON'] = 'ON'
+                elif self.options.sanitize == "memory":
+                    tc.variables['MEMORY_SANITIZER_ON'] = 'ON'
+                else:  # address or default
+                    tc.variables['MEMORY_SANITIZER_ON'] = 'ON'  # triggers ASan+UBSan
         tc.generate()
 
         deps = CMakeDeps(self)
@@ -137,11 +142,18 @@ class UBlkPPConan(ConanFile):
             self.cpp_info.requires.extend(["libiscsi::libiscsi"])
         if (self.options.get_safe("homeblocks")):
             self.cpp_info.requires.extend(["homeblocks::homeblocks"])
-        if self.options.get_safe("sanitize"):
-            self.cpp_info.sharedlinkflags.append("-fsanitize=address")
-            self.cpp_info.exelinkflags.append("-fsanitize=address")
-            self.cpp_info.sharedlinkflags.append("-fsanitize=undefined")
-            self.cpp_info.exelinkflags.append("-fsanitize=undefined")
+        if self.options.get_safe("sanitize") and self.options.sanitize != "False":
+            if self.options.sanitize == "thread":
+                self.cpp_info.sharedlinkflags.append("-fsanitize=thread")
+                self.cpp_info.exelinkflags.append("-fsanitize=thread")
+            elif self.options.sanitize == "memory":
+                self.cpp_info.sharedlinkflags.append("-fsanitize=memory")
+                self.cpp_info.exelinkflags.append("-fsanitize=memory")
+            else:  # address or default
+                self.cpp_info.sharedlinkflags.append("-fsanitize=address")
+                self.cpp_info.exelinkflags.append("-fsanitize=address")
+                self.cpp_info.sharedlinkflags.append("-fsanitize=undefined")
+                self.cpp_info.exelinkflags.append("-fsanitize=undefined")
 
         self.cpp_info.set_property("cmake_file_name", "UblkPP")
         self.cpp_info.set_property("cmake_target_name", "UblkPP::UblkPP")
