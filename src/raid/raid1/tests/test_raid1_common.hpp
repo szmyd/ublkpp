@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -28,9 +29,16 @@ static const ublkpp::raid1::SuperBlock normal_superblock = {
                .read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::EITHER),
                .device_b = 0,
                .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = 0}},
-    ._reserved = {0x00}};
+    .superbitmap_reserved = {0x00}};
 
 static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
+
+// Helper for tests: allocate a SuperBitmap buffer for Bitmap constructor
+inline std::unique_ptr<uint8_t[]> make_test_superbitmap() {
+    auto buf = std::make_unique<uint8_t[]>(ublkpp::raid1::k_superbitmap_size);
+    memset(buf.get(), 0x00, ublkpp::raid1::k_superbitmap_size);
+    return buf;
+}
 
 #define EXPECT_SYNC_OP_REPEAT(OP, CNT, device, dev_b, fail, sz, off)                                                   \
     EXPECT_CALL(*(device), sync_iov(OP, _, _, _))                                                                      \

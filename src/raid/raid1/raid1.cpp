@@ -105,7 +105,6 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
 
-    // Calculate required reservation size of SuperBlock and BitMap
     auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
     reserved_size = sizeof(SuperBlock) + bitmap_size;
 
@@ -151,7 +150,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
     // Read in existing dirty BITMAP pages
     _dirty_bitmap =
-        std::make_unique< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size(), _str_uuid);
+        std::make_unique< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size(), _sb->superbitmap_reserved, _str_uuid);
     if (_device_a->new_device) {
         _dirty_bitmap->init_to(*_device_a->disk);
         if (!_device_b->new_device) _sb->fields.read_route = static_cast< uint8_t >(read_route::DEVB);

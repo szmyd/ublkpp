@@ -6,6 +6,7 @@
 #include "tests/test_disk.hpp"
 #include "raid/raid1/bitmap.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
+#include "raid/raid1/tests/test_raid1_common.hpp"
 
 using ::testing::_;
 #ifndef Ki
@@ -21,7 +22,8 @@ TEST(Raid1, InitBitmap) {
     auto const device_params = TestParams{.capacity = capacity};
     auto const block_size = device_params.l_size;
     auto device = std::make_shared< ublkpp::TestDisk >(device_params);
-    auto bitmap = ublkpp::raid1::Bitmap(capacity, chunk_size, block_size);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(capacity, chunk_size, block_size, superbitmap_buf.get());
 
     // Each page is 4k and represents 32KB of data per bit. Calculations follow for how bitmap clearning should occur.
     auto const max_pages = device->max_tx() / ublkpp::raid1::Bitmap::page_size();
@@ -49,7 +51,8 @@ TEST(Raid1, InitBitmap) {
 // Ensure that all required pages are initialized
 TEST(Raid1, InitBitmapFailure) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 2 * Gi});
-    auto bitmap = ublkpp::raid1::Bitmap(2 * Gi, 32 * Ki, 4 * Ki);
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(2 * Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
 
     EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(1)
