@@ -7,7 +7,7 @@ namespace ublkpp {
 
 struct StripeDevice;
 
-constexpr uint32_t _max_stripe_cnt{16};
+constexpr uint32_t _max_stripe_cnt{64};
 
 class Raid0Disk : public UblkDisk {
     std::vector< std::unique_ptr< StripeDevice > > _stripe_array;
