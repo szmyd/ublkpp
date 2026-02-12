@@ -144,7 +144,7 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
 
-    auto const route_mask = ((1U << route_size()) - 1);
+    auto const route_mask = _max_stripe_cnt - 1;
 
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     auto const lba = addr >> params()->basic.logical_bs_shift;
@@ -182,7 +182,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
     // Special case for single device
     if (1 == _stripe_array.size()) return func(0, sub_cmd, iovecs, 1, addr);
 
-    auto const route_mask = ((1U << route_size()) - 1);
+    auto const route_mask = _max_stripe_cnt - 1;
 
     DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
     auto const len = (uint32_t)iovecs->iov_len;
@@ -367,7 +367,7 @@ void Raid0Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
     // First, let the underlying device handle its portion of the routing
     // We need to determine which stripe handled this I/O by extracting our routing bits
     // from sub_cmd, accounting for the underlying device's routing bits.
-    auto const route_mask = ((1U << route_size()) - 1);
+    auto const route_mask = _max_stripe_cnt - 1;
 
     // Extract stripe index from sub_cmd (shift past underlying device's route bits)
     auto const stripe_idx = static_cast< size_t >((sub_cmd >> _stripe_array[0]->disk->route_size()) & route_mask);
