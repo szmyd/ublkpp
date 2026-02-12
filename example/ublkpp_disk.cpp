@@ -303,9 +303,8 @@ int main(int argc, char* argv[]) {
                                                             Pistache::Rest::Routes::bind(get_prometheus_metrics),
                                                             iomgr::url_t::safe}};
             http_server_ptr->setup_routes(routes);
-            LOGINFO("Started http server ");
+            http_server_ptr->start();
         } catch (std::runtime_error const& e) { LOGERROR("setup routes failed, {}", e.what()) }
-        http_server_ptr->start();
 
         exit_future.wait();
         k_target.reset();
