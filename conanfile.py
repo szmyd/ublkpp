@@ -24,7 +24,7 @@ class UBlkPPConan(ConanFile):
                 "shared": ['True', 'False'],
                 "fPIC": ['True', 'False'],
                 "coverage": ['True', 'False'],
-                "sanitize": ['address', 'thread', 'memory', 'False'],
+                "sanitize": ['thread', 'memory', 'False'],
                 "homeblocks": ['True', 'False'],
                 "iscsi": ['True', 'False'],
                 }
@@ -114,10 +114,8 @@ class UBlkPPConan(ConanFile):
             elif self.options.get_safe("sanitize") and self.options.sanitize != "False":
                 if self.options.sanitize == "thread":
                     tc.variables['THREAD_SANITIZER_ON'] = 'ON'
-                elif self.options.sanitize == "memory":
+                else:
                     tc.variables['MEMORY_SANITIZER_ON'] = 'ON'
-                else:  # address or default
-                    tc.variables['ADDRESS_SANITIZER_ON'] = 'ON'
         tc.generate()
 
         deps = CMakeDeps(self)
@@ -146,12 +144,9 @@ class UBlkPPConan(ConanFile):
             if self.options.sanitize == "thread":
                 self.cpp_info.sharedlinkflags.append("-fsanitize=thread")
                 self.cpp_info.exelinkflags.append("-fsanitize=thread")
-            elif self.options.sanitize == "memory":
+            else:
                 self.cpp_info.sharedlinkflags.append("-fsanitize=memory")
                 self.cpp_info.exelinkflags.append("-fsanitize=memory")
-            else:  # address or default
-                self.cpp_info.sharedlinkflags.append("-fsanitize=address")
-                self.cpp_info.exelinkflags.append("-fsanitize=address")
                 self.cpp_info.sharedlinkflags.append("-fsanitize=undefined")
                 self.cpp_info.exelinkflags.append("-fsanitize=undefined")
 
