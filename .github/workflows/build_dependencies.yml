@@ -147,7 +147,7 @@ jobs:
 
     - name: Create and Test Package
       run: |
-        sanitize=$([[ "${{ inputs.tooling }}" == "Sanitize" ]] && echo "True" || echo "False")
+        sanitize=$([[ "${{ inputs.tooling }}" == "Sanitize" ]] && echo "address" || echo "False")
         coverage=$([[ "${{ inputs.tooling }}" == "Coverage" ]] && echo "True" || echo "False")
         python -m pip install gcovr
         conan build \
