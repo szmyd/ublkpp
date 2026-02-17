@@ -53,13 +53,13 @@ static raid1::SuperBlock* read_superblock(UblkDisk& device) {
     return static_cast< raid1::SuperBlock* >(iov.iov_base);
 }
 
-io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b) {
+io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b, uint8_t read_route) {
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
-    auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
-    // We temporarily set the Superblock for Device A/B based on argument
+    sb->fields.read_route = read_route;
     if (device_b) sb->fields.device_b = 1;
+    auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
     auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
     RLOGI("Wrote: {} to: {}", *sb, device)
     sb->fields.device_b = 0;

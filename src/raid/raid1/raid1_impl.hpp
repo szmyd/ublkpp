@@ -34,6 +34,9 @@ class Raid1DiskImpl : public UblkDisk {
     std::shared_ptr< raid1::SuperBlock > _sb;
     std::unique_ptr< raid1::Bitmap > _dirty_bitmap;
 
+    // Runtime cached state (to avoid races on _sb bitfields)
+    std::atomic<uint8_t> _read_route_cache{static_cast<uint8_t>(raid1::read_route::EITHER)};
+
     // For implementing round-robin reads
     raid1::read_route _last_read{raid1::read_route::DEVB};
 
@@ -43,8 +46,8 @@ class Raid1DiskImpl : public UblkDisk {
     std::atomic< uint8_t > _resync_state;
     std::atomic< uint8_t > _io_op_cnt;
 
-	// Metrics
-	std::unique_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
+    // Metrics
+    std::unique_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
     // Asynchronous replies that did not go through io_uring
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
 
@@ -60,6 +63,14 @@ class Raid1DiskImpl : public UblkDisk {
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
                           ublk_io_data const* async_data = nullptr);
     void __resync_task();
+
+    raid1::read_route __get_read_route() const {
+        return static_cast<raid1::read_route>(_read_route_cache.load(std::memory_order_acquire));
+    }
+    void __set_read_route(uint8_t route) {
+        _read_route_cache.store(route, std::memory_order_release);
+    }
+
 
 public:
     Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
