@@ -526,19 +526,15 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
         TLOGD("Deiniting Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
         ublksrv_dev_deinit(ublk_dev);
     }
-    /*
-    Now we never delete devices, we preserve them for resartability
+
     if (device_added) {
         TLOGD("Stopping Control {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
         ublksrv_ctrl_del_dev(ctrl_dev);
     }
-    Should we deinit control?
-    Let's try
     if (ctrl_dev) {
         TLOGD("De-initializing Control {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
         ublksrv_ctrl_deinit(ctrl_dev);
     }
-     */
     TLOGD("Stopped {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
 }
 
