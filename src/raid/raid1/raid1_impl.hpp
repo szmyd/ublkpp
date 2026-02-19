@@ -67,8 +67,8 @@ class Raid1DiskImpl : public UblkDisk {
     raid1::read_route __get_read_route() const {
         return static_cast<raid1::read_route>(_read_route_cache.load(std::memory_order_acquire));
     }
-    void __set_read_route(uint8_t route) {
-        _read_route_cache.store(route, std::memory_order_release);
+    void __set_read_route(raid1::read_route route) {
+        _read_route_cache.store(static_cast<uint8_t>(route), std::memory_order_release);
     }
 
 

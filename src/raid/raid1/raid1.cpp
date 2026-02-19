@@ -146,7 +146,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         throw std::runtime_error("Could not find reasonable superblock!"); // LCOV_EXCL_LINE
 
     // Initialize read_route cache from loaded superblock
-    __set_read_route(_sb->fields.read_route);
+    __set_read_route(static_cast<read_route>(_sb->fields.read_route));
 
     // Initialize Age if New
     if (_device_a->new_device && _device_b->new_device) _sb->fields.bitmap.age = htobe64(1);
@@ -156,11 +156,11 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         std::make_unique< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size(), _sb->superbitmap_reserved, _str_uuid);
     if (_device_a->new_device) {
         _dirty_bitmap->init_to(*_device_a->disk);
-        if (!_device_b->new_device) __set_read_route(static_cast<uint8_t>(read_route::DEVB));
+        if (!_device_b->new_device) __set_read_route(read_route::DEVB);
     }
     if (_device_b->new_device) {
         _dirty_bitmap->init_to(*_device_b->disk);
-        if (!_device_a->new_device) __set_read_route(static_cast<uint8_t>(read_route::DEVA));
+        if (!_device_a->new_device) __set_read_route(read_route::DEVA);
     }
 
     // We need to completely dirty one side if either is new when the other is not
@@ -420,7 +420,7 @@ std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
 io_result Raid1DiskImpl::__become_clean() {
     if (!IS_DEGRADED) return 0;
     RLOGI("Device becoming clean [{}] [uuid:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
-    __set_read_route(static_cast<uint8_t>(read_route::EITHER));
+    __set_read_route(read_route::EITHER);
     if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false, READ_ROUTE); !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
@@ -593,8 +593,8 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
     auto const old_route = READ_ROUTE;
     __set_read_route((0b1 & ((sub_cmd) >> _device_b->disk->route_size()))
-                         ? static_cast< uint8_t >(read_route::DEVA)
-                         : static_cast< uint8_t >(read_route::DEVB));
+                         ? read_route::DEVA
+                         : read_route::DEVB);
     auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
     RLOGW("Device became degraded {} [age:{}] [uuid:{}] ", *DIRTY_DEVICE->disk,
