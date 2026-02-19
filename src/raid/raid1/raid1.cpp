@@ -190,7 +190,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
     // DIRTY
     if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b,
-                          READ_ROUTE)) {
+                          _read_route_cache.load())) {
         RLOGE("Failed writing SuperBlock to: {} becoming degraded. [uuid:{}]", *CLEAN_DEVICE->disk, _str_uuid)
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
@@ -208,7 +208,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     }
 
     if (!write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b,
-                           READ_ROUTE)) {
+                           _read_route_cache.load())) {
         if (!__become_degraded(DIRTY_SUBCMD)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
@@ -237,7 +237,7 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices
     if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b,
-                                     READ_ROUTE);
+                                     _read_route_cache.load());
         !res) {
         if (IS_DEGRADED) {
             RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
@@ -247,7 +247,7 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     }
     if (!IS_DEGRADED &&
         !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b,
-                          READ_ROUTE)) {
+                          _read_route_cache.load())) {
         RLOGW("Failed to clear clean bit [uuid:{}] dev: {}", _str_uuid, *DIRTY_DEVICE->disk)
     }
 }
@@ -340,14 +340,14 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     if (_device_a->disk->id() == outgoing_device_id) {
         _device_a.swap(incoming_mirror);
         if (auto res = write_superblock(*_device_a->disk, _sb.get(), false,
-                                         READ_ROUTE);
+                                         _read_route_cache.load());
             !res || !__become_degraded(0U, false)) {
             return incoming_device;
         }
     } else {
         _device_b.swap(incoming_mirror);
         if (auto res = write_superblock(*_device_b->disk, _sb.get(), true,
-                                         READ_ROUTE);
+                                         _read_route_cache.load());
             !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
             return incoming_device;
         }
@@ -421,10 +421,10 @@ io_result Raid1DiskImpl::__become_clean() {
     if (!IS_DEGRADED) return 0;
     RLOGI("Device becoming clean [{}] [uuid:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
     __set_read_route(static_cast<uint8_t>(read_route::EITHER));
-    if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false, READ_ROUTE); !sync_res) {
+    if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false, _read_route_cache.load()); !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
-    if (auto sync_res = write_superblock(*_device_b->disk, _sb.get(), true, READ_ROUTE); !sync_res) {
+    if (auto sync_res = write_superblock(*_device_b->disk, _sb.get(), true, _read_route_cache.load()); !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
     _is_degraded.clear(std::memory_order_release);
@@ -591,7 +591,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
-    auto const old_route = READ_ROUTE;
+    auto const old_route = _read_route_cache.load();
     __set_read_route((0b1 & ((sub_cmd) >> _device_b->disk->route_size()))
                          ? static_cast< uint8_t >(read_route::DEVA)
                          : static_cast< uint8_t >(read_route::DEVB));
@@ -608,7 +608,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
 
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b,
-                                         READ_ROUTE);
+                                         _read_route_cache.load());
         !sync_res) {
         // Rollback the failure to update the header
         __set_read_route(old_route);

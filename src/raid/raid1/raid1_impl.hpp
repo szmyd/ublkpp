@@ -64,8 +64,8 @@ class Raid1DiskImpl : public UblkDisk {
                           ublk_io_data const* async_data = nullptr);
     void __resync_task();
 
-    uint8_t __get_read_route() const {
-        return _read_route_cache.load(std::memory_order_acquire);
+    raid1::read_route __get_read_route() const {
+        return static_cast<raid1::read_route>(_read_route_cache.load(std::memory_order_acquire));
     }
     void __set_read_route(uint8_t route) {
         _read_route_cache.store(route, std::memory_order_release);
