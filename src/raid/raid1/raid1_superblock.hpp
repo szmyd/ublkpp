@@ -56,7 +56,7 @@ static_assert(offsetof(SuperBlock, superbitmap_reserved) == 74, "SuperBlock::sup
 auto format_as(SuperBlock const& sb);
 
 extern SuperBlock* pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
-extern io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b, uint8_t read_route);
+extern io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b, read_route read_route);
 extern std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
 
