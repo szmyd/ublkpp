@@ -20,7 +20,7 @@ static void init_superblock(ublkpp::raid1::SuperBlock* sb, const boost::uuids::u
     sb->header.version = htobe16(1);
     std::memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
     sb->fields.clean_unmount = 1;
-    static_cast<ublkpp::raid1::read_route>(sb->fields.read_route) = static_cast<uint8_t>(ublkpp::raid1::read_route::EITHER);
+    sb->fields.read_route = static_cast<uint8_t>(ublkpp::raid1::read_route::EITHER);
     sb->fields.bitmap.chunk_size = htobe32(chunk_size);
     sb->fields.bitmap.age = 0;
 }
