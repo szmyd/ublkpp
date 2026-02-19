@@ -517,6 +517,7 @@ ublkpp_tgt::~ublkpp_tgt() = default;
 
 std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; }
 std::shared_ptr< UblkDisk > ublkpp_tgt::device() const { return _p->device; }
+int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     if (ublk_dev) {
