@@ -22,7 +22,6 @@ SISL_OPTION_GROUP(ublkpp_tgt,
                    cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
                   (qdepth, "", "qdepth", "I/O Queue Depth per target",
                    cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"),
-                  (feature_recovery, "", "feature_recovery", "Enable Recovery Feature", cxxopts::value< bool >(), ""),
                   (feature_zero_copy, "", "feature_zero_copy", "Enable ZeroCopy Feature", cxxopts::value< bool >(), ""))
 
 using namespace std::chrono_literals;
@@ -454,7 +453,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
     if (0 <= device_id) tgt->device_recovering = true;
     auto ublk_flags = unsigned(0);
-    if (0 < SISL_OPTIONS["feature_recovery"].count()) {
+    if (tgt->device_recovering) {
         TLOGI("Starting device recovery...: {}", to_string(vol_id))
         ublk_flags |= (unsigned)(UBLK_F_USER_RECOVERY | UBLK_F_USER_RECOVERY_REISSUE);
     }
