@@ -515,7 +515,9 @@ std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; 
 std::shared_ptr< UblkDisk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
-ublkpp_tgt_impl::~ublkpp_tgt_impl() {
+void ublkpp_tgt::destroy() { _p->destroy(); }
+
+void ublkpp_tgt_impl::destroy() {
     if (ublk_dev) {
         TLOGD("Stopping Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
         ublksrv_ctrl_stop_dev(ctrl_dev);
@@ -532,6 +534,10 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
         ublksrv_ctrl_deinit(ctrl_dev);
     }
     TLOGD("Stopped {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+}
+
+ublkpp_tgt_impl::~ublkpp_tgt_impl() {
+    // Destructor intentionally left empty - call destroy() explicitly
 }
 
 } // namespace ublkpp

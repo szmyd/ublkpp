@@ -23,6 +23,7 @@ struct ublkpp_tgt {
     std::filesystem::path device_path() const;
     std::shared_ptr< UblkDisk > device() const;
     int device_id() const;
+    void destroy();
 
 private:
     explicit ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p);
