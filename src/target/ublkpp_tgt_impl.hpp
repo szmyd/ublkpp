@@ -42,6 +42,7 @@ struct ublkpp_tgt_impl {
 
     ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d);
     ~ublkpp_tgt_impl();
+    void destroy();
 };
 
 } // namespace ublkpp
