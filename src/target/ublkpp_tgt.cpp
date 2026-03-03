@@ -530,7 +530,7 @@ void ublkpp_tgt_impl::destroy() {
 
     if (device_added) {
         TLOGD("Stopping Control {}", str_id)
-        ublksrv_ctrl_del_dev(ctrl_dev);
+        ublksrv_ctrl_del_dev_async(ctrl_dev);
     }
     if (ctrl_dev) {
         TLOGD("De-initializing Control {}", str_id)
