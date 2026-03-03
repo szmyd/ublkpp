@@ -525,6 +525,8 @@ void ublkpp_tgt_impl::destroy() {
         TLOGD("Deiniting {}", str_id)
         ublksrv_dev_deinit(ublk_dev);
     }
+    // Stop the UblkDisk now
+    device.reset();
 
     if (device_added) {
         TLOGD("Stopping Control {}", str_id)
