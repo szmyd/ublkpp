@@ -518,22 +518,23 @@ int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 void ublkpp_tgt::destroy() { _p->destroy(); }
 
 void ublkpp_tgt_impl::destroy() {
+    auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
     if (ublk_dev) {
-        TLOGD("Stopping Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+        TLOGD("Stopping {}", str_id)
         ublksrv_ctrl_stop_dev(ctrl_dev);
-        TLOGD("Deiniting Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+        TLOGD("Deiniting {}", str_id)
         ublksrv_dev_deinit(ublk_dev);
     }
 
     if (device_added) {
-        TLOGD("Stopping Control {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+        TLOGD("Stopping Control {}", str_id)
         ublksrv_ctrl_del_dev(ctrl_dev);
     }
     if (ctrl_dev) {
-        TLOGD("De-initializing Control {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+        TLOGD("De-initializing Control {}", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
     }
-    TLOGD("Stopped {} [uuid:{}]", device_path.native(), to_string(volume_uuid))
+    TLOGD("Stopped {}", str_id)
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
