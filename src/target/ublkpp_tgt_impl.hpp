@@ -39,6 +39,7 @@ struct ublkpp_tgt_impl {
 
     // Owned by us
     std::unique_ptr< ublksrv_dev_data > dev_data;
+    std::vector< std::thread > queue_handlers;
 
     ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d);
     ~ublkpp_tgt_impl();

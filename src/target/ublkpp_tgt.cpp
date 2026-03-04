@@ -175,7 +175,8 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     sem_t queue_sem;
     sem_init(&queue_sem, 0, 0);
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
-        sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt, i, &queue_sem).detach();
+        tgt->queue_handlers.push_back(
+            sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt, i, &queue_sem));
     }
     auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
@@ -525,6 +526,13 @@ void ublkpp_tgt_impl::destroy() {
         TLOGD("Deiniting {}", str_id)
         ublksrv_dev_deinit(ublk_dev);
     }
+
+    // Wait for all queue_handler threads to exit
+    TLOGD("Waiting for I/O to stop on {}", str_id)
+    for (auto& q : queue_handlers)
+        q.join();
+    TLOGD("I/O stopped on {}", str_id)
+
     // Stop the UblkDisk now
     device.reset();
 
