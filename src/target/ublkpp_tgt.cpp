@@ -36,19 +36,20 @@ static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt_impl > > _
 
 constexpr auto k_max_time = 1s;
 
-static void check_dev(ublksrv_ctrl_dev_info const* info) {
+static bool check_dev(ublksrv_ctrl_dev_info const* info) {
     static auto const sys_path = std::filesystem::path{"/"} / "dev";
     auto const str_path = (sys_path / fmt::format("ublkc{}", info->dev_id)).native();
 
     auto wait = 0ms;
     while (wait < k_max_time) {
-        if (int fd = open(str_path.c_str(), O_RDWR); fd > 0) {
+        if (int fd = open(str_path.c_str(), O_RDWR); fd >= 0) {
             close(fd);
-            break;
+            return true;
         }
         std::this_thread::sleep_for(100ms);
         wait += 100ms;
     }
+    return false;
 }
 
 static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
@@ -129,42 +130,38 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         }
     }
 
-    tgt->device_added = true;
-    {
-        auto info = ublksrv_ctrl_get_dev_info(tgt->ctrl_dev);
-        tgt->dev_data->dev_id = info->dev_id;
-    }
-    // Let go of our shared_ptr to the target
-    auto ctrl_dev = tgt->ctrl_dev;
-    auto dev_ptr = tgt->device.get();
+    auto const dinfo = ublksrv_ctrl_get_dev_info(tgt->ctrl_dev);
 
-    auto const dinfo = ublksrv_ctrl_get_dev_info(ctrl_dev);
-    auto const dev_id = dinfo->dev_id;
+    tgt->device_added = true;
+    tgt->dev_data->dev_id = dinfo->dev_id;
 
     // Wait for Ctrl device to appear
-    check_dev(dinfo);
+    if (!check_dev(dinfo)) {
+        TLOGE("dev {} never saw control device", tgt->dev_data->dev_id)
+        return std::unexpected(std::make_error_condition(std::errc::no_such_device));
+    }
 
-    if (auto ret = ublksrv_ctrl_get_affinity(ctrl_dev); 0 > ret) {
-        TLOGE("dev {} get affinity failed {}", dev_id, ret)
+    if (auto ret = ublksrv_ctrl_get_affinity(tgt->ctrl_dev); 0 > ret) {
+        TLOGE("dev {} get affinity failed {}", tgt->dev_data->dev_id, ret)
         return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
 
-    TLOGD("Start ublksrv io daemon {}-{}", "ublkpp", dev_id)
+    TLOGD("Start ublksrv io daemon {}-{}", "ublkpp", tgt->dev_data->dev_id)
 
     // Target is about to initialize! Insert into our map
     {
         auto lk = std::scoped_lock< std::mutex >(_map_lock);
-        _init_map.emplace(std::make_pair(ctrl_dev, tgt));
+        _init_map.emplace(std::make_pair(tgt->ctrl_dev, tgt));
     }
 
-    tgt->ublk_dev = ublksrv_dev_init(ctrl_dev);
+    tgt->ublk_dev = ublksrv_dev_init(tgt->ctrl_dev);
 
     {
         auto lk = std::scoped_lock< std::mutex >(_map_lock);
-        _init_map.erase(ctrl_dev);
+        _init_map.erase(tgt->ctrl_dev);
     }
     if (!tgt->ublk_dev) {
-        TLOGE("dev-{} start ubsrv failed", dev_id)
+        TLOGE("dev-{} start ublksrv failed", tgt->dev_data->dev_id)
         return std::unexpected(std::make_error_condition(std::errc::no_such_device));
     }
 
@@ -175,10 +172,16 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     sem_t queue_sem;
     sem_init(&queue_sem, 0, 0);
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
-        sisl::named_thread(fmt::format("q_{}_{}", dev_id, i), ublksrv_queue_handler, tgt, i, &queue_sem).detach();
+        tgt->queue_handlers.push_back(sisl::named_thread(fmt::format("q_{}_{}", tgt->dev_data->dev_id, i),
+                                                         ublksrv_queue_handler, tgt, i, &queue_sem));
     }
     auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
+
+    // Let go of our shared_ptr to the target
+    auto ctrl_dev = tgt->ctrl_dev;
+    auto dev_ptr = tgt->device.get();
+    auto const dev_id = tgt->dev_data->dev_id;
     tgt.reset();
 
     // Wait for Queues to start
@@ -519,24 +522,40 @@ void ublkpp_tgt::destroy() { _p->destroy(); }
 
 void ublkpp_tgt_impl::destroy() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
+    // First send a signal to stop the ublk device and exit all I/O queues
     if (ublk_dev) {
         TLOGD("Stopping {}", str_id)
         ublksrv_ctrl_stop_dev(ctrl_dev);
-        TLOGD("Deiniting {}", str_id)
-        ublksrv_dev_deinit(ublk_dev);
     }
-    // Stop the UblkDisk now
+
+    // Wait for all queue_handler threads to exit
+    TLOGD("Waiting for I/O to stop on {}", str_id)
+    for (auto& q : queue_handlers)
+        q.join();
+
+    // De-allocate the ublksrv device and free all unowned memory
+    if (ublk_dev) {
+        TLOGD("De-allocate {}", str_id)
+        ublksrv_dev_deinit(ublk_dev);
+        ublk_dev = nullptr;
+    }
+
+    // De-allocate our devices now, will cause things like RAID-1 to flush Bitmaps
+    // and all FSDisk will close their fd's
     device.reset();
 
+    // Delete the ublk control object (ublkc must be closed!)
     if (device_added) {
-        TLOGD("Stopping Control {}", str_id)
+        TLOGD("Stopping Control for {}", str_id)
         ublksrv_ctrl_del_dev_async(ctrl_dev);
     }
+
+    // De-allocate the ublksrv control device finally
     if (ctrl_dev) {
-        TLOGD("De-initializing Control {}", str_id)
+        TLOGD("De-allocate Control for {}", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
     }
-    TLOGD("Stopped {}", str_id)
+    TLOGI("Stopped {}", str_id)
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
