@@ -4,34 +4,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.18.6
+## 0.19.0
+- ublkpp_tgt: Allow oom killing of process.
+
+## 0.18.x
 - ublkpp_tgt: Shutdown control device asynchronously.
-
-## 0.18.5
 - ublkpp_tgt: add get device destroy api
-
-## 0.18.4
 - ublkpp_tgt: add get device id api
-
-## 0.18.3
 - raid1: Fix data races accessing superblock read_route field 
-
-## 0.18.2
 - raid0: Increase route from 4 to 6 bits.
-
-## 0.18.1
 - bitmap: SuperBitMap introduction. Improve the bitmap load_from speed by reading superbitmap first.
-
-## 0.18.0
 - Feature: Device Recoverability
 
-## 0.17.2
+## 0.17.x
 - bitmap: Increased shutdown speed by batching sync_to requests and tracking the unchanged pages
-
-## 0.17.1
 - iomgr: Shutdown during process termination.
-
-## 0.17.0
 - Introduce Metrics gathering
 
 ## 0.16.x

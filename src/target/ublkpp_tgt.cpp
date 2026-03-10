@@ -165,9 +165,6 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         return std::unexpected(std::make_error_condition(std::errc::no_such_device));
     }
 
-    // Unprivileged device support
-    if (!(dinfo->flags & UBLK_F_UNPRIVILEGED_DEV)) ublksrv_apply_oom_protection();
-
     // Setup Queues
     sem_t queue_sem;
     sem_init(&queue_sem, 0, 0);
