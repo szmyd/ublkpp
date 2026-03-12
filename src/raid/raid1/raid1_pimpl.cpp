@@ -17,6 +17,10 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
                                                    std::shared_ptr< UblkDisk > new_device) {
     return _impl->swap_device(old_device_id, new_device);
 }
+size_t Raid1Disk::memory_requirement(std::shared_ptr< UblkDisk > const& d) {
+    return raid1::Raid1DiskImpl::memory_requirement(d);
+}
+
 raid1::array_state Raid1Disk::replica_states() const { return _impl->replica_states(); }
 uint64_t Raid1Disk::reserved_size() const { return _impl->get_reserved_size(); }
 std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk::replicas() const {

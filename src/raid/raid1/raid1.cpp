@@ -75,6 +75,14 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
     sb = std::shared_ptr< SuperBlock >(read_super.value().first, free_page());
 }
 
+// Return the amount of memory required to handle a given device should it be
+// part of a RAID1 disk. This mainly consists of the BITMAP requirement should
+// it become completely dirty (swap_device).
+size_t Raid1DiskImpl::memory_requirement(std::shared_ptr< UblkDisk > const& d) {
+    return Bitmap::memory_requirement(d->params()->basic.dev_sectors << SECTOR_SHIFT, k_min_chunk_size) +
+        sizeof(SuperBlock);
+}
+
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                              std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) :
         UblkDisk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {

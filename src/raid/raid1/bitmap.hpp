@@ -41,6 +41,9 @@ public:
 
     using map_type_t = std::map< uint32_t, PageData >;
 
+    // Return the amount of space a BITMAP would require for give parameters
+    static size_t memory_requirement(uint64_t data_size, uint32_t chunk_size);
+
 private:
     std::string const _id;
     uint64_t _data_size;
