@@ -17,6 +17,9 @@ struct ublkpp_tgt_impl;
 struct ublkpp_tgt {
     using run_result_t = std::expected< std::unique_ptr< ublkpp_tgt >, std::error_condition >;
 
+    // Returns the amount of memory each tgt queue_handler will require for I/O to work correctly.
+    static size_t memory_requirement();
+
     ~ublkpp_tgt();
 
     static run_result_t run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device, int device_id = -1);
