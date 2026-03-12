@@ -26,10 +26,17 @@ public:
 
     /// Raid1Disk API
     /// =============
+
+    // Returns the amount of memory a RAID-1 device built around this device
+    // would require for replication to work correctly.
+    static size_t memory_requirement(std::shared_ptr< UblkDisk > const&);
+
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
     raid1::array_state replica_states() const;
     uint64_t reserved_size() const;
     std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const;
+
+    // This is only used by the UTs for raid1
     void toggle_resync(bool t);
     /// =============
 

@@ -447,6 +447,13 @@ static int init_queue(const struct ublksrv_queue*, void**) {
 
 void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
 
+size_t ublkpp_tgt::memory_requirement() {
+    auto const max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >();
+    auto const nr_hw_queues = SISL_OPTIONS["nr_hw_queues"].as< uint16_t >();
+    auto const queue_depth = SISL_OPTIONS["qdepth"].as< uint16_t >();
+    return max_io_buf_bytes * nr_hw_queues * queue_depth;
+}
+
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
 ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device,
                                          int device_id) {

@@ -1,14 +1,14 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
+#include <ublkpp/ublkpp.hpp>
 
 #include "ublkpp/lib/sub_cmd.hpp"
 
 SISL_LOGGING_INIT(ublk_tgt)
 
-SISL_OPTIONS_ENABLE(logging)
+SISL_OPTIONS_ENABLE(logging, ublkpp_tgt)
 
 using ublkpp::sub_cmd_flags;
 using ublkpp::sub_cmd_t;
@@ -37,12 +37,15 @@ TEST(SubCmd, FlagSetting) {
     auto multi_unset = ublkpp::unset_flags(multi_set, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATE);
     EXPECT_FALSE(ublkpp::is_replicate(multi_unset));
     EXPECT_FALSE(ublkpp::is_retry(multi_unset));
+
+    // The default is 1 queue, 128 qdepth and 512Ki max_tx
+    EXPECT_EQ(64 * 1024 * 1024, ublkpp::ublkpp_tgt::memory_requirement());
 }
 
 int main(int argc, char* argv[]) {
     int parsed_argc = argc;
     ::testing::InitGoogleTest(&parsed_argc, argv);
-    SISL_OPTIONS_LOAD(parsed_argc, argv, logging);
+    SISL_OPTIONS_LOAD(parsed_argc, argv, logging, ublkpp_tgt);
     sisl::logging::SetLogger(std::string(argv[0]));
     spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
     parsed_argc = 1;

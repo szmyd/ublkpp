@@ -79,6 +79,7 @@ public:
 
     /// Raid1Disk API
     /// =============
+    static size_t memory_requirement(std::shared_ptr< UblkDisk > const&);
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
     raid1::array_state replica_states() const;
     uint64_t get_reserved_size() const { return reserved_size; }

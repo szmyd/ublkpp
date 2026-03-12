@@ -13,11 +13,16 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
-size_t Bitmap::max_pages_per_tx(const UblkDisk& device) {
-    return device.max_tx() / k_page_size;
+size_t Bitmap::max_pages_per_tx(const UblkDisk& device) { return device.max_tx() / k_page_size; }
+
+size_t Bitmap::memory_requirement(uint64_t data_size, uint32_t chunk_size) {
+    auto const page_width = chunk_size * k_page_size * k_bits_in_byte;
+    auto const nr_pages = data_size / page_width + ((0 == data_size % page_width) ? 0 : 1);
+    return (nr_pages * k_page_size);
 }
 
-Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved, std::string const& id) :
+Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved,
+               std::string const& id) :
         _id(id),
         _data_size(data_size),
         _chunk_size(chunk_size),

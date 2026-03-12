@@ -3,7 +3,11 @@
 // Brief: Test that a simple WRITE operation is replicated to both underlying Devices.
 TEST(Raid1, SimpleWrite) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = 200 * Gi});
+
+    EXPECT_EQ(8 * Ki, ublkpp::Raid1Disk::memory_requirement(device_a));
+    EXPECT_EQ(804 * Ki, ublkpp::Raid1Disk::memory_requirement(device_b));
+
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
