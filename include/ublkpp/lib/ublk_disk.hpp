@@ -31,7 +31,7 @@ public:
     // If this is `true` the tgt will expect the Device to call `ublksrv_complete_io`
     bool uses_ublk_iouring{true};
 
-    explicit UblkDisk();
+    UblkDisk();
     virtual ~UblkDisk();
 
     // Constant parameters for device
@@ -91,5 +91,20 @@ public:
 
 inline auto format_as(UblkDisk const& device) { return fmt::format("{}", device.to_string()); }
 inline auto format_as(std::shared_ptr< UblkDisk > const& p) { return fmt::format("{}", *p); }
+
+class DefunctDisk : public UblkDisk {
+public:
+    DefunctDisk();
+
+    std::string id() const override;
+
+    io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
+                             uint64_t addr) override;
+
+    io_result async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
+                        uint32_t nr_vecs, uint64_t addr) override;
+    io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
+};
 
 } // namespace ublkpp

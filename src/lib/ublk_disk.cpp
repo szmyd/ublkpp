@@ -105,4 +105,41 @@ uint32_t UblkDisk::max_tx() const { return _params->basic.max_sectors << SECTOR_
 bool UblkDisk::can_discard() const { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
 uint64_t UblkDisk::capacity() const { return _params->basic.dev_sectors << SECTOR_SHIFT; }
 
+DefunctDisk::DefunctDisk() : UblkDisk() {
+    direct_io = true;
+    auto& our_params = *params();
+    our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+    our_params.basic.logical_bs_shift = 9;
+    our_params.basic.physical_bs_shift = 9;
+}
+
+std::string DefunctDisk::id() const { return "defunct"; }
+
+io_result DefunctDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
+    return std::unexpected(std::make_error_condition(std::errc::io_error));
+}
+
+io_result DefunctDisk::handle_discard(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, uint32_t, uint64_t) {
+    return std::unexpected(std::make_error_condition(std::errc::io_error));
+}
+
+io_result DefunctDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t) {
+    return std::unexpected(std::make_error_condition(std::errc::io_error));
+}
+
+io_result DefunctDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t) noexcept {
+    switch (op) {
+    case UBLK_IO_OP_READ: {
+        auto vec_it = iovecs;
+        for (auto i = 0U; nr_vecs > i; ++i) {
+            memset(vec_it->iov_base, 0x00, vec_it->iov_len);
+            ++vec_it;
+        }
+        return __iovec_len(iovecs, iovecs + nr_vecs);
+    }
+    default:
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
+}
+
 } // namespace ublkpp
