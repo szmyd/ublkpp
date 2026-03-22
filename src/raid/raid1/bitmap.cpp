@@ -247,6 +247,13 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 
 uint64_t Bitmap::page_size() { return k_page_size; }
 
+uint64_t Bitmap::calculate_max_memory(uint64_t device_size, uint32_t chunk_size) {
+    // Each page tracks: chunk_size * k_page_size * k_bits_in_byte bytes of data
+    auto const page_width = chunk_size * k_page_size * k_bits_in_byte;
+    auto const num_pages = (device_size + page_width - 1) / page_width;  // Round up
+    return num_pages * k_page_size + k_superbitmap_size;
+}
+
 size_t Bitmap::dirty_pages() {
     auto cnt = std::erase_if(_page_map, [](const auto& it) {
         return (0 == isal_zero_detect(it.second.page.get(), k_page_size));

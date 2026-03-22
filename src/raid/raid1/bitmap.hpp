@@ -65,6 +65,10 @@ public:
     size_t dirty_pages();
     uint64_t dirty_data_est() const;
 
+    // Calculate worst-case bitmap memory usage for a given device size
+    // Returns memory in bytes required to track the entire device when fully dirty
+    static uint64_t calculate_max_memory(uint64_t device_size, uint32_t chunk_size = k_min_chunk_size);
+
     bool is_dirty(uint64_t addr, uint32_t len);
 
     // Tuple of form [page*, page_offset, size_consumed (max len)]
