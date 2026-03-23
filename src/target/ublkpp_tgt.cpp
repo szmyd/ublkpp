@@ -83,9 +83,11 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     set_queue_thread_affinity(cdev);
 
     // Initialize UBlkSrv IOUring queue and bind target pointer
+    // NOTE: Removed IORING_SETUP_DEFER_TASK as it was blocking ublksrv_ctrl_del_dev,
+    // look at adding this back as it theoretically could improve performance.
     auto q =
         ublksrv_queue_init_flags(target->ublk_dev, q_id, target.get(),
-                                 IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+                                 IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
 
     // Wake up ::start() thread
     sem_post(queue_sem);
@@ -544,7 +546,7 @@ void ublkpp_tgt_impl::destroy() {
     // Delete the ublk control object (ublkc must be closed!)
     if (device_added) {
         TLOGD("Stopping Control for {}", str_id)
-        ublksrv_ctrl_del_dev_async(ctrl_dev);
+        ublksrv_ctrl_del_dev(ctrl_dev);
     }
 
     // De-allocate the ublksrv control device finally
