@@ -218,8 +218,8 @@ Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
         _page_map.emplace(static_cast< uint32_t >(offset), PageData{std::shared_ptr< word_t >{}, false});
     if (happened) {
         void* new_page{nullptr};
-        if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) throw std::runtime_error("OutOfMemory");
-        ; // LCOV_EXCL_LINE
+        if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
+            throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
         memset(new_page, 0, k_page_size);
         it->second.page.reset(reinterpret_cast< word_t* >(new_page), free_page());
     }
