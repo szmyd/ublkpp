@@ -127,19 +127,8 @@ io_result DefunctDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, sub_
     return std::unexpected(std::make_error_condition(std::errc::io_error));
 }
 
-io_result DefunctDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t) noexcept {
-    switch (op) {
-    case UBLK_IO_OP_READ: {
-        auto vec_it = iovecs;
-        for (auto i = 0U; nr_vecs > i; ++i) {
-            memset(vec_it->iov_base, 0x00, vec_it->iov_len);
-            ++vec_it;
-        }
-        return __iovec_len(iovecs, iovecs + nr_vecs);
-    }
-    default:
-        return std::unexpected(std::make_error_condition(std::errc::io_error));
-    }
+io_result DefunctDisk::sync_iov(uint8_t, iovec*, uint32_t, off_t) noexcept {
+    return std::unexpected(std::make_error_condition(std::errc::io_error));
 }
 
 } // namespace ublkpp

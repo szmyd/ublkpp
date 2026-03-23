@@ -69,10 +69,17 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
     } // LCOV_EXCL_STOP
 
     auto read_super = load_superblock(*disk, uuid, chunk_size);
-    if (!read_super)
-        throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
-    new_device = read_super.value().second;
-    sb = std::shared_ptr< SuperBlock >(read_super.value().first, free_page());
+    if (!read_super) {
+        // It is not a failure to be able to load the superblock from a DefunctDevice which is
+        // never meant to "work".
+        if (std::dynamic_pointer_cast< DefunctDisk >(disk) == nullptr)
+            throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
+        // It is not a failure to be able to load the superblock from a DefunctDevice which is
+        new_device = true;
+    } else {
+        new_device = read_super.value().second;
+        sb = std::shared_ptr< SuperBlock >(read_super.value().first, free_page());
+    }
 }
 
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
@@ -135,11 +142,11 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     if (auto sb_res = pick_superblock(_device_a->sb.get(), _device_b->sb.get()); sb_res) {
         if (sb_res == _device_a->sb.get()) {
             _sb = std::move(_device_a->sb);
-            if (1 < (be64toh(_sb->fields.bitmap.age) - be64toh(_device_b->sb->fields.bitmap.age)))
+            if (!_device_b->sb || 1 < (be64toh(_sb->fields.bitmap.age) - be64toh(_device_b->sb->fields.bitmap.age)))
                 _device_b->new_device = true;
         } else {
             _sb = std::move(_device_b->sb);
-            if (1 < (be64toh(_sb->fields.bitmap.age) - be64toh(_device_a->sb->fields.bitmap.age)))
+            if (!_device_a->sb || 1 < (be64toh(_sb->fields.bitmap.age) - be64toh(_device_a->sb->fields.bitmap.age)))
                 _device_a->new_device = true;
         }
     } else

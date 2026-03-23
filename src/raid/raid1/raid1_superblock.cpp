@@ -17,6 +17,9 @@ auto format_as(SuperBlock const& sb) {
 }
 
 raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {
+    // If either superblock is null, take the other
+    if (!dev_a || !dev_b) return dev_a ? dev_a : dev_b;
+
     if (be64toh(dev_a->fields.bitmap.age) < be64toh(dev_b->fields.bitmap.age)) {
         dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
         return dev_b;
@@ -46,7 +49,7 @@ static raid1::SuperBlock* read_superblock(UblkDisk& device) {
         return nullptr;
     } // LCOV_EXCL_STOP
     if (auto res = device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 0UL); !res) {
-        RLOGE("Could not read SuperBlock of [sz:{}] [res:{}]", sb_size, res.error().message())
+        RLOGE("Could not read SuperBlock of [sz:{}] from: {} [res:{}]", sb_size, device, res.error().message())
         free(iov.iov_base);
         return nullptr;
     }
@@ -57,7 +60,7 @@ io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
-    sb->fields.read_route = static_cast<uint8_t>(read_route);
+    sb->fields.read_route = static_cast< uint8_t >(read_route);
     if (device_b) sb->fields.device_b = 1;
     auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
     auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
