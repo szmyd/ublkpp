@@ -74,7 +74,6 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
         // never meant to "work".
         if (std::dynamic_pointer_cast< DefunctDisk >(disk) == nullptr)
             throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
-        // It is not a failure to be able to load the superblock from a DefunctDevice which is
         new_device = true;
     } else {
         new_device = read_super.value().second;

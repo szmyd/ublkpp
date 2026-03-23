@@ -18,7 +18,6 @@ struct array_state {
     uint64_t bytes_to_sync;
 };
 } // namespace raid1
-
 class Raid1Disk : public UblkDisk {
 public:
     Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
