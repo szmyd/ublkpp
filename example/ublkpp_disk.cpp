@@ -182,7 +182,7 @@ static std::unique_ptr< ublkpp::UblkDisk > get_driver(std::string const& resourc
     //   iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>
     return std::make_unique< ublkpp::iSCSIDisk >(resource);
 #else
-    return nullptr;
+    return std::make_unique< ublkpp::DefunctDisk >();
 #endif
 }
 

@@ -218,7 +218,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         if (!DIRTY_DEVICE->new_device) return;
     }
 
-    if (!write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b, READ_ROUTE)) {
+    if (RUNNING_DEFUNCT || !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b, READ_ROUTE)) {
         if (!__become_degraded(DIRTY_SUBCMD)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
