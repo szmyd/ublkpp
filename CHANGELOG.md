@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - raid1: Ability to bring RAID1 online with missing device.
 
 ## 0.19.x
+- ublkpp_tgt: Remove DEFER_TASK from flags passed to ublksrv_queue_init
 - ublkpp_tgt: Allow oom killing of process.
 
 ## 0.18.x

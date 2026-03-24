@@ -83,9 +83,10 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     set_queue_thread_affinity(cdev);
 
     // Initialize UBlkSrv IOUring queue and bind target pointer
-    auto q =
-        ublksrv_queue_init_flags(target->ublk_dev, q_id, target.get(),
-                                 IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
+    // NOTE: Removed IORING_SETUP_DEFER_TASK as it was blocking ublksrv_ctrl_del_dev,
+    // look at adding this back as it theoretically could improve performance.
+    auto q = ublksrv_queue_init_flags(target->ublk_dev, q_id, target.get(),
+                                      IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
 
     // Wake up ::start() thread
     sem_post(queue_sem);
@@ -500,7 +501,10 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .reserved = {0, 0, 0, 0, 0, 0, 0},
     });
     auto res = start(tgt);
-    if (!res) return std::unexpected(res.error());
+    if (!res) {
+        tgt->destroy();
+        return std::unexpected(res.error());
+    }
     tgt->device_path = res.value();
 
     auto new_tgt = new ublkpp_tgt(tgt);
@@ -544,7 +548,7 @@ void ublkpp_tgt_impl::destroy() {
     // Delete the ublk control object (ublkc must be closed!)
     if (device_added) {
         TLOGD("Stopping Control for {}", str_id)
-        ublksrv_ctrl_del_dev_async(ctrl_dev);
+        ublksrv_ctrl_del_dev(ctrl_dev);
     }
 
     // De-allocate the ublksrv control device finally
