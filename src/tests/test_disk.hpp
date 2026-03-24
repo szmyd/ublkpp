@@ -53,27 +53,6 @@ public:
     uint8_t route_size() const override { return 0; }
 };
 
-class TestDefunctDisk : public DefunctDisk {
-public:
-    using DefunctDisk::DefunctDisk;
-
-    MOCK_METHOD(std::list< int >, open_for_uring, (int const), (override));
-    MOCK_METHOD(io_result, handle_internal,
-                (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t, int), (override));
-    MOCK_METHOD(void, collect_async, (ublksrv_queue const*, std::list< async_result >&), (override));
-    MOCK_METHOD(void, idle_transition, (ublksrv_queue const*, bool), (override));
-    MOCK_METHOD(io_result, handle_flush, (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t), (override));
-    MOCK_METHOD(io_result, handle_discard, (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, uint32_t, uint64_t),
-                (override));
-
-    MOCK_METHOD(io_result, async_iov,
-                (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t), (override));
-
-    MOCK_METHOD(io_result, sync_iov, (uint8_t, iovec*, uint32_t, off_t offset), (override, noexcept));
-
-    uint8_t route_size() const override { return 0; }
-};
-
 }; // namespace ublkpp
 
 inline ublk_io_data make_io_data(uint32_t op_flags, uint32_t len = 0, uint64_t start = 0) {
