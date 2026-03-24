@@ -148,8 +148,10 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
             if (!_device_a->sb || 1 < (be64toh(_sb->fields.bitmap.age) - be64toh(_device_a->sb->fields.bitmap.age)))
                 _device_a->new_device = true;
         }
-    } else
+    } else {
+        RLOGE("Could read SuperBlocks from any device, aborting assembly of: {} [parent_id: {}]", _str_uuid, parent_id)
         throw std::runtime_error("Could not find reasonable superblock!"); // LCOV_EXCL_LINE
+    }
 
     // Initialize read_route cache from loaded superblock
     __set_read_route(static_cast< read_route >(_sb->fields.read_route));

@@ -1,5 +1,4 @@
 #include "test_raid1_common.hpp"
-#include <isa-l/mem_routines.h>
 
 // If we initialize with one new device and one defunct, take the working device as is
 TEST(Raid1, DefunctDiskB) {
@@ -30,4 +29,12 @@ TEST(Raid1, DefunctDiskA) {
             return ublkpp::raid1::k_page_size;
         })
         .RetiresOnSaturation();
+}
+
+// We should throw if both devices are Defunct
+TEST(Raid1, DefunctDisks) {
+    auto device_a = std::make_shared< ublkpp::DefunctDisk >();
+    auto device_b = std::make_shared< ublkpp::DefunctDisk >();
+    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
 }
