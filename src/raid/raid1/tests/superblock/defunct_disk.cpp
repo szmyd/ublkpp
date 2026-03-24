@@ -6,14 +6,8 @@ TEST(Raid1, DefunctDiskB) {
     auto device_b = std::make_shared< ublkpp::DefunctDisk >();
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
+    // Only update the SuperBlock, no writes to BITMAP
     EXPECT_TO_WRITE_SB(device_a);
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .WillOnce([&raid_device](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
-            return ublkpp::raid1::k_page_size;
-        })
-        .RetiresOnSaturation();
 }
 
 TEST(Raid1, DefunctDiskA) {
@@ -21,14 +15,8 @@ TEST(Raid1, DefunctDiskA) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
+    // Only update the SuperBlock, no writes to BITMAP
     EXPECT_TO_WRITE_SB(device_b);
-    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .WillOnce([&raid_device](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
-            return ublkpp::raid1::k_page_size;
-        })
-        .RetiresOnSaturation();
 }
 
 // We should throw if both devices are Defunct

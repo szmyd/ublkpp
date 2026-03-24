@@ -38,6 +38,10 @@ using raid1::read_route;
 #define CLEAN_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_B : SEND_TO_A)
 #define DIRTY_SUBCMD (read_route::DEVB == READ_ROUTE ? SEND_TO_A : SEND_TO_B)
 
+// True if the dirty device is a DefunctDisk type
+#define DEFUNCT_DEVICE(d) (std::dynamic_pointer_cast< DefunctDisk >((d)) != nullptr)
+#define RUNNING_DEFUNCT DEFUNCT_DEVICE(DIRTY_DEVICE->disk)
+
 namespace raid1 {
 
 // Min page-resolution (how much does the smallest page cover?)
@@ -72,7 +76,7 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
     if (!read_super) {
         // It is not a failure to be able to load the superblock from a DefunctDevice which is
         // never meant to "work".
-        if (std::dynamic_pointer_cast< DefunctDisk >(disk) == nullptr)
+        if (!DEFUNCT_DEVICE(disk))
             throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
         new_device = true;
     } else {
@@ -171,7 +175,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         if (!_device_a->new_device) __set_read_route(read_route::DEVA);
     }
 
-    // We need to completely dirty one side if either is new when the other is not
+    // We need to completely dirty one side if either is new when the other is not, this will also
+    // apply to when a DefunctDisk is provided, load_from will be skipped in this case.
     sub_cmd_t const sub_cmd = 0U;
     if ((_device_a->new_device xor _device_b->new_device) ||
         ((read_route::EITHER != READ_ROUTE) && (0 == _sb->fields.clean_unmount))) {
@@ -208,7 +213,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     }
 
     // If we're starting degraded, we need to initiate a resync_task
-    if (IS_DEGRADED) {
+    if (IS_DEGRADED && !RUNNING_DEFUNCT) {
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
         if (!DIRTY_DEVICE->new_device) return;
     }
@@ -229,8 +234,9 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     }
     if (_resync_task.joinable()) _resync_task.join();
     if (!_sb) return;
+
     // Write out our dirty bitmap
-    if (IS_DEGRADED) {
+    if (IS_DEGRADED && !RUNNING_DEFUNCT) {
         RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *CLEAN_DEVICE->disk)
         if (auto res = _dirty_bitmap->sync_to(*CLEAN_DEVICE->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
@@ -309,7 +315,8 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     std::shared_ptr< MirrorDevice > incoming_mirror;
     try {
         incoming_mirror = std::make_shared< MirrorDevice >(_uuid, incoming_device);
-        if (be64toh(incoming_mirror->sb->fields.bitmap.age) + 1 < be64toh(_sb->fields.bitmap.age)) {
+        if (!incoming_mirror->sb ||
+            (be64toh(incoming_mirror->sb->fields.bitmap.age) + 1 < be64toh(_sb->fields.bitmap.age))) {
             RLOGD("Age read: {} Current: {}", be64toh(incoming_mirror->sb->fields.bitmap.age),
                   be64toh(_sb->fields.bitmap.age))
             incoming_mirror->new_device = true;
@@ -353,7 +360,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-    if (_resync_enabled)
+    if (_resync_enabled && !RUNNING_DEFUNCT)
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 
     // incoming_mirror now holds the outgoing device
@@ -376,7 +383,7 @@ void Raid1DiskImpl::toggle_resync(bool t) {
     _resync_enabled = t;
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
 
-    if (IS_DEGRADED && t)
+    if (IS_DEGRADED && !RUNNING_DEFUNCT && t)
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 }
 
@@ -503,6 +510,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
 }
 
 void Raid1DiskImpl::__resync_task() {
+    DEBUG_ASSERT(!RUNNING_DEFUNCT, "Ran resync task on Defunct disk!");
     RLOGD("Resync Task created for [uuid:{}]", _str_uuid)
     auto const resync_start = std::chrono::steady_clock::now();
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
@@ -610,7 +618,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         return sync_res;
     }
     DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
-    if (_resync_enabled && spawn_resync) {
+    if (_resync_enabled && !RUNNING_DEFUNCT && spawn_resync) {
         if (_resync_task.joinable()) _resync_task.join();
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
     }
