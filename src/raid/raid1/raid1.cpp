@@ -343,16 +343,12 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     if (_device_a->disk->id() == outgoing_device_id) {
         _device_a.swap(incoming_mirror);
-        if (auto res = write_superblock(*_device_a->disk, _sb.get(), false, READ_ROUTE);
-            !res || !__become_degraded(0U, false)) {
-            return incoming_device;
-        }
+        write_superblock(*_device_a->disk, _sb.get(), false, READ_ROUTE);
+        if (!__become_degraded(0U, false)) return incoming_device;
     } else {
         _device_b.swap(incoming_mirror);
-        if (auto res = write_superblock(*_device_b->disk, _sb.get(), true, READ_ROUTE);
-            !res || !__become_degraded(1U << _device_b->disk->route_size(), false)) {
-            return incoming_device;
-        }
+        write_superblock(*_device_b->disk, _sb.get(), true, READ_ROUTE);
+        if (!__become_degraded(1U << _device_b->disk->route_size(), false)) return incoming_device;
     }
 
     // Record successful device swap
