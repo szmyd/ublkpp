@@ -7,7 +7,11 @@
 
 #include <boost/uuid/uuid.hpp>
 
+#ifdef HAVE_LIBISCSI
 #define UBLK_LOG_MODS ublksrv, ublk_tgt, ublk_raid, ublk_drivers, libiscsi
+#else
+#define UBLK_LOG_MODS ublksrv, ublk_tgt, ublk_raid, ublk_drivers
+#endif
 
 namespace ublkpp {
 

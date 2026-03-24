@@ -61,7 +61,7 @@ struct MirrorDevice {
     std::shared_ptr< SuperBlock > sb;
     std::atomic_flag unavail;
 
-    bool new_device{false};
+    bool new_device{true};
 };
 
 MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device) :
@@ -72,13 +72,12 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
         throw std::runtime_error("Invalid Chunk Size");
     } // LCOV_EXCL_STOP
 
+    // It is not a failure to be able to load the superblock from a DefunctDevice
+    if (DEFUNCT_DEVICE(disk)) return;
+
     auto read_super = load_superblock(*disk, uuid, chunk_size);
     if (!read_super) {
-        // It is not a failure to be able to load the superblock from a DefunctDevice which is
-        // never meant to "work".
-        if (!DEFUNCT_DEVICE(disk))
-            throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
-        new_device = true;
+        throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
     } else {
         new_device = read_super.value().second;
         sb = std::shared_ptr< SuperBlock >(read_super.value().first, free_page());
@@ -102,6 +101,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
     // Set largest underlying user-data size we support as starting point
     our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
+
+    RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
 
     // Now find the what size we should actually set based on the smallest provided device
     for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
@@ -182,8 +183,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
         ((read_route::EITHER != READ_ROUTE) && (0 == _sb->fields.clean_unmount))) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
-        RLOGW("Device is new {}, dirty all of device {}", *(_device_a->new_device ? _device_a->disk : _device_b->disk),
-              *(_device_a->new_device ? _device_b->disk : _device_a->disk))
+        RLOGW("Device is replacement {}, dirty all of BITMAP",
+              *(_device_a->new_device ? _device_a->disk : _device_b->disk))
         _dirty_bitmap->dirty_region(0, capacity());
         _is_degraded.test_and_set(std::memory_order_relaxed);
     } else if (read_route::EITHER != READ_ROUTE) {
