@@ -13,11 +13,10 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
-size_t Bitmap::max_pages_per_tx(const UblkDisk& device) {
-    return device.max_tx() / k_page_size;
-}
+size_t Bitmap::max_pages_per_tx(const UblkDisk& device) { return device.max_tx() / k_page_size; }
 
-Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved, std::string const& id) :
+Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved,
+               std::string const& id) :
         _id(id),
         _data_size(data_size),
         _chunk_size(chunk_size),
@@ -74,24 +73,32 @@ std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitm
     );
 }
 
-void Bitmap::init_to(UblkDisk& device) {
+void Bitmap::init_to(std::shared_ptr< UblkDisk > device) {
     // Clear the SuperBitmap when initializing a new bitmap
     _super_bitmap.clear_all();
+
+    // We skip this is the device past to us is really a DefunctDisk. DefunctDisks will never
+    // succeed WRITEs and *must* be swapped with another disk for the RAID1 to begin resync. So here
+    // we just return rather than inevitably throw below and have to add this logic add just call site.
+    if (std::dynamic_pointer_cast< DefunctDisk >(device) != nullptr) [[unlikely]] {
+        RLOGD("Device is DEFUNCT, skipping init_to")
+        return;
+    }
 
     auto proto = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
 
     // TODO should be able to use discard if supported here. Need to add support in the Drivers first in sync_iov call
     // For now, create a scatter-gather of the MaxI/O size to clear synchronously erase the bitmap region.
     RLOGI("Clearing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}] on: {}", _num_pages, _num_pages * k_page_size / Ki, _id,
-          device)
-    auto const max_pages = max_pages_per_tx(device);
+          *device)
+    auto const max_pages = max_pages_per_tx(*device);
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     std::fill_n(iov.get(), max_pages, proto);
 
     for (auto pg_idx = 0UL; _num_pages > pg_idx;) {
-        auto res = device.sync_iov(UBLK_IO_OP_WRITE, iov.get(), std::min(_num_pages - pg_idx, max_pages),
-                                   k_page_size + (pg_idx * k_page_size));
+        auto res = device->sync_iov(UBLK_IO_OP_WRITE, iov.get(), std::min(_num_pages - pg_idx, max_pages),
+                                    k_page_size + (pg_idx * k_page_size));
         if (!res) { throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message())); }
         pg_idx += max_pages;
     }
@@ -207,15 +214,15 @@ Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
         else
             return &it->second;
     }
-    auto [it, happened] = _page_map.emplace(static_cast< uint32_t >(offset),
-                                            PageData{std::shared_ptr< word_t >{},
-                                                     false});
-	if(happened) {
+    auto [it, happened] =
+        _page_map.emplace(static_cast< uint32_t >(offset), PageData{std::shared_ptr< word_t >{}, false});
+    if (happened) {
         void* new_page{nullptr};
-    	if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err) throw std::runtime_error("OutOfMemory");; // LCOV_EXCL_LINE
+        if (auto err = ::posix_memalign(&new_page, _align, k_page_size); err)
+            throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
         memset(new_page, 0, k_page_size);
         it->second.page.reset(reinterpret_cast< word_t* >(new_page), free_page());
-	}
+    }
     return &it->second;
 }
 
@@ -248,9 +255,8 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 uint64_t Bitmap::page_size() { return k_page_size; }
 
 size_t Bitmap::dirty_pages() {
-    auto cnt = std::erase_if(_page_map, [](const auto& it) {
-        return (0 == isal_zero_detect(it.second.page.get(), k_page_size));
-    });
+    auto cnt = std::erase_if(_page_map,
+                             [](const auto& it) { return (0 == isal_zero_detect(it.second.page.get(), k_page_size)); });
     if (0 < cnt) { RLOGD("Dropped [{}/{}] page(s) from the Bitmap [id: {}]", cnt, _page_map.size() + cnt, _id); }
     auto sz = _page_map.size();
     auto const full = (sz * (k_page_size * k_bits_in_byte));

@@ -17,19 +17,20 @@ public:
 
     struct PageData {
         std::shared_ptr< word_t > page;
-        std::atomic< bool > loaded_from_disk;  // true = loaded unchanged, false = modified/new
+        std::atomic< bool > loaded_from_disk; // true = loaded unchanged, false = modified/new
 
         PageData(std::shared_ptr< word_t > p, bool from_disk) : page(std::move(p)), loaded_from_disk(from_disk) {}
 
         // Move constructor - needed because std::atomic is not movable
-        PageData(PageData&& other) noexcept
-            : page(std::move(other.page)), loaded_from_disk(other.loaded_from_disk.load(std::memory_order_relaxed)) {}
+        PageData(PageData&& other) noexcept :
+                page(std::move(other.page)), loaded_from_disk(other.loaded_from_disk.load(std::memory_order_relaxed)) {}
 
         // Move assignment
         PageData& operator=(PageData&& other) noexcept {
             if (this != &other) {
                 page = std::move(other.page);
-                loaded_from_disk.store(other.loaded_from_disk.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                loaded_from_disk.store(other.loaded_from_disk.load(std::memory_order_relaxed),
+                                       std::memory_order_relaxed);
             }
             return *this;
         }
@@ -59,7 +60,8 @@ private:
     static size_t max_pages_per_tx(const UblkDisk& device);
 
 public:
-    Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved, std::string const& id = "");
+    Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved,
+           std::string const& id = "");
 
     static uint64_t page_size();
     size_t dirty_pages();
@@ -76,7 +78,7 @@ public:
     static std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t >
     calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size);
 
-    void init_to(UblkDisk& device);
+    void init_to(std::shared_ptr< UblkDisk > device);
     io_result sync_to(UblkDisk& device, uint64_t offset = 0UL);
     void load_from(UblkDisk& device);
 };

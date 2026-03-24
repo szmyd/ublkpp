@@ -44,7 +44,7 @@ TEST(Raid1, InitBitmap) {
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::Bitmap::page_size()));
             return ublkpp::raid1::Bitmap::page_size();
         });
-    bitmap.init_to(*device);
+    bitmap.init_to(device);
     EXPECT_EQ(num_pages * ublkpp::raid1::Bitmap::page_size(), total_written);
 }
 
@@ -60,5 +60,5 @@ TEST(Raid1, InitBitmapFailure) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
-    EXPECT_THROW(bitmap.init_to(*device), std::runtime_error);
+    EXPECT_THROW(bitmap.init_to(device), std::runtime_error);
 }
