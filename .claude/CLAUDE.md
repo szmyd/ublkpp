@@ -2,6 +2,56 @@
 
 A C++ library providing RAID0/1/10 support for Linux's userspace block (ublk) driver.
 
+## Claude Workflow
+
+**CRITICAL: Task Execution Protocol**
+
+For EVERY non-trivial task (code changes, bug fixes, features), follow this workflow:
+
+### 1. **ALWAYS Start with Planning**
+- Use `EnterPlanMode` for any code implementation task
+- Explore the codebase to understand context
+- Ask clarifying questions if requirements are unclear
+- Design the approach before writing code
+- Present the plan for approval
+
+**When to plan:**
+- Any code change affecting multiple files
+- Bug fixes requiring investigation
+- New features or functionality
+- Refactoring existing code
+- Performance improvements
+
+**When to skip planning:**
+- Simple one-line fixes (typos, obvious bugs)
+- Documentation-only changes
+- Pure research/exploration tasks
+
+### 2. **Execute the Plan**
+- Implement the approved approach
+- Follow development workflow (see below)
+- Stay focused on the plan
+
+### 3. **ALWAYS Finish with Review & Analysis**
+After completing ANY task, perform a self-review:
+
+**Analyze what was done:**
+- Review all code changes for correctness
+- Check for potential issues (race conditions, memory leaks, edge cases)
+- Verify tests cover the changes
+- Confirm formatting was applied
+- Look for security vulnerabilities
+- Consider performance implications
+- Validate error handling is complete
+
+**Report findings:**
+- Summarize what was implemented
+- Call out any concerns or trade-offs
+- Suggest follow-up improvements if needed
+- Confirm all workflow steps were completed
+
+**This review is MANDATORY** - never skip it, even for small changes.
+
 ## Quick Reference
 
 **Note:** Build environment (local vs SSH) is configured in your personal `~/.claude/CLAUDE.md`.
