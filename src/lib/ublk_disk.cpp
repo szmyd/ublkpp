@@ -115,6 +115,7 @@ DefunctDisk::DefunctDisk() : UblkDisk() {
 
 std::string DefunctDisk::id() const { return "defunct"; }
 
+// LCOV_EXCL_START
 io_result DefunctDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
     return std::unexpected(std::make_error_condition(std::errc::io_error));
 }
@@ -126,6 +127,7 @@ io_result DefunctDisk::handle_discard(ublksrv_queue const*, ublk_io_data const*,
 io_result DefunctDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t) {
     return std::unexpected(std::make_error_condition(std::errc::io_error));
 }
+// LCOV_EXCL_STOP
 
 io_result DefunctDisk::sync_iov(uint8_t, iovec*, uint32_t, off_t) noexcept {
     return std::unexpected(std::make_error_condition(std::errc::io_error));
