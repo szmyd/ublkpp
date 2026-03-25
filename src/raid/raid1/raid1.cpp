@@ -18,8 +18,8 @@
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (resync_level, "", "resync_level", "Resync prioritization level (0-32)",
-                   cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"))
+                  (resync_level, "", "resync_level", "Resync prioritization level (0-256)",
+                   cxxopts::value< std::uint32_t >()->default_value("32"), "<io_size>"))
 
 using namespace std::chrono_literals;
 
@@ -199,7 +199,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     _sb->fields.clean_unmount = 0x0;
     _sb->fields.device_b = 0;
     _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
-    _io_op_cnt.store(0U);
+
+    _last_resync_steal.store(std::chrono::steady_clock::now().time_since_epoch().count());
 
     if (RUNNING_DEFUNCT) RLOGW("RAID1 device [uuid:{}] is running with a defunct device!", _str_uuid)
 
@@ -458,7 +459,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_raid_metrics) { _raid_metrics->record_dirty_pages(nr_pages); }
     while (0 < nr_pages) {
-        auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
+        auto copies_left = (std::min(256U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * Mi) / max_tx();
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
@@ -502,7 +503,8 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         }
         cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
         nr_pages = _dirty_bitmap->dirty_pages();
-        if (_raid_metrics) { _raid_metrics->record_dirty_pages(nr_pages); }
+        if (_raid_metrics) {
+            _raid_metrics->record_dirty_pages(nr_pages); }
     }
     free(iov.iov_base);
     return static_cast< resync_state >(cur_state);
@@ -564,22 +566,25 @@ void Raid1DiskImpl::__resync_task() {
 
 void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     using namespace std::chrono_literals;
+    static auto const time_steal_period = (100ms).count();
+
     auto cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
     if (enter) {
         cur_state = static_cast< uint8_t >(resync_state::PAUSE);
         _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
         return;
     }
+
     // To allow I/O wait for resync task to PAUSE (if any running)
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::PAUSE))) {
         if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
-            if (!IS_DEGRADED) break;
-            auto const cnt = _io_op_cnt.fetch_add(1, std::memory_order_relaxed);
-            if (0U == (cnt % 512)) {
+            auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+            if (time_steal_period < (_last_resync_steal.load() - now)) {
+                _last_resync_steal.store(now);
                 _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
                 cur_state = static_cast< uint8_t >(resync_state::IDLE);
             } else
-                break;
+                return; // I/O READY!
         } else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
         else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
@@ -810,7 +815,7 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
     RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", data->tag, lba, len, _str_uuid)
 
     // Stop any on-going resync
-    idle_transition(q, false);
+    if (IS_DEGRADED) idle_transition(q, false);
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
@@ -833,7 +838,7 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
           addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
 
     // Stop any on-going resync
-    idle_transition(q, false);
+    if (IS_DEGRADED) idle_transition(q, false);
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
@@ -862,7 +867,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
           _str_uuid)
 
     // Stop any on-going resync
-    idle_transition(nullptr, false);
+    if (IS_DEGRADED) idle_transition(nullptr, false);
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
