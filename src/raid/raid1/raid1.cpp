@@ -18,8 +18,8 @@
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (resync_level, "", "resync_level", "Resync prioritization level (0-256)",
-                   cxxopts::value< std::uint32_t >()->default_value("32"), "<io_size>"))
+                  (resync_level, "", "resync_level", "Resync prioritization level (0-1024)",
+                   cxxopts::value< std::uint32_t >()->default_value("256"), "<io_size>"))
 
 using namespace std::chrono_literals;
 
@@ -459,7 +459,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_raid_metrics) { _raid_metrics->record_dirty_pages(nr_pages); }
     while (0 < nr_pages) {
-        auto copies_left = (std::min(256U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * Mi) / max_tx();
+        auto copies_left = (std::min(1024U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * Mi) / max_tx();
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
@@ -503,8 +503,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         }
         cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
         nr_pages = _dirty_bitmap->dirty_pages();
-        if (_raid_metrics) {
-            _raid_metrics->record_dirty_pages(nr_pages); }
+        if (_raid_metrics) { _raid_metrics->record_dirty_pages(nr_pages); }
     }
     free(iov.iov_base);
     return static_cast< resync_state >(cur_state);
