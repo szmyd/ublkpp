@@ -460,6 +460,11 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
     while (0 < nr_pages) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
+
+        // Announce the region we're working on for overlap detection
+        ResyncRegion region{logical_off, logical_off + sz};
+        _active_resync_region.store(&region, std::memory_order_release);
+
         while (0 < sz && 0U < copies_left--) {
             if (0 == sz) break;
             iov.iov_len = std::min(sz, params()->basic.max_sectors << SECTOR_SHIFT);
@@ -472,35 +477,49 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
                 __clean_region(0, logical_off, iov.iov_len);
                 // Record resync progress
                 if (_raid_metrics) { _raid_metrics->record_resync_progress(iov.iov_len); }
+                // Track bytes for batching
+                _resync_bytes_since_pause.fetch_add(iov.iov_len, std::memory_order_relaxed);
             } else {
                 DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
                 break;
             }
             std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
+            // Update region for next chunk
+            region.start = logical_off;
+            region.end = logical_off + sz;
         }
 
-        // Give I/O a chance to interrupt resync
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
+        // Clear active region before yielding
+        _active_resync_region.store(nullptr, std::memory_order_release);
+
+        // Check if we need to pause for batch fairness (every 256MB)
+        if (_resync_bytes_since_pause.load(std::memory_order_relaxed) >= RESYNC_BATCH_SIZE) {
+            // Brief pause to let I/O catch up
+            std::this_thread::sleep_for(1ms);
+            _resync_bytes_since_pause.store(0, std::memory_order_relaxed);
+        } else {
+            // Brief yield for I/O (much shorter than old approach)
+            std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 10us);
+        }
+
+        // Check if we should stop
+        cur_state = _resync_state.load(std::memory_order_acquire);
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
+            free(iov.iov_base);
+            return static_cast< resync_state >(cur_state);
+        }
+
+        // If paused, wait to resume
+        while (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
+            cur_state = static_cast< uint8_t >(resync_state::IDLE);
+            std::this_thread::sleep_for(300us);
+            cur_state = _resync_state.load(std::memory_order_acquire);
             if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
                 free(iov.iov_base);
                 return static_cast< resync_state >(cur_state);
             }
         }
-        cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-        // Give time for degraded device to become available again
-        std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 30us);
 
-        // Resume resync after short delay
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
-            if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
-                cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                std::this_thread::sleep_for(300us);
-            } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
-                free(iov.iov_base);
-                return static_cast< resync_state >(cur_state);
-            }
-        }
-        cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
         nr_pages = _dirty_bitmap->dirty_pages();
         if (_raid_metrics) { _raid_metrics->record_dirty_pages(nr_pages); }
     }
@@ -562,32 +581,58 @@ void Raid1DiskImpl::__resync_task() {
     RLOGD("Resync Task Finished for [uuid:{}]", _str_uuid)
 }
 
-void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
+// Helper to pause resync if I/O overlaps with active resync region
+void __pause_resync_if_overlap(std::atomic< uint8_t >& resync_state, uint64_t addr, uint32_t len,
+                               std::atomic< ResyncRegion* >& active_region) {
     using namespace std::chrono_literals;
-    auto cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-    if (enter) {
-        cur_state = static_cast< uint8_t >(resync_state::PAUSE);
-        _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-        return;
-    }
-    // To allow I/O wait for resync task to PAUSE (if any running)
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::PAUSE))) {
-        if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
-            if (!IS_DEGRADED) break;
-            auto const cnt = _io_op_cnt.fetch_add(1, std::memory_order_relaxed);
-            if (0U == (cnt % 512)) {
-                _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
-                cur_state = static_cast< uint8_t >(resync_state::IDLE);
-            } else
-                break;
-        } else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
-            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-        else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
-            cur_state = static_cast< uint8_t >(resync_state::IDLE);
-        else if (static_cast< uint8_t >(resync_state::IDLE) == cur_state)
-            continue;
+    if (!active_region.load(std::memory_order_acquire)) return;
+
+    auto* region = active_region.load(std::memory_order_acquire);
+    if (!region) return;
+
+    // Check for overlap
+    uint64_t io_end = addr + len;
+    bool overlaps = !(io_end <= region->start || addr >= region->end);
+    if (!overlaps) return;
+
+    // Pause resync for this overlapping I/O
+    auto cur_state = static_cast< uint8_t >(raid1::resync_state::ACTIVE);
+    while (!resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(raid1::resync_state::PAUSE))) {
+        if (cur_state == static_cast< uint8_t >(raid1::resync_state::PAUSE) ||
+            cur_state == static_cast< uint8_t >(raid1::resync_state::STOPPED)) {
+            break;
+        }
         std::this_thread::sleep_for(10us);
+        cur_state = static_cast< uint8_t >(raid1::resync_state::ACTIVE);
     }
+}
+
+// Helper to resume paused resync after I/O completes
+void __resume_resync_if_paused(std::atomic< uint8_t >& resync_state, uint64_t addr, uint32_t len,
+                               std::atomic< ResyncRegion* >& active_region) {
+    auto* region = active_region.load(std::memory_order_acquire);
+    if (!region) return;
+
+    // Check if we had paused for this I/O
+    uint64_t io_end = addr + len;
+    bool overlaps = !(io_end <= region->start || addr >= region->end);
+    if (!overlaps) return;
+
+    // Resume resync
+    auto pause_state = static_cast< uint8_t >(raid1::resync_state::PAUSE);
+    resync_state.compare_exchange_strong(pause_state, static_cast< uint8_t >(raid1::resync_state::IDLE));
+}
+
+void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
+    // With region-based resync, idle transitions are primarily for compatibility
+    // The actual blocking/resuming is handled by region overlap detection in I/O paths
+    if (enter) {
+        // On idle entry, suggest resync can resume (if it was paused)
+        auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+        _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+    }
+    // On idle exit (I/O arrival), region-based logic in I/O paths handles blocking
+    // No action needed here since overlap detection is more precise
 }
 
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync) {
@@ -809,13 +854,13 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", data->tag, lba, len, _str_uuid)
 
-    // Stop any on-going resync
-    idle_transition(q, false);
+    // Only block resync if I/O overlaps with active resync region
+    __pause_resync_if_overlap(_resync_state, addr, len, _active_resync_region);
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
 
-    return __replicate(
+    auto result = __replicate(
         sub_cmd,
         [q, data, len, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) -> io_result {
             // Discard does not support internal commands, we can safely ignore these optimistic operations
@@ -823,6 +868,10 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
             return d.handle_discard(q, data, scmd, len, a);
         },
         addr, len, q, data);
+
+    // Resume resync if we paused it
+    __resume_resync_if_paused(_resync_state, addr, len, _active_resync_region);
+    return result;
 }
 
 io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
@@ -832,27 +881,34 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
           addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
 
-    // Stop any on-going resync
-    idle_transition(q, false);
+    // Only block resync if I/O overlaps with active resync region
+    __pause_resync_if_overlap(_resync_state, addr, len, _active_resync_region);
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
-    if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
-        return __failover_read(
+    if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod)) {
+        auto result = __failover_read(
             sub_cmd,
             [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
                 return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
             },
             addr, len);
+        __resume_resync_if_paused(_resync_state, addr, len, _active_resync_region);
+        return result;
+    }
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
 
-    return __replicate(
+    auto result = __replicate(
         sub_cmd,
         [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
             return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
         },
         addr, len, q, data);
+
+    // Resume resync if we paused it
+    __resume_resync_if_paused(_resync_state, addr, len, _active_resync_region);
+    return result;
 }
 
 io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
@@ -861,30 +917,36 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
           _str_uuid)
 
-    // Stop any on-going resync
-    idle_transition(nullptr, false);
+    // Only block resync if I/O overlaps with active resync region
+    __pause_resync_if_overlap(_resync_state, addr, len, _active_resync_region);
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
-    if (UBLK_IO_OP_READ == op)
-        return __failover_read(
+    if (UBLK_IO_OP_READ == op) {
+        auto result = __failover_read(
             0U,
             [iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t) {
                 return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, a);
             },
             addr, len);
+        __resume_resync_if_paused(_resync_state, addr, len, _active_resync_region);
+        return result;
+    }
 
     size_t res{0};
-    if (auto io_res = __replicate(
-            0U,
-            [&res, op, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t s) {
-                auto p_res = d.sync_iov(op, iovecs, nr_vecs, a);
-                // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
-                if (p_res && !is_replicate(s)) res += p_res.value();
-                return p_res;
-            },
-            addr, len);
-        !io_res)
-        return io_res;
+    auto io_res = __replicate(
+        0U,
+        [&res, op, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t s) {
+            auto p_res = d.sync_iov(op, iovecs, nr_vecs, a);
+            // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
+            if (p_res && !is_replicate(s)) res += p_res.value();
+            return p_res;
+        },
+        addr, len);
+
+    // Resume resync if we paused it
+    __resume_resync_if_paused(_resync_state, addr, len, _active_resync_region);
+
+    if (!io_res) return io_res;
     return res;
 }
 

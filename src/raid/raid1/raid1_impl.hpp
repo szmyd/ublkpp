@@ -19,6 +19,12 @@ struct MirrorDevice;
 
 ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPED = 4);
 
+// Region tracking for concurrent resync
+struct ResyncRegion {
+    uint64_t start;
+    uint64_t end;
+};
+
 class Raid1DiskImpl : public UblkDisk {
     // Global counter for active resyncs across all RAID1 devices
     static inline std::atomic_uint32_t s_active_resyncs{0};
@@ -46,6 +52,11 @@ class Raid1DiskImpl : public UblkDisk {
     std::atomic< uint8_t > _resync_state;
     std::atomic< uint8_t > _io_op_cnt;
 
+    // Region-based resync tracking for concurrent I/O
+    std::atomic< ResyncRegion* > _active_resync_region{nullptr};
+    std::atomic< uint64_t > _resync_bytes_since_pause{0};
+    static constexpr uint64_t RESYNC_BATCH_SIZE = 256ULL << 20; // 256MB
+
     // Metrics
     std::unique_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
     // Asynchronous replies that did not go through io_uring
@@ -69,6 +80,13 @@ class Raid1DiskImpl : public UblkDisk {
     }
     void __set_read_route(raid1::read_route route) {
         _read_route_cache.store(static_cast<uint8_t>(route), std::memory_order_release);
+    }
+
+    bool __regions_overlap(uint64_t addr, uint32_t len) const {
+        auto* region = _active_resync_region.load(std::memory_order_acquire);
+        if (!region) return false;
+        uint64_t io_end = addr + len;
+        return !(io_end <= region->start || addr >= region->end);
     }
 
 
