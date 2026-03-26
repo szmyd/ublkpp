@@ -276,8 +276,11 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
 
     // Get/Create a Page
     auto page_data = __get_page(page_offset);
-    DEBUG_ASSERT_NOTNULL(page_data, "Expected to find dirty page!")
-    if (!page_data) return std::make_tuple(nullptr, page_offset, sz);
+    if (!page_data) {
+        RLOGW("clean_region: page {} not found (already clean or cleared during device swap) [addr:{:#0x}, id: {}]",
+              page_offset, addr, _id);
+        return std::make_tuple(nullptr, page_offset, sz);
+    }
 
     auto cur_word = page_data->page.get() + word_offset;
 
