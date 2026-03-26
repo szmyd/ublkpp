@@ -314,7 +314,19 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
         return incoming_device;
     }
 
-    // Write the superblock and clear the BITMAP region of the new device before usage
+    // Terminate any ongoing resync task BEFORE clearing bitmap to avoid race condition
+    auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
+            return incoming_device;
+        else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
+            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+    }
+    cur_state = static_cast< uint8_t >(resync_state::STOPPED);
+    if (_resync_task.joinable()) _resync_task.join();
+    _is_degraded.clear(std::memory_order_release);
+
+    // Now safe to initialize incoming mirror and clear bitmap (resync stopped)
     std::shared_ptr< MirrorDevice > incoming_mirror;
     try {
         incoming_mirror = std::make_shared< MirrorDevice >(_uuid, incoming_device);
@@ -326,18 +338,6 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
         }
         if (incoming_mirror->new_device) _dirty_bitmap->init_to(incoming_mirror->disk);
     } catch (std::runtime_error const& e) { return incoming_device; }
-
-    // Terminate any ongoing resync task
-    auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPED))) {
-        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
-            return incoming_device;
-        else if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state)
-            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-    }
-    cur_state = static_cast< uint8_t >(resync_state::STOPPED);
-    if (_resync_task.joinable()) _resync_task.join();
-    _is_degraded.clear(std::memory_order_release);
 
     // Dirty the entire bitmap if new disk
     if (incoming_mirror->new_device) _dirty_bitmap->dirty_region(0, capacity());
