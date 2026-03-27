@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.20.2
+- **CRITICAL FIX**: raid1: Prevent stale reads from degraded device during resync
+  - Fixed race condition where async writes during degraded mode could fail to dirty bitmap before resync checks it
+  - Bitmap is now dirtied BEFORE launching async writes to DIRTY_DEVICE when device appears available but array is degraded
+  - Prevents resync from skipping regions that have in-flight async writes, which could lead to data corruption
+  - All writes during degraded operation now properly dirty bitmap to ensure correctness during recovery
+- **CRITICAL FIX**: raid1: Add thread-safe synchronization to bitmap page map
+  - Replaced `std::map` with `std::unordered_map` + `std::shared_mutex` for concurrent access
+  - Protects bitmap `_page_map` structure from race conditions between resync thread and async I/O
+  - Shared locks for readers (`is_dirty`, `next_dirty`, `clean_region`, `sync_to`) allow concurrent reads
+  - Exclusive locks for writers (`dirty_region`, `dirty_pages`, `load_from`) prevent structural corruption
+  - Fixes potential crashes and data corruption from concurrent map modification during resync
+
 ## 0.20.1
 - raid1: Stop resync before touching bitmap during swap.
 

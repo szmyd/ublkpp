@@ -737,6 +737,14 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             // We will go ahead and attempt this WRITE on a known degraded device,
             // set this flag so we can clear any bits in the bitmap should is succeed
             sub_cmd = set_flags(sub_cmd, sub_cmd_flags::INTERNAL);
+        } else {
+            // FIX: Device appears available and bitmap clean, but we're about to attempt async write.
+            // Dirty bitmap FIRST in case the write fails (will be cleaned if write succeeds).
+            // This prevents resync from skipping this region if it checks the bitmap while the async
+            // write is in flight but before it completes/fails.
+            _dirty_bitmap->dirty_region(addr, len);
+            // Then attempt the optimistic write with INTERNAL flag so it gets cleaned on success
+            sub_cmd = set_flags(sub_cmd, sub_cmd_flags::INTERNAL);
         }
     }
 
