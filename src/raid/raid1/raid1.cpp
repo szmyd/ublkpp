@@ -470,7 +470,10 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
                     __copy_region(&iov, 1, logical_off + reserved_size, *CLEAN_DEVICE->disk, *DIRTY_DEVICE->disk);
                 res) {
                 // Clear Bitmap and set device as available if successful
-                DIRTY_DEVICE->unavail.clear(std::memory_order_release);
+                if (DIRTY_DEVICE->unavail.test(std::memory_order_acquire)) {
+                    RLOGI("Mirror became available again: {} [uuid:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
+                    DIRTY_DEVICE->unavail.clear(std::memory_order_release);
+                }
                 __clean_region(0, logical_off, iov.iov_len);
                 // Record resync progress
                 if (_raid_metrics) { _raid_metrics->record_resync_progress(iov.iov_len); }
