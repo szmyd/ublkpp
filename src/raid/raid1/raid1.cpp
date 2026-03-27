@@ -338,33 +338,67 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     }
     cur_state = static_cast< uint8_t >(resync_state::STOPPED);
     if (_resync_task.joinable()) _resync_task.join();
+
+    // Save degraded state for error recovery
+    auto const was_degraded = _is_degraded.test(std::memory_order_acquire);
+
+    // Perform all operations that can throw BEFORE modifying state
+    try {
+        // Clear bitmap on new device's disk and dirty entire region for resync
+        if (incoming_mirror->new_device) {
+            _dirty_bitmap->init_to(incoming_mirror->disk);
+            _dirty_bitmap->dirty_region(0, capacity());
+        }
+    } catch (std::runtime_error const& e) {
+        // Exception during bitmap operations - restore resync state
+        cur_state = static_cast< uint8_t >(resync_state::STOPPED);
+        _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+        if (was_degraded && _resync_enabled && !RUNNING_DEFUNCT) {
+            _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+        }
+        throw;
+    }
+
+    // Now safe to commit state changes (all throwing operations completed)
+    _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
     _is_degraded.clear(std::memory_order_release);
 
-    // Now safe to clear bitmap (resync stopped, no concurrent access)
-    if (incoming_mirror->new_device) _dirty_bitmap->init_to(incoming_mirror->disk);
-
-    // Dirty the entire bitmap if new disk
-    if (incoming_mirror->new_device) _dirty_bitmap->dirty_region(0, capacity());
-
-    // Write the superblock to the new device and advance the age to make the outgoint device invalid
-    _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
+    // Swap devices and mark as degraded (starts resync automatically)
     if (_device_a->disk->id() == outgoing_device_id) {
         _device_a.swap(incoming_mirror);
         write_superblock(*_device_a->disk, _sb.get(), false, READ_ROUTE);
-        if (!__become_degraded(0U, false)) return incoming_device;
+        if (!__become_degraded(0U, false)) {
+            // Failed to mark degraded - restore resync state and return
+            cur_state = static_cast< uint8_t >(resync_state::STOPPED);
+            _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+            if (was_degraded && _resync_enabled && !RUNNING_DEFUNCT) {
+                _resync_task =
+                    sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+            }
+            return incoming_device;
+        }
     } else {
         _device_b.swap(incoming_mirror);
         write_superblock(*_device_b->disk, _sb.get(), true, READ_ROUTE);
-        if (!__become_degraded(1U << _device_b->disk->route_size(), false)) return incoming_device;
+        if (!__become_degraded(1U << _device_b->disk->route_size(), false)) {
+            // Failed to mark degraded - restore resync state and return
+            cur_state = static_cast< uint8_t >(resync_state::STOPPED);
+            _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+            if (was_degraded && _resync_enabled && !RUNNING_DEFUNCT) {
+                _resync_task =
+                    sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+            }
+            return incoming_device;
+        }
     }
-
-    // Record successful device swap
-    if (_raid_metrics) { _raid_metrics->record_device_swap(); }
 
     // Now set back to IDLE state and kick a resync task off
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
     if (_resync_enabled && !RUNNING_DEFUNCT)
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+
+    // Record successful device swap (resync already started by __become_degraded)
+    if (_raid_metrics) { _raid_metrics->record_device_swap(); }
 
     // incoming_mirror now holds the outgoing device
     return incoming_mirror->disk;
