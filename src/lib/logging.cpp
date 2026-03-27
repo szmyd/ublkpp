@@ -12,13 +12,13 @@ SISL_LOGGING_DEF(ublk_drivers)
 // was using syslog by default. Here we trap and forward into SISL
 // logging instead
 extern "C" {
-static void va_log(const char* msg, va_list& ap) {
+static void va_log(auto level, const char* msg, va_list& ap) {
     char* log_mesg;
     if (0 >= vasprintf(&log_mesg, msg, ap)) {
         LOGCRITICAL("Could not allocate memory for logging!")
         return;
     }
-    sisl::logging::GetLogger()->warn("{}", log_mesg);
+    sisl::logging::GetLogger()->log(level, "{}", log_mesg);
     free(log_mesg);
 }
 
@@ -26,7 +26,7 @@ extern void ublk_dbg(int, const char* msg, ...) {
     if (!LEVELCHECK(ublksrv, spdlog::level::level_enum::trace)) return;
     va_list ap;
     va_start(ap, msg);
-    va_log(msg, ap);
+    va_log(spdlog::level::level_enum::debug, msg, ap);
     va_end(ap);
 }
 
@@ -34,23 +34,23 @@ extern void ublk_ctrl_dbg(int, const char* msg, ...) {
     if (!LEVELCHECK(ublksrv, spdlog::level::level_enum::trace)) return;
     va_list ap;
     va_start(ap, msg);
-    va_log(msg, ap);
+    va_log(spdlog::level::level_enum::trace, msg, ap);
     va_end(ap);
 }
 
 extern void ublk_err(const char* msg, ...) {
-    if (!LEVELCHECK(ublksrv, spdlog::level::level_enum::err)) return;
+    if (!LEVELCHECK(ublksrv, spdlog::level::level_enum::trace)) return;
     va_list ap;
     va_start(ap, msg);
-    va_log(msg, ap);
+    va_log(spdlog::level::level_enum::err, msg, ap);
     va_end(ap);
 }
 
 extern void ublk_log(const char* msg, ...) {
-    if (!LEVELCHECK(ublksrv, spdlog::level::level_enum::info)) return;
+    if (!LEVELCHECK(ublksrv, spdlog::level::level_enum::trace)) return;
     va_list ap;
     va_start(ap, msg);
-    va_log(msg, ap);
+    va_log(spdlog::level::level_enum::info, msg, ap);
     va_end(ap);
 }
 }

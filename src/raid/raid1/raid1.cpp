@@ -324,9 +324,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
                   be64toh(_sb->fields.bitmap.age))
             incoming_mirror->new_device = true;
         }
-    } catch (std::runtime_error const& e) {
-        return incoming_device;
-    }
+    } catch (std::runtime_error const& e) { return incoming_device; }
 
     // Terminate any ongoing resync task BEFORE clearing bitmap to avoid race condition
     auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
@@ -737,14 +735,6 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             // We will go ahead and attempt this WRITE on a known degraded device,
             // set this flag so we can clear any bits in the bitmap should is succeed
             sub_cmd = set_flags(sub_cmd, sub_cmd_flags::INTERNAL);
-        } else {
-            // FIX: Device appears available and bitmap clean, but we're about to attempt async write.
-            // Dirty bitmap FIRST in case the write fails (will be cleaned if write succeeds).
-            // This prevents resync from skipping this region if it checks the bitmap while the async
-            // write is in flight but before it completes/fails.
-            _dirty_bitmap->dirty_region(addr, len);
-            // Then attempt the optimistic write with INTERNAL flag so it gets cleaned on success
-            sub_cmd = set_flags(sub_cmd, sub_cmd_flags::INTERNAL);
         }
     }
 
@@ -801,11 +791,14 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data co
                                          iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res) {
     sub_cmd = unset_flags(sub_cmd, sub_cmd_flags::INTERNAL);
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
+    auto const lba = addr >> params()->basic.logical_bs_shift;
 
     if (0 == res) {
+        RLOGI("Cleared {:#0x}Ki Inline! @ lba:{:#0x}", len / Ki, lba, _str_uuid)
         DIRTY_DEVICE->unavail.clear(std::memory_order_release);
         return __clean_region(sub_cmd, addr, len, q, data);
     }
+    RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x}", len / Ki, lba, _str_uuid)
     _dirty_bitmap->dirty_region(addr, len);
     return io_result(0);
 }
@@ -820,9 +813,6 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
                                         uint32_t len, uint64_t addr) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", data->tag, lba, len, _str_uuid)
-
-    // Stop any on-going resync
-    idle_transition(q, false);
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
@@ -843,9 +833,6 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}] [uuid:{}]",
           ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
           addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
-
-    // Stop any on-going resync
-    idle_transition(q, false);
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))

@@ -319,6 +319,11 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
     tgt->metrics.record_queue_depth_change(q, op, true);
 
+    // If there were no other outstanding commands, transition out of idle
+    // before submitting.
+    if (UBLK_IO_OP_READ != op && (1 == tgt->_outstanding_writes.fetch_add(1, std::memory_order_relaxed)))
+        tgt->device->idle_transition(q, false);
+
     // First we submit the IO to the UblkDisk device. It in turn will return the number
     // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
     // cause this amplification of operations.
@@ -350,6 +355,8 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
         TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, ublkpp_io->ret_val)
     }
     ublksrv_complete_io(q, data->tag, ublkpp_io->ret_val);
+    if (UBLK_IO_OP_READ != op && (0 == tgt->_outstanding_writes.fetch_sub(1, std::memory_order_relaxed)))
+        tgt->device->idle_transition(q, true);
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -371,6 +378,8 @@ static void tgt_io_done(ublksrv_queue const* q, ublk_io_data const* data, io_uri
     } catch (std::exception const& e) {
         TLOGE("I/O threw exception: [{}]", e.what())
         ublksrv_complete_io(q, data->tag, -EIO);
+        if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod))
+            static_cast< ublkpp_tgt_impl* >(q->private_data)->_outstanding_writes.fetch_sub(1, std::memory_order_relaxed);
     }
 }
 
@@ -434,19 +443,12 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 }
 
 static void deinit_tgt(const struct ublksrv_dev*) { TLOGD("Deinit tgt!") }
-
-static void idle_transition(ublksrv_queue const* q, bool enter) {
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    TLOGT("Idle Trans: {}", enter)
-    tgt->device->idle_transition(q, enter);
-}
-
+static void idle_transition(ublksrv_queue const*, bool enter) { TLOGT("Idle Trans: {}", enter) }
 static int init_queue(const struct ublksrv_queue*, void**) {
     TLOGD("Init Queue")
     return 0;
 }
-
-void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
+static void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
 ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device,
