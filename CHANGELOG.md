@@ -11,7 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Prevents resync from skipping regions that have in-flight async writes, which could lead to data corruption
   - All writes during degraded operation now properly dirty bitmap to ensure correctness during recovery
 - **CRITICAL FIX**: raid1: Add thread-safe synchronization to bitmap page map
-  - Replaced `std::map` with `std::unordered_map` + `std::shared_mutex` for concurrent access
   - Protects bitmap `_page_map` structure from race conditions between resync thread and async I/O
   - Shared locks for readers (`is_dirty`, `next_dirty`, `clean_region`, `sync_to`) allow concurrent reads
   - Exclusive locks for writers (`dirty_region`, `dirty_pages`, `load_from`) prevent structural corruption
