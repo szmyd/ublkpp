@@ -336,11 +336,17 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     if (_device_a->disk->id() == outgoing_device_id) {
         _device_a.swap(incoming_mirror);
         write_superblock(*_device_a->disk, _sb.get(), false, READ_ROUTE);
-        if (!__become_degraded(0U, false)) return incoming_device;
+        if (!__become_degraded(0U, false)) {
+            __resume_resync();
+            return incoming_device;
+        }
     } else {
         _device_b.swap(incoming_mirror);
         write_superblock(*_device_b->disk, _sb.get(), true, READ_ROUTE);
-        if (!__become_degraded(1U << _device_b->disk->route_size(), false)) return incoming_device;
+        if (!__become_degraded(1U << _device_b->disk->route_size(), false)) {
+            __resume_resync();
+            return incoming_device;
+        }
     }
 
     // Record successful device swap
@@ -348,8 +354,6 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 
     // Now set back to IDLE state and kick a resync task off
     __resume_resync();
-    if (_resync_enabled && !RUNNING_DEFUNCT)
-        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
 
     // incoming_mirror now holds the outgoing device
     return incoming_mirror->disk;
@@ -561,10 +565,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         return sync_res;
     }
     DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
-    if (_resync_enabled && !RUNNING_DEFUNCT && spawn_resync) {
-        if (_resync_task.joinable()) _resync_task.join();
-        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
-    }
+    if (spawn_resync) __resume_resync();
     return 0;
 }
 
@@ -862,7 +863,19 @@ void Raid1DiskImpl::__pause_resync() {
 // Resume any on-going resync by moving to IDLE
 void Raid1DiskImpl::__resume_resync() {
     auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
-    _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+    if (!RUNNING_DEFUNCT) {
+        // If we went from PAUSE->IDLE then a task is running already!
+        if (_resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE))) return;
+        // If we were already IDLE than we need to spawn a task ourselves
+        if (static_cast< uint8_t >(resync_state::IDLE) == cur_state) {
+            // Cleanup any finished resync tasks
+            if (_resync_task.joinable()) _resync_task.join();
+            _resync_task =
+                sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
+        }
+        DEBUG_ASSERT_NE(static_cast< uint8_t >(resync_state::SLEEPING), cur_state,
+                        "Should never find Sleeping Resync here. *BUG*!");
+    }
 }
 
 // Abort any on-going resync task by moving to STOPPED and rejoin the thread

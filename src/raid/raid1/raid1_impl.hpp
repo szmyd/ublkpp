@@ -41,7 +41,6 @@ class Raid1DiskImpl : public UblkDisk {
     raid1::read_route _last_read{raid1::read_route::DEVB};
 
     // Active Re-Sync Task
-    bool _resync_enabled{true};
     std::thread _resync_task;
     std::atomic_uint8_t _resync_state;
 
