@@ -319,11 +319,6 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
     tgt->metrics.record_queue_depth_change(q, op, true);
 
-    // If there were no other outstanding commands, transition out of idle
-    // before submitting.
-    if (UBLK_IO_OP_READ != op && (1 == tgt->_outstanding_writes.fetch_add(1, std::memory_order_release)))
-        tgt->device->idle_transition(q, false);
-
     // First we submit the IO to the UblkDisk device. It in turn will return the number
     // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
     // cause this amplification of operations.
@@ -355,8 +350,6 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
         TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, ublkpp_io->ret_val)
     }
     ublksrv_complete_io(q, data->tag, ublkpp_io->ret_val);
-    if (UBLK_IO_OP_READ != op && (0 == tgt->_outstanding_writes.fetch_sub(1, std::memory_order_acquire)))
-        tgt->device->idle_transition(q, true);
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -378,11 +371,6 @@ static void tgt_io_done(ublksrv_queue const* q, ublk_io_data const* data, io_uri
     } catch (std::exception const& e) {
         TLOGE("I/O threw exception: [{}]", e.what())
         ublksrv_complete_io(q, data->tag, -EIO);
-        if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) {
-            auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-            if (0 == tgt->_outstanding_writes.fetch_sub(1, std::memory_order_acquire))
-                tgt->device->idle_transition(q, true);
-        }
     }
 }
 
@@ -405,11 +393,6 @@ static void handle_event(ublksrv_queue const* q) {
         } catch (std::exception const& e) {
             TLOGE("Async event threw exception: [{}]", e.what())
             ublksrv_complete_io(q, result.io->tag, -EIO);
-            // Decrement outstanding write counter if this was a write operation
-            if (UBLK_IO_OP_READ != ublksrv_get_op(result.io->iod)) {
-                if (0 == tgt->_outstanding_writes.fetch_sub(1, std::memory_order_acquire))
-                    tgt->device->idle_transition(q, true);
-            }
         }
     }
 }

@@ -33,9 +33,7 @@ struct ublkpp_tgt_impl {
     // == Metrics ==
     UblkIOMetrics metrics;
 
-    std::atomic_uint32_t _outstanding_writes;
     // == ======= ==
-
     // Owned by us
     std::unique_ptr< ublksrv_dev_data > dev_data;
     std::vector< std::thread > queue_handlers;

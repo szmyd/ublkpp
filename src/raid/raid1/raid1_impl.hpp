@@ -43,6 +43,7 @@ class Raid1DiskImpl : public UblkDisk {
     // Active Re-Sync Task
     std::thread _resync_task;
     std::atomic_uint8_t _resync_state;
+    std::atomic_uint32_t _outstanding_writes;
 
     // Metrics
     std::unique_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
@@ -94,8 +95,6 @@ public:
     std::list< int > open_for_uring(int const iouring_device) override;
 
     uint8_t route_size() const override { return 1; }
-
-    void idle_transition(ublksrv_queue const*, bool t) override { toggle_resync(t); }
 
     void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) override;
 

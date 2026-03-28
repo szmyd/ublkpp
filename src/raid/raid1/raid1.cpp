@@ -646,6 +646,9 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     if (!replica_write) {
         sub_cmd = shift_route(sub_cmd, route_size());
         sub_cmd = CLEAN_SUBCMD;
+        // Track outstanding writes for resync coordination
+        // If this is the first outstanding write, pause resync
+        if (1 == _outstanding_writes.fetch_add(1, std::memory_order_release)) __pause_resync();
     }
 
     auto res = func(*(CLEAN_SUBCMD == sub_cmd ? CLEAN_DEVICE->disk : DIRTY_DEVICE->disk), sub_cmd);
@@ -805,9 +808,6 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
           _str_uuid)
 
-    // Stop any on-going resync
-    idle_transition(nullptr, false);
-
     // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
         return __failover_read(
@@ -818,17 +818,20 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
             addr, len);
 
     size_t res{0};
-    if (auto io_res = __replicate(
-            0U,
-            [&res, op, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t s) {
-                auto p_res = d.sync_iov(op, iovecs, nr_vecs, a);
-                // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
-                if (p_res && !is_replicate(s)) res += p_res.value();
-                return p_res;
-            },
-            addr, len);
-        !io_res)
-        return io_res;
+    auto io_res = __replicate(
+        0U,
+        [&res, op, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t s) {
+            auto p_res = d.sync_iov(op, iovecs, nr_vecs, a);
+            // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
+            if (p_res && !is_replicate(s)) res += p_res.value();
+            return p_res;
+        },
+        addr, len);
+
+    // Decrement counter and resume resync if this was the last write (__replicate incremented it)
+    if (0 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
+
+    if (!io_res) return io_res;
     return res;
 }
 
@@ -843,6 +846,12 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) 
 
     // Pass completion notification to the underlying device for its metrics
     device->on_io_complete(data, sub_cmd);
+
+    // Decrement outstanding write counter for writes (not reads)
+    // If this is the last outstanding write, resume resync
+    if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) {
+        if (0 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
+    }
 }
 
 // Pause an ongoing resync task (spin while ACTIVE) by moving to SLEEPING
