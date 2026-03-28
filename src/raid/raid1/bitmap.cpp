@@ -105,6 +105,9 @@ void Bitmap::init_to(std::shared_ptr< UblkDisk > device) {
 }
 
 io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
+    // Shared lock: we only iterate _page_map, no modifications
+    std::shared_lock lock(_page_map_mutex);
+
     if (_page_map.empty()) return 0;
 
     // Allocate iovec array for batching consecutive pages
@@ -162,6 +165,9 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
 }
 
 void Bitmap::load_from(UblkDisk& device) {
+    // Exclusive lock: we modify _page_map structure (emplace new pages during load)
+    std::unique_lock lock(_page_map_mutex);
+
     // Note: SuperBitmap must be loaded from SuperBlock BEFORE calling this function
     // The caller should read the entire 4KiB SuperBlock (which includes SuperBitmap at offset 74)
     // and pass the superbitmap_reserved pointer to the Bitmap constructor
@@ -227,6 +233,9 @@ Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
 }
 
 bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
+    // Shared lock: we only read _page_map, no modifications
+    std::shared_lock lock(_page_map_mutex);
+
     for (auto off = 0U; len > off;) {
         auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             calc_bitmap_region(addr + off, len - off, _chunk_size);
@@ -255,6 +264,9 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
 uint64_t Bitmap::page_size() { return k_page_size; }
 
 size_t Bitmap::dirty_pages() {
+    // Exclusive lock: we modify _page_map structure (erase pages)
+    std::unique_lock lock(_page_map_mutex);
+
     auto cnt = std::erase_if(_page_map,
                              [](const auto& it) { return (0 == isal_zero_detect(it.second.page.get(), k_page_size)); });
     if (0 < cnt) { RLOGD("Dropped [{}/{}] page(s) from the Bitmap [id: {}]", cnt, _page_map.size() + cnt, _id); }
@@ -266,6 +278,9 @@ size_t Bitmap::dirty_pages() {
 }
 
 std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t addr, uint32_t len) {
+    // Shared lock: we only read/modify bits within existing pages, no map structure changes
+    std::shared_lock lock(_page_map_mutex);
+
     // Since we can require updating multiple pages on a page boundary write we need to loop here with a cursor
     // Calculate the tuple mentioned above
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
@@ -315,6 +330,9 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
 uint64_t Bitmap::dirty_data_est() const { return _dirty_chunks_est.load(std::memory_order_relaxed) * _chunk_size; }
 
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
+    // Shared lock: we only iterate _page_map, no modifications
+    std::shared_lock lock(_page_map_mutex);
+
     uint32_t sz = 0;
     uint64_t logical_off = 0;
     // Find the first dirty page
@@ -351,6 +369,9 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
 //      * page_offset  : Page index
 //      * sz           : The number of bytes from the provided `len` that fit in this page
 void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
+    // Exclusive lock: we may modify _page_map structure (insert new pages)
+    std::unique_lock lock(_page_map_mutex);
+
     auto const end = addr + len;
     auto cur_off = addr;
     while (end > cur_off) {
