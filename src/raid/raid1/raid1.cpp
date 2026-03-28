@@ -466,7 +466,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         }
         cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
         // Give time for degraded device to become available again
-        std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 30us);
+        std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 300us);
 
         // Resume resync after short delay
         while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
@@ -858,7 +858,7 @@ void Raid1DiskImpl::__pause_resync() {
         else if (static_cast< uint8_t >(resync_state::IDLE) == cur_state)
             continue;
         // Sleep a little since the resync thread is actively reading/writing
-        std::this_thread::sleep_for(5us);
+        std::this_thread::sleep_for(50us);
     }
 }
 
@@ -888,7 +888,7 @@ void Raid1DiskImpl::__stop_resync() {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
         if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state) {
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-            std::this_thread::sleep_for(5us);
+            std::this_thread::sleep_for(50us);
         }
     }
     if (_resync_task.joinable()) _resync_task.join();
