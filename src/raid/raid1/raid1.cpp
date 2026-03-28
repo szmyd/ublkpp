@@ -386,6 +386,8 @@ std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskI
 }
 
 std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
+    // Now that we're up and the target wants to begin I/O let's unpause our resync task
+    __resume_resync();
     auto fds = (_device_a->disk->open_for_uring(iouring_device_start));
     fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
     return fds;
