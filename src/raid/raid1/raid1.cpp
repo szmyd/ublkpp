@@ -874,29 +874,27 @@ void Raid1DiskImpl::__pause_resync() {
 // Resume any on-going resync by moving to IDLE
 void Raid1DiskImpl::__resume_resync() {
     auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
-    if (!RUNNING_DEFUNCT) {
-        // If we went from PAUSE->IDLE then a task is running already!
-        if (_resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE))) return;
-        // If we were already IDLE then we need to spawn a task ourselves
-        // Also handle STOPPED state (from __stop_resync during swap_device)
-        if ((static_cast< uint8_t >(resync_state::IDLE) == cur_state) ||
-            (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)) {
-            // Cleanup any finished resync tasks
-            if (_resync_task.joinable()) _resync_task.join();
-            // Atomically transition STOPPED->IDLE before spawning (if needed)
-            if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
-                auto stopped = static_cast< uint8_t >(resync_state::STOPPED);
-                if (!_resync_state.compare_exchange_strong(stopped, static_cast< uint8_t >(resync_state::IDLE))) {
-                    // State changed between check and CAS - someone else changed it, bail out
-                    return;
-                }
+    // If we went from PAUSE->IDLE then a task is running already!
+    if (_resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE))) return;
+    // If we were already IDLE then we need to spawn a task ourselves
+    // Also handle STOPPED state (from __stop_resync during swap_device)
+    if ((static_cast< uint8_t >(resync_state::IDLE) == cur_state) ||
+        (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)) {
+        // Cleanup any finished resync tasks
+        if (_resync_task.joinable()) _resync_task.join();
+        // Atomically transition STOPPED->IDLE before spawning (if needed)
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
+            auto stopped = static_cast< uint8_t >(resync_state::STOPPED);
+            if (!_resync_state.compare_exchange_strong(stopped, static_cast< uint8_t >(resync_state::IDLE))) {
+                // State changed between check and CAS - someone else changed it, bail out
+                return;
             }
-            _resync_task =
-                sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
         }
-        DEBUG_ASSERT_NE(static_cast< uint8_t >(resync_state::SLEEPING), cur_state,
-                        "Should never find Sleeping Resync here. *BUG*!");
+        if (RUNNING_DEFUNCT || !_resync_enabled) return;
+        _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
     }
+    DEBUG_ASSERT_NE(static_cast< uint8_t >(resync_state::SLEEPING), cur_state,
+                    "Should never find Sleeping Resync here. *BUG*!");
 }
 
 // Abort any on-going resync task by moving to STOPPED and rejoin the thread
@@ -914,6 +912,7 @@ void Raid1DiskImpl::__stop_resync() {
 }
 
 void Raid1DiskImpl::toggle_resync(bool t) {
+    _resync_enabled = t;
     if (t) return __resume_resync();
     __pause_resync();
 }
