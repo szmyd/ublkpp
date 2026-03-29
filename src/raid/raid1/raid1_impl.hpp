@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <thread>
@@ -75,6 +76,7 @@ class Raid1DiskImpl : public UblkDisk {
     void __pause_resync();
     void __resume_resync();
     void __stop_resync();
+    resync_state __yield_resync(std::chrono::microseconds const yield_for);
 
 public:
     Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,

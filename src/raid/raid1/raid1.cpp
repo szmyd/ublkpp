@@ -421,18 +421,19 @@ static inline io_result __copy_region(iovec* iovec, int nr_vecs, uint64_t addr, 
 }
 
 resync_state Raid1DiskImpl::__clean_bitmap() {
-    auto cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
+    auto cur_state = resync_state::ACTIVE;
     // Set ourselves up with a buffer to do all the read/write operations from
     auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
     if (auto err = ::posix_memalign(&iov.iov_base, block_size(), params()->basic.max_sectors << SECTOR_SHIFT);
         0 != err || nullptr == iov.iov_base) [[unlikely]] { // LCOV_EXCL_START
         RLOGE("Could not allocate memory for I/O: {}", strerror(err))
-        return static_cast< resync_state >(cur_state);
+        return cur_state;
     } // LCOV_EXCL_STOP
 
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_raid_metrics) { _raid_metrics->record_dirty_pages(nr_pages); }
     while (0 < nr_pages) {
+        // TODO Change this so it's easier to control with a future QoS algorithm
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
@@ -457,33 +458,17 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
             std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
         }
 
-        // Give I/O a chance to interrupt resync
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
-            if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
-                free(iov.iov_base);
-                return static_cast< resync_state >(cur_state);
-            }
-        }
-        cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-        // Give time for degraded device to become available again
-        std::this_thread::sleep_for(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 300us);
+        // Yield and check for stopped
+        if (cur_state = __yield_resync(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 300us);
+            resync_state::STOPPED == cur_state)
+            break;
 
-        // Resume resync after short delay
-        while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
-            if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
-                cur_state = static_cast< uint8_t >(resync_state::IDLE);
-                std::this_thread::sleep_for(300us);
-            } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
-                free(iov.iov_base);
-                return static_cast< resync_state >(cur_state);
-            }
-        }
-        cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
+        // Sweep and count dirty pages left
         nr_pages = _dirty_bitmap->dirty_pages();
         if (_raid_metrics) { _raid_metrics->record_dirty_pages(nr_pages); }
     }
     free(iov.iov_base);
-    return static_cast< resync_state >(cur_state);
+    return cur_state;
 }
 
 void Raid1DiskImpl::__resync_task() {
@@ -909,6 +894,29 @@ void Raid1DiskImpl::__stop_resync() {
         }
     }
     if (_resync_task.joinable()) _resync_task.join();
+}
+
+resync_state Raid1DiskImpl::__yield_resync(std::chrono::microseconds const yield_for) {
+    static auto const recheck_delay = 300us;
+    auto cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
+    // Give I/O a chance to interrupt resync
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
+        if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) return static_cast< resync_state >(cur_state);
+    }
+    cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+
+    // Yield to the I/O threads
+    std::this_thread::sleep_for(yield_for);
+
+    // Resume resync after short delay
+    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
+        if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
+            cur_state = static_cast< uint8_t >(resync_state::IDLE);
+            std::this_thread::sleep_for(recheck_delay);
+        } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
+            return static_cast< resync_state >(cur_state);
+    }
+    return resync_state::ACTIVE;
 }
 
 void Raid1DiskImpl::toggle_resync(bool t) {
