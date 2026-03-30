@@ -46,6 +46,12 @@ using raid1::read_route;
 #define DEFUNCT_DEVICE(d) (std::dynamic_pointer_cast< DefunctDisk >((d)) != nullptr)
 #define RUNNING_DEFUNCT DEFUNCT_DEVICE(DIRTY_DEVICE->disk)
 
+// Track outstanding writes
+#define ENQUEUE_WRITE_OP                                                                                               \
+    if (1 == _outstanding_writes.fetch_add(1, std::memory_order_release)) __pause_resync();
+#define DEQUEUE_WRITE_OP                                                                                               \
+    if (0 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
+
 namespace raid1 {
 
 // Min page-resolution (how much does the smallest page cover?)
@@ -642,13 +648,15 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         sub_cmd = CLEAN_SUBCMD;
         // Track outstanding writes for resync coordination
         // If this is the first outstanding write, pause resync
-        if (1 == _outstanding_writes.fetch_add(1, std::memory_order_release)) __pause_resync();
     }
 
+    // Sync IOVs have to track this differently as the do not receive on_io_complete
+    if (async_data) ENQUEUE_WRITE_OP
     auto res = func(*(CLEAN_SUBCMD == sub_cmd ? CLEAN_DEVICE->disk : DIRTY_DEVICE->disk), sub_cmd);
 
     // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     if (!res) {
+        if (async_data) DEQUEUE_WRITE_OP
         if (IS_DEGRADED && !replica_write) {
             RLOGE("Double failure! [tag:{:#0x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return res;
@@ -658,7 +666,11 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         _dirty_bitmap->dirty_region(addr, len);
 
         if (replica_write) return dirty_res;
-        if (res = func(*CLEAN_DEVICE->disk, CLEAN_SUBCMD); !res) return res;
+        ENQUEUE_WRITE_OP
+        if (res = func(*CLEAN_DEVICE->disk, CLEAN_SUBCMD); !res) {
+            if (async_data) DEQUEUE_WRITE_OP
+            return res;
+        }
         return res.value() + dirty_res.value();
     }
     if (replica_write) return res;
@@ -735,12 +747,14 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data co
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
 
+    // Internal Commands are ALWAYS Writes
+    DEQUEUE_WRITE_OP
     if (0 == res) {
-        RLOGI("Cleared {:#0x}Ki Inline! @ lba:{:#0x}", len / Ki, lba, _str_uuid)
+        RLOGI("Cleared {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
         DIRTY_DEVICE->unavail.clear(std::memory_order_release);
         return __clean_region(sub_cmd, addr, len, q, data);
     }
-    RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x}", len / Ki, lba, _str_uuid)
+    RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
     _dirty_bitmap->dirty_region(addr, len);
     return io_result(0);
 }
@@ -811,6 +825,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
             },
             addr, len);
 
+    ENQUEUE_WRITE_OP
     size_t res{0};
     auto io_res = __replicate(
         0U,
@@ -821,9 +836,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
             return p_res;
         },
         addr, len);
-
-    // Decrement counter and resume resync if this was the last write (__replicate incremented it)
-    if (0 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
+    DEQUEUE_WRITE_OP
 
     if (!io_res) return io_res;
     return res;
@@ -843,9 +856,7 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) 
 
     // Decrement outstanding write counter for writes (not reads)
     // If this is the last outstanding write, resume resync
-    if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) {
-        if (0 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
-    }
+    if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) { DEQUEUE_WRITE_OP }
 }
 
 // Pause an ongoing resync task (spin while ACTIVE) by moving to SLEEPING
