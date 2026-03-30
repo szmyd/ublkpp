@@ -666,7 +666,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         _dirty_bitmap->dirty_region(addr, len);
 
         if (replica_write) return dirty_res;
-        ENQUEUE_WRITE_OP
+        if (async_data) ENQUEUE_WRITE_OP
         if (res = func(*CLEAN_DEVICE->disk, CLEAN_SUBCMD); !res) {
             if (async_data) DEQUEUE_WRITE_OP
             return res;
