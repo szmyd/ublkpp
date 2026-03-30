@@ -3,6 +3,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <shared_mutex>
 #include <tuple>
 
 #include "ublkpp/lib/ublk_disk.hpp"
@@ -48,6 +49,9 @@ private:
     uint32_t _chunk_size;
     uint32_t _align;
     map_type_t _page_map;
+    // SharedMutex allows multiple concurrent readers (is_dirty, next_dirty) or single writer (dirty_region, dirty_pages)
+    // This protects _page_map structure from concurrent modification during resync and async I/O
+    mutable std::shared_mutex _page_map_mutex;
     std::shared_ptr< word_t > _clean_page;
 
     uint32_t const _page_width; // Number of bytes represented by a single page (block)

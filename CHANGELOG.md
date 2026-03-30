@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - raid1: Consolidate state machine logic.
 - raid1: Add outstanding write counter, trigger resync on this.
 
+## 0.20.2
+- **CRITICAL FIX**: raid1: Add thread-safe synchronization to bitmap page map
+  - Protects bitmap `_page_map` structure from race conditions between resync thread and async I/O
+  - Shared locks for readers (`is_dirty`, `next_dirty`, `clean_region`, `sync_to`) allow concurrent reads
+  - Exclusive locks for writers (`dirty_region`, `dirty_pages`, `load_from`) prevent structural corruption
+  - Fixes potential crashes and data corruption from concurrent map modification during resync
+
 ## 0.20.1
 - raid1: Stop resync before touching bitmap during swap.
 
