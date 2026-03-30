@@ -19,7 +19,11 @@ SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
                   (resync_level, "", "resync_level", "Resync prioritization level (0-32)",
-                   cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"))
+                   cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"),
+                  (avail_delay, "", "avail_delay", "Delay between checking if a degraded device is available again",
+                   cxxopts::value< std::uint32_t >()->default_value("5"), "<seconds>"),
+                  (resync_delay, "", "resync_delay", "Delay between I/O and Resync context switches",
+                   cxxopts::value< std::uint32_t >()->default_value("300"), "<microseconds> (us)"))
 
 using namespace std::chrono_literals;
 
@@ -46,6 +50,7 @@ namespace raid1 {
 
 // Min page-resolution (how much does the smallest page cover?)
 constexpr auto k_min_page_depth = k_min_chunk_size * k_page_size * k_bits_in_byte; // 1GiB from above
+constexpr auto k_state_spin_time = 50us;
 
 // Max user-data size
 constexpr uint64_t k_max_user_data =
@@ -421,6 +426,9 @@ static inline io_result __copy_region(iovec* iovec, int nr_vecs, uint64_t addr, 
 }
 
 resync_state Raid1DiskImpl::__clean_bitmap() {
+    static auto const unavail_delay = std::chrono::microseconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
+    static auto const avail_delay = std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >());
+
     auto cur_state = resync_state::ACTIVE;
     // Set ourselves up with a buffer to do all the read/write operations from
     auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
@@ -459,7 +467,8 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         }
 
         // Yield and check for stopped
-        if (cur_state = __yield_resync(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? 5s : 300us);
+        if (cur_state =
+                __yield_resync(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? unavail_delay : avail_delay);
             resync_state::STOPPED == cur_state)
             break;
 
@@ -495,7 +504,7 @@ void Raid1DiskImpl::__resync_task() {
             return;
         }
         cur_state = static_cast< uint8_t >(resync_state::IDLE);
-        std::this_thread::sleep_for(300us);
+        std::this_thread::sleep_for(std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >()));
     }
 
     // We are now guaranteed to be the only active thread performing I/O on the device
@@ -852,7 +861,7 @@ void Raid1DiskImpl::__pause_resync() {
         else if (static_cast< uint8_t >(resync_state::IDLE) == cur_state)
             continue;
         // Sleep a little since the resync thread is actively reading/writing
-        std::this_thread::sleep_for(50us);
+        std::this_thread::sleep_for(k_state_spin_time);
     }
 }
 
@@ -890,14 +899,13 @@ void Raid1DiskImpl::__stop_resync() {
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) break;
         if (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state) {
             cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-            std::this_thread::sleep_for(50us);
+            std::this_thread::sleep_for(k_state_spin_time);
         }
     }
     if (_resync_task.joinable()) _resync_task.join();
 }
 
 resync_state Raid1DiskImpl::__yield_resync(std::chrono::microseconds const yield_for) {
-    static auto const recheck_delay = 300us;
     auto cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
     // Give I/O a chance to interrupt resync
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
@@ -912,7 +920,7 @@ resync_state Raid1DiskImpl::__yield_resync(std::chrono::microseconds const yield
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
         if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
             cur_state = static_cast< uint8_t >(resync_state::IDLE);
-            std::this_thread::sleep_for(recheck_delay);
+            std::this_thread::sleep_for(yield_for);
         } else if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state)
             return static_cast< resync_state >(cur_state);
     }
