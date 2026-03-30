@@ -45,7 +45,7 @@ class Raid1DiskImpl : public UblkDisk {
     bool _resync_enabled{true};
     std::thread _resync_task;
     std::atomic_uint8_t _resync_state;
-    std::atomic_uint32_t _outstanding_writes;
+    std::atomic_uint32_t _outstanding_writes{0U};
 
     // Metrics
     std::unique_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
