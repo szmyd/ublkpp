@@ -390,7 +390,10 @@ static void handle_event(ublksrv_queue const* q) {
             ublkpp_io->tgt_io_cqe = nullptr;
             ublkpp_io->async_completion = &result;
             ublkpp_io->co.resume();
-        } catch (std::exception const& e) { ublksrv_complete_io(q, result.io->tag, -EIO); }
+        } catch (std::exception const& e) {
+            TLOGE("Async event threw exception: [{}]", e.what())
+            ublksrv_complete_io(q, result.io->tag, -EIO);
+        }
     }
 }
 
@@ -434,19 +437,12 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 }
 
 static void deinit_tgt(const struct ublksrv_dev*) { TLOGD("Deinit tgt!") }
-
-static void idle_transition(ublksrv_queue const* q, bool enter) {
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    TLOGT("Idle Trans: {}", enter)
-    tgt->device->idle_transition(q, enter);
-}
-
+static void idle_transition(ublksrv_queue const*, bool enter) { TLOGT("Idle Trans: {}", enter) }
 static int init_queue(const struct ublksrv_queue*, void**) {
     TLOGD("Init Queue")
     return 0;
 }
-
-void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
+static void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
 ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device,
