@@ -639,9 +639,10 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
     _dirty_bitmap->dirty_region(addr, len);
     DEQUEUE_WRITE_OP
 
-    if (IS_DEGRADED && CLEAN_SUBCMD == sub_cmd)
+    if (IS_DEGRADED && CLEAN_SUBCMD == sub_cmd) {
         // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
         return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
 
     io_result dirty_res;
     if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
@@ -873,7 +874,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     return res;
 }
 
-void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
+void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
     // Determine which device handled this I/O based on the lowest bit of sub_cmd
     // 0 = device A, 1 = device B
     auto const device_bit = static_cast< uint8_t >(sub_cmd & 0x1);
@@ -883,11 +884,13 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) 
           device_bit)
 
     // Pass completion notification to the underlying device for its metrics
-    device->on_io_complete(data, sub_cmd);
+    device->on_io_complete(data, sub_cmd, res);
 
-    // Decrement outstanding write counter for writes (not reads)
+    // Decrement outstanding write counter for writes (not reads), but only if it was a
+    // success. Error cases will be handled by handle_internal and __handle_async_retry
+    // as they need to dirty the BITMAP prior to unblocking the resync task.
     // If this is the last outstanding write, resume resync
-    if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) { DEQUEUE_WRITE_OP }
+    if (0 == res && UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) { DEQUEUE_WRITE_OP }
 }
 
 // Pause an ongoing resync task (spin while ACTIVE) by moving to SLEEPING

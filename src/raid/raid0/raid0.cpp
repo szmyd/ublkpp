@@ -363,7 +363,7 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
     return sb;
 }
 
-void Raid0Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
+void Raid0Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
     // First, let the underlying device handle its portion of the routing
     // We need to determine which stripe handled this I/O by extracting our routing bits
     // from sub_cmd, accounting for the underlying device's routing bits.
@@ -372,12 +372,11 @@ void Raid0Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
     // Extract stripe index from sub_cmd (shift past underlying device's route bits)
     auto const stripe_idx = static_cast< size_t >((sub_cmd >> _stripe_array[0]->disk->route_size()) & route_mask);
 
-    RLOGT("Raid0Disk::on_io_complete [tag:{:#0x}] [sub_cmd:{}] stripe_idx:{}", data->tag, ublkpp::to_string(sub_cmd), stripe_idx)
+    RLOGT("Raid0Disk::on_io_complete [tag:{:#0x}] [sub_cmd:{}] stripe_idx:{}", data->tag, ublkpp::to_string(sub_cmd),
+          stripe_idx)
 
     // Pass completion notification to the underlying device for its metrics
-    if (stripe_idx < _stripe_array.size()) {
-        _stripe_array[stripe_idx]->disk->on_io_complete(data, sub_cmd);
-    }
+    if (stripe_idx < _stripe_array.size()) { _stripe_array[stripe_idx]->disk->on_io_complete(data, sub_cmd, res); }
 }
 
 } // namespace ublkpp
