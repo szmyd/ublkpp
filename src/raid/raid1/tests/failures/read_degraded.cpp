@@ -27,8 +27,8 @@ TEST(Raid1, ReadOnDegraded) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
-        remove_io_data(ublk_data);
         raid_device.on_io_complete(&ublk_data, working_sub, 0);
+        remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(1, res.value());
     }

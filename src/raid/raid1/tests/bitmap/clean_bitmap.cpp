@@ -66,6 +66,7 @@ TEST(Raid1, CleanBitmapSingleRegion) {
         auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Allow resync operations - accept any reasonable read/write operations
@@ -173,6 +174,7 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
         auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     raid_device.toggle_resync(true);
@@ -222,6 +224,7 @@ TEST(Raid1, CleanBitmapReadFailure) {
         auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Simulate read failure from clean device during resync
@@ -301,6 +304,7 @@ TEST(Raid1, CleanBitmapWriteFailure) {
         auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Simulate successful reads but write failure to dirty device during resync
@@ -398,8 +402,8 @@ TEST(Raid1, CleanBitmapStoppedState) {
     for (uint64_t offset : {64 * Ki, 128 * Ki, 256 * Ki, 512 * Ki, 1 * Mi}) {
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, offset);
-        remove_io_data(ublk_data);
         raid_device.on_io_complete(&ublk_data, 0b100, 0);
+        remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
 
@@ -413,6 +417,7 @@ TEST(Raid1, CleanBitmapStoppedState) {
         auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Start resync
@@ -475,6 +480,7 @@ TEST(Raid1, CleanBitmapLargeRegion) {
         auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Expect multiple I/O operations to resync the large region

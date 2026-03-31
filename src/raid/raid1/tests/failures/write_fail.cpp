@@ -57,6 +57,7 @@ TEST(Raid1, WriteFailImmediateDevA) {
         auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b100, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     {
