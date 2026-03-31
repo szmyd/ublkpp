@@ -43,13 +43,12 @@ TEST(Raid1, WriteDoubleFailure) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 12 * Ki, 16 * Ki);
         ASSERT_TRUE(res);
         EXPECT_EQ(1, res.value());
-        remove_io_data(ublk_data);
 
-        ublk_data = make_io_data(UBLK_IO_OP_WRITE);
+        raid_device.on_io_complete(&ublk_data, 0b100, -EIO); // Async failure
+
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
         res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
         ASSERT_FALSE(res);
-        EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
     }
 

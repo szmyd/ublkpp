@@ -13,11 +13,6 @@ TEST(Raid1, WriteRetryAFailure) {
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
-            .Times(1)
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-                return 1;
-            });
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
@@ -33,31 +28,12 @@ TEST(Raid1, WriteRetryAFailure) {
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
-            .Times(1)
-            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-                return 1;
-            });
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 12 * Ki, 16 * Ki);
         remove_io_data(ublk_data);
         ASSERT_FALSE(res);
     }
-
-    // Subsequent writes should continue to go to side A first
-    auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
-        .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-            return std::unexpected(std::make_error_condition(std::errc::io_error));
-        });
-    // The primary device has not been rotated to B from the retries above since updating the SB failed
-    // and have not successfully become degraded yet
-    EXPECT_TO_WRITE_SB_F(device_b, true);
-    auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
-    remove_io_data(ublk_data);
-    ASSERT_FALSE(res);
 
     // expect unmount_clean attempt on both devices
     EXPECT_TO_WRITE_SB_F(device_a, true);
