@@ -72,9 +72,13 @@ using raid1::read_route;
     }
 #else
 #define ENQUEUE_WRITE_OP                                                                                               \
-    if (0 == _outstanding_writes.fetch_add(1, std::memory_order_release)) __pause_resync();
+    {                                                                                                                  \
+        if (0 == _outstanding_writes.fetch_add(1, std::memory_order_release)) __pause_resync();                        \
+    }
 #define DEQUEUE_WRITE_OP                                                                                               \
-    if (1 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
+    {                                                                                                                  \
+        if (1 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();                       \
+    }
 #endif
 
 namespace raid1 {
@@ -614,8 +618,8 @@ void Raid1DiskImpl::__clean_region(uint64_t addr, uint32_t len) {
 
         auto const page_addr = (pg_size * pg_offset) + pg_size;
 
-        // These don't actually need to succeed; this page will remain dirty and loaded next time we
-        // use this bitmap (extra copies for this page).
+        // These don't actually need to succeed; this page will remain dirty and loaded the next time
+        // we use this bitmap (extra copies for this page).
         if (auto res = CLEAN_DEVICE->disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) {
             RLOGW("Failed to clear bitmap page. [uuid:{}]", _str_uuid)
         }
