@@ -51,23 +51,17 @@ using raid1::read_route;
 #define ENQUEUE_WRITE_OP                                                                                               \
     {                                                                                                                  \
         if (auto const old_val = _outstanding_writes.fetch_add(1, std::memory_order_release); 0 == old_val) {          \
-            RLOGT("Outstanding Writes: {}", old_val + 1);                                                              \
             __pause_resync();                                                                                          \
         } else if (UINT32_MAX == old_val) {                                                                            \
             DEBUG_ASSERT(false, "Outstanding Write Count Reached UINT32_MAX!");                                        \
-        } else {                                                                                                       \
-            RLOGT("Outstanding Writes: {}", old_val + 1);                                                              \
         }                                                                                                              \
     }
 #define DEQUEUE_WRITE_OP                                                                                               \
     {                                                                                                                  \
         if (auto const old_val = _outstanding_writes.fetch_sub(1, std::memory_order_acquire); 1 == old_val) {          \
-            RLOGT("Outstanding Writes: {}", old_val - 1);                                                              \
             __resume_resync();                                                                                         \
         } else if (0 == old_val) {                                                                                     \
             DEBUG_ASSERT(false, "Outstanding Write Count is Negative!");                                               \
-        } else {                                                                                                       \
-            RLOGT("Outstanding Writes: {}", old_val - 1);                                                              \
         }                                                                                                              \
     }
 #else
