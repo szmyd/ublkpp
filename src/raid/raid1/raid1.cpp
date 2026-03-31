@@ -887,10 +887,10 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
     device->on_io_complete(data, sub_cmd, res);
 
     // Decrement outstanding write counter for writes (not reads), but only if it was a
-    // success. Error cases will be handled by handle_internal and __handle_async_retry
+    // success or a failed retry which we will not re-enqueue.
+    // Error cases will be handled by handle_internal and __handle_async_retry
     // as they need to dirty the BITMAP prior to unblocking the resync task.
-    // If this is the last outstanding write, resume resync
-    if (0 == res && UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) { DEQUEUE_WRITE_OP }
+    if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod) && (0 == res || is_retry(sub_cmd))) { DEQUEUE_WRITE_OP }
 }
 
 // Pause an ongoing resync task (spin while ACTIVE) by moving to SLEEPING
