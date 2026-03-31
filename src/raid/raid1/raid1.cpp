@@ -630,14 +630,15 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
                                               ublk_io_data const* async_data) {
     // No Synchronous operations retry
     DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
+
+    // Record this degraded operation in the bitmap, then unblock resync_task (if exists)
+    _dirty_bitmap->dirty_region(addr, len);
     DEQUEUE_WRITE_OP
 
     if (IS_DEGRADED && CLEAN_SUBCMD == sub_cmd)
         // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
         return std::unexpected(std::make_error_condition(std::errc::io_error));
 
-    // Record this degraded operation in the bitmap, result is # of async writes enqueued
-    _dirty_bitmap->dirty_region(addr, len);
     io_result dirty_res;
     if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
 
