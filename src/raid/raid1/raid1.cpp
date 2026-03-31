@@ -503,8 +503,8 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
         }
 
         // Yield and check for stopped
-        if (cur_state =
-                __yield_resync(DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? unavail_delay : avail_delay);
+        if (cur_state = __yield_resync(
+                DIRTY_DEVICE->unavail.test(std::memory_order_acquire) ? unavail_delay : avail_delay, avail_delay);
             resync_state::STOPPED == cur_state)
             break;
 
@@ -947,7 +947,8 @@ void Raid1DiskImpl::__stop_resync() {
     if (_resync_task.joinable()) _resync_task.join();
 }
 
-resync_state Raid1DiskImpl::__yield_resync(std::chrono::microseconds const yield_for) {
+resync_state Raid1DiskImpl::__yield_resync(std::chrono::microseconds const yield_for,
+                                           std::chrono::microseconds const spin_time) {
     auto cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
     // Give I/O a chance to interrupt resync
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
@@ -955,8 +956,12 @@ resync_state Raid1DiskImpl::__yield_resync(std::chrono::microseconds const yield
     }
     cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
 
-    // Yield to the I/O threads
-    std::this_thread::sleep_for(yield_for);
+    // Yield to the I/O threads; but allow early bail out if we're stopped
+    auto const end_time = std::chrono::steady_clock::now() + yield_for;
+    while (end_time > std::chrono::steady_clock::now()) {
+        std::this_thread::sleep_for(spin_time);
+        if (static_cast< uint8_t >(resync_state::STOPPED) == _resync_state.load(std::memory_order_acquire)) break;
+    }
 
     // Resume resync after short delay
     while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {

@@ -75,7 +75,7 @@ class Raid1DiskImpl : public UblkDisk {
     void __pause_resync();
     void __resume_resync();
     void __stop_resync();
-    resync_state __yield_resync(std::chrono::microseconds const yield_for);
+    resync_state __yield_resync(std::chrono::microseconds const yield_for, std::chrono::microseconds const spin_time);
 
 public:
     Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
