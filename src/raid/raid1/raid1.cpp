@@ -462,7 +462,7 @@ static inline io_result __copy_region(iovec* iovec, int nr_vecs, uint64_t addr, 
 }
 
 resync_state Raid1DiskImpl::__clean_bitmap() {
-    static auto const unavail_delay = std::chrono::microseconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
+    static auto const unavail_delay = std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
     static auto const avail_delay = std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >());
 
     auto cur_state = resync_state::ACTIVE;
