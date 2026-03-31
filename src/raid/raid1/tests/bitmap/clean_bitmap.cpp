@@ -50,7 +50,7 @@ TEST(Raid1, CleanBitmapSingleRegion) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, 64 * Ki);
-        raid_device.on_io_complete(&ublk_data, working_sub);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -158,7 +158,7 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
     for (uint64_t offset : {64 * Ki, 128 * Ki, 256 * Ki}) {
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, offset);
-        raid_device.on_io_complete(&ublk_data, 0b100);
+        raid_device.on_io_complete(&ublk_data, 0b100, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -211,7 +211,7 @@ TEST(Raid1, CleanBitmapReadFailure) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, 64 * Ki);
-        raid_device.on_io_complete(&ublk_data, working_sub);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -290,7 +290,7 @@ TEST(Raid1, CleanBitmapWriteFailure) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, 64 * Ki);
-        raid_device.on_io_complete(&ublk_data, working_sub);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -399,7 +399,7 @@ TEST(Raid1, CleanBitmapStoppedState) {
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, offset);
         remove_io_data(ublk_data);
-        raid_device.on_io_complete(&ublk_data, 0b100);
+        raid_device.on_io_complete(&ublk_data, 0b100, 0);
         ASSERT_TRUE(res);
     }
 
@@ -459,7 +459,7 @@ TEST(Raid1, CleanBitmapLargeRegion) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 256 * Ki, 64 * Ki);
-        raid_device.on_io_complete(&ublk_data, working_sub);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }

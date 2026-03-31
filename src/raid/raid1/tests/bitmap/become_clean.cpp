@@ -36,7 +36,7 @@ TEST(Raid1, CleanBitmap) {
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
         ASSERT_TRUE(res);
         EXPECT_EQ(1, res.value()); // Bitmap dirty deferred
-        raid_device.on_io_complete(&ublk_data, working_sub);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
     }
 
@@ -102,7 +102,7 @@ TEST(Raid1, CleanBitmap) {
             });
         EXPECT_TO_WRITE_SB(device_b);
 
-        raid_device.on_io_complete(&ublk_data, 0b100);
+        raid_device.on_io_complete(&ublk_data, 0b100, 0);
         raid_device.queue_internal_resp(nullptr, &ublk_data, internal_sub_cmd, 0UL);
         remove_io_data(ublk_data);
         raid_device.toggle_resync(true);
