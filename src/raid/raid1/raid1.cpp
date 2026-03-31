@@ -47,10 +47,35 @@ using raid1::read_route;
 #define RUNNING_DEFUNCT DEFUNCT_DEVICE(DIRTY_DEVICE->disk)
 
 // Track outstanding writes
+#ifndef NDEBUG
 #define ENQUEUE_WRITE_OP                                                                                               \
-    if (1 == _outstanding_writes.fetch_add(1, std::memory_order_release)) __pause_resync();
+    {                                                                                                                  \
+        if (auto const old_val = _outstanding_writes.fetch_add(1, std::memory_order_release); 0 == old_val) {          \
+            RLOGT("Outstanding Writes: {}", old_val + 1);                                                              \
+            __pause_resync();                                                                                          \
+        } else if (UINT32_MAX == old_val) {                                                                            \
+            DEBUG_ASSERT(false, "Outstanding Write Count Reached UINT32_MAX!");                                        \
+        } else {                                                                                                       \
+            RLOGT("Outstanding Writes: {}", old_val + 1);                                                              \
+        }                                                                                                              \
+    }
 #define DEQUEUE_WRITE_OP                                                                                               \
-    if (0 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
+    {                                                                                                                  \
+        if (auto const old_val = _outstanding_writes.fetch_sub(1, std::memory_order_acquire); 1 == old_val) {          \
+            RLOGT("Outstanding Writes: {}", old_val - 1);                                                              \
+            __resume_resync();                                                                                         \
+        } else if (0 == old_val) {                                                                                     \
+            DEBUG_ASSERT(false, "Outstanding Write Count is Negative!");                                               \
+        } else {                                                                                                       \
+            RLOGT("Outstanding Writes: {}", old_val - 1);                                                              \
+        }                                                                                                              \
+    }
+#else
+#define ENQUEUE_WRITE_OP                                                                                               \
+    if (0 == _outstanding_writes.fetch_add(1, std::memory_order_release)) __pause_resync();
+#define DEQUEUE_WRITE_OP                                                                                               \
+    if (1 == _outstanding_writes.fetch_sub(1, std::memory_order_acquire)) __resume_resync();
+#endif
 
 namespace raid1 {
 
@@ -239,6 +264,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 }
 
 Raid1DiskImpl::~Raid1DiskImpl() {
+    DEBUG_ASSERT_EQ(0, _outstanding_writes.load(), "Outstanding Write Count is Non-Zero!");
     RLOGD("Shutting down; [uuid:{}]", _str_uuid)
     __stop_resync();
 
@@ -612,15 +638,16 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
                                               ublk_io_data const* async_data) {
     // No Synchronous operations retry
     DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
+    DEQUEUE_WRITE_OP
 
     if (IS_DEGRADED && CLEAN_SUBCMD == sub_cmd)
         // If we're already degraded and failure was on CLEAN disk then treat this as a fatal
         return std::unexpected(std::make_error_condition(std::errc::io_error));
 
     // Record this degraded operation in the bitmap, result is # of async writes enqueued
+    _dirty_bitmap->dirty_region(addr, len);
     io_result dirty_res;
     if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
-    _dirty_bitmap->dirty_region(addr, len);
 
     if (is_replicate(sub_cmd)) return dirty_res;
 
@@ -661,6 +688,9 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             RLOGE("Double failure! [tag:{:#0x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return res;
         }
+        // We only dirty if we can become degraded here, because unlike in the handle_async_retry
+        // case, the I/O has not potentially landed on the replicant disk yet; saving us the effort
+        // of clearing it later.
         io_result dirty_res;
         if (dirty_res = __become_degraded(sub_cmd); !dirty_res) return dirty_res;
         _dirty_bitmap->dirty_region(addr, len);
@@ -747,7 +777,10 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data co
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
 
-    // Internal Commands are ALWAYS Writes
+    if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod)) {
+        DIRTY_DEVICE->unavail.clear(std::memory_order_release);
+        return io_result(0);
+    }
     DEQUEUE_WRITE_OP
     if (0 == res) {
         RLOGI("Cleared {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
