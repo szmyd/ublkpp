@@ -488,7 +488,7 @@ resync_state Raid1DiskImpl::__clean_bitmap() {
                     RLOGI("Mirror became available again: {} [uuid:{}] ", *DIRTY_DEVICE->disk, _str_uuid)
                     DIRTY_DEVICE->unavail.clear(std::memory_order_release);
                 }
-                __clean_region(0, logical_off, iov.iov_len);
+                __clean_region(logical_off, iov.iov_len);
                 // Record resync progress
                 if (_raid_metrics) { _raid_metrics->record_resync_progress(iov.iov_len); }
             } else {
@@ -597,18 +597,15 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
     return 0;
 }
 
-io_result Raid1DiskImpl::__clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                        ublk_io_data const* data) {
+void Raid1DiskImpl::__clean_region(uint64_t addr, uint32_t len) {
     auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Cleaning pages for [lba:{:#0x}|len:{:#0x}|sub_cmd:{}] [uuid:{}]", lba, len, ublkpp::to_string(sub_cmd),
-          _str_uuid);
+    RLOGT("Cleaning pages for [lba:{:#0x}|len:{:#0x}] [uuid:{}]", lba, len, _str_uuid);
 
     auto const pg_size = _dirty_bitmap->page_size();
     auto iov = iovec{.iov_base = nullptr, .iov_len = pg_size};
 
     auto const end = addr + len;
     auto cur_off = addr;
-    auto ret_val = io_result(0);
     while (end > cur_off) {
         auto [page, pg_offset, sz] = _dirty_bitmap->clean_region(cur_off, end - cur_off);
         cur_off += sz;
@@ -617,17 +614,12 @@ io_result Raid1DiskImpl::__clean_region(sub_cmd_t sub_cmd, uint64_t addr, uint32
 
         auto const page_addr = (pg_size * pg_offset) + pg_size;
 
-        // These don't actually need to succeed; it's optimistic
-        auto res = data ? CLEAN_DEVICE->disk->async_iov(q, data, CLEAN_SUBCMD, &iov, 1, page_addr)
-                        : CLEAN_DEVICE->disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr);
-        if (!res) return res;
-        if (data) ret_val = ret_val.value() + res.value(); // We don't need this if sync op
+        // These don't actually need to succeed; this page will remain dirty and loaded next time we
+        // use this bitmap (extra copies for this page).
+        if (auto res = CLEAN_DEVICE->disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) {
+            RLOGW("Failed to clear bitmap page. [uuid:{}]", _str_uuid)
+        }
     }
-
-    // MUST Submit here since iov is on the stack!
-    if (q && 0 < ret_val.value()) io_uring_submit(q->ring_ptr);
-
-    return ret_val;
 }
 
 // Failed Async WRITEs all end up here and have the side-effect of dirtying the BITMAP
@@ -771,7 +763,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     return __failover_read(sub_cmd, std::move(func), addr, len);
 }
 
-io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                          iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res) {
     sub_cmd = unset_flags(sub_cmd, sub_cmd_flags::INTERNAL);
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
@@ -785,10 +777,11 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const* q, ublk_io_data co
     if (0 == res) {
         RLOGI("Cleared {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
         DIRTY_DEVICE->unavail.clear(std::memory_order_release);
-        return __clean_region(sub_cmd, addr, len, q, data);
+        __clean_region(addr, len);
+    } else {
+        RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
+        _dirty_bitmap->dirty_region(addr, len);
     }
-    RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
-    _dirty_bitmap->dirty_region(addr, len);
     return io_result(0);
 }
 
