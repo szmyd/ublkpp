@@ -63,7 +63,8 @@ TEST(Raid1, CleanBitmapSingleRegion) {
     {
         // Make Device B available again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
@@ -149,7 +150,7 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
     // Create multiple dirty regions at different offsets
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(3)
-        .WillOnce(
+        .WillRepeatedly(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
@@ -171,7 +172,8 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
     {
         // Make Device B available again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
@@ -221,7 +223,8 @@ TEST(Raid1, CleanBitmapReadFailure) {
     {
         // Make Device B available again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
@@ -301,7 +304,8 @@ TEST(Raid1, CleanBitmapWriteFailure) {
     {
         // Make Device B available again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
@@ -414,7 +418,8 @@ TEST(Raid1, CleanBitmapStoppedState) {
     {
         // Make Device B available again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
@@ -477,7 +482,8 @@ TEST(Raid1, CleanBitmapLargeRegion) {
     {
         // Make Device B available again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);

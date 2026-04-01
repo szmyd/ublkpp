@@ -52,7 +52,8 @@ TEST(Raid1, ConcurrentIODuringResync) {
     {
         // Make Device B available again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
@@ -154,8 +155,8 @@ TEST(Raid1, ConcurrentIODuringResync) {
     std::this_thread::sleep_for(10ms);
 
     // Record how many resync operations happened before we pause with writes
-    auto resync_ops_before = resync_reads.load(std::memory_order_relaxed) +
-                             resync_writes.load(std::memory_order_relaxed);
+    auto resync_ops_before =
+        resync_reads.load(std::memory_order_relaxed) + resync_writes.load(std::memory_order_relaxed);
 
     // Step 6: Complete the concurrent writes
     // This should DEQUEUE (decrement counter, resume resync when counter hits 0)
@@ -181,7 +182,8 @@ TEST(Raid1, ConcurrentIODuringResync) {
     std::this_thread::sleep_for(100ms);
 
     // Verify resync resumed and made progress after writes completed
-    auto resync_ops_after = resync_reads.load(std::memory_order_relaxed) + resync_writes.load(std::memory_order_relaxed);
+    auto resync_ops_after =
+        resync_reads.load(std::memory_order_relaxed) + resync_writes.load(std::memory_order_relaxed);
     EXPECT_GT(resync_ops_after, resync_ops_before) << "Resync should have resumed and made progress after writes";
 
     // Verify concurrent writes actually happened

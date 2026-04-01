@@ -766,7 +766,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
 
 io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                          iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res) {
-    sub_cmd = unset_flags(sub_cmd, sub_cmd_flags::INTERNAL);
+    DEBUG_ASSERT(is_internal(sub_cmd), "handle_internal on: {}", ublkpp::to_string(sub_cmd));
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
 
@@ -774,7 +774,6 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data cons
         DIRTY_DEVICE->unavail.clear(std::memory_order_release);
         return io_result(0);
     }
-    DEQUEUE_WRITE_OP
     if (0 == res) {
         RLOGI("Cleared {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
         DIRTY_DEVICE->unavail.clear(std::memory_order_release);
@@ -783,6 +782,7 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data cons
         RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
         _dirty_bitmap->dirty_region(addr, len);
     }
+    DEQUEUE_WRITE_OP
     return io_result(0);
 }
 
@@ -883,11 +883,11 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
 
     // Decrement outstanding write counter for writes (not reads), but only if it was a
     // success.
-    // Error cases will be handled by handle_internal and __handle_async_retry
+    // Error cases will be handled by __handle_async_retry
     // as they need to dirty the BITMAP prior to unblocking the resync task.
     if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) {
         DEBUG_ASSERT(!is_retry(sub_cmd), "Retried a WRITE command?!");
-        if (0 == res) DEQUEUE_WRITE_OP
+        if (0 <= res && !is_internal(sub_cmd)) DEQUEUE_WRITE_OP
     }
 }
 
@@ -922,10 +922,8 @@ void Raid1DiskImpl::__resume_resync() {
         // Atomically transition STOPPED->IDLE before spawning (if needed)
         if (static_cast< uint8_t >(resync_state::STOPPED) == cur_state) {
             auto stopped = static_cast< uint8_t >(resync_state::STOPPED);
-            if (!_resync_state.compare_exchange_strong(stopped, static_cast< uint8_t >(resync_state::IDLE))) {
-                // State changed between check and CAS - someone else changed it, bail out
-                return;
-            }
+            // State changed between check and CAS - someone else changed it, bail out
+            if (!_resync_state.compare_exchange_strong(stopped, static_cast< uint8_t >(resync_state::IDLE))) return;
         }
         if (RUNNING_DEFUNCT || !_resync_enabled) return;
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });

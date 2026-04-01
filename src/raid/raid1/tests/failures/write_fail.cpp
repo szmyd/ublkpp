@@ -54,7 +54,8 @@ TEST(Raid1, WriteFailImmediateDevA) {
     {
         // Make Device A avail again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b100, 0);
+        auto sub_cmd = ublkpp::set_flags(0b100, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);

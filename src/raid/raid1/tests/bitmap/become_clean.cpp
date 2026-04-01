@@ -48,7 +48,8 @@ TEST(Raid1, CleanBitmap) {
     {
         // Make Device B avail again
         auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, 0b101, 0);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
         remove_io_data(ublk_data);
@@ -104,6 +105,7 @@ TEST(Raid1, CleanBitmap) {
         EXPECT_TO_WRITE_SB(device_b);
 
         raid_device.on_io_complete(&ublk_data, 0b100, 0);
+        internal_sub_cmd = ublkpp::set_flags(internal_sub_cmd, ublkpp::sub_cmd_flags::INTERNAL);
         raid_device.queue_internal_resp(nullptr, &ublk_data, internal_sub_cmd, 0UL);
         remove_io_data(ublk_data);
         raid_device.toggle_resync(true);
