@@ -232,33 +232,34 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // We mark the SB dirty here and clean in our destructor so we know if we _crashed_ at some instance later
     _sb->fields.clean_unmount = 0x0;
     _sb->fields.device_b = 0;
-    _resync_state.store(static_cast< uint8_t >(resync_state::IDLE));
 
     if (RUNNING_DEFUNCT) RLOGW("RAID1 device [uuid:{}] is running with a defunct device!", _str_uuid)
 
-    // If we Fail to write the SuperBlock to then CLEAN device we immediately dirty the bitmap and try to write to
-    // DIRTY
+    // If we Fail to write the SuperBlock to CLEAN device we immediately become degraded and try to write to DIRTY
+    auto dirty_written{false};
     if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b, READ_ROUTE)) {
         // If already degraded this is Fatal
         if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
-        // This will write the SB to DIRTY so we can skip this down below
-        if (!__become_degraded(CLEAN_SUBCMD)) {
+        if (!__become_degraded(CLEAN_SUBCMD, false)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
-        return;
+        dirty_written = true;
+    }
+    if (RUNNING_DEFUNCT ||
+        (!dirty_written && !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b, READ_ROUTE))) {
+        if (!__become_degraded(DIRTY_SUBCMD, false)) {
+            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
+        }
     }
 
-    // If we're starting degraded, we need to initiate a resync_task
-    if (IS_DEGRADED && !RUNNING_DEFUNCT) {
+    // If we're starting degraded, we need to initiate a resync_task, if it's
+    // defunct we'll get a swap_device call later which will launch it.
+    if (RUNNING_DEFUNCT || !IS_DEGRADED)
+        _resync_state.store(static_cast< uint8_t >(resync_state::IDLE));
+    else {
+        // Start paused so we can disable it if need be prior to I/O coming in
         _resync_state.store(static_cast< uint8_t >(resync_state::PAUSE));
         _resync_task = sisl::named_thread(fmt::format("r_{}", _str_uuid.substr(0, 13)), [this] { __resync_task(); });
-        if (!DIRTY_DEVICE->new_device) return;
-    }
-
-    if (RUNNING_DEFUNCT || !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b, READ_ROUTE)) {
-        if (!__become_degraded(DIRTY_SUBCMD)) {
-            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
-        }
     }
 }
 
