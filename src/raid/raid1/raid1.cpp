@@ -764,8 +764,9 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     return __failover_read(sub_cmd, std::move(func), addr, len);
 }
 
-io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                         iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res) {
+io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data,
+                                         [[maybe_unused]] sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs,
+                                         uint64_t addr, int res) {
     DEBUG_ASSERT(is_internal(sub_cmd), "handle_internal on: {}", ublkpp::to_string(sub_cmd));
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     auto const lba = addr >> params()->basic.logical_bs_shift;
