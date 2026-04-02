@@ -155,6 +155,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
     if (auto err = ::posix_memalign(&iov.iov_base, _io_size, _max_size); 0 != err || nullptr == iov.iov_base)
         [[unlikely]] { // LCOV_EXCL_START
         RLOGE("Could not allocate memory for I/O: {}", strerror(err))
+        if (iov.iov_base) free(iov.iov_base);
         return cur_state;
     } // LCOV_EXCL_STOP
 

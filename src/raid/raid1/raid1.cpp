@@ -219,7 +219,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
 Raid1DiskImpl::~Raid1DiskImpl() {
     RLOGD("Shutting down; [uuid:{}]", _str_uuid)
-    auto cnt_at_stop = _resync_task->stop();
+    [[maybe_unused]] auto cnt_at_stop = _resync_task->stop();
     DEBUG_ASSERT_EQ(0, cnt_at_stop, "Outstanding Write Count is Non-Zero!");
 
     if (!_sb) return;
@@ -316,7 +316,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 
     // Terminate any ongoing resync task BEFORE clearing bitmap to avoid race condition
     auto old_resync_flag = _resync_enabled;
-    if (old_resync_flag) toggle_resync(false);
+    toggle_resync(false);
 
     // Now safe to clear bitmap (resync stopped, no concurrent access)
     try {

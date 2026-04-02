@@ -16,7 +16,15 @@ constexpr auto k_state_spin_time = 50us;
 class Bitmap;
 class MirrorDevice;
 
+// State transitions:
+//   IDLE → ACTIVE (launch())
+//   ACTIVE ⟷ SLEEPING (yield for I/O)
+//   SLEEPING → PAUSE (I/O started, block resync)
+//   PAUSE → ACTIVE (I/O finished, resync can proceed)
+//   any → STOPPING (shutdown requested)
+//   STOPPING → IDLE (shutdown complete)
 ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
+
 class Raid1ResyncTask {
 
     // Global counter for active resyncs across all RAID1 devices
