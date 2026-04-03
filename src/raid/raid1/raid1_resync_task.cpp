@@ -78,6 +78,8 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     }
     if (0 == _dirty_bitmap->dirty_pages()) complete();
     RLOGD("Resync Task Finished for [uuid:{}]", str_uuid)
+
+    // Open up I/O Again
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
 }
 
