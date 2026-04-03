@@ -425,22 +425,30 @@ io_result Raid1DiskImpl::__become_clean() {
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync) {
     // We only update the AGE if we're not degraded already
     if (_is_degraded.test_and_set(std::memory_order_acquire)) return 0;
-    auto const old_route = READ_ROUTE;
-    __set_read_route((0b1 & ((sub_cmd) >> _device_b->disk->route_size())) ? read_route::DEVA : read_route::DEVB);
+
+    // Determine new route based on which device failed
+    auto const old_route = __get_read_route();
+    auto const new_route = (0b1 & ((sub_cmd) >> _device_b->disk->route_size())) ? read_route::DEVA : read_route::DEVB;
+    __set_read_route(new_route);
+
+    // Capture device pointers based on new route to prevent race with swap_device
+    auto* clean_dev = (read_route::DEVB == new_route) ? _device_b.get() : _device_a.get();
+    auto* dirty_dev = (read_route::DEVB == new_route) ? _device_a.get() : _device_b.get();
+    auto const device_b_is_clean = (read_route::DEVB == new_route);
+
     auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
-    RLOGW("Device became degraded {} [age:{}] [uuid:{}] ", *DIRTY_DEVICE->disk,
+    RLOGW("Device became degraded {} [age:{}] [uuid:{}] ", *dirty_dev->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
 
     // Record degradation event in metrics with device name
     if (_raid_metrics) {
-        auto device_name = (READ_ROUTE == read_route::DEVA) ? "device_b" : "device_a";
+        auto device_name = (new_route == read_route::DEVA) ? "device_b" : "device_a";
         _raid_metrics->record_device_degraded(device_name);
     }
 
     // Must update age first; we do this synchronously to gate pending retry results
-    if (auto sync_res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b, READ_ROUTE);
-        !sync_res) {
+    if (auto sync_res = write_superblock(*clean_dev->disk, _sb.get(), device_b_is_clean, new_route); !sync_res) {
         // Rollback the failure to update the header
         __set_read_route(old_route);
         _sb->fields.bitmap.age = old_age;
@@ -448,7 +456,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
         RLOGE("Could not become degraded [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
-    DIRTY_DEVICE->unavail.test_and_set(std::memory_order_acquire);
+    dirty_dev->unavail.test_and_set(std::memory_order_acquire);
     if (spawn_resync && _resync_enabled) toggle_resync(true); // Launch a Resync Task
     return 0;
 }
