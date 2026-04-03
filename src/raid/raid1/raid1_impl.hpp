@@ -64,6 +64,12 @@ class Raid1DiskImpl : public UblkDisk {
                           MirrorDevice* backup_dev = nullptr, sub_cmd_t active_subcmd = 0U);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror);
 
+    // Constructor helpers
+    void __init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b);
+    void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
+                                      std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id);
+    void __init_bitmap_and_degraded_route();
+
     raid1::read_route __get_read_route() const {
         return static_cast< raid1::read_route >(_read_route_cache.load(std::memory_order_acquire));
     }
