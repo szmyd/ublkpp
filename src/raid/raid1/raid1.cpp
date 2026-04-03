@@ -505,7 +505,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     // Apply our shift to the sub_cmd if it's not a replica write
 
     // Capture routing state atomically at function entry (if not provided by recursive call)
-    sub_cmd_t backup_subcmd;
+    sub_cmd_t backup_subcmd = SEND_TO_B;
     if (!active_dev) {
         sub_cmd = shift_route(sub_cmd, route_size());
         auto const route = __get_read_route();
