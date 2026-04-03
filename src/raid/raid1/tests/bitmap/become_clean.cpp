@@ -65,6 +65,7 @@ TEST(Raid1, CleanBitmap) {
                                      iovec* iovecs, uint32_t, uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
                 EXPECT_FALSE(ublkpp::is_replicate(sub_cmd));
+                EXPECT_FALSE(ublkpp::is_internal(sub_cmd));
                 EXPECT_EQ(iovecs->iov_len, 32 * Ki);
                 EXPECT_EQ(addr, raid_device.reserved_size());
                 return 1;

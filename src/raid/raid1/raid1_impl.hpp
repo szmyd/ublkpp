@@ -61,7 +61,8 @@ class Raid1DiskImpl : public UblkDisk {
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* async_data);
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
-                          ublk_io_data const* async_data = nullptr);
+                          ublk_io_data const* async_data = nullptr, MirrorDevice* active_dev = nullptr,
+                          MirrorDevice* backup_dev = nullptr, sub_cmd_t active_subcmd = 0U);
 
     raid1::read_route __get_read_route() const {
         return static_cast< raid1::read_route >(_read_route_cache.load(std::memory_order_acquire));
