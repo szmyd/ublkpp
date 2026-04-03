@@ -155,7 +155,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     }
 
     // Initialize read_route cache from loaded superblock
-    _read_route_cache.store(_sb->fields.read_route, std::memory_order_relaxed);
+    __store_read_route(static_cast< read_route >(_sb->fields.read_route));
 
     // Initialize Age if New
     if (_device_a->new_device && _device_b->new_device) _sb->fields.bitmap.age = htobe64(1);
@@ -165,13 +165,11 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
                                                _sb->superbitmap_reserved, _str_uuid);
     if (_device_a->new_device) {
         _dirty_bitmap->init_to(_device_a->disk);
-        if (!_device_b->new_device)
-            _read_route_cache.store(static_cast< uint8_t >(read_route::DEVB), std::memory_order_relaxed);
+        if (!_device_b->new_device) __store_read_route(read_route::DEVB);
     }
     if (_device_b->new_device) {
         _dirty_bitmap->init_to(_device_b->disk);
-        if (!_device_a->new_device)
-            _read_route_cache.store(static_cast< uint8_t >(read_route::DEVA), std::memory_order_relaxed);
+        if (!_device_a->new_device) __store_read_route(read_route::DEVA);
     }
 
     // We need to completely dirty one side if either is new when the other is not, this will also
@@ -351,8 +349,8 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
                                   std::shared_ptr< MirrorDevice >& incoming_mirror) {
     bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
-    auto cur_read_route = static_cast< uint8_t >(__get_read_route());
-    auto new_read_route = static_cast< uint8_t >(swapping_device_a ? read_route::DEVB : read_route::DEVA);
+    auto cur_read_route = __get_read_route();
+    auto new_read_route = swapping_device_a ? read_route::DEVB : read_route::DEVA;
 
     if (!__set_read_route(cur_read_route, new_read_route)) return false;
 
@@ -422,38 +420,35 @@ std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
 }
 
 io_result Raid1DiskImpl::__become_clean() {
-    auto old_read_route = static_cast< uint8_t >(__get_read_route());
-    if (static_cast< uint8_t >(read_route::EITHER) == old_read_route) return 0;
-    RLOGI("Device becoming clean [{}] [uuid:{}] ",
-          *(static_cast< uint8_t >(read_route::DEVB) == old_read_route ? _device_a : _device_b)->disk, _str_uuid)
+    auto old_read_route = __get_read_route();
+    if (read_route::EITHER == old_read_route) return 0;
+    RLOGI("Device becoming clean [{}] [uuid:{}] ", *(read_route::DEVB == old_read_route ? _device_a : _device_b)->disk,
+          _str_uuid)
     // Write the new SuperBlock with updated clean read_route
-    if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false, static_cast< read_route >(old_read_route));
-        !sync_res) {
+    if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false, old_read_route); !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
-    if (auto sync_res = write_superblock(*_device_b->disk, _sb.get(), true, static_cast< read_route >(old_read_route));
-        !sync_res) {
+    if (auto sync_res = write_superblock(*_device_b->disk, _sb.get(), true, old_read_route); !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
     // Avoid checking DirtyBitmap going forward on reads/writes
-    __set_read_route(old_read_route, static_cast< uint8_t >(read_route::EITHER));
+    __set_read_route(old_read_route, read_route::EITHER);
     return 0;
 }
 
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync) {
     // Determine new route based on which device failed
-    auto old_route = static_cast< uint8_t >(read_route::EITHER);
-    auto new_route = static_cast< uint8_t >((0b1 & ((sub_cmd) >> _device_b->disk->route_size())) ? read_route::DEVA
-                                                                                                 : read_route::DEVB);
+    auto old_route = read_route::EITHER;
+    auto new_route = (0b1 & ((sub_cmd) >> _device_b->disk->route_size())) ? read_route::DEVA : read_route::DEVB;
     if (!__set_read_route(old_route, new_route)) {
         if (old_route == new_route) return 0; // Already degraded
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
     // Capture device pointers based on new route to prevent race with swap_device
-    auto* clean_dev = (read_route::DEVB == static_cast< read_route >(new_route)) ? _device_b.get() : _device_a.get();
-    auto* dirty_dev = (read_route::DEVB == static_cast< read_route >(new_route)) ? _device_a.get() : _device_b.get();
-    auto const device_b_is_clean = (read_route::DEVB == static_cast< read_route >(new_route));
+    auto* clean_dev = (read_route::DEVB == new_route) ? _device_b.get() : _device_a.get();
+    auto* dirty_dev = (read_route::DEVB == new_route) ? _device_a.get() : _device_b.get();
+    auto const device_b_is_clean = (read_route::DEVB == new_route);
 
     auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
@@ -462,13 +457,12 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t sub_cmd, bool spawn_resync)
 
     // Record degradation event in metrics with device name
     if (_raid_metrics) {
-        auto device_name = (static_cast< read_route >(new_route) == read_route::DEVA) ? "device_b" : "device_a";
+        auto device_name = (new_route == read_route::DEVA) ? "device_b" : "device_a";
         _raid_metrics->record_device_degraded(device_name);
     }
 
     // Must update age first; we do this synchronously to gate pending retry results
-    if (auto sync_res =
-            write_superblock(*clean_dev->disk, _sb.get(), device_b_is_clean, static_cast< read_route >(new_route));
+    if (auto sync_res = write_superblock(*clean_dev->disk, _sb.get(), device_b_is_clean, new_route);
         !sync_res) {
         // Rollback the failure to update the header
         _sb->fields.bitmap.age = old_age;
