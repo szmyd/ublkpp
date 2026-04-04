@@ -531,7 +531,7 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
 
     // Check if this sub_cmd went to what we currently consider Clean, if we're also dirty this is a fatal error
     auto const state = __capture_route_state();
-    if (state.is_degraded && state.active_subcmd == sub_cmd) {
+    if (state.is_degraded && state.active_subcmd == (sub_cmd & _route_mask)) {
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
