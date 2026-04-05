@@ -16,20 +16,20 @@ public:
     SuperBitmap(uint8_t* superblock_reserved_field);
 
     // Set bit for a bitmap page (mark as dirty)
-    void set_bit(uint32_t page_idx);
+    void set_bit(uint32_t page_idx) noexcept;
 
     // Clear bit for a bitmap page (mark as clean)
-    void clear_bit(uint32_t page_idx);
+    void clear_bit(uint32_t page_idx) noexcept;
 
     // Test if bitmap page is dirty
-    bool test_bit(uint32_t page_idx) const;
+    bool test_bit(uint32_t page_idx) const noexcept;
 
     // Clear all bits (mark all pages clean)
-    void clear_all();
+    void clear_all() noexcept;
 
     // Get raw data pointer (points into SuperBlock.superbitmap_reserved)
-    uint8_t* data();
-    const uint8_t* data() const;
+    uint8_t* data() noexcept;
+    const uint8_t* data() const noexcept;
 };
 
 } // namespace ublkpp::raid1

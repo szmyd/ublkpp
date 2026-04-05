@@ -20,7 +20,7 @@ public:
     explicit FSDisk(std::filesystem::path const& path, std::string const& parent_id = "");
     ~FSDisk() override;
 
-    std::string id() const override { return _path.native(); }
+    std::string id() const noexcept override { return _path.native(); }
 
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,

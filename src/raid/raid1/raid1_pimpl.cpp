@@ -17,22 +17,22 @@ std::shared_ptr< UblkDisk > Raid1Disk::swap_device(std::string const& old_device
                                                    std::shared_ptr< UblkDisk > new_device) {
     return _impl->swap_device(old_device_id, new_device);
 }
-raid1::array_state Raid1Disk::replica_states() const { return _impl->replica_states(); }
-uint64_t Raid1Disk::reserved_size() const { return _impl->get_reserved_size(); }
-std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk::replicas() const {
+raid1::array_state Raid1Disk::replica_states() const noexcept { return _impl->replica_states(); }
+uint64_t Raid1Disk::reserved_size() const noexcept { return _impl->get_reserved_size(); }
+std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk::replicas() const noexcept {
     return _impl->replicas();
 }
 void Raid1Disk::toggle_resync(bool t) { return _impl->toggle_resync(t); }
 
-uint32_t Raid1Disk::block_size() const { return _impl->block_size(); }
-bool Raid1Disk::can_discard() const { return _impl->can_discard(); }
-uint64_t Raid1Disk::capacity() const { return _impl->capacity(); }
+uint32_t Raid1Disk::block_size() const noexcept { return _impl->block_size(); }
+bool Raid1Disk::can_discard() const noexcept { return _impl->can_discard(); }
+uint64_t Raid1Disk::capacity() const noexcept { return _impl->capacity(); }
 
-ublk_params* Raid1Disk::params() { return _impl->params(); }
-ublk_params const* Raid1Disk::params() const { return _impl->params(); }
-std::string Raid1Disk::id() const { return _impl->id(); }
+ublk_params* Raid1Disk::params() noexcept { return _impl->params(); }
+ublk_params const* Raid1Disk::params() const noexcept { return _impl->params(); }
+std::string Raid1Disk::id() const noexcept { return _impl->id(); }
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device) { return _impl->open_for_uring(iouring_device); }
-uint8_t Raid1Disk::route_size() const { return _impl->route_size(); }
+uint8_t Raid1Disk::route_size() const noexcept { return _impl->route_size(); }
 void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
 void Raid1Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
     return _impl->on_io_complete(data, sub_cmd, res);

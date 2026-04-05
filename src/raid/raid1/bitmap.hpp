@@ -67,9 +67,9 @@ public:
     Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved,
            std::string const& id = "");
 
-    static uint64_t page_size();
+    static uint64_t page_size() noexcept;
     size_t dirty_pages();
-    uint64_t dirty_data_est() const;
+    uint64_t dirty_data_est() const noexcept;
 
     bool is_dirty(uint64_t addr, uint32_t len);
 

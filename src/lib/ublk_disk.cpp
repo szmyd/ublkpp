@@ -56,7 +56,7 @@ io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, 
     return async_iov(q, data, sub_cmd, &iov, 1, addr);
 }
 
-io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) {
+io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) noexcept {
     DLOGW("Use of deprecated ::sync_io(...)! Please convert to using ::sync_iov(...)")
     auto iov = iovec{.iov_base = buf, .iov_len = len};
     return sync_iov(op, &iov, 1, addr);
@@ -97,10 +97,10 @@ std::string UblkDisk::to_string() const {
     return fmt::format("[{}, size={}{}, lbs={:#0x}]", id(), capacity() / cap_denom, cap_denom == Gi ? "Gi" : "Mi",
                        block_size());
 }
-uint32_t UblkDisk::block_size() const { return 1 << _params->basic.logical_bs_shift; }
-uint32_t UblkDisk::max_tx() const { return _params->basic.max_sectors << SECTOR_SHIFT; }
-bool UblkDisk::can_discard() const { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
-uint64_t UblkDisk::capacity() const { return _params->basic.dev_sectors << SECTOR_SHIFT; }
+uint32_t UblkDisk::block_size() const noexcept { return 1 << _params->basic.logical_bs_shift; }
+uint32_t UblkDisk::max_tx() const noexcept { return _params->basic.max_sectors << SECTOR_SHIFT; }
+bool UblkDisk::can_discard() const noexcept { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
+uint64_t UblkDisk::capacity() const noexcept { return _params->basic.dev_sectors << SECTOR_SHIFT; }
 
 DefunctDisk::DefunctDisk() : UblkDisk() {
     direct_io = true;
@@ -110,7 +110,7 @@ DefunctDisk::DefunctDisk() : UblkDisk() {
     our_params.basic.physical_bs_shift = 9;
 }
 
-std::string DefunctDisk::id() const { return "~DEFUNCT~"; }
+std::string DefunctDisk::id() const noexcept { return "~DEFUNCT~"; }
 
 // LCOV_EXCL_START
 io_result DefunctDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
