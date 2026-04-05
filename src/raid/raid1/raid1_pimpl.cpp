@@ -24,12 +24,12 @@ std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1Disk:
 }
 void Raid1Disk::toggle_resync(bool t) { return _impl->toggle_resync(t); }
 
-uint32_t Raid1Disk::block_size() const { return _impl->block_size(); }
-bool Raid1Disk::can_discard() const { return _impl->can_discard(); }
-uint64_t Raid1Disk::capacity() const { return _impl->capacity(); }
+uint32_t Raid1Disk::block_size() const noexcept { return _impl->block_size(); }
+bool Raid1Disk::can_discard() const noexcept { return _impl->can_discard(); }
+uint64_t Raid1Disk::capacity() const noexcept { return _impl->capacity(); }
 
-ublk_params* Raid1Disk::params() { return _impl->params(); }
-ublk_params const* Raid1Disk::params() const { return _impl->params(); }
+ublk_params* Raid1Disk::params() noexcept { return _impl->params(); }
+ublk_params const* Raid1Disk::params() const noexcept { return _impl->params(); }
 std::string Raid1Disk::id() const noexcept { return _impl->id(); }
 std::list< int > Raid1Disk::open_for_uring(int const iouring_device) { return _impl->open_for_uring(iouring_device); }
 uint8_t Raid1Disk::route_size() const noexcept { return _impl->route_size(); }

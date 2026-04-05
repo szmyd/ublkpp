@@ -35,13 +35,13 @@ public:
 
     /// UBlkDisk Interface Overrides
     /// ============================
-    uint32_t block_size() const override;
-    bool can_discard() const override;
-    uint64_t capacity() const override;
+    uint32_t block_size() const noexcept override;
+    bool can_discard() const noexcept override;
+    uint64_t capacity() const noexcept override;
     // ================
 
-    ublk_params* params() override;
-    ublk_params const* params() const override;
+    ublk_params* params() noexcept override;
+    ublk_params const* params() const noexcept override;
     std::string id() const noexcept override;
     std::list< int > open_for_uring(int const iouring_device) override;
 
