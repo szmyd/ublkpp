@@ -571,6 +571,8 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     // Determine where we're going
     auto cur_subcmd = second_write ? captured_state->backup_subcmd : captured_state->active_subcmd;
     auto cur_disk = second_write ? captured_state->backup_dev->disk : captured_state->active_dev->disk;
+
+    // Queue the I/O on the active device
     auto active_res = func(*cur_disk, cur_subcmd);
 
     // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
@@ -589,7 +591,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         _dirty_bitmap->dirty_region(addr, len);
         if (second_write) return backup_res;
 
-        // Follow-up Backup Write, Active Failed
+	// Queue the I/O on the backup device after active failed
         if (async_data) _resync_task->enqueue_write();
         if (active_res = func(*captured_state->backup_dev->disk, captured_state->backup_subcmd); !active_res) {
             if (async_data) _resync_task->dequeue_write();
@@ -631,7 +633,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     } else
         sub_cmd = shift_route(sub_cmd, route_size());
 
-    // Pick a device to read from
+    // Pick a device to read from (load-balancer)
     auto route = read_route::DEVA;
     auto need_to_test{false};
     if (state.is_degraded && (!retry && state.backup_dev->unavail.test(std::memory_order_acquire))) {
