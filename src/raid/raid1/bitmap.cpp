@@ -261,7 +261,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
     return false;
 }
 
-uint64_t Bitmap::page_size() { return k_page_size; }
+uint64_t Bitmap::page_size() noexcept { return k_page_size; }
 
 size_t Bitmap::dirty_pages() {
     // Exclusive lock: we modify _page_map structure (erase pages)
@@ -327,7 +327,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     return std::make_tuple(nullptr, page_offset, sz);
 }
 
-uint64_t Bitmap::dirty_data_est() const { return _dirty_chunks_est.load(std::memory_order_relaxed) * _chunk_size; }
+uint64_t Bitmap::dirty_data_est() const noexcept { return _dirty_chunks_est.load(std::memory_order_relaxed) * _chunk_size; }
 
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
     // Shared lock: we only iterate _page_map, no modifications

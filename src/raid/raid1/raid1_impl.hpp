@@ -70,7 +70,7 @@ class Raid1DiskImpl : public UblkDisk {
                                       std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id);
     void __init_bitmap_and_degraded_route();
 
-    raid1::read_route __get_read_route() const {
+    raid1::read_route __get_read_route() const noexcept {
         return static_cast< raid1::read_route >(_read_route_cache.load(std::memory_order_acquire));
     }
 
@@ -78,12 +78,12 @@ class Raid1DiskImpl : public UblkDisk {
     RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
 
     // CAS with uint8_t (for when caller already has uint8_t)
-    bool __set_read_route(uint8_t& old_route, uint8_t new_route) {
+    bool __set_read_route(uint8_t& old_route, uint8_t new_route) noexcept {
         return _read_route_cache.compare_exchange_strong(old_route, new_route);
     }
 
     // CAS with read_route (convenience wrapper - eliminates casting at call sites)
-    bool __set_read_route(raid1::read_route& old_route, raid1::read_route new_route) {
+    bool __set_read_route(raid1::read_route& old_route, raid1::read_route new_route) noexcept {
         auto old_val = static_cast< uint8_t >(old_route);
         bool result = __set_read_route(old_val, static_cast< uint8_t >(new_route));
         old_route = static_cast< raid1::read_route >(old_val); // Update with actual value read
@@ -91,7 +91,7 @@ class Raid1DiskImpl : public UblkDisk {
     }
 
     // Direct store (for initialization/non-CAS updates)
-    void __store_read_route(raid1::read_route route) {
+    void __store_read_route(raid1::read_route route) noexcept {
         _read_route_cache.store(static_cast< uint8_t >(route), std::memory_order_release);
     }
 
@@ -103,18 +103,18 @@ public:
     /// Raid1Disk API
     /// =============
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
-    raid1::array_state replica_states() const;
-    uint64_t get_reserved_size() const { return reserved_size; }
+    raid1::array_state replica_states() const noexcept;
+    uint64_t get_reserved_size() const noexcept { return reserved_size; }
     void toggle_resync(bool t);
-    std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const;
+    std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const noexcept;
     /// =============
 
     /// UBlkDisk Interface Overrides
     /// ============================
-    std::string id() const override { return "RAID1"; }
+    std::string id() const noexcept override { return "RAID1"; }
     std::list< int > open_for_uring(int const iouring_device) override;
 
-    uint8_t route_size() const override { return 1; }
+    uint8_t route_size() const noexcept override { return 1; }
 
     void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
 

@@ -414,7 +414,7 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
     return true;
 }
 
-raid1::array_state Raid1DiskImpl::replica_states() const {
+raid1::array_state Raid1DiskImpl::replica_states() const noexcept {
     auto const sz_to_sync = _dirty_bitmap->dirty_data_est();
     switch (__get_read_route()) {
     case read_route::DEVA:
@@ -436,7 +436,7 @@ raid1::array_state Raid1DiskImpl::replica_states() const {
     }
 }
 
-std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskImpl::replicas() const {
+std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskImpl::replicas() const noexcept {
     return std::make_pair(_device_a->disk, _device_b->disk);
 }
 
