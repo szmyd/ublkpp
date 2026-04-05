@@ -34,7 +34,7 @@ public:
             our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         direct_io = test_params.direct_io;
     }
-    std::string id() const override { return my_id; }
+    std::string id() const noexcept override { return my_id; }
 
     MOCK_METHOD(std::list< int >, open_for_uring, (int const), (override));
     MOCK_METHOD(io_result, handle_internal,
@@ -50,7 +50,7 @@ public:
 
     MOCK_METHOD(io_result, sync_iov, (uint8_t, iovec*, uint32_t, off_t offset), (override, noexcept));
 
-    uint8_t route_size() const override { return 0; }
+    uint8_t route_size() const noexcept override { return 0; }
 };
 
 }; // namespace ublkpp

@@ -27,29 +27,29 @@ public:
     /// Raid1Disk API
     /// =============
     std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
-    raid1::array_state replica_states() const;
-    uint64_t reserved_size() const;
-    std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const;
+    raid1::array_state replica_states() const noexcept;
+    uint64_t reserved_size() const noexcept;
+    std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const noexcept;
     void toggle_resync(bool t);
     /// =============
 
     /// UBlkDisk Interface Overrides
     /// ============================
-    uint32_t block_size() const override;
-    bool can_discard() const override;
-    uint64_t capacity() const override;
+    uint32_t block_size() const noexcept override;
+    bool can_discard() const noexcept override;
+    uint64_t capacity() const noexcept override;
     // ================
 
-    ublk_params* params() override;
-    ublk_params const* params() const override;
-    std::string id() const override;
+    ublk_params* params() noexcept override;
+    ublk_params const* params() const noexcept override;
+    std::string id() const noexcept override;
     std::list< int > open_for_uring(int const iouring_device) override;
 
-    uint8_t route_size() const override;
+    uint8_t route_size() const noexcept override;
 
     void idle_transition(ublksrv_queue const*, bool) override;
 
-    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
 
     io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
                               uint32_t nr_vecs, uint64_t addr, int res) override;

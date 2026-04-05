@@ -8,18 +8,27 @@ TEST(Raid1, DiscardRetry) {
     raid_device.toggle_resync(false);
 
     {
+        ublkpp::sub_cmd_t working_sub;
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_a, handle_discard(_, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, handle_discard(_, _, _, _, _))
+            .Times(1)
+            .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, uint32_t,
+                                     uint64_t) {
+                working_sub = sub_cmd;
+                return 1;
+            });
+        EXPECT_CALL(*device_b, handle_discard(_, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, uint32_t, uint64_t) {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
 
-        auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_discard(nullptr, &ublk_data, sub_cmd, 4 * Ki, 8 * Ki);
-        remove_io_data(ublk_data);
+        auto ublk_data = make_io_data(UBLK_IO_OP_DISCARD);
+        auto res = raid_device.handle_discard(nullptr, &ublk_data, 0b10, 4 * Ki, 8 * Ki);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         ASSERT_TRUE(res);
-        // No need to re-write on A side
-        EXPECT_EQ(0, res.value());
+        EXPECT_EQ(1, res.value());
+        remove_io_data(ublk_data);
     }
     auto compls = std::list< ublkpp::async_result >();
     raid_device.collect_async(nullptr, compls);
