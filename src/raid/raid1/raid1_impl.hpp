@@ -69,6 +69,7 @@ class Raid1DiskImpl : public UblkDisk {
     void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                                       std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id);
     void __init_bitmap_and_degraded_route();
+    void __become_active();
 
     raid1::read_route __get_read_route() const noexcept {
         return static_cast< raid1::read_route >(_read_route_cache.load(std::memory_order_acquire));

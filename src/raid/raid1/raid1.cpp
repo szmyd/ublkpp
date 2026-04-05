@@ -91,15 +91,12 @@ RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                              std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) :
         UblkDisk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {
-    if (DEFUNCT_DEVICE(dev_a) && DEFUNCT_DEVICE(dev_b)) {
+    // At least one device has to be "real"
+    if (DEFUNCT_DEVICE(dev_a) && DEFUNCT_DEVICE(dev_b))
         throw std::runtime_error("Can not run with both devices missing"); // LCOV_EXCL_LINE
-    }
-    // Create metrics with parent_id for correlation
-    if (!parent_id.empty()) { _raid_metrics = std::make_unique< UblkRaidMetrics >(parent_id, _str_uuid); }
-    direct_io = true; // RAID-1 requires DIO
 
-    // We enqueue async responses for RAID1 retries even if our underlying devices use uring
-    uses_ublk_iouring = false;
+    // Create metrics with parent_id for correlation
+    if (!parent_id.empty()) _raid_metrics = std::make_unique< UblkRaidMetrics >(parent_id, _str_uuid);
 
     // Discover parameters and calculate reserved space
     __init_params(dev_a, dev_b);
@@ -107,37 +104,24 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // Load devices, select best superblock, initialize route
     __load_and_select_superblock(uuid, std::move(dev_a), std::move(dev_b), parent_id);
 
-    // Initialize bitmap and handle initial degradation
+    // Initialize bitmap and handle initial degradation based on route determination
     __init_bitmap_and_degraded_route();
 
     // Initialize resync_task
     _resync_task = std::make_shared< Raid1ResyncTask >(_dirty_bitmap, reserved_size, block_size(),
                                                        params()->basic.max_sectors << SECTOR_SHIFT, _raid_metrics);
 
-    // We mark the SB dirty here and clean in our destructor so we know if we had unclean shutdown next load
-    auto dirty_written{false};
-    _sb->fields.clean_unmount = 0x0;
-    _sb->fields.device_b = 0; // Reset this in case we loaded from dev_b
-    auto const state = __capture_route_state();
-    if (!write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route)) {
-        // If already degraded this is Fatal
-        if (state.is_degraded) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
-        // Disk A failed to write superblock, trigger a degradation on it by mocking a fake sub_cmd for it
-        if (!__become_degraded(0b0, &state, false)) {
-            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
-        }
-        dirty_written = true;
-        // State is wrong now, but we are done checking the order and route
-    }
-    if (!dirty_written && !DEFUNCT_DEVICE(state.backup_dev->disk) &&
-        !write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
-        if (!__become_degraded(0b1, &state, false)) {
-            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
-        }
-    }
+    // Write the up-to-date superblocks and mark devices as in use
+    __become_active();
 }
 
 void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b) {
+    RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
+
+    direct_io = true; // RAID-1 requires DIO
+    // We enqueue async responses for RAID1 retries even if our underlying devices use uring
+    uses_ublk_iouring = false;
+
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
@@ -145,8 +129,6 @@ void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std:
 
     // Set largest underlying user-data size we support as starting point
     our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
-
-    RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
 
     // Now find the what size we should actually set based on the smallest provided device
     for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
@@ -245,6 +227,28 @@ void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
         _dirty_bitmap->load_from(*state.active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
         RLOGW("Raid1 was not cleanly shutdown last time [uuid:{}]!", _str_uuid)
+    }
+}
+
+void Raid1DiskImpl::__become_active() {
+    // Mark the devices as ACTIVE and write the updated superblocks
+    auto const state = __capture_route_state();
+    _sb->fields.clean_unmount = 0x0;
+    _sb->fields.device_b = 0; // Reset this in case we loaded from dev_b
+    if (!write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route)) {
+        // If already degraded this is Fatal
+        if (state.is_degraded) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
+        // Disk A failed to write superblock, trigger a degradation on it by mocking a fake sub_cmd for it
+        if (!__become_degraded(0b0, &state, false)) {
+            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
+        }
+        return;
+    }
+    if (DEFUNCT_DEVICE(state.backup_dev->disk)) return;
+    if (!write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
+        if (!__become_degraded(0b1, &state, false)) {
+            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
+        }
     }
 }
 
@@ -591,7 +595,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         _dirty_bitmap->dirty_region(addr, len);
         if (second_write) return backup_res;
 
-	// Queue the I/O on the backup device after active failed
+        // Queue the I/O on the backup device after active failed
         if (async_data) _resync_task->enqueue_write();
         if (active_res = func(*captured_state->backup_dev->disk, captured_state->backup_subcmd); !active_res) {
             if (async_data) _resync_task->dequeue_write();
