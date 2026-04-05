@@ -25,9 +25,10 @@ TEST(Raid1, WriteFailImmediateDevA) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
-        remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(1, res.value());
+        raid_device.on_io_complete(&ublk_data, 0b101, 0);
+        remove_io_data(ublk_data);
     }
 
     {
@@ -44,18 +45,20 @@ TEST(Raid1, WriteFailImmediateDevA) {
                 return 1;
             });
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 180 * Ki);
-        remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(1, res.value());
+        raid_device.on_io_complete(&ublk_data, 0b101, 0);
+        remove_io_data(ublk_data);
     }
 
     {
         // Make Device A avail again
-        iovec iov{.iov_base = nullptr, .iov_len = 160 * Ki};
-        // Device A is clean!
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b100, &iov, 1, 32 * Ki, 0);
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(0b100, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
         EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     {
@@ -82,9 +85,11 @@ TEST(Raid1, WriteFailImmediateDevA) {
                 return 1;
             });
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 380 * Ki);
-        remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(2, res.value());
+        raid_device.on_io_complete(&ublk_data, 0b100, 0);
+        raid_device.on_io_complete(&ublk_data, 0b101, 0);
+        remove_io_data(ublk_data);
     }
 
     // expect unmount_clean on both devices
@@ -125,6 +130,7 @@ TEST(Raid1, WriteFailImmediateDevB) {
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+        raid_device.on_io_complete(&ublk_data, 0b100, 0);
         remove_io_data(ublk_data);
         ASSERT_FALSE(res);
     }

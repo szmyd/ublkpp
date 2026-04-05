@@ -49,7 +49,7 @@ public:
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 
-    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
     /// ============================
 };
 } // namespace ublkpp
