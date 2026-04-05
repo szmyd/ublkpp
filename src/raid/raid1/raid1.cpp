@@ -25,17 +25,11 @@ SISL_OPTION_GROUP(raid1,
                   (resync_delay, "", "resync_delay", "Delay between I/O and Resync context switches",
                    cxxopts::value< std::uint32_t >()->default_value("300"), "<microseconds> (us)"))
 
-using namespace std::chrono_literals;
-
 namespace ublkpp {
-using raid1::read_route;
 
 // SubCmd decoders
 #define SEND_TO_A (sub_cmd & ((1U << sqe_tgt_data_width) - 2))
 #define SEND_TO_B (sub_cmd | 0b1)
-
-// True if the dirty device is a DefunctDisk type
-#define DEFUNCT_DEVICE(d) (std::dynamic_pointer_cast< DefunctDisk >((d)) != nullptr)
 
 namespace raid1 {
 
@@ -45,6 +39,9 @@ constexpr auto k_min_page_depth = k_min_chunk_size * k_page_size * k_bits_in_byt
 // Max user-data size
 constexpr uint64_t k_max_user_data =
     (unsigned __int128)(k_min_page_depth - k_page_size) * (UINT64_MAX - sizeof(SuperBlock)) / k_min_page_depth;
+
+// True if the dirty device is a DefunctDisk type
+#define DEFUNCT_DEVICE(d) (std::dynamic_pointer_cast< DefunctDisk >((d)) != nullptr)
 
 struct free_page {
     void operator()(void* x) { free(x); }
@@ -70,19 +67,33 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
     }
 }
 
-// Route routines
-// *NOTE* These Macros are ONLY safe to use in the destructor/constructors
-// and their helpers. An alternative "cleaner" approach is recommended
-// ***********************************************************************
-#define IS_DEGRADED (read_route::EITHER != __get_read_route())
-#define CLEAN_DEVICE (read_route::DEVB == __get_read_route() ? _device_b : _device_a)
-#define DIRTY_DEVICE (read_route::DEVB == __get_read_route() ? _device_a : _device_b)
-#define RUNNING_DEFUNCT DEFUNCT_DEVICE(DIRTY_DEVICE->disk)
-// ***********************************************************************
+// Route state capture
+struct RouteState {
+    MirrorDevice* active_dev;
+    MirrorDevice* backup_dev;
+    sub_cmd_t active_subcmd;
+    sub_cmd_t backup_subcmd;
+    raid1::read_route route;
+    bool is_degraded;
+};
+
+// Atomically capture routing state with all derived values
+RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
+    auto const route = __get_read_route();
+    return RouteState{.active_dev = (read_route::DEVB == route) ? _device_b.get() : _device_a.get(),
+                      .backup_dev = (read_route::DEVB == route) ? _device_a.get() : _device_b.get(),
+                      .active_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_B : SEND_TO_A),
+                      .backup_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_A : SEND_TO_B),
+                      .route = route,
+                      .is_degraded = (read_route::EITHER != route)};
+}
 
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                              std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) :
         UblkDisk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {
+    if (DEFUNCT_DEVICE(dev_a) && DEFUNCT_DEVICE(dev_b)) {
+        throw std::runtime_error("Can not run with both devices missing"); // LCOV_EXCL_LINE
+    }
     // Create metrics with parent_id for correlation
     if (!parent_id.empty()) { _raid_metrics = std::make_unique< UblkRaidMetrics >(parent_id, _str_uuid); }
     direct_io = true; // RAID-1 requires DIO
@@ -99,28 +110,31 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     // Initialize bitmap and handle initial degradation
     __init_bitmap_and_degraded_route();
 
-    // We mark the SB dirty here and clean in our destructor so we know if we had unclean shutdown next load
-    _sb->fields.clean_unmount = 0x0;
-    _sb->fields.device_b = 0; // Reset this in case we loaded from dev_b
-    auto dirty_written{false};
-    if (!write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b, __get_read_route())) {
-        // If already degraded this is Fatal
-        if (IS_DEGRADED) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
-        // Disk A failed to write superblock, trigger a degradation on it by mocking a fake sub_cmd for it
-        if (!__become_degraded(0b0, nullptr, false)) {
-            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
-        }
-        dirty_written = true;
-    }
-    if (!dirty_written && !RUNNING_DEFUNCT &&
-        !write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b, __get_read_route())) {
-        if (!__become_degraded(0b1, nullptr, false)) {
-            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
-        }
-    }
     // Initialize resync_task
     _resync_task = std::make_shared< Raid1ResyncTask >(_dirty_bitmap, reserved_size, block_size(),
                                                        params()->basic.max_sectors << SECTOR_SHIFT, _raid_metrics);
+
+    // We mark the SB dirty here and clean in our destructor so we know if we had unclean shutdown next load
+    auto dirty_written{false};
+    _sb->fields.clean_unmount = 0x0;
+    _sb->fields.device_b = 0; // Reset this in case we loaded from dev_b
+    auto const state = __capture_route_state();
+    if (!write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route)) {
+        // If already degraded this is Fatal
+        if (state.is_degraded) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
+        // Disk A failed to write superblock, trigger a degradation on it by mocking a fake sub_cmd for it
+        if (!__become_degraded(0b0, &state, false)) {
+            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
+        }
+        dirty_written = true;
+        // State is wrong now, but we are done checking the order and route
+    }
+    if (!dirty_written && !DEFUNCT_DEVICE(state.backup_dev->disk) &&
+        !write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
+        if (!__become_degraded(0b1, &state, false)) {
+            throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
+        }
+    }
 }
 
 void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b) {
@@ -198,60 +212,40 @@ void Raid1DiskImpl::__load_and_select_superblock(boost::uuids::uuid const& uuid,
 }
 
 void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
+    auto const state = __capture_route_state();
     // Read in existing dirty BITMAP pages
     _dirty_bitmap = std::make_shared< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size(),
                                                _sb->superbitmap_reserved, _str_uuid);
-    if (_device_a->new_device) _dirty_bitmap->init_to(_device_a->disk);
-    if (_device_b->new_device) _dirty_bitmap->init_to(_device_b->disk);
+    if (state.active_dev->new_device) _dirty_bitmap->init_to(state.active_dev->disk);
+    if (state.backup_dev->new_device) _dirty_bitmap->init_to(state.backup_dev->disk);
 
     // We need to completely dirty one side if either is new when the other is not, this will also
     // apply to when a DefunctDisk is provided, load_from will be skipped in this case.
-    if ((DEFUNCT_DEVICE(_device_a->disk) || DEFUNCT_DEVICE(_device_b->disk))) {
+    if ((DEFUNCT_DEVICE(state.active_dev->disk) || DEFUNCT_DEVICE(state.backup_dev->disk))) {
         RLOGW("RAID1 device [uuid:{}] is running with a defunct device!", _str_uuid)
         // Defunct disks are marked NEW
-        __store_read_route(_device_a->new_device ? read_route::DEVB : read_route::DEVA);
+        __store_read_route(state.active_dev->new_device ? read_route::DEVB : read_route::DEVA);
         // We still want to load from the BITMAP and not bump the age, maybe we'll get the orig
         // disk back in a swap when it becomes available?
-        _dirty_bitmap->load_from(*CLEAN_DEVICE->disk);
-    } else if (_device_a->new_device xor _device_b->new_device) {
+        _dirty_bitmap->load_from(*state.active_dev->disk);
+    } else if (state.active_dev->new_device xor state.backup_dev->new_device) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Device is replacement {}, dirty all of BITMAP",
-              *(_device_a->new_device ? _device_a->disk : _device_b->disk))
+              *(state.active_dev->new_device ? state.active_dev->disk : state.backup_dev->disk))
         _dirty_bitmap->dirty_region(0, capacity());
-        __store_read_route(_device_a->new_device ? read_route::DEVB : read_route::DEVA);
+        __store_read_route(state.active_dev->new_device ? read_route::DEVB : read_route::DEVA);
     } else if ((read_route::EITHER != __get_read_route()) && (0 == _sb->fields.clean_unmount)) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Unclean shutdown in degraded mode! Dirty all of BITMAP")
         _dirty_bitmap->dirty_region(0, capacity());
     } else if (read_route::EITHER != __get_read_route()) {
-        RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *DIRTY_DEVICE->disk)
-        _dirty_bitmap->load_from(*CLEAN_DEVICE->disk);
+        RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *state.backup_dev->disk)
+        _dirty_bitmap->load_from(*state.active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
         RLOGW("Raid1 was not cleanly shutdown last time [uuid:{}]!", _str_uuid)
     }
-}
-
-// Route state capture
-struct RouteState {
-    MirrorDevice* active_dev;
-    MirrorDevice* backup_dev;
-    sub_cmd_t active_subcmd;
-    sub_cmd_t backup_subcmd;
-    raid1::read_route route;
-    bool is_degraded;
-};
-
-// Atomically capture routing state with all derived values
-RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
-    auto const route = __get_read_route();
-    return RouteState{.active_dev = (read_route::DEVB == route) ? _device_b.get() : _device_a.get(),
-                      .backup_dev = (read_route::DEVB == route) ? _device_a.get() : _device_b.get(),
-                      .active_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_B : SEND_TO_A),
-                      .backup_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_A : SEND_TO_B),
-                      .route = route,
-                      .is_degraded = (read_route::EITHER != route)};
 }
 
 Raid1DiskImpl::~Raid1DiskImpl() {
@@ -261,10 +255,11 @@ Raid1DiskImpl::~Raid1DiskImpl() {
 
     if (!_sb) return;
 
+    auto const state = __capture_route_state();
     // Write out our dirty bitmap
-    if (IS_DEGRADED && !RUNNING_DEFUNCT) {
-        RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *CLEAN_DEVICE->disk)
-        if (auto res = _dirty_bitmap->sync_to(*CLEAN_DEVICE->disk, sizeof(SuperBlock)); !res) {
+    if (state.is_degraded && !DEFUNCT_DEVICE(state.backup_dev->disk)) {
+        RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *state.active_dev->disk)
+        if (auto res = _dirty_bitmap->sync_to(*state.active_dev->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
                   _str_uuid)
             return;
@@ -273,13 +268,14 @@ Raid1DiskImpl::~Raid1DiskImpl() {
     }
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices
-    if (auto res = write_superblock(*CLEAN_DEVICE->disk, _sb.get(), CLEAN_DEVICE == _device_b, __get_read_route());
+    if (auto res = write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route);
         !res) {
-        if (IS_DEGRADED) {
+        if (state.is_degraded) {
             RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
         }
     }
-    if (!IS_DEGRADED) write_superblock(*DIRTY_DEVICE->disk, _sb.get(), DIRTY_DEVICE == _device_b, __get_read_route());
+    if (!state.is_degraded)
+        write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
 // RAID1 devices have the property of being replacable while maintaining
