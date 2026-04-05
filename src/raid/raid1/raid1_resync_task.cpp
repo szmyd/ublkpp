@@ -78,11 +78,13 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     }
     if (0 == _dirty_bitmap->dirty_pages()) complete();
     RLOGD("Resync Task Finished for [uuid:{}]", str_uuid)
+
+    // Open up I/O Again
     _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
 }
 
-void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                             std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete) {
+void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
+                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
     // First we must become IDLE
     auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
     auto done{false};
@@ -105,12 +107,11 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
 
     _resync_task = sisl::named_thread(
         fmt::format("r_{}", str_uuid.substr(0, 13)),
-        [this, uuid = str_uuid, clean = clean_mirror, dirty = dirty_mirror, compl_cb = std::move(complete)] mutable {
-            _start(uuid, clean, dirty, std::move(compl_cb));
-        });
+        [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
+         compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
 }
 
-void Raid1ResyncTask::clean_region(uint64_t addr, uint32_t len, std::shared_ptr< MirrorDevice > clean_mirror) {
+void Raid1ResyncTask::clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {
     auto const pg_size = _dirty_bitmap->page_size();
     auto iov = iovec{.iov_base = nullptr, .iov_len = pg_size};
 
@@ -126,8 +127,8 @@ void Raid1ResyncTask::clean_region(uint64_t addr, uint32_t len, std::shared_ptr<
 
         // These don't actually need to succeed; this page will remain dirty and loaded the next time
         // we use this bitmap (extra copies for this page).
-        if (auto res = clean_mirror->disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) {
-            RLOGW("Failed to clear bitmap page to: {}", *clean_mirror->disk)
+        if (auto res = clean_mirror.disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, page_addr); !res) {
+            RLOGW("Failed to clear bitmap page to: {}", *clean_mirror.disk)
         }
     }
 }
@@ -176,7 +177,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
                     RLOGI("Mirror became available again: {}", *dirty_mirror->disk)
                     dirty_mirror->unavail.clear(std::memory_order_release);
                 }
-                clean_region(logical_off, iov.iov_len, clean_mirror);
+                clean_region(logical_off, iov.iov_len, *clean_mirror);
                 // Record resync progress
                 if (_metrics) { _metrics->record_resync_progress(iov.iov_len); }
             } else {

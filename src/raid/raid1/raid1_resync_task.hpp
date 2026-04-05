@@ -63,10 +63,10 @@ public:
                     std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
     ~Raid1ResyncTask();
 
-    void clean_region(uint64_t addr, uint32_t len, std::shared_ptr< MirrorDevice > clean_device);
+    void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
 
-    void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
+    void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
+                std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
     // Generic method to move Resync StateMachine to STOPPING
     uint32_t stop(); // Returns the _outstanding_writes cnt here
