@@ -204,11 +204,6 @@ void Bitmap::load_from(UblkDisk& device) {
     }
 }
 
-Bitmap::PageData* Bitmap::__get_page(uint64_t offset) noexcept {
-    auto& pd = _page_map[offset];
-    return pd.page.load(std::memory_order_acquire) ? &pd : nullptr;
-}
-
 Bitmap::PageData* Bitmap::__get_or_create_page(uint64_t offset) {
     auto& pd = _page_map[offset];
 
@@ -235,10 +230,9 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
         auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             calc_bitmap_region(addr + off, len - off, _chunk_size);
         off += sz;
-        auto page_data = __get_page(page_offset);
-        if (!page_data) continue;
-
-        auto page = page_data->page.load(std::memory_order_acquire);
+        if (!_super_bitmap.test_bit(page_offset)) continue;
+        auto page = _page_map[page_offset].page.load(std::memory_order_acquire);
+        if (!page) continue;
         auto cur_word = page.get() + word_offset;
 
         // Handle update crossing multiple words (optimization potential?)
@@ -285,14 +279,14 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     DEBUG_ASSERT_EQ(0, addr % _chunk_size, "Address [addr:{:#0x}] is not aligned to {:#0x}", addr, _chunk_size)
     DEBUG_ASSERT_EQ(0, len % _chunk_size, "Len [len:{:#0x}] is not aligned to {:#0x}", len, _chunk_size)
 
-    auto page_data = __get_page(page_offset);
-    if (!page_data) {
+    auto& page_data = _page_map[page_offset];
+    auto page = page_data.page.load(std::memory_order_acquire);
+    if (!page) {
         RLOGW("clean_region: page {} not found (already clean or cleared during device swap) [addr:{:#0x}, id: {}]",
               page_offset, addr, _id);
         return std::make_tuple(nullptr, page_offset, sz);
     }
 
-    auto page = page_data->page.load(std::memory_order_acquire);
     auto cur_word = page.get() + word_offset;
 
     // Handle update crossing multiple words (optimization potential?)
@@ -311,7 +305,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     }
 
     // Mark as modified AFTER all modifications (release ensures visibility)
-    page_data->loaded_from_disk.store(false, std::memory_order_release);
+    page_data.loaded_from_disk.store(false, std::memory_order_release);
     RLOGT("Bitmap CLEANED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
 
     // Check if page became completely clean, and update superbitmap if so

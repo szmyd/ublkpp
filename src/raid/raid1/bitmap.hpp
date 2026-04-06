@@ -58,7 +58,6 @@ private:
     SuperBitmap _super_bitmap;
 
 private:
-    PageData* __get_page(uint64_t offset) noexcept;
     PageData* __get_or_create_page(uint64_t offset);
     static size_t max_pages_per_tx(const UblkDisk& device);
 
