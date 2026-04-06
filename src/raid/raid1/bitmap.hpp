@@ -1,10 +1,9 @@
 #pragma once
 
 #include <atomic>
-#include <map>
 #include <memory>
-#include <shared_mutex>
 #include <tuple>
+#include <vector>
 
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "super_bitmap.hpp"
@@ -17,41 +16,40 @@ public:
     using word_t = std::atomic_uint64_t;
 
     struct PageData {
-        std::shared_ptr< word_t > page;
-        std::atomic< bool > loaded_from_disk; // true = loaded unchanged, false = modified/new
+        // Null shared_ptr = page is clean (no memory allocated). Lazy-allocated on first dirty_region.
+        // atomic<shared_ptr> allows lock-free CAS during concurrent lazy allocation.
+        std::atomic< std::shared_ptr< word_t > > page{nullptr};
+        std::atomic< bool > loaded_from_disk{false}; // true = loaded unchanged, false = modified/new
 
-        PageData(std::shared_ptr< word_t > p, bool from_disk) : page(std::move(p)), loaded_from_disk(from_disk) {}
+        PageData() = default;
 
-        // Move constructor - needed because std::atomic is not movable
+        // Move constructor/assignment are needed for vector construction only (single-threaded).
+        // Not safe to move a PageData that is concurrently accessed.
         PageData(PageData&& other) noexcept :
-                page(std::move(other.page)), loaded_from_disk(other.loaded_from_disk.load(std::memory_order_relaxed)) {}
+                page(other.page.load(std::memory_order_relaxed)),
+                loaded_from_disk(other.loaded_from_disk.load(std::memory_order_relaxed)) {}
 
-        // Move assignment
         PageData& operator=(PageData&& other) noexcept {
             if (this != &other) {
-                page = std::move(other.page);
+                page.store(other.page.load(std::memory_order_relaxed), std::memory_order_relaxed);
                 loaded_from_disk.store(other.loaded_from_disk.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
             }
             return *this;
         }
 
-        // Delete copy constructor and assignment (std::atomic is not copyable)
-        PageData(const PageData&) = delete;
-        PageData& operator=(const PageData&) = delete;
+        PageData(PageData const&) = delete;
+        PageData& operator=(PageData const&) = delete;
     };
-
-    using map_type_t = std::map< uint32_t, PageData >;
 
 private:
     std::string const _id;
     uint64_t _data_size;
     uint32_t _chunk_size;
     uint32_t _align;
-    map_type_t _page_map;
-    // SharedMutex allows multiple concurrent readers (is_dirty, next_dirty) or single writer (dirty_region, dirty_pages)
-    // This protects _page_map structure from concurrent modification during resync and async I/O
-    mutable std::shared_mutex _page_map_mutex;
+    // Pre-allocated to _num_pages at construction. Slots never inserted or erased after init,
+    // eliminating all structural modifications and the need for a mutex.
+    std::vector< PageData > _page_map;
     std::shared_ptr< word_t > _clean_page;
 
     uint32_t const _page_width; // Number of bytes represented by a single page (block)
