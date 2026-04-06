@@ -396,7 +396,7 @@ TEST(Raid1, CleanBitmapStoppedState) {
     // Create multiple dirty regions
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(5)
-        .WillOnce(
+        .WillRepeatedly(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)

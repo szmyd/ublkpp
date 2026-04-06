@@ -190,7 +190,6 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
-            if (0 == sz) break;
             iov.iov_len = std::min(sz, _max_size);
             // Copy Region from clean to dirty
             if (auto res = __copy_region(&iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
@@ -264,26 +263,31 @@ uint32_t Raid1ResyncTask::stop() noexcept {
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
                                       std::chrono::microseconds const spin_time) noexcept {
     auto cur_state = resync_state::ACTIVE;
-    // Give I/O a chance to interrupt resync
+
+    // Phase 1: Transition ACTIVE→SLEEPING (give I/O a chance to interrupt)
     while (!__cas_state_weak(cur_state, resync_state::SLEEPING)) {
         if (resync_state::STOPPING == cur_state) return cur_state;
     }
     cur_state = resync_state::SLEEPING;
 
-    // Yield to the I/O threads; but allow early bail out if we're stopped
+    // Phase 2: Sleep for yield_for, checking for STOPPING periodically
     auto const end_time = std::chrono::steady_clock::now() + yield_for;
-    while (end_time > std::chrono::steady_clock::now()) {
+    while (std::chrono::steady_clock::now() < end_time) {
         std::this_thread::sleep_for(spin_time);
-        if (resync_state::STOPPING == __load_state()) break;
+        if (resync_state::STOPPING == __load_state()) return resync_state::STOPPING;
     }
 
-    // Resume resync after short delay
+    // Phase 3: Transition SLEEPING→ACTIVE (resume resync)
     while (!__cas_state_weak(cur_state, resync_state::ACTIVE)) {
+        if (resync_state::STOPPING == cur_state) return cur_state;
+
         if (resync_state::PAUSE == cur_state) {
+            // I/O started during sleep - wait for it to complete
+            // Set to IDLE anticipating __resume() will transition PAUSE→ACTIVE
+            // This prevents busy-spinning and gives I/O threads priority
             cur_state = resync_state::IDLE;
             std::this_thread::sleep_for(yield_for);
-        } else if (resync_state::STOPPING == cur_state)
-            return cur_state;
+        }
     }
     return resync_state::ACTIVE;
 }
