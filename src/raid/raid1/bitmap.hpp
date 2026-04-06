@@ -58,27 +58,28 @@ private:
     SuperBitmap _super_bitmap;
 
 private:
-    PageData* __get_page(uint64_t offset, bool creat = false);
+    PageData* __get_page(uint64_t offset) noexcept;
+    PageData* __get_or_create_page(uint64_t offset);
     static size_t max_pages_per_tx(const UblkDisk& device);
 
 public:
     Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved,
            std::string const& id = "");
 
-    static uint64_t page_size();
-    size_t dirty_pages();
-    uint64_t dirty_data_est() const;
+    static uint64_t page_size() noexcept;
+    size_t dirty_pages() noexcept;
+    uint64_t dirty_data_est() const noexcept;
 
-    bool is_dirty(uint64_t addr, uint32_t len);
+    bool is_dirty(uint64_t addr, uint32_t len) noexcept;
 
     // Tuple of form [page*, page_offset, size_consumed (max len)]
     void dirty_region(uint64_t addr, uint64_t len);
-    std::tuple< word_t*, uint32_t, uint32_t > clean_region(uint64_t addr, uint32_t len);
-    std::pair< uint64_t, uint32_t > next_dirty();
+    std::tuple< word_t*, uint32_t, uint32_t > clean_region(uint64_t addr, uint32_t len) noexcept;
+    std::pair< uint64_t, uint32_t > next_dirty() noexcept;
 
     // Each bit in the BITMAP represents a single "Chunk" of size chunk_size
     static std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t >
-    calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size);
+    calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size) noexcept;
 
     void init_to(std::shared_ptr< UblkDisk > device);
     io_result sync_to(UblkDisk& device, uint64_t offset = 0UL);

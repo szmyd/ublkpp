@@ -45,8 +45,8 @@ Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t*
 //      * shift_offset : The bits to begin setting within the word indicated
 //      * nr_bits      : The number of bits fit in this word
 //      * sz           : The number of bytes to represent as "dirty" from this index
-std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t > Bitmap::calc_bitmap_region(uint64_t addr, uint64_t len,
-                                                                                          uint32_t chunk_size) {
+std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t >
+Bitmap::calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size) noexcept {
     // Precompute page_width_bits if constants are known
     auto const page_width_bits = chunk_size * k_page_size * k_bits_in_byte; // Compile-time if possible
 
@@ -123,27 +123,16 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
         return res;
     };
 
-    for (auto pg_off = 0U; pg_off < _num_pages; ++pg_off) {
+    for (auto pg_off = _super_bitmap.next_set_bit(0); pg_off < _num_pages;
+         pg_off = _super_bitmap.next_set_bit(pg_off + 1)) {
         auto& page_data = _page_map[pg_off];
 
-        // Skip pages loaded from disk that haven't been modified
+        // Pages loaded from disk that haven't been modified already match on-disk content — skip.
         if (page_data.loaded_from_disk.load(std::memory_order_acquire)) continue;
 
         auto page = page_data.page.load(std::memory_order_acquire);
-
-        // Skip pages that were never allocated (always clean)
+        DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
         if (!page) continue;
-
-        // Check if page is dirty and update superbitmap accordingly
-        auto const page_is_dirty = (0 != isal_zero_detect(page.get(), k_page_size));
-        if (page_is_dirty) {
-            _super_bitmap.set_bit(pg_off);
-        } else {
-            _super_bitmap.clear_bit(pg_off);
-        }
-
-        // Skip zero pages (shouldn't happen after dirty_pages cleanup)
-        if (!page_is_dirty) continue;
 
         bool consecutive = (iov_cnt > 0) && (pg_off == batch_start + iov_cnt);
         if (iov_cnt >= max_batch || (iov_cnt > 0 && !consecutive)) {
@@ -193,8 +182,13 @@ void Bitmap::load_from(UblkDisk& device) {
             free(iov.iov_base);
             throw std::runtime_error(fmt::format("Failed to read: {}", res.error().message()));
         }
-        // If page is empty; leave the slot unallocated
-        if (0 == isal_zero_detect(iov.iov_base, k_page_size)) continue;
+        // If page is empty, clear any stale superbitmap bit and leave the slot unallocated.
+        // This can happen after a crash where the page was cleaned but the on-disk superbitmap
+        // was not updated. Clearing it here restores the invariant: bit set ↔ page non-null.
+        if (0 == isal_zero_detect(iov.iov_base, k_page_size)) {
+            _super_bitmap.clear_bit(pg_idx);
+            continue;
+        }
         RLOGT("Page: {} is *DIRTY* [id: {}]", pg_idx + 1, _id)
         _dirty_chunks_est += (k_page_size * k_bits_in_byte);
 
@@ -210,13 +204,13 @@ void Bitmap::load_from(UblkDisk& device) {
     }
 }
 
-Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
+Bitmap::PageData* Bitmap::__get_page(uint64_t offset) noexcept {
     auto& pd = _page_map[offset];
+    return pd.page.load(std::memory_order_acquire) ? &pd : nullptr;
+}
 
-    if (!creat) {
-        // Return nullptr if no page memory has been allocated for this slot
-        return pd.page.load(std::memory_order_acquire) ? &pd : nullptr;
-    }
+Bitmap::PageData* Bitmap::__get_or_create_page(uint64_t offset) {
+    auto& pd = _page_map[offset];
 
     // Fast path: page already allocated
     if (pd.page.load(std::memory_order_acquire)) return &pd;
@@ -236,7 +230,7 @@ Bitmap::PageData* Bitmap::__get_page(uint64_t offset, bool creat) {
     return &pd;
 }
 
-bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
+bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
     for (auto off = 0U; len > off;) {
         auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             calc_bitmap_region(addr + off, len - off, _chunk_size);
@@ -262,31 +256,20 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) {
     return false;
 }
 
-uint64_t Bitmap::page_size() { return k_page_size; }
+uint64_t Bitmap::page_size() noexcept { return k_page_size; }
 
-size_t Bitmap::dirty_pages() {
+size_t Bitmap::dirty_pages() noexcept {
     size_t dirty_cnt = 0;
 
     // Use SuperBitmap to skip pages known to be clean — avoids isal_zero_detect on every page.
     for (auto pg_off = _super_bitmap.next_set_bit(0); pg_off < _num_pages;
          pg_off = _super_bitmap.next_set_bit(pg_off + 1)) {
         auto& pd = _page_map[pg_off];
-        auto page = pd.page.load(std::memory_order_acquire);
+        auto page = pd.page.load(std::memory_order_relaxed);
+        DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
         if (!page) continue;
 
-        if (0 == isal_zero_detect(page.get(), k_page_size)) {
-            // Reachable only through a race: clean_region zeroed this page and cleared its
-            // SuperBitmap bit between our next_set_bit() call and the isal_zero_detect above.
-            // The bit is already clear, but the page memory was never freed (clean_region doesn't
-            // CAS the pointer). Without this CAS the allocation leaks for the Bitmap's lifetime
-            // since next_set_bit will never return this page again. // LCOV_EXCL_START
-            std::shared_ptr< word_t > expected = page;
-            if (pd.page.compare_exchange_strong(expected, nullptr, std::memory_order_release,
-                                                std::memory_order_relaxed)) {
-                _super_bitmap.clear_bit(pg_off);
-            } // LCOV_EXCL_STOP
-        } else
-            ++dirty_cnt;
+        ++dirty_cnt;
     }
 
     auto const full = (dirty_cnt * (k_page_size * k_bits_in_byte));
@@ -295,7 +278,7 @@ size_t Bitmap::dirty_pages() {
     return dirty_cnt;
 }
 
-std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t addr, uint32_t len) {
+std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t addr, uint32_t len) noexcept {
     auto [page_offset, word_offset, shift_offset, nr_bits, sz] = calc_bitmap_region(addr, len, _chunk_size);
 
     // Address and Length should be chunk aligned!
@@ -340,9 +323,11 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     return std::make_tuple(nullptr, page_offset, sz);
 }
 
-uint64_t Bitmap::dirty_data_est() const { return _dirty_chunks_est.load(std::memory_order_relaxed) * _chunk_size; }
+uint64_t Bitmap::dirty_data_est() const noexcept {
+    return _dirty_chunks_est.load(std::memory_order_relaxed) * _chunk_size;
+}
 
-std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
+std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
     uint32_t sz = 0;
     uint64_t logical_off = 0;
 
@@ -351,7 +336,8 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() {
          pg_off = _super_bitmap.next_set_bit(pg_off + 1)) {
         sz = 0;
         auto page = _page_map[pg_off].page.load(std::memory_order_acquire);
-        if (!page || 0 == isal_zero_detect(page.get(), k_page_size)) continue;
+        DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
+        if (!page) continue;
         logical_off = static_cast< uint64_t >(_page_width) * pg_off;
 
         // Find the first dirty word
@@ -392,7 +378,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
             calc_bitmap_region(cur_off, end - cur_off, _chunk_size);
         cur_off += sz;
 
-        auto page_data = __get_page(page_offset, true);
+        auto page_data = __get_or_create_page(page_offset);
         if (!page_data) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
 
         auto page = page_data->page.load(std::memory_order_acquire);
