@@ -29,6 +29,11 @@ struct ublkpp_tgt {
     int device_id() const;
     void destroy();
 
+    // Estimate target-level memory overhead (I/O queues, threads)
+    // Uses current runtime configuration from SISL options
+    // This is allocated once and shared by all devices in the stack
+    static uint64_t estimate_queue_memory() noexcept;
+
 private:
     explicit ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p);
     std::shared_ptr< ublkpp_tgt_impl > _p;

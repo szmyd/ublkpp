@@ -4,6 +4,7 @@
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
 
+#include "ublkpp/lib/memory_constants.hpp"
 #include "raid0_impl.hpp"
 #include "lib/logging.hpp"
 
@@ -378,6 +379,11 @@ void Raid0Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
     if (stripe_idx < _stripe_array.size()) {
         _stripe_array[stripe_idx]->disk->on_io_complete(data, sub_cmd);
     }
+}
+
+uint64_t Raid0Disk::estimate_device_overhead(uint32_t num_disks) noexcept {
+    // RAID-0 specific overhead: SuperBlocks only (one per disk, 4 KiB each)
+    return static_cast< uint64_t >(num_disks) * k_page_size;
 }
 
 } // namespace ublkpp

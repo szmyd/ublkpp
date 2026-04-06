@@ -12,6 +12,7 @@
 #include <ublksrv.h>
 
 #include "ublkpp/lib/ublk_disk.hpp"
+#include "ublkpp/lib/memory_constants.hpp"
 #include "lib/logging.hpp"
 #include "ublkpp_tgt_impl.hpp"
 
@@ -557,6 +558,26 @@ void ublkpp_tgt_impl::destroy() {
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     // Destructor intentionally left empty - call destroy() explicitly
+}
+
+uint64_t ublkpp_tgt::estimate_queue_memory() noexcept {
+    // Read current runtime configuration
+    auto const qdepth = SISL_OPTIONS["qdepth"].as< uint16_t >();
+    auto const max_io_size = SISL_OPTIONS["max_io_size"].as< uint32_t >();
+    auto const nr_hw_queues = SISL_OPTIONS["nr_hw_queues"].as< uint16_t >();
+
+    // ublksrv I/O buffers (managed internally by ublksrv library)
+    // Each queue allocates: (qdepth × max_io_size) for data + (qdepth × ~40 bytes) for metadata
+    uint64_t ublksrv_buffers = static_cast< uint64_t >(nr_hw_queues) *
+        ((static_cast< uint64_t >(qdepth) * max_io_size) + (qdepth * k_async_io_size));
+
+    // Thread stacks (OS allocates per queue handler)
+    uint64_t thread_overhead = static_cast< uint64_t >(nr_hw_queues) * k_thread_stack_size;
+
+    // Target implementation overhead (small, fixed)
+    constexpr uint64_t target_overhead = k_page_size; // ~4 KiB for metadata
+
+    return ublksrv_buffers + thread_overhead + target_overhead;
 }
 
 } // namespace ublkpp
