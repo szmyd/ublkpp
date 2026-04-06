@@ -301,6 +301,17 @@ TEST(Raid1, YourTestName) {
 
 ## 📚 Documentation
 
+### Using as a Library
+
+ublkpp can be integrated into your project as a Conan package to build custom block devices:
+
+- **[Library Guide](docs/LIBRARY.md)**: Architecture, core concepts, and design patterns
+- **[Integration Guide](docs/INTEGRATION.md)**: Consuming via Conan/CMake with examples
+- **[Extension Guide](docs/EXTENDING.md)**: Creating custom RAID types and backend drivers
+- **[API Reference](docs/API.md)**: Complete API documentation
+
+### Development & Contributing
+
 - **[CHANGELOG.md](CHANGELOG.md)**: Version history and release notes
 - **[CLAUDE.md](.claude/CLAUDE.md)**: Development guidelines and workflows
 - **[Linux ublk Documentation](https://docs.kernel.org/block/ublk.html)**: Kernel driver details
