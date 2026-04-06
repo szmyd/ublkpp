@@ -266,7 +266,6 @@ uint64_t Bitmap::page_size() { return k_page_size; }
 
 size_t Bitmap::dirty_pages() {
     size_t dirty_cnt = 0;
-    size_t freed_cnt = 0;
 
     // Use SuperBitmap to skip pages known to be clean — avoids isal_zero_detect on every page.
     for (auto pg_off = _super_bitmap.next_set_bit(0); pg_off < _num_pages;
@@ -276,20 +275,20 @@ size_t Bitmap::dirty_pages() {
         if (!page) continue;
 
         if (0 == isal_zero_detect(page.get(), k_page_size)) {
-            // Page is all-zeros: release the memory by CAS-ing back to nullptr.
-            // A concurrent dirty_region may re-allocate it immediately after — that's fine.
+            // Reachable only through a race: clean_region zeroed this page and cleared its
+            // SuperBitmap bit between our next_set_bit() call and the isal_zero_detect above.
+            // The bit is already clear, but the page memory was never freed (clean_region doesn't
+            // CAS the pointer). Without this CAS the allocation leaks for the Bitmap's lifetime
+            // since next_set_bit will never return this page again. // LCOV_EXCL_START
             std::shared_ptr< word_t > expected = page;
             if (pd.page.compare_exchange_strong(expected, nullptr, std::memory_order_release,
                                                 std::memory_order_relaxed)) {
                 _super_bitmap.clear_bit(pg_off);
-                ++freed_cnt;
-            }
-        } else {
+            } // LCOV_EXCL_STOP
+        } else
             ++dirty_cnt;
-        }
     }
 
-    if (0 < freed_cnt) { RLOGD("Dropped [{}] zero page(s) from the Bitmap [id: {}]", freed_cnt, _id); }
     auto const full = (dirty_cnt * (k_page_size * k_bits_in_byte));
     if (full < _dirty_chunks_est.load(std::memory_order_relaxed))
         _dirty_chunks_est.store(full, std::memory_order_relaxed);
