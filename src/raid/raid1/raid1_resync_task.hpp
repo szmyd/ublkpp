@@ -25,6 +25,20 @@ class MirrorDevice;
 //   STOPPING → IDLE (shutdown complete)
 ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
 
+// State transition actions for __transition_to helper
+enum class transition_action : uint8_t {
+    RETRY,            // Continue CAS loop immediately
+    RETRY_WITH_SLEEP, // Sleep k_state_spin_time then retry
+    SUCCESS,          // Exit loop (CAS succeeded or found target state)
+    EARLY_EXIT        // Exit caller function immediately
+};
+
+// Result from state transition handler callback
+struct transition_result {
+    resync_state next_state; // State to expect on next retry
+    transition_action action;
+};
+
 class Raid1ResyncTask {
 
     // Global counter for active resyncs across all RAID1 devices
@@ -53,8 +67,8 @@ class Raid1ResyncTask {
                           std::memory_order success = std::memory_order_seq_cst,
                           std::memory_order failure = std::memory_order_seq_cst) noexcept {
         auto expected_val = static_cast< uint8_t >(expected);
-        bool result = _resync_state.compare_exchange_weak(expected_val, static_cast< uint8_t >(desired),
-                                                           success, failure);
+        bool result =
+            _resync_state.compare_exchange_weak(expected_val, static_cast< uint8_t >(desired), success, failure);
         expected = static_cast< resync_state >(expected_val);
         return result;
     }
@@ -63,13 +77,17 @@ class Raid1ResyncTask {
                             std::memory_order success = std::memory_order_seq_cst,
                             std::memory_order failure = std::memory_order_seq_cst) noexcept {
         auto expected_val = static_cast< uint8_t >(expected);
-        bool result = _resync_state.compare_exchange_strong(expected_val, static_cast< uint8_t >(desired),
-                                                             success, failure);
+        bool result =
+            _resync_state.compare_exchange_strong(expected_val, static_cast< uint8_t >(desired), success, failure);
         expected = static_cast< resync_state >(expected_val);
         return result;
     }
 
     resync_state __run(auto& clean_mirror, auto& dirty_mirror);
+
+    // Generic state transition helper - reduces duplication across launch/stop/pause
+    template < typename StateHandler >
+    bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
 
     // This most happen, so we wait till the resync job becomes sleeping, then move it quickly to
     // PAUSE to prevent any resync opeartions from continuing to run (will block in __yield)

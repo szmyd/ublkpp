@@ -26,6 +26,29 @@ Raid1ResyncTask::~Raid1ResyncTask() noexcept {
     if (_resync_task.joinable()) _resync_task.join();
 }
 
+template < typename StateHandler >
+bool Raid1ResyncTask::__transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept {
+    auto cur_state = initial;
+    while (!__cas_state_weak(cur_state, target)) {
+        auto [next_state, action] = handler(cur_state);
+
+        switch (action) {
+        case transition_action::RETRY:
+            cur_state = next_state;
+            break;
+        case transition_action::RETRY_WITH_SLEEP:
+            cur_state = next_state;
+            std::this_thread::sleep_for(k_state_spin_time);
+            break;
+        case transition_action::SUCCESS:
+            return true;
+        case transition_action::EARLY_EXIT:
+            return false;
+        }
+    }
+    return true; // CAS succeeded
+}
+
 void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                              std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete) {
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
@@ -85,23 +108,24 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                              std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
     // First we must become IDLE
-    auto cur_state = resync_state::IDLE;
-    auto done{false};
-    while (!done && !__cas_state_weak(cur_state, resync_state::IDLE)) {
-        switch (cur_state) {
-        case resync_state::IDLE: {
-            done = true;
-        } break;
-        case resync_state::ACTIVE:
-        case resync_state::SLEEPING:
-        case resync_state::PAUSE: {
-            // We are already running!
-            return;
-        } break;
-        case resync_state::STOPPING:
-            cur_state = resync_state::IDLE; // We're stopping, wait for IDLE
-            std::this_thread::sleep_for(k_state_spin_time);
-        }
+    auto transitioned =
+        __transition_to(resync_state::IDLE, resync_state::IDLE, [](resync_state state) -> transition_result {
+            switch (state) {
+            case resync_state::IDLE:
+                return {state, transition_action::SUCCESS};
+            case resync_state::ACTIVE:
+            case resync_state::SLEEPING:
+            case resync_state::PAUSE:
+                return {state, transition_action::EARLY_EXIT};
+            case resync_state::STOPPING:
+                return {resync_state::IDLE, transition_action::RETRY_WITH_SLEEP};
+            }
+            std::unreachable();
+        });
+
+    if (!transitioned) {
+        RLOGD("Resync Task aborted for [uuid:{}] - already running", str_uuid)
+        return;
     }
 
     _resync_task = sisl::named_thread(
@@ -201,49 +225,38 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
 }
 
 void Raid1ResyncTask::__pause() noexcept {
-    auto cur_state = resync_state::SLEEPING;
-    while (!__cas_state_weak(cur_state, resync_state::PAUSE)) {
-        switch (cur_state) {
+    __transition_to(resync_state::SLEEPING, resync_state::PAUSE, [](resync_state state) -> transition_result {
+        switch (state) {
         case resync_state::IDLE:
-            return; // No-Op
-        case resync_state::SLEEPING:
-            break; // Skip sleeping, try again now, should succeed
-        case resync_state::ACTIVE: {
-            // Try again after sleep
-            cur_state = resync_state::SLEEPING;
-            std::this_thread::sleep_for(k_state_spin_time);
-        } break;
         case resync_state::PAUSE:
         case resync_state::STOPPING:
-            return; // No-Op
+            return {state, transition_action::EARLY_EXIT};
+        case resync_state::SLEEPING:
+            return {state, transition_action::RETRY};
+        case resync_state::ACTIVE:
+            return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
         }
-    }
+        std::unreachable();
+    });
 }
 
 // Abort any on-going resync task by moving to STOPPING and rejoin the thread
 uint32_t Raid1ResyncTask::stop() noexcept {
     RLOGI("Terminating Resync Task")
     // Terminate any ongoing resync task
-    auto cur_state = resync_state::PAUSE;
-    auto done = false;
-    while (!done && !__cas_state_weak(cur_state, resync_state::STOPPING)) {
-        switch (cur_state) {
-        case resync_state::IDLE: {
-            done = true; // No resync task running
-        } break;
-        case resync_state::ACTIVE: {
-            cur_state = resync_state::SLEEPING;
-            std::this_thread::sleep_for(k_state_spin_time);
-        } break;
+    __transition_to(resync_state::PAUSE, resync_state::STOPPING, [](resync_state state) -> transition_result {
+        switch (state) {
+        case resync_state::IDLE:
+        case resync_state::STOPPING:
+            return {state, transition_action::SUCCESS};
+        case resync_state::ACTIVE:
+            return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
         case resync_state::SLEEPING:
         case resync_state::PAUSE:
-            // Try again, should work immediately
-            break;
-        case resync_state::STOPPING: {
-            done = true; // This is the state we want
-        } break;
+            return {state, transition_action::RETRY};
         }
-    }
+        std::unreachable();
+    });
     if (_resync_task.joinable()) _resync_task.join();
     return _outstanding_writes.load(std::memory_order_acquire);
 }
