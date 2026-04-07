@@ -1,71 +1,329 @@
 # ublkpp
+
 [![Conan Build](https://github.com/szmyd/ublkpp/actions/workflows/merge_build.yml/badge.svg?branch=main)](https://github.com/szmyd/ublkpp/actions/workflows/merge_build.yml)
 [![CodeCov](https://codecov.io/gh/szmyd/ublkpp/graph/badge.svg?token=2N5W3458RK)](https://codecov.io/gh/szmyd/ublkpp)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-## Intro
+> A high-performance C++23 library providing RAID0/1/10 support for Linux's userspace block (ublk) driver
 
-A target for Linux' [userspace block](https://docs.kernel.org/block/ublk.html) driver, currently
-based on [ublksrv](https://github.com/ublk-org/ublksrv) IO_URING implementation.
+## 🚀 Features
 
-## QuickStart
+- **RAID Support**: Full implementation of RAID0 (striping), RAID1 (mirroring), and RAID10 (stripe of mirrors)
+- **RAID1 Resilient Bitmap**: Memory-efficient dirty tracking (4 KiB page tracks 1 GiB data)
+- **Hot Device Replacement**: Swap devices in degraded RAID1 arrays without downtime
+- **Multiple Backends**: File system, iSCSI, and HomeBlocks support
+- **Comprehensive Testing**: High test coverage with unit and integration tests
+- **Modern C++**: Built with C++23, leveraging `std::expected` for error handling
+- **Production Ready**: Thread-safe, handles degraded modes, optimistic recovery
+
+## 📋 Table of Contents
+
+- [Quick Start](#-quick-start)
+- [Architecture](#-architecture)
+- [RAID Features](#-raid-features)
+- [Example Application](#-example-application)
+- [Development](#-development)
+- [Testing](#-testing)
+- [Dependencies](#-dependencies)
+- [License](#-license)
+
+## 🏃 Quick Start
+
+### Prerequisites
+
+- Linux kernel with ublk support (5.19+)
+- Conan 2.0+
+- CMake 3.22+
+- C++23 compatible compiler (GCC 13+, Clang 17+)
 
 ### Build Library
 
-    $ git clone git@github.com:szmyd/ublkpp
-    $ ublkpp/prepare_v2.sh
-    $ conan build -s:h build_type=Debug --build missing ublkpp
+```bash
+git clone https://github.com/szmyd/ublkpp
+cd ublkpp
+./prepare_v2.sh
+conan build -s:h build_type=Debug --build missing ublkpp
+```
 
-## Example App
-An `ublkpp_disk` application can be used to try out basic RAID1/0/10 capabilities with a single Target. The lifetime of
-the ublk device is tied to the lifetime of the process itself.
+### Build Options
 
-### Build and Run Example Application
+```bash
+# Release build
+conan build -s:h build_type=Release --build missing ublkpp
 
-    $ conan build -s:h build_type=Release --build missing ublkpp
-    $ sudo modprobe ublk_drv
-    $ fallocate -l 2G file1.dat
-    $ fallocate -l 2G file2.dat
-    $ fallocate -l 2G file3.dat
-    $ fallocate -l 2G file4.dat
-    $ hexdump -n 256 file*.dat
-        0000000 0000 0000 0000 0000 0000 0000 0000 0000
-        *
-        0000100
-    $ sudo ublkpp/build/Release/example/ublkpp_disk -scv 2 --raid10 file1.dat,file2.dat,file3.dat,file4.dat
-        ... // SuperBlock Initialization
-        [07/06/25 18:01:50] [info] [build/Release/example/ublkpp_disk] [223787] [ublkpp_tgt.cpp:178:start] Device exposed as UBD device: [/dev/ublkb0]
+# With coverage
+conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
 
-### Usage
-In another session we should find the exposed BLOCK device.
+# With sanitizers (address or thread)
+conan build -s:h build_type=Debug -o sanitize=address --build missing ublkpp
+conan build -s:h build_type=Debug -o sanitize=thread --build missing ublkpp
 
-    $ lsblk
-        NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
-        ...
-        ublkb0      259:3    0    4G  0 disk
+# Optional backends
+conan build -o homeblocks=True --build missing ublkpp
+conan build -o iscsi=True --build missing ublkpp
+```
 
-### Write Data into ublk Device
+## 🏗️ Architecture
 
-    $ sudo dd if=/dev/urandom of=/dev/ublkb0 bs=4k count=1 
-        1+0 records in
-        1+0 records out
-        4096 bytes copied, 0.00407932 s, 126 kB/s
-    $ hexdump -n 256 file1.dat
-        0000000 2553 0aff 9934 c53e 3a67 17c8 ae49 641b
-        0000010 0100 a0d8 b2c5 e056 7144 61af 0854 461f
-        0000020 4c0f 0001 0000 0000 0000 0000 0080 0001
-        0000030 0000 0001 0000 0000 0000 0000 0000 0000
-        0000040 0000 0000 0000 0000 0000 0000 0000 0000
-        *
-        0000100
+### Project Structure
 
-If we dump the first 4KiB of any backing device we'll find the RAID-1 SuperBlock for the first Stripe.
+```
+ublkpp/
+├── include/ublkpp/       # Public headers
+│   ├── raid/             # RAID0, RAID1 interfaces
+│   └── drivers/          # FSDisk, iSCSIDisk, HomeBlkDisk
+├── src/
+│   ├── driver/           # Backend implementations
+│   ├── lib/              # Core UblkDisk base classes
+│   ├── metrics/          # I/O and RAID metrics
+│   ├── raid/             # RAID logic (bitmap, superblock)
+│   └── target/           # ublkpp_tgt
+└── example/              # Sample applications
+```
 
-## License Information
-Primary Author: [Brian Szmyd](https://github.com/szmyd)
+### Core Abstractions
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the
-License. You may obtain a copy of the License at https://www.apache.org/licenses/LICENSE-2.0.
+- **`UblkDisk`**: Base class for all block devices
+- **`FSDisk`**: File-based block device implementation
+- **`Raid0Disk`**: Striping across multiple devices
+- **`Raid1Disk`**: Mirroring with bitmap-based resilience
+- **`UblkTarget`**: Exposes devices to kernel via ublk
 
-Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an
-"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITHomeStore OF ANY KIND, either express or implied. See the License for the
-specific language governing permissions and limitations under the License.
+## 💾 RAID Features
+
+### RAID0 (Striping)
+
+- Configurable stripe size (default: 128 KiB)
+- Distributes data across devices for performance
+- Linear capacity aggregation
+
+### RAID1 (Mirroring)
+
+**Key Features:**
+- Two-way mirroring with dirty bitmap tracking
+- Degraded mode operation (single device failure)
+- Hot device replacement via `swap_device()`
+- Optimistic recovery with INTERNAL writes
+- Configurable read routing (PRIMARY, SECONDARY, EITHER)
+
+**Bitmap Efficiency:**
+- 4 KiB pages track 32 KiB chunks (default)
+- Memory footprint: ~0.4% of capacity (e.g., 8 MiB for 2 TB)
+- SuperBitmap optimization for fast initialization
+
+**Resync Features:**
+- Background resync with I/O coordination
+- Atomic counter synchronization between I/O and resync
+- Pause/resume on write operations
+- Configurable delay intervals
+
+### RAID10 (Stripe of Mirrors)
+
+- RAID0 striping across RAID1 pairs
+- Combines performance and redundancy
+- Requires even number of devices (min: 4)
+
+## 🖥️ Example Application
+
+The `ublkpp_disk` application demonstrates all RAID capabilities with a single target.
+
+### Build and Run
+
+```bash
+# Build release version
+conan build -s:h build_type=Release --build missing ublkpp
+
+# Load kernel module
+sudo modprobe ublk_drv
+
+# Create backing files
+fallocate -l 2G file1.dat
+fallocate -l 2G file2.dat
+fallocate -l 2G file3.dat
+fallocate -l 2G file4.dat
+
+# Launch RAID10 device
+sudo ublkpp/build/Release/example/ublkpp_disk --raid10 file1.dat,file2.dat,file3.dat,file4.dat
+```
+
+### Usage Examples
+
+```bash
+# Single device (loop mode)
+sudo ublkpp_disk --loop /dev/sdb
+
+# RAID0 (striping)
+sudo ublkpp_disk --raid0 /dev/sdc,/dev/sdd --stripe_size 262144
+
+# RAID1 (mirroring)
+sudo ublkpp_disk --raid1 /dev/sde,/dev/sdf
+
+# RAID10 (4+ devices)
+sudo ublkpp_disk --raid10 file1.dat,file2.dat,file3.dat,file4.dat
+
+# Recover existing device
+sudo ublkpp_disk --device_id 0 --raid1 /dev/sde,/dev/sdf
+```
+
+### Verify Device
+
+```bash
+$ lsblk
+NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+...
+ublkb0      259:3    0    4G  0 disk
+
+# Make Filesystem
+$ sudo mkfs.xfs /dev/ublkb0
+$ sudo mount /dev/ublkb0 /mnt
+```
+
+## 🛠️ Development
+
+### Code Style
+
+- **Indentation**: 4 spaces
+- **Line Length**: 120 characters
+- **Pointers**: Left alignment (`Type* ptr`)
+- **Standard**: C++23
+- **Headers**: `#pragma once`
+
+### Naming Conventions
+
+| Element | Convention | Example |
+|---------|------------|---------|
+| Classes | PascalCase | `Raid1Disk` |
+| Functions | snake_case | `async_iov()` |
+| Members | _snake_case | `_device` |
+| Constants | k_snake_case | `k_page_size` |
+| Macros/Enums | SCREAMING_SNAKE_CASE | `UBLK_IO_OP_WRITE` |
+
+### Workflow
+
+```bash
+# 1. Write code
+# 2. Write tests (see Testing section)
+# 3. Format code
+./apply-clang-format.sh
+
+# 4. Build and test
+conan build -s:h build_type=Debug --build missing ublkpp
+```
+
+### Error Handling
+
+Uses `std::expected<T, std::error_condition>` pattern:
+
+```cpp
+using io_result = std::expected<int, std::error_condition>;
+
+io_result write_data(uint64_t addr, uint32_t len) {
+    if (auto res = device->sync_iov(UBLK_IO_OP_WRITE, iov, 1, addr); !res) {
+        DLOGE("Write failed at {:#x}: {}", addr, res.error().message());
+        return res;
+    }
+    return len;
+}
+```
+
+## 🧪 Testing
+
+### Test Organization
+
+```
+src/<component>/tests/
+├── test_*_common.hpp      # Shared test utilities
+├── simple/                # Basic functionality tests
+├── failures/              # Error handling tests
+├── bitmap/                # RAID1 bitmap tests
+└── superblock/            # Superblock I/O tests
+```
+
+### Running Tests
+
+```bash
+# Tests run automatically during build
+conan build -s:h build_type=Debug --build missing ublkpp
+
+# Coverage report
+conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
+# View: build/Debug/coverage_html/index.html
+
+# Thread sanitizer
+conan build -s:h build_type=Debug -o sanitize=thread --build missing ublkpp
+
+# Address sanitizer
+conan build -s:h build_type=Debug -o sanitize=address --build missing ublkpp
+```
+
+### Writing Tests
+
+Framework: Google Test (GTest) with GMock
+
+```cpp
+#include "test_raid1_common.hpp"
+
+TEST(Raid1, YourTestName) {
+    auto device_a = CREATE_DISK_A(TestParams{.capacity = 2 * Gi});
+    auto device_b = CREATE_DISK_B(TestParams{.capacity = 2 * Gi});
+
+    EXPECT_TO_WRITE_SB(device_a);
+    EXPECT_TO_WRITE_SB(device_b);
+
+    auto raid = ublkpp::Raid1Disk(uuid, device_a, device_b);
+
+    // Test logic...
+    EXPECT_EQ(expected, actual);
+}
+```
+
+## 📦 Dependencies
+
+### Core Dependencies
+
+- **[sisl](https://github.com/eBay/sisl)**: Logging, options, utilities
+- **[ublksrv](https://github.com/ublk-org/ublksrv)**: ublk driver interface
+- **boost**: UUID generation
+- **liburing**: io_uring support
+
+### Optional Dependencies
+
+- **[iomgr](https://github.com/eBay/IOManager)**: Async I/O (for testing)
+- **[homeblks](https://github.com/eBay/HomeBlocks)**: HomeBlocks backend
+- **libiscsi**: iSCSI backend support
+
+### Build Tools
+
+- Conan 2.0+
+- CMake 3.22+
+- clang-format (code formatting)
+- gcovr (coverage reporting)
+
+## 📚 Documentation
+
+- **[CHANGELOG.md](CHANGELOG.md)**: Version history and release notes
+- **[CLAUDE.md](.claude/CLAUDE.md)**: Development guidelines and workflows
+- **[Linux ublk Documentation](https://docs.kernel.org/block/ublk.html)**: Kernel driver details
+
+## 🤝 Contributing
+
+Contributions are welcome! Please:
+
+1. Follow the code style (run `./apply-clang-format.sh`)
+2. Add tests for new functionality
+3. Update CHANGELOG.md and version in conanfile.py
+4. Ensure all tests pass with sanitizers
+5. Submit pull requests against `main`
+
+## 📄 License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+
+**Primary Author**: [Brian Szmyd](https://github.com/szmyd)
+
+---
+
+**Links:**
+- 🐛 [Report Issues](https://github.com/szmyd/ublkpp/issues)
+- 💬 [Discussions](https://github.com/szmyd/ublkpp/discussions)
+- 📖 [ublksrv GitHub](https://github.com/ublk-org/ublksrv)
