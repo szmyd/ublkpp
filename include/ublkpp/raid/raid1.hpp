@@ -49,7 +49,7 @@ public:
 
     void idle_transition(ublksrv_queue const*, bool) override;
 
-    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
 
     io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
                               uint32_t nr_vecs, uint64_t addr, int res) override;

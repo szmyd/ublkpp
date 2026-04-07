@@ -8,27 +8,48 @@ TEST(Raid1, WriteDoubleFailure) {
     raid_device.toggle_resync(false);
 
     {
+        ublkpp::sub_cmd_t working_sub;
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
+                                     uint32_t, uint64_t) {
+                working_sub = sub_cmd;
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
-        remove_io_data(ublk_data);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
         ASSERT_TRUE(res);
-        EXPECT_EQ(0, res.value());
+        EXPECT_EQ(1, res.value());
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
+        remove_io_data(ublk_data);
     }
 
-    // Follow up retry on device A fails without operations on B
+    // Follow up on device A fails without operations on B
     {
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return 1;
+            });
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 12 * Ki, 16 * Ki);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(1, res.value());
+
+        raid_device.on_io_complete(&ublk_data, 0b100, -EIO); // Async failure
+
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
-        remove_io_data(ublk_data);
+        res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 12 * Ki, 16 * Ki);
         ASSERT_FALSE(res);
+        remove_io_data(ublk_data);
     }
 
     // Follow up on device A fails without operations on B
@@ -41,7 +62,7 @@ TEST(Raid1, WriteDoubleFailure) {
             });
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 12 * Ki, 16 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 28 * Ki, 8 * Ki);
         remove_io_data(ublk_data);
         ASSERT_FALSE(res);
     }
