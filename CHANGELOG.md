@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.20.6
+- RouteState atomicity: Introduced RouteState struct and __capture_route_state() to atomically capture all 
+  route-derived values (active/backup devices, subcmds, degraded flag) at function entry
+- Eliminated unsafe macros: Removed CLEAN_DEVICE, DIRTY_DEVICE, IS_DEGRADED, CLEAN_SUBCMD, DIRTY_SUBCMD macros that
+  could evaluate differently mid-operation when swap_device changes the route
+
 ## 0.20.5
 - raid1: Fix some device swap races by consolidating atomic loads
 

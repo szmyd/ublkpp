@@ -19,7 +19,7 @@ SuperBitmap::SuperBitmap(uint8_t* superblock_reserved_field)
     // explicitly call clear_all() if they want to initialize a new bitmap.
 }
 
-void SuperBitmap::set_bit(uint32_t page_idx) {
+void SuperBitmap::set_bit(uint32_t page_idx) noexcept {
     DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
@@ -27,7 +27,7 @@ void SuperBitmap::set_bit(uint32_t page_idx) {
     std::atomic_ref<uint8_t>(_bits[byte_idx]).fetch_or(1U << bit_idx, std::memory_order_relaxed);
 }
 
-void SuperBitmap::clear_bit(uint32_t page_idx) {
+void SuperBitmap::clear_bit(uint32_t page_idx) noexcept {
     DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
@@ -35,7 +35,7 @@ void SuperBitmap::clear_bit(uint32_t page_idx) {
     std::atomic_ref<uint8_t>(_bits[byte_idx]).fetch_and(~(1U << bit_idx), std::memory_order_relaxed);
 }
 
-bool SuperBitmap::test_bit(uint32_t page_idx) const {
+bool SuperBitmap::test_bit(uint32_t page_idx) const noexcept {
     DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
@@ -44,7 +44,7 @@ bool SuperBitmap::test_bit(uint32_t page_idx) const {
     return (byte_val & (1U << bit_idx)) != 0;
 }
 
-void SuperBitmap::clear_all() {
+void SuperBitmap::clear_all() noexcept {
     if (!_bits) return;
     // NOTE: clear_all() should only be called during initialization (init_to) when
     // no concurrent access is happening. Using memset here is safe in that context.
@@ -52,11 +52,11 @@ void SuperBitmap::clear_all() {
     memset(_bits, 0x00, k_superbitmap_size);
 }
 
-uint8_t* SuperBitmap::data() {
+uint8_t* SuperBitmap::data() noexcept {
     return _bits;
 }
 
-const uint8_t* SuperBitmap::data() const {
+const uint8_t* SuperBitmap::data() const noexcept {
     return _bits;
 }
 

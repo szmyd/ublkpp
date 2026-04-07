@@ -16,21 +16,44 @@ Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint6
         _io_size(io_size),
         _max_size(max_io),
         _offset(offset),
-        _resync_state(static_cast< uint8_t >(resync_state::IDLE)),
+        _resync_state(static_cast< uint8_t >(resync_state::IDLE)), // Initial store, can't use helper
         _outstanding_writes(0U),
         _resync_task() {
     if (!_dirty_bitmap) throw std::runtime_error("No Bitmap");
 }
 
-Raid1ResyncTask::~Raid1ResyncTask() {
+Raid1ResyncTask::~Raid1ResyncTask() noexcept {
     if (_resync_task.joinable()) _resync_task.join();
+}
+
+template < typename StateHandler >
+bool Raid1ResyncTask::__transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept {
+    auto cur_state = initial;
+    while (!__cas_state_weak(cur_state, target)) {
+        auto [next_state, action] = handler(cur_state);
+
+        switch (action) {
+        case transition_action::RETRY:
+            cur_state = next_state;
+            break;
+        case transition_action::RETRY_WITH_SLEEP:
+            cur_state = next_state;
+            std::this_thread::sleep_for(k_state_spin_time);
+            break;
+        case transition_action::SUCCESS:
+            return true;
+        case transition_action::EARLY_EXIT:
+            return false;
+        }
+    }
+    return true; // CAS succeeded
 }
 
 void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                              std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete) {
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
     auto const resync_start = std::chrono::steady_clock::now();
-    auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
+    auto cur_state = resync_state::IDLE;
     // Record resync start - increment global and per-device counters
     auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
     // Capture the initial size of data to resync
@@ -40,34 +63,33 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         _metrics->record_active_resyncs(active_count);
     }
     // Wait to become IDLE
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
+    while (!__cas_state_weak(cur_state, resync_state::ACTIVE)) {
         // If we're stopped or another task was started we should exit
-        if ((static_cast< uint8_t >(resync_state::STOPPING) == cur_state) ||
-            (static_cast< uint8_t >(resync_state::ACTIVE) == cur_state) ||
-            (static_cast< uint8_t >(resync_state::SLEEPING) == cur_state)) {
+        if ((resync_state::STOPPING == cur_state) || (resync_state::ACTIVE == cur_state) ||
+            (resync_state::SLEEPING == cur_state)) {
             RLOGD("Resync Task aborted for [uuid:{}] state: {}", str_uuid, cur_state)
             return;
         }
-        cur_state = static_cast< uint8_t >(resync_state::IDLE);
+        cur_state = resync_state::IDLE;
         std::this_thread::sleep_for(std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >()));
     }
 
     // We are now guaranteed to be the only active thread performing I/O on the device
-    cur_state = static_cast< uint8_t >(__run(clean_mirror, dirty_mirror));
+    cur_state = __run(clean_mirror, dirty_mirror);
 
     // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
     auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
     if (_metrics) _metrics->record_active_resyncs(final_count);
 
     // If stopped, end now.
-    if (static_cast< uint8_t >(resync_state::STOPPING) == cur_state) {
+    if (resync_state::STOPPING == cur_state) {
         RLOGD("Resync Task Stopped for [uuid:{}]", str_uuid)
-        _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+        __cas_state_strong(cur_state, resync_state::IDLE);
         return;
     }
 
     // Otherwise we _should_ be active (not paused or idle), if the bitmap is clean call complete
-    DEBUG_ASSERT_EQ(static_cast< uint8_t >(resync_state::ACTIVE), cur_state, "Resync stopped in unexpected state");
+    DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state");
     if (_metrics) {
         auto const resync_end = std::chrono::steady_clock::now();
         auto const duration_seconds =
@@ -80,29 +102,30 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     RLOGD("Resync Task Finished for [uuid:{}]", str_uuid)
 
     // Open up I/O Again
-    _resync_state.compare_exchange_strong(cur_state, static_cast< uint8_t >(resync_state::IDLE));
+    __cas_state_strong(cur_state, resync_state::IDLE);
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                              std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
     // First we must become IDLE
-    auto cur_state = static_cast< uint8_t >(resync_state::IDLE);
-    auto done{false};
-    while (!done && !_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::IDLE))) {
-        switch (static_cast< resync_state >(cur_state)) {
-        case resync_state::IDLE: {
-            done = true;
-        } break;
-        case resync_state::ACTIVE:
-        case resync_state::SLEEPING:
-        case resync_state::PAUSE: {
-            // We are already running!
-            return;
-        } break;
-        case resync_state::STOPPING:
-            cur_state = static_cast< uint8_t >(resync_state::IDLE); // We're stopping, wait for IDLE
-            std::this_thread::sleep_for(k_state_spin_time);
-        }
+    auto transitioned =
+        __transition_to(resync_state::IDLE, resync_state::IDLE, [](resync_state state) -> transition_result {
+            switch (state) {
+            case resync_state::IDLE:
+                return {state, transition_action::SUCCESS};
+            case resync_state::ACTIVE:
+            case resync_state::SLEEPING:
+            case resync_state::PAUSE:
+                return {state, transition_action::EARLY_EXIT};
+            case resync_state::STOPPING:
+                return {resync_state::IDLE, transition_action::RETRY_WITH_SLEEP};
+            }
+            std::unreachable();
+        });
+
+    if (!transitioned) {
+        RLOGD("Resync Task aborted for [uuid:{}] - already running", str_uuid)
+        return;
     }
 
     _resync_task = sisl::named_thread(
@@ -167,7 +190,6 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
-            if (0 == sz) break;
             iov.iov_len = std::min(sz, _max_size);
             // Copy Region from clean to dirty
             if (auto res = __copy_region(&iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
@@ -201,77 +223,71 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
     return cur_state;
 }
 
-void Raid1ResyncTask::__pause() {
-    auto cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::PAUSE))) {
-        switch (static_cast< resync_state >(cur_state)) {
+void Raid1ResyncTask::__pause() noexcept {
+    __transition_to(resync_state::SLEEPING, resync_state::PAUSE, [](resync_state state) -> transition_result {
+        switch (state) {
         case resync_state::IDLE:
-            return; // No-Op
-        case resync_state::SLEEPING:
-            break; // Skip sleeping, try again now, should succeed
-        case resync_state::ACTIVE: {
-            // Try again after sleep
-            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-            std::this_thread::sleep_for(k_state_spin_time);
-        } break;
         case resync_state::PAUSE:
         case resync_state::STOPPING:
-            return; // No-Op
+            return {state, transition_action::EARLY_EXIT};
+        case resync_state::SLEEPING:
+            return {state, transition_action::RETRY};
+        case resync_state::ACTIVE:
+            return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
         }
-    }
+        std::unreachable();
+    });
 }
 
 // Abort any on-going resync task by moving to STOPPING and rejoin the thread
-uint32_t Raid1ResyncTask::stop() {
+uint32_t Raid1ResyncTask::stop() noexcept {
     RLOGI("Terminating Resync Task")
     // Terminate any ongoing resync task
-    auto cur_state = static_cast< uint8_t >(resync_state::PAUSE);
-    auto done = false;
-    while (!done && !_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::STOPPING))) {
-        switch (static_cast< resync_state >(cur_state)) {
-        case resync_state::IDLE: {
-            done = true; // No resync task running
-        } break;
-        case resync_state::ACTIVE: {
-            cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
-            std::this_thread::sleep_for(k_state_spin_time);
-        } break;
+    __transition_to(resync_state::PAUSE, resync_state::STOPPING, [](resync_state state) -> transition_result {
+        switch (state) {
+        case resync_state::IDLE:
+        case resync_state::STOPPING:
+            return {state, transition_action::SUCCESS};
+        case resync_state::ACTIVE:
+            return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
         case resync_state::SLEEPING:
         case resync_state::PAUSE:
-            // Try again, should work immediately
-            break;
-        case resync_state::STOPPING: {
-            done = true; // This is the state we want
-        } break;
+            return {state, transition_action::RETRY};
         }
-    }
+        std::unreachable();
+    });
     if (_resync_task.joinable()) _resync_task.join();
     return _outstanding_writes.load(std::memory_order_acquire);
 }
 
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
-                                      std::chrono::microseconds const spin_time) {
-    auto cur_state = static_cast< uint8_t >(resync_state::ACTIVE);
-    // Give I/O a chance to interrupt resync
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::SLEEPING))) {
-        if (static_cast< uint8_t >(resync_state::STOPPING) == cur_state) return static_cast< resync_state >(cur_state);
-    }
-    cur_state = static_cast< uint8_t >(resync_state::SLEEPING);
+                                      std::chrono::microseconds const spin_time) noexcept {
+    auto cur_state = resync_state::ACTIVE;
 
-    // Yield to the I/O threads; but allow early bail out if we're stopped
+    // Phase 1: Transition ACTIVE→SLEEPING (give I/O a chance to interrupt)
+    while (!__cas_state_weak(cur_state, resync_state::SLEEPING)) {
+        if (resync_state::STOPPING == cur_state) return cur_state;
+    }
+    cur_state = resync_state::SLEEPING;
+
+    // Phase 2: Sleep for yield_for, checking for STOPPING periodically
     auto const end_time = std::chrono::steady_clock::now() + yield_for;
-    while (end_time > std::chrono::steady_clock::now()) {
+    while (std::chrono::steady_clock::now() < end_time) {
         std::this_thread::sleep_for(spin_time);
-        if (static_cast< uint8_t >(resync_state::STOPPING) == _resync_state.load(std::memory_order_acquire)) break;
+        if (resync_state::STOPPING == __load_state()) return resync_state::STOPPING;
     }
 
-    // Resume resync after short delay
-    while (!_resync_state.compare_exchange_weak(cur_state, static_cast< uint8_t >(resync_state::ACTIVE))) {
-        if (static_cast< uint8_t >(resync_state::PAUSE) == cur_state) {
-            cur_state = static_cast< uint8_t >(resync_state::IDLE);
+    // Phase 3: Transition SLEEPING→ACTIVE (resume resync)
+    while (!__cas_state_weak(cur_state, resync_state::ACTIVE)) {
+        if (resync_state::STOPPING == cur_state) return cur_state;
+
+        if (resync_state::PAUSE == cur_state) {
+            // I/O started during sleep - wait for it to complete
+            // Set to IDLE anticipating __resume() will transition PAUSE→ACTIVE
+            // This prevents busy-spinning and gives I/O threads priority
+            cur_state = resync_state::IDLE;
             std::this_thread::sleep_for(yield_for);
-        } else if (static_cast< uint8_t >(resync_state::STOPPING) == cur_state)
-            return static_cast< resync_state >(cur_state);
+        }
     }
     return resync_state::ACTIVE;
 }

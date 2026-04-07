@@ -82,7 +82,7 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
 
 Raid0Disk::~Raid0Disk() = default;
 
-std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const {
+std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const noexcept {
     if (auto const width = _stripe_array.size(); width <= stripe_offset) {
         RLOGW("Stripe offset [{}] larger than array width [{}]", stripe_offset, width)
         return nullptr;
