@@ -233,7 +233,7 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
     return res;
 }
 
-void FSDisk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
+void FSDisk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int) {
     DLOGT("FSDisk::on_io_complete {} : [tag:{:0x}] [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
     // Record I/O completion for this individual disk
     if (_metrics) { _metrics->record_io_complete(data, sub_cmd); }

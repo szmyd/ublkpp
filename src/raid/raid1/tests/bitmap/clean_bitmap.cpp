@@ -33,13 +33,24 @@ TEST(Raid1, CleanBitmapSingleRegion) {
 
     {
         // Cause a write failure to dirty the bitmap
+        ublkpp::sub_cmd_t working_sub;
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
+                                     uint32_t, uint64_t) {
+                working_sub = sub_cmd;
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 32 * Ki, 64 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, 64 * Ki);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -51,9 +62,12 @@ TEST(Raid1, CleanBitmapSingleRegion) {
 
     {
         // Make Device B available again
-        iovec iov{.iov_base = nullptr, .iov_len = 0 * Ki};
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 64 * Ki, 0);
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Allow resync operations - accept any reasonable read/write operations
@@ -134,11 +148,19 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
                            uint64_t) -> io_result { return 1; });
 
     // Create multiple dirty regions at different offsets
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        .Times(3)
+        .WillRepeatedly(
+            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        });
     for (uint64_t offset : {64 * Ki, 128 * Ki, 256 * Ki}) {
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 32 * Ki, offset);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, offset);
+        raid_device.on_io_complete(&ublk_data, 0b100, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -149,9 +171,12 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
 
     {
         // Make Device B available again
-        iovec iov{.iov_base = nullptr, .iov_len = 0 * Ki};
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 64 * Ki, 0);
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     raid_device.toggle_resync(true);
@@ -173,22 +198,36 @@ TEST(Raid1, CleanBitmapReadFailure) {
 
     {
         // Create a dirty region
+        ublkpp::sub_cmd_t working_sub;
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
+                                     uint32_t, uint64_t) {
+                working_sub = sub_cmd;
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 32 * Ki, 64 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, 64 * Ki);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
 
     {
         // Make Device B available again
-        iovec iov{.iov_base = nullptr, .iov_len = 0 * Ki};
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 64 * Ki, 0);
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Simulate read failure from clean device during resync
@@ -240,22 +279,36 @@ TEST(Raid1, CleanBitmapWriteFailure) {
 
     {
         // Create a dirty region
+        ublkpp::sub_cmd_t working_sub;
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
+                                     uint32_t, uint64_t) {
+                working_sub = sub_cmd;
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 32 * Ki, 64 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, 64 * Ki);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
 
     {
         // Make Device B available again
-        iovec iov{.iov_base = nullptr, .iov_len = 0 * Ki};
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 64 * Ki, 0);
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Simulate successful reads but write failure to dirty device during resync
@@ -341,11 +394,19 @@ TEST(Raid1, CleanBitmapStoppedState) {
                            uint64_t) -> io_result { return 1; });
 
     // Create multiple dirty regions
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        .Times(5)
+        .WillRepeatedly(
+            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        .Times(1)
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        });
     for (uint64_t offset : {64 * Ki, 128 * Ki, 256 * Ki, 512 * Ki, 1 * Mi}) {
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 32 * Ki, offset);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 32 * Ki, offset);
+        raid_device.on_io_complete(&ublk_data, 0b100, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -356,9 +417,12 @@ TEST(Raid1, CleanBitmapStoppedState) {
 
     {
         // Make Device B available again
-        iovec iov{.iov_base = nullptr, .iov_len = 0 * Ki};
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 64 * Ki, 0);
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Start resync
@@ -386,14 +450,26 @@ TEST(Raid1, CleanBitmapLargeRegion) {
     raid_device.toggle_resync(false);
 
     {
+        // Cause a write failure to dirty the bitmap
+        ublkpp::sub_cmd_t working_sub;
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
+                                     uint32_t, uint64_t) {
+                working_sub = sub_cmd;
+                return 1;
+            });
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
         // Create a large dirty region (multiple chunks)
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
-                                         ublkpp::sub_cmd_flags::RETRIED | ublkpp::sub_cmd_flags::REPLICATE);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 256 * Ki, 64 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 256 * Ki, 64 * Ki);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
     }
@@ -405,9 +481,12 @@ TEST(Raid1, CleanBitmapLargeRegion) {
 
     {
         // Make Device B available again
-        iovec iov{.iov_base = nullptr, .iov_len = 0 * Ki};
-        auto res = raid_device.handle_internal(nullptr, nullptr, 0b101, &iov, 1, 64 * Ki, 0);
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ);
+        auto sub_cmd = ublkpp::set_flags(0b101, ublkpp::sub_cmd_flags::INTERNAL);
+        auto res = raid_device.queue_internal_resp(nullptr, &ublk_data, sub_cmd, 0);
         ASSERT_TRUE(res);
+        EXPECT_EQ(0, res.value());
+        remove_io_data(ublk_data);
     }
 
     // Expect multiple I/O operations to resync the large region

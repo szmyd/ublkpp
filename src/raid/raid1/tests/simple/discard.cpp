@@ -28,6 +28,8 @@ TEST(Raid1, SimpleDiscard) {
 
     auto ublk_data = make_io_data(UBLK_IO_OP_DISCARD, 4 * Ki, 8 * Ki);
     auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+    raid_device.on_io_complete(&ublk_data, 0b100, 0);
+    raid_device.on_io_complete(&ublk_data, 0b101, 0);
     remove_io_data(ublk_data);
     ASSERT_TRUE(res);
     EXPECT_EQ(2, res.value());
