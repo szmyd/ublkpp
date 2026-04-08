@@ -62,7 +62,8 @@ class Raid1DiskImpl : public UblkDisk {
                                    ublk_io_data const* async_data);
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
                           ublk_io_data const* async_data = nullptr, RouteState* state = nullptr);
-    bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror);
+    bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
+                       raid1::read_route const& cur_route);
 
     // Constructor helpers
     void __init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b);

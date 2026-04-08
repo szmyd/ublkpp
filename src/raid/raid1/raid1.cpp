@@ -63,7 +63,7 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
         throw std::runtime_error(fmt::format("Could not read superblock! {}", read_super.error().message()));
     } else {
         new_device = read_super.value().second;
-        sb = std::shared_ptr< SuperBlock >(read_super.value().first, free_page());
+        sb = std::shared_ptr< SuperBlock >(read_super.value().first, [](void* x) { free(x); });
     }
 }
 
@@ -76,27 +76,6 @@ struct RouteState {
     raid1::read_route route;
     bool is_degraded;
 };
-
-// Capture routing state with consistent device pointers using double-read retry.
-// The writer ordering in __swap_device is: CAS route (seq_cst) -> device.swap().
-// If device pointers are stable across two reads, the route we observed between them
-// is consistent: either no swap started, or the CAS fired but the ptr swap hasn't
-// landed yet — both states are valid for routing purposes.
-RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
-    while (true) {
-        auto a = _device_a;
-        auto b = _device_b;
-        auto const route = __get_read_route();
-        if (_device_a != a || _device_b != b) continue;
-
-        return RouteState{.active_dev = (read_route::DEVB == route) ? std::move(b) : std::move(a),
-                          .backup_dev = (read_route::DEVB == route) ? std::move(a) : std::move(b),
-                          .active_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_B : SEND_TO_A),
-                          .backup_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_A : SEND_TO_B),
-                          .route = route,
-                          .is_degraded = (read_route::EITHER != route)};
-    }
-}
 
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
                              std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) :
@@ -292,6 +271,36 @@ Raid1DiskImpl::~Raid1DiskImpl() {
         write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
+// ##########################################!! WARNING !!##########################################
+// One should not directly access _device_a, _device_b or _read_route directly following this point.
+// It is running in a multi-threaded case and subject to swap_device an become_degraded altering
+// these values between your memory loads. Use the following method to access this in a consistent
+// manner that is race-free
+// ##########################################!! WARNING !!##########################################
+
+// Capture routing state with consistent device pointers using double-read retry.
+// The writer ordering in __swap_device is: CAS route (seq_cst) -> device.swap().
+// If device pointers are stable across two reads, the route we observed between them
+// is consistent: either no swap started, or the CAS fired but the ptr swap hasn't
+// landed yet — both states are valid for routing purposes.
+RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
+    auto const sub_to_a = (sub_cmd & ((1U << sqe_tgt_data_width) - 2));
+    auto const sub_to_b = (sub_cmd | 0b1);
+    while (true) {
+        auto a = _device_a;
+        auto b = _device_b;
+        auto const route = __get_read_route();
+        if (_device_a != a || _device_b != b) continue;
+
+        return RouteState{.active_dev = (read_route::DEVB == route) ? std::move(b) : std::move(a),
+                          .backup_dev = (read_route::DEVB == route) ? std::move(a) : std::move(b),
+                          .active_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? sub_to_b : sub_to_a),
+                          .backup_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? sub_to_a : sub_to_b),
+                          .route = route,
+                          .is_degraded = (read_route::EITHER != route)};
+    }
+}
+
 // RAID1 devices have the property of being replacable while maintaining
 // consistency due to the fact that the data is replicated. Swapping a device
 // may occur for a multitude of _reasons_ but the following RULES apply when
@@ -332,19 +341,20 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
         return incoming_device;
     }
 
+    auto const state = __capture_route_state();
     // We check if the outgoing device is actually part of this array first,
     // then we ensure that the incoming device is actually a different device
     // from what we already have. If either is not true, do nothing.
-    if ((_device_a->disk->id() != outgoing_device_id) && (_device_b->disk->id() != outgoing_device_id)) {
+    if ((state.active_dev->disk->id() != outgoing_device_id) && (state.backup_dev->disk->id() != outgoing_device_id)) {
         RLOGE("Refusing to replace unrecognized mirror!")
         return incoming_device;
-    } else if ((_device_a->disk->id() == incoming_device->id()) || (_device_b->disk->id() == incoming_device->id())) {
+    } else if ((state.active_dev->disk->id() == incoming_device->id()) ||
+               (state.backup_dev->disk->id() == incoming_device->id())) {
         RLOGI("No replacements discovered! {} already in array, nothing to do...", *incoming_device)
         return incoming_device;
     }
 
     // If we're degraded; check that we're swapping out the degraded device
-    auto const state = __capture_route_state();
     if (state.is_degraded && state.active_dev->disk->id() == outgoing_device_id) {
         RLOGE("Refusing to replace working mirror from degraded device!")
         return incoming_device;
@@ -379,7 +389,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     }
 
     // Atomically swap the device or fail; fail if swapping sole active device
-    if (__swap_device(outgoing_device_id, incoming_mirror) && _raid_metrics) {
+    if (__swap_device(outgoing_device_id, incoming_mirror, state.route) && _raid_metrics) {
         // Record successful device swap
         _raid_metrics->record_device_swap();
     }
@@ -392,12 +402,17 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 }
 
 bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
-                                  std::shared_ptr< MirrorDevice >& incoming_mirror) {
+                                  std::shared_ptr< MirrorDevice >& incoming_mirror,
+                                  raid1::read_route const& cur_route) {
+    // Make this routine exclusive
+    static auto lck = std::mutex();
+    auto lg = std::scoped_lock< std::mutex >(lck);
+
     bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
-    auto cur_read_route = __get_read_route();
     auto new_read_route = swapping_device_a ? read_route::DEVB : read_route::DEVA;
 
-    if (!__set_read_route(cur_read_route, new_read_route)) return false;
+    auto orig_route = cur_route;
+    if (!__set_read_route(orig_route, new_read_route)) return false;
 
     auto old_age = be64toh(_sb->fields.bitmap.age);
     auto new_age = old_age + 16;
@@ -408,18 +423,17 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 
     // Write superblock to staying device first (critical path)
     auto& staying_dev = swapping_device_a ? _device_b : _device_a;
-    if (auto sync_res = write_superblock(*staying_dev->disk, _sb.get(), swapping_device_a, __get_read_route());
-        !sync_res) {
+    if (auto sync_res = write_superblock(*staying_dev->disk, _sb.get(), swapping_device_a, new_read_route); !sync_res) {
         RLOGE("Could not advance Age [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-        outgoing_dev.swap(incoming_mirror); // Bail Out!
-        __set_read_route(new_read_route, cur_read_route);
+        // Rollback
         _sb->fields.bitmap.age = htobe64(old_age);
+        outgoing_dev.swap(incoming_mirror);
+        __set_read_route(new_read_route, cur_route);
         return false;
-    } else {
-        // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
-        // later when we become clean; so let's be optimistic!
-        write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a, __get_read_route());
     }
+    // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
+    // later when we become clean; so let's be optimistic!
+    write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a, __get_read_route());
 
     // Dirty entire bitmap if this is a new device
     if (outgoing_dev->new_device) _dirty_bitmap->dirty_region(0, capacity());
