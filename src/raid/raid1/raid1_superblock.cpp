@@ -10,10 +10,10 @@ namespace ublkpp::raid1 {
 auto format_as(SuperBlock const& sb) {
     auto read_uuid = boost::uuids::uuid();
     memcpy(read_uuid.data, sb.header.uuid, sizeof(sb.header.uuid));
-    return fmt::format("[uuid:{}, ver:{:#0x}, age:{}, chunk_sz:{}Ki, read_route:{:#0x} (Side-{}:{})]",
-                       to_string(read_uuid), be16toh(sb.header.version), be64toh(sb.fields.bitmap.age),
-                       be32toh(sb.fields.bitmap.chunk_size) / Ki, sb.fields.read_route, sb.fields.device_b ? "B" : "A",
-                       sb.fields.clean_unmount ? "Clean" : "Dirty");
+    return fmt::format("[uuid:{}, ver:{:#0x}, age:{}, chunk_sz:{}Ki, read_route:{} (Side-{}:{})]", to_string(read_uuid),
+                       be16toh(sb.header.version), be64toh(sb.fields.bitmap.age),
+                       be32toh(sb.fields.bitmap.chunk_size) / Ki, static_cast< read_route >(sb.fields.read_route),
+                       sb.fields.device_b ? "B" : "A", sb.fields.clean_unmount ? "Clean" : "Active");
 }
 
 raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* dev_b) {

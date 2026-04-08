@@ -9,12 +9,25 @@ TEST(Raid1, ReadOnDegraded) {
 
     // First send a retry write to degrade the array on side A
     {
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
+        ublkpp::sub_cmd_t working_sub;
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+            .Times(1)
+            .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
+                                     uint32_t, uint64_t) {
+                working_sub = sub_cmd;
+                return 1;
+            });
         // Will dirty superblock header
         EXPECT_TO_WRITE_SB(device_b);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
-        auto res = raid_device.handle_rw(nullptr, &ublk_data, sub_cmd, nullptr, 4 * Ki, 8 * Ki);
+        auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
+        raid_device.on_io_complete(&ublk_data, working_sub, 0);
         remove_io_data(ublk_data);
         ASSERT_TRUE(res);
         EXPECT_EQ(1, res.value());

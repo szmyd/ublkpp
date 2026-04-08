@@ -250,12 +250,12 @@ static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
     sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
                                                      : ublkpp_io->async_completion->sub_cmd);
 
-    // Record I/O completion for device latency tracking
-    // Notify the device about I/O completion for device-specific metrics
-    device->on_io_complete(data, old_cmd);
-
     // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
     auto sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
+
+    // Record I/O completion for device latency tracking
+    // Notify the device about I/O completion for device-specific metrics
+    device->on_io_complete(data, old_cmd, sub_cmd_res);
 
     // Internal commands are not part of the result like a replicate command, but we do inform the devices of the result
     if (is_internal(old_cmd)) {

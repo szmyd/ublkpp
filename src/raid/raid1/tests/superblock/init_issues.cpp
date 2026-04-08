@@ -31,6 +31,7 @@ TEST(Raid1, ReadingSBProblems) {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, false, true);
         auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
         auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+        raid_device.toggle_resync(false);
         // expect unmount_clean update
         EXPECT_TO_WRITE_SB(device_b);
     }
@@ -42,6 +43,7 @@ TEST(Raid1, ReadingSBProblems) {
         // Expect an extra WRITE to the SB when sync'ing the SB to DevB fails
         EXPECT_SYNC_OP_REPEAT(UBLK_IO_OP_WRITE, 2, device_a, false, false, ublkpp::raid1::k_page_size, 0UL);
         auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+        raid_device.toggle_resync(false);
         // expect unmount_clean update
         EXPECT_TO_WRITE_SB(device_a);
     }

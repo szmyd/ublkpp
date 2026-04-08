@@ -26,8 +26,8 @@ public:
     /// Raid0Disk API
     /// =============
 
-    std::shared_ptr< UblkDisk > get_device(uint32_t stripe_offset) const;
-    uint32_t stripe_size() const { return _stripe_size; }
+    std::shared_ptr< UblkDisk > get_device(uint32_t stripe_offset) const noexcept;
+    uint32_t stripe_size() const noexcept { return _stripe_size; }
 
     // Estimate device-specific memory overhead (SuperBlocks only)
     // Does NOT include queue/thread overhead - use ublkpp_tgt::estimate_queue_memory() for that
@@ -37,10 +37,10 @@ public:
 
     /// UBlkDisk Interface Overrides
     /// ============================
-    std::string id() const override { return "RAID0"; }
+    std::string id() const noexcept override { return "RAID0"; }
     std::list< int > open_for_uring(int const iouring_device) override;
 
-    uint8_t route_size() const override { return ilog2(_max_stripe_cnt); }
+    uint8_t route_size() const noexcept override { return ilog2(_max_stripe_cnt); }
     void idle_transition(ublksrv_queue const*, bool) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
@@ -55,7 +55,7 @@ public:
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 
-    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
     /// ============================
 };
 } // namespace ublkpp

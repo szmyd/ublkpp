@@ -6,8 +6,8 @@
 //
 TEST(Raid1, DevicesLargerThanAllowed) {
     // Create disks without SuperBlock read/write expectations since we'll throw before those operations
-    auto device_a = CREATE_DISK_F(TestParams{.capacity = UINT64_MAX}, false, true, false, true, false);
-    auto device_b = CREATE_DISK_F(TestParams{.capacity = UINT64_MAX}, true, true, false, true, false);
+    auto device_a = CREATE_DISK_F(TestParams{.capacity = UINT64_MAX}, false, false, false, true, false);
+    auto device_b = CREATE_DISK_F(TestParams{.capacity = UINT64_MAX}, true, false, false, true, false);
 
     // Should throw exception for devices exceeding SuperBitmap capacity
     EXPECT_THROW(

@@ -34,6 +34,8 @@ TEST(Raid1, SimpleWrite) {
     // Construct a Retry Route that points to Device A in a RAID1 device
     auto const current_sub_cmd = 0b10;
     auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, current_sub_cmd);
+    raid_device.on_io_complete(&ublk_data, 0b100, 0);
+    raid_device.on_io_complete(&ublk_data, 0b101, 0);
     remove_io_data(ublk_data);
     ASSERT_TRUE(res);
     EXPECT_EQ(2, res.value());
