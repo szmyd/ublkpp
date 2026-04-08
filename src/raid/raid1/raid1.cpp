@@ -278,7 +278,7 @@ std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
-// Care must be taken in this routiine as we need the correct order of the read_route, swap() and unvail calls.
+// Care must be taken in this routine as we need the correct order of the read_route, swap() and unavil calls.
 // Ensure that these are left in the order as they appear to prevent breaking the read-retry loop in
 // __capture_route_state(...)! While this occurs when threaded, it must access the _device_a and _device_b
 // pointers directly to mutate them. This is safe as long as we follow this requirement and hold the lock
