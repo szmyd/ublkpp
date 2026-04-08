@@ -12,7 +12,4 @@ constexpr uint64_t k_async_io_size = 40; // ~40 bytes
 // Page size constant
 constexpr uint64_t k_page_size = 4096; // 4 KiB
 
-// PageData structure overhead (from raid1/bitmap.hpp)
-constexpr uint64_t k_page_data_overhead = 16; // atomic + shared_ptr
-
 } // namespace ublkpp
