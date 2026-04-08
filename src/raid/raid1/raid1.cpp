@@ -69,23 +69,33 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
 
 // Route state capture
 struct RouteState {
-    MirrorDevice* active_dev;
-    MirrorDevice* backup_dev;
+    std::shared_ptr< MirrorDevice > active_dev;
+    std::shared_ptr< MirrorDevice > backup_dev;
     sub_cmd_t active_subcmd;
     sub_cmd_t backup_subcmd;
     raid1::read_route route;
     bool is_degraded;
 };
 
-// Atomically capture routing state with all derived values
+// Capture routing state with consistent device pointers using double-read retry.
+// The writer ordering in __swap_device is: CAS route (seq_cst) -> device.swap().
+// If device pointers are stable across two reads, the route we observed between them
+// is consistent: either no swap started, or the CAS fired but the ptr swap hasn't
+// landed yet — both states are valid for routing purposes.
 RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
-    auto const route = __get_read_route();
-    return RouteState{.active_dev = (read_route::DEVB == route) ? _device_b.get() : _device_a.get(),
-                      .backup_dev = (read_route::DEVB == route) ? _device_a.get() : _device_b.get(),
-                      .active_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_B : SEND_TO_A),
-                      .backup_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_A : SEND_TO_B),
-                      .route = route,
-                      .is_degraded = (read_route::EITHER != route)};
+    while (true) {
+        auto a = _device_a;
+        auto b = _device_b;
+        auto const route = __get_read_route();
+        if (_device_a != a || _device_b != b) continue;
+
+        return RouteState{.active_dev = (read_route::DEVB == route) ? std::move(b) : std::move(a),
+                          .backup_dev = (read_route::DEVB == route) ? std::move(a) : std::move(b),
+                          .active_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_B : SEND_TO_A),
+                          .backup_subcmd = static_cast< sub_cmd_t >((read_route::DEVB == route) ? SEND_TO_A : SEND_TO_B),
+                          .route = route,
+                          .is_degraded = (read_route::EITHER != route)};
+    }
 }
 
 Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
@@ -661,9 +671,12 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     // Move load-balancer forward, this is optimistic, doesn't need to be atomic
     _last_read = route;
 
-    // Attempt read on device; if it succeeds or we are degraded return the result
-    auto device = (read_route::DEVA == route) ? _device_a->disk : _device_b->disk;
-    if (auto res = func(*device, (device == _device_a->disk) ? SEND_TO_A : SEND_TO_B); res || retry) { return res; }
+    // Attempt read on device using captured state shared_ptrs to avoid races with swap_device
+    bool const going_to_a = (read_route::DEVA == route);
+    auto const& chosen_dev = going_to_a ? ((state.route != read_route::DEVB) ? state.active_dev : state.backup_dev)
+                                        : ((state.route == read_route::DEVB) ? state.active_dev : state.backup_dev);
+    auto const chosen_sub = static_cast< sub_cmd_t >(going_to_a ? SEND_TO_A : SEND_TO_B);
+    if (auto res = func(*chosen_dev->disk, chosen_sub); res || retry) { return res; }
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
@@ -806,11 +819,9 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
 void Raid1DiskImpl::toggle_resync(bool t) {
     _resync_enabled = t;
     if (_resync_enabled) {
-        auto const route = __get_read_route();
-        auto active_dev = (read_route::DEVB == route) ? _device_b : _device_a;
-        auto backup_dev = (read_route::DEVB == route) ? _device_a : _device_b;
-        if (read_route::EITHER != route && !DEFUNCT_DEVICE(backup_dev->disk)) {
-            _resync_task->launch(_str_uuid, active_dev, backup_dev, [this] { __become_clean(); });
+        auto const state = __capture_route_state();
+        if (read_route::EITHER != state.route && !DEFUNCT_DEVICE(state.backup_dev->disk)) {
+            _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); });
         }
     } else
         _resync_task->stop();
