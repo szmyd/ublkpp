@@ -271,6 +271,17 @@ Raid1DiskImpl::~Raid1DiskImpl() {
         write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
+std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
+    // Now that we're up and the target wants to begin I/O let's unpause our resync task, there are no i/o threads
+    // yet so we can continue to access _device_a and b directly
+    auto fds = (_device_a->disk->open_for_uring(iouring_device_start));
+    fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
+
+    // I/O will start comming in now, enable resync
+    toggle_resync(true);
+    return fds;
+}
+
 // ##########################################!! WARNING !!##########################################
 // One should not directly access _device_a, _device_b or _read_route directly following this point.
 // It is running in a multi-threaded case and subject to swap_device an become_degraded altering
@@ -444,15 +455,17 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 
 raid1::array_state Raid1DiskImpl::replica_states() const noexcept {
     auto const sz_to_sync = _dirty_bitmap->dirty_data_est();
-    switch (__get_read_route()) {
+    auto const state = __capture_route_state();
+
+    switch (state.route) {
     case read_route::DEVA:
         return raid1::array_state{.device_a = replica_state::CLEAN,
-                                  .device_b = _device_b->unavail.test(std::memory_order_acquire)
+                                  .device_b = state.backup_dev->unavail.test(std::memory_order_acquire)
                                       ? replica_state::ERROR
                                       : replica_state::SYNCING,
                                   .bytes_to_sync = sz_to_sync};
     case read_route::DEVB:
-        return raid1::array_state{.device_a = _device_a->unavail.test(std::memory_order_acquire)
+        return raid1::array_state{.device_a = state.backup_dev->unavail.test(std::memory_order_acquire)
                                       ? replica_state::ERROR
                                       : replica_state::SYNCING,
                                   .device_b = replica_state::CLEAN,
@@ -465,17 +478,16 @@ raid1::array_state Raid1DiskImpl::replica_states() const noexcept {
 }
 
 std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskImpl::replicas() const noexcept {
-    return std::make_pair(_device_a->disk, _device_b->disk);
-}
-
-std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
-    // Now that we're up and the target wants to begin I/O let's unpause our resync task
-    auto fds = (_device_a->disk->open_for_uring(iouring_device_start));
-    fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
-
-    // I/O will start comming in now, enable resync
-    toggle_resync(true);
-    return fds;
+    auto const state = __capture_route_state();
+    // Return devices in their logical positions (A, B) based on current route
+    // When route == DEVA: active is A, backup is B
+    // When route == DEVB: active is B, backup is A
+    // When route == EITHER: active is A, backup is B (clean state)
+    if (state.route == read_route::DEVB) {
+        return std::make_pair(state.backup_dev->disk, state.active_dev->disk);
+    } else {
+        return std::make_pair(state.active_dev->disk, state.backup_dev->disk);
+    }
 }
 
 io_result Raid1DiskImpl::__become_clean() {
