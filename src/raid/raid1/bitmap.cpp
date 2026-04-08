@@ -132,7 +132,10 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
 
         auto page = page_data.page.load(std::memory_order_acquire);
         DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
-        if (!page) continue;
+        if (!page) {
+            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off")
+            continue;
+        }
 
         bool consecutive = (iov_cnt > 0) && (pg_off == batch_start + iov_cnt);
         if (iov_cnt >= max_batch || (iov_cnt > 0 && !consecutive)) {
@@ -263,7 +266,10 @@ size_t Bitmap::dirty_pages() noexcept {
         auto& pd = _page_map[pg_off];
         auto page = pd.page.load(std::memory_order_relaxed);
         DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
-        if (!page) continue;
+        if (!page) {
+            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off")
+            continue;
+        }
 
         ++dirty_cnt;
     }
@@ -333,7 +339,10 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
         sz = 0;
         auto page = _page_map[pg_off].page.load(std::memory_order_acquire);
         DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
-        if (!page) continue;
+        if (!page) {
+            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off")
+            continue;
+        }
         logical_off = static_cast< uint64_t >(_page_width) * pg_off;
 
         // Find the first dirty word
