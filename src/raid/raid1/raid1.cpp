@@ -43,10 +43,6 @@ constexpr uint64_t k_max_user_data =
 // True if the dirty device is a DefunctDisk type
 #define DEFUNCT_DEVICE(d) (std::dynamic_pointer_cast< DefunctDisk >((d)) != nullptr)
 
-struct free_page {
-    void operator()(void* x) { free(x); }
-};
-
 MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device) :
         disk(std::move(device)) {
     auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
