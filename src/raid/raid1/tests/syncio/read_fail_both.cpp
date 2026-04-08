@@ -1,6 +1,7 @@
 #include "test_raid1_common.hpp"
 
 // This test is similar to SyncIoDevAFail, but the re-issued READ fails too. Still device is *NOT* degraded!
+// Runs in isolated thread to get fresh thread_local load balancer state.
 TEST(Raid1, SyncIoReadFailBoth) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
@@ -13,7 +14,7 @@ TEST(Raid1, SyncIoReadFailBoth) {
     EXPECT_SYNC_OP(test_op, device_a, false, true, test_sz, test_off + raid_device.reserved_size());
     EXPECT_SYNC_OP(test_op, device_b, true, true, test_sz, test_off + raid_device.reserved_size());
 
-    EXPECT_FALSE(raid_device.sync_io(test_op, nullptr, test_sz, test_off));
+    RUN_IN_THREAD({ EXPECT_FALSE(raid_device.sync_io(test_op, nullptr, test_sz, test_off)); });
 
     // expect attempt to sync both SBs
     EXPECT_TO_WRITE_SB_F(device_a, true);

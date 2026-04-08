@@ -669,10 +669,9 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
 }
 
 io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
-                                         ublksrv_queue const* q, RouteState const* state) {
-    // Per-queue read load balancer state (nullptr queue key for sync I/O)
-    auto& last_read = _last_read_per_queue[q];
-    if (last_read == raid1::read_route{}) last_read = raid1::read_route::DEVB; // Initialize on first use
+                                         RouteState const* state) {
+    // Per-thread read load balancer state (each queue runs on dedicated thread)
+    thread_local raid1::read_route last_read = raid1::read_route::DEVB;
 
     auto const retry = is_retry(sub_cmd);
     if (retry) {
@@ -726,7 +725,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
-    return __failover_read(sub_cmd, std::move(func), addr, len, q, state);
+    return __failover_read(sub_cmd, std::move(func), addr, len, state);
 }
 
 io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data,
@@ -794,7 +793,7 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
             [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
                 return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
             },
-            addr, len, q);
+            addr, len);
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
@@ -820,7 +819,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
             [iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t) {
                 return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, a);
             },
-            addr, len, nullptr);
+            addr, len);
 
     _resync_task->enqueue_write();
     size_t res{0};

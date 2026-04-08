@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstring>
+#include <thread>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -114,3 +115,11 @@ inline std::unique_ptr<uint8_t[]> make_test_superbitmap() {
 #define CREATE_DISK(params, dev_b) CREATE_DISK_F((params), (dev_b), false, false, false, false)
 #define CREATE_DISK_A(params) CREATE_DISK((params), false)
 #define CREATE_DISK_B(params) CREATE_DISK((params), true)
+
+// Wrap test body in thread to get fresh thread_local state (for RAID1 load balancer isolation)
+#define RUN_IN_THREAD(body)     \
+    do {                        \
+        std::thread([&]() {     \
+            body                \
+        }).join();              \
+    } while (0)
