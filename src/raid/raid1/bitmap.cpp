@@ -133,7 +133,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
         auto page = page_data.page.load(std::memory_order_acquire);
         DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
         if (!page) {
-            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off")
+            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off)
             continue;
         }
 
@@ -267,7 +267,7 @@ size_t Bitmap::dirty_pages() noexcept {
         auto page = pd.page.load(std::memory_order_relaxed);
         DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
         if (!page) {
-            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off")
+            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off)
             continue;
         }
 
@@ -340,7 +340,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
         auto page = _page_map[pg_off].page.load(std::memory_order_acquire);
         DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
         if (!page) {
-            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off")
+            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off)
             continue;
         }
         logical_off = static_cast< uint64_t >(_page_width) * pg_off;
