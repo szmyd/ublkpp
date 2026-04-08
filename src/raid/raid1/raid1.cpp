@@ -287,8 +287,7 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
                                   std::shared_ptr< MirrorDevice >& incoming_mirror,
                                   raid1::read_route const& cur_route) {
     // Make this routine exclusive
-    static auto lck = std::mutex();
-    auto lg = std::scoped_lock< std::mutex >(lck);
+    auto lg = std::scoped_lock< std::mutex >(_swap_lock);
 
     bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
     auto new_read_route = swapping_device_a ? read_route::DEVB : read_route::DEVA;

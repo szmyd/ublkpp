@@ -51,6 +51,10 @@ class Raid1DiskImpl : public UblkDisk {
     bool _resync_enabled{true};
     std::shared_ptr< Raid1ResyncTask > _resync_task;
 
+
+    // Ensure exclusivity in __swap_device
+    std::mutex _swap_lock;
+
     // Internal routines
     io_result __become_clean();
     io_result __become_degraded(sub_cmd_t failed_path, RouteState const* state, bool spawn_resync = true);
