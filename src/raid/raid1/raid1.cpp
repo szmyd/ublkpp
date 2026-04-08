@@ -278,6 +278,52 @@ std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
     return fds;
 }
 
+// Care must be taken in this routiine as we need the correct order of the read_route, swap() and unvail calls.
+// Ensure that these are left in the order as they appear to prevent breaking the read-retry loop in
+// __capture_route_state(...)! While this occurs when threaded, it must access the _device_a and _device_b
+// pointers directly to mutate them. This is safe as long as we follow this requirement and hold the lock
+// throughout the "relative quick" operation (double sync I/O).
+bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
+                                  std::shared_ptr< MirrorDevice >& incoming_mirror,
+                                  raid1::read_route const& cur_route) {
+    // Make this routine exclusive
+    static auto lck = std::mutex();
+    auto lg = std::scoped_lock< std::mutex >(lck);
+
+    bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
+    auto new_read_route = swapping_device_a ? read_route::DEVB : read_route::DEVA;
+
+    auto orig_route = cur_route;
+    if (!__set_read_route(orig_route, new_read_route)) return false;
+
+    auto old_age = be64toh(_sb->fields.bitmap.age);
+    auto new_age = old_age + 16;
+
+    auto& outgoing_dev = swapping_device_a ? _device_a : _device_b;
+    outgoing_dev.swap(incoming_mirror);
+    _sb->fields.bitmap.age = htobe64(new_age);
+
+    // Write superblock to staying device first (critical path)
+    auto& staying_dev = swapping_device_a ? _device_b : _device_a;
+    if (auto sync_res = write_superblock(*staying_dev->disk, _sb.get(), swapping_device_a, new_read_route); !sync_res) {
+        RLOGE("Could not advance Age [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        // Rollback
+        _sb->fields.bitmap.age = htobe64(old_age);
+        outgoing_dev.swap(incoming_mirror);
+        __set_read_route(new_read_route, cur_route);
+        return false;
+    }
+    // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
+    // later when we become clean; so let's be optimistic!
+    write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a, __get_read_route());
+
+    // Dirty entire bitmap if this is a new device
+    if (outgoing_dev->new_device) _dirty_bitmap->dirty_region(0, capacity());
+    // Open up for Large WRITES and RESYNC
+    outgoing_dev->unavail.clear(std::memory_order_release);
+    return true;
+}
+
 // ##########################################!! WARNING !!##########################################
 // One should not directly access _device_a, _device_b or _read_route directly following this point.
 // It is running in a multi-threaded case and subject to swap_device an become_degraded altering
@@ -406,47 +452,6 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 
     // incoming_mirror now holds the outgoing device (or incoming if failed)
     return incoming_mirror->disk;
-}
-
-bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
-                                  std::shared_ptr< MirrorDevice >& incoming_mirror,
-                                  raid1::read_route const& cur_route) {
-    // Make this routine exclusive
-    static auto lck = std::mutex();
-    auto lg = std::scoped_lock< std::mutex >(lck);
-
-    bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
-    auto new_read_route = swapping_device_a ? read_route::DEVB : read_route::DEVA;
-
-    auto orig_route = cur_route;
-    if (!__set_read_route(orig_route, new_read_route)) return false;
-
-    auto old_age = be64toh(_sb->fields.bitmap.age);
-    auto new_age = old_age + 16;
-
-    auto& outgoing_dev = swapping_device_a ? _device_a : _device_b;
-    outgoing_dev.swap(incoming_mirror);
-    _sb->fields.bitmap.age = htobe64(new_age);
-
-    // Write superblock to staying device first (critical path)
-    auto& staying_dev = swapping_device_a ? _device_b : _device_a;
-    if (auto sync_res = write_superblock(*staying_dev->disk, _sb.get(), swapping_device_a, new_read_route); !sync_res) {
-        RLOGE("Could not advance Age [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-        // Rollback
-        _sb->fields.bitmap.age = htobe64(old_age);
-        outgoing_dev.swap(incoming_mirror);
-        __set_read_route(new_read_route, cur_route);
-        return false;
-    }
-    // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
-    // later when we become clean; so let's be optimistic!
-    write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a, __get_read_route());
-
-    // Dirty entire bitmap if this is a new device
-    if (outgoing_dev->new_device) _dirty_bitmap->dirty_region(0, capacity());
-    // Open up for Large WRITES and RESYNC
-    outgoing_dev->unavail.clear(std::memory_order_release);
-    return true;
 }
 
 raid1::array_state Raid1DiskImpl::replica_states() const noexcept {
