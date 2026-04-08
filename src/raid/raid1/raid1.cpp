@@ -673,12 +673,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     thread_local raid1::read_route last_read = raid1::read_route::DEVB;
 
     auto const retry = is_retry(sub_cmd);
-    if (retry) {
-        // Don't shift on retry - decode last_read from existing route bits
-        auto const temp_state = __capture_route_state(sub_cmd);
-        last_read =
-            (0b1 & ((sub_cmd) >> temp_state.backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
-    } else if (!state) {
+    if (!state && !retry) {
         // Shift route before capturing state for first attempt
         sub_cmd = shift_route(sub_cmd, route_size());
     }
@@ -687,6 +682,10 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     RouteState const local_state = state ? RouteState{} : __capture_route_state(sub_cmd);
     if (!state) state = &local_state;
 
+    if (retry) {
+        // Don't shift on retry - decode last_read from existing route bits
+        last_read = (0b1 & ((sub_cmd) >> state->backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
+    }
     // Pick a device to read from (load-balancer)
     auto route = read_route::DEVA;
     auto need_to_test{false};
