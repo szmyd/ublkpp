@@ -4,7 +4,6 @@
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
 
-#include "ublkpp/lib/memory_constants.hpp"
 #include "raid0_impl.hpp"
 #include "lib/logging.hpp"
 
