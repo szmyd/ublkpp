@@ -502,10 +502,12 @@ io_result Raid1DiskImpl::__become_clean() {
     // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
     bool const active_is_device_b = (state.route == read_route::DEVB);
 
-    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, state.route); !sync_res) {
+    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, state.route);
+        !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
-    if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, state.route); !sync_res) {
+    if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, state.route);
+        !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
 
@@ -666,36 +668,43 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
 }
 
 io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
-                                         ublksrv_queue const* q) {
+                                         ublksrv_queue const* q, RouteState const* state) {
     // Per-queue read load balancer state (nullptr queue key for sync I/O)
     auto& last_read = _last_read_per_queue[q];
     if (last_read == raid1::read_route{}) last_read = raid1::read_route::DEVB; // Initialize on first use
 
-    // Capture routing state atomically at function entry
-    auto const state = __capture_route_state();
     auto const retry = is_retry(sub_cmd);
     if (retry) {
-        last_read = (0b1 & ((sub_cmd) >> state.backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
-    } else
+        // Don't shift on retry - decode last_read from existing route bits
+        auto const temp_state = __capture_route_state(sub_cmd);
+        last_read =
+            (0b1 & ((sub_cmd) >> temp_state.backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
+    } else if (!state) {
+        // Shift route before capturing state for first attempt
         sub_cmd = shift_route(sub_cmd, route_size());
+    }
+
+    // Capture routing state atomically at function entry, or reuse passed state
+    RouteState const local_state = state ? RouteState{} : __capture_route_state(sub_cmd);
+    if (!state) state = &local_state;
 
     // Pick a device to read from (load-balancer)
     auto route = read_route::DEVA;
     auto need_to_test{false};
-    if (state.is_degraded && (!retry && state.backup_dev->unavail.test(std::memory_order_acquire))) {
-        route = state.route;
+    if (state->is_degraded && (!retry && state->backup_dev->unavail.test(std::memory_order_acquire))) {
+        route = state->route;
     } else {
         if (read_route::DEVB == last_read) {
-            if (read_route::DEVB == state.route) need_to_test = true;
+            if (read_route::DEVB == state->route) need_to_test = true;
         } else {
             route = read_route::DEVB;
-            if (read_route::DEVA == state.route) need_to_test = true;
+            if (read_route::DEVA == state->route) need_to_test = true;
         }
     }
 
     // If we are degraded and the load-balancer wants to use the dirty disk, check it for dirty bits first
     // and if all true; then  use the current active route from the captured state
-    if (state.is_degraded && need_to_test && _dirty_bitmap->is_dirty(addr, len)) route = state.route;
+    if (state->is_degraded && need_to_test && _dirty_bitmap->is_dirty(addr, len)) route = state->route;
 
     // We've already attempted this device...we don't want to re-attempt
     if (retry && (last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -704,15 +713,19 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     last_read = route;
 
     // Attempt read on device using captured state shared_ptrs to avoid races with swap_device
+    // Map logical route (DEVA/DEVB) to physical device and subcmd from captured state
     bool const going_to_a = (read_route::DEVA == route);
-    auto const& chosen_dev = going_to_a ? ((state.route != read_route::DEVB) ? state.active_dev : state.backup_dev)
-                                        : ((state.route == read_route::DEVB) ? state.active_dev : state.backup_dev);
-    auto const chosen_sub = static_cast< sub_cmd_t >(going_to_a ? SEND_TO_A : SEND_TO_B);
+    auto const use_active = going_to_a ? (state->route != read_route::DEVB) : (state->route == read_route::DEVB);
+    auto const& chosen_dev = use_active ? state->active_dev : state->backup_dev;
+    // Use subcmd from captured state, adding RETRIED flag if this is a retry attempt
+    auto chosen_sub = use_active ? state->active_subcmd : state->backup_subcmd;
+    if (retry) chosen_sub = set_flags(chosen_sub, sub_cmd_flags::RETRIED);
+
     if (auto res = func(*chosen_dev->disk, chosen_sub); res || retry) { return res; }
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
-    return __failover_read(sub_cmd, std::move(func), addr, len, q);
+    return __failover_read(sub_cmd, std::move(func), addr, len, q, state);
 }
 
 io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data,

@@ -57,7 +57,8 @@ class Raid1DiskImpl : public UblkDisk {
     // Internal routines
     io_result __become_clean();
     io_result __become_degraded(sub_cmd_t failed_path, RouteState const* state, bool spawn_resync = true);
-    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q);
+    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q,
+                              RouteState const* state = nullptr);
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* async_data);
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
