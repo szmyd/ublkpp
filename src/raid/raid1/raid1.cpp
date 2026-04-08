@@ -491,19 +491,27 @@ std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskI
 }
 
 io_result Raid1DiskImpl::__become_clean() {
-    auto old_read_route = __get_read_route();
-    if (read_route::EITHER == old_read_route) return 0;
-    RLOGI("Device becoming clean [{}] [uuid:{}] ", *(read_route::DEVB == old_read_route ? _device_a : _device_b)->disk,
-          _str_uuid)
+    auto const state = __capture_route_state();
+    if (read_route::EITHER == state.route) return 0;
+
+    RLOGI("Device becoming clean [{}] [uuid:{}] ", *state.backup_dev->disk, _str_uuid)
+
     // Write the new SuperBlock with updated clean read_route
-    if (auto sync_res = write_superblock(*_device_a->disk, _sb.get(), false, old_read_route); !sync_res) {
+    // Determine which device is device_b based on route:
+    // - When route == DEVA: active_dev is A (is_device_b=false), backup_dev is B (is_device_b=true)
+    // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
+    bool const active_is_device_b = (state.route == read_route::DEVB);
+
+    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, state.route); !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
-    if (auto sync_res = write_superblock(*_device_b->disk, _sb.get(), true, old_read_route); !sync_res) {
+    if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, state.route); !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
+
     // Avoid checking DirtyBitmap going forward on reads/writes
-    __set_read_route(old_read_route, read_route::EITHER);
+    auto old_route = state.route;
+    __set_read_route(old_route, read_route::EITHER);
     return 0;
 }
 
