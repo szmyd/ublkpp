@@ -14,11 +14,11 @@ class SuperBitmapTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Allocate and zero-initialize buffer
-        buffer = std::make_unique<uint8_t[]>(k_superbitmap_size);
+        buffer = std::make_unique< uint8_t[] >(k_superbitmap_size);
         std::memset(buffer.get(), 0, k_superbitmap_size);
     }
 
-    std::unique_ptr<uint8_t[]> buffer;
+    std::unique_ptr< uint8_t[] > buffer;
 };
 
 // Basic functionality tests
@@ -82,7 +82,7 @@ TEST_F(SuperBitmapTest, MultipleBitsInSameByte) {
     // Clear one bit
     sb.clear_bit(3);
     EXPECT_FALSE(sb.test_bit(3));
-    EXPECT_TRUE(sb.test_bit(0));  // Others unchanged
+    EXPECT_TRUE(sb.test_bit(0)); // Others unchanged
     EXPECT_TRUE(sb.test_bit(7));
 }
 
@@ -102,7 +102,7 @@ TEST_F(SuperBitmapTest, BoundaryValues) {
     EXPECT_TRUE(sb.test_bit(7));
 
     // Test first bit in last byte
-    sb.set_bit(32168);  // 4021 * 8 = 32,168
+    sb.set_bit(32168); // 4021 * 8 = 32,168
     EXPECT_TRUE(sb.test_bit(32168));
 }
 
@@ -147,7 +147,7 @@ TEST_F(SuperBitmapTest, DataPointer) {
 
 TEST_F(SuperBitmapTest, PreservesExistingData) {
     // Pre-populate buffer with some pattern
-    buffer[0] = 0b10101010;  // Bits 0,2,4,6 set
+    buffer[0] = 0b10101010;   // Bits 0,2,4,6 set
     buffer[100] = 0b11110000; // Bits 800-803 set
 
     SuperBitmap sb(buffer.get());
@@ -170,7 +170,7 @@ TEST_F(SuperBitmapTest, ConcurrentSetBitDifferentBytes) {
 
     constexpr int num_threads = 10;
     constexpr int bits_per_thread = 100;
-    std::vector<std::thread> threads;
+    std::vector< std::thread > threads;
 
     // Each thread sets bits in a different range
     for (int t = 0; t < num_threads; ++t) {
@@ -190,8 +190,7 @@ TEST_F(SuperBitmapTest, ConcurrentSetBitDifferentBytes) {
     for (int t = 0; t < num_threads; ++t) {
         int start_bit = t * 1000;
         for (int i = 0; i < bits_per_thread; ++i) {
-            EXPECT_TRUE(sb.test_bit(start_bit + i))
-                << "Bit " << (start_bit + i) << " should be set";
+            EXPECT_TRUE(sb.test_bit(start_bit + i)) << "Bit " << (start_bit + i) << " should be set";
         }
     }
 }
@@ -199,8 +198,8 @@ TEST_F(SuperBitmapTest, ConcurrentSetBitDifferentBytes) {
 TEST_F(SuperBitmapTest, ConcurrentSetBitSameByte) {
     SuperBitmap sb(buffer.get());
 
-    constexpr int num_threads = 8;  // One thread per bit in first byte
-    std::vector<std::thread> threads;
+    constexpr int num_threads = 8; // One thread per bit in first byte
+    std::vector< std::thread > threads;
 
     // Each thread sets a different bit in the same byte
     for (int bit = 0; bit < num_threads; ++bit) {
@@ -218,8 +217,7 @@ TEST_F(SuperBitmapTest, ConcurrentSetBitSameByte) {
 
     // Verify all 8 bits in first byte are set
     for (int bit = 0; bit < num_threads; ++bit) {
-        EXPECT_TRUE(sb.test_bit(bit))
-            << "Bit " << bit << " should be set";
+        EXPECT_TRUE(sb.test_bit(bit)) << "Bit " << bit << " should be set";
     }
 }
 
@@ -228,21 +226,19 @@ TEST_F(SuperBitmapTest, ConcurrentSetAndClearDifferentBits) {
 
     // Pre-set some bits
     for (int i = 0; i < 16; ++i) {
-        if (i % 2 == 0) {
-            sb.set_bit(i);
-        }
+        if (i % 2 == 0) { sb.set_bit(i); }
     }
 
-    std::vector<std::thread> threads;
+    std::vector< std::thread > threads;
 
     // Half the threads set odd bits, half clear even bits
     for (int bit = 0; bit < 16; ++bit) {
         threads.emplace_back([&sb, bit]() {
             for (int i = 0; i < 500; ++i) {
                 if (bit % 2 == 1) {
-                    sb.set_bit(bit);  // Set odd bits
+                    sb.set_bit(bit); // Set odd bits
                 } else {
-                    sb.clear_bit(bit);  // Clear even bits
+                    sb.clear_bit(bit); // Clear even bits
                 }
             }
         });
@@ -255,11 +251,9 @@ TEST_F(SuperBitmapTest, ConcurrentSetAndClearDifferentBits) {
     // Verify final state: odd bits set, even bits clear
     for (int bit = 0; bit < 16; ++bit) {
         if (bit % 2 == 1) {
-            EXPECT_TRUE(sb.test_bit(bit))
-                << "Odd bit " << bit << " should be set";
+            EXPECT_TRUE(sb.test_bit(bit)) << "Odd bit " << bit << " should be set";
         } else {
-            EXPECT_FALSE(sb.test_bit(bit))
-                << "Even bit " << bit << " should be clear";
+            EXPECT_FALSE(sb.test_bit(bit)) << "Even bit " << bit << " should be clear";
         }
     }
 }
@@ -267,8 +261,8 @@ TEST_F(SuperBitmapTest, ConcurrentSetAndClearDifferentBits) {
 TEST_F(SuperBitmapTest, ConcurrentReadWhileWrite) {
     SuperBitmap sb(buffer.get());
 
-    std::atomic<bool> stop{false};
-    std::atomic<int> read_count{0};
+    std::atomic< bool > stop{false};
+    std::atomic< int > read_count{0};
 
     // Writer thread: sets bits 0-99
     std::thread writer([&]() {
@@ -281,12 +275,12 @@ TEST_F(SuperBitmapTest, ConcurrentReadWhileWrite) {
     });
 
     // Reader threads: read bits 0-99
-    std::vector<std::thread> readers;
+    std::vector< std::thread > readers;
     for (int t = 0; t < 4; ++t) {
         readers.emplace_back([&]() {
             while (!stop.load()) {
                 for (int bit = 0; bit < 100; ++bit) {
-                    (void)sb.test_bit(bit);  // Just read, don't care about result
+                    (void)sb.test_bit(bit); // Just read, don't care about result
                     read_count.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -307,10 +301,88 @@ TEST_F(SuperBitmapTest, ConcurrentReadWhileWrite) {
     EXPECT_GT(read_count.load(), 0);
 }
 
+// next_set_bit tests
+TEST_F(SuperBitmapTest, NextSetBitEmpty) {
+    SuperBitmap sb(buffer.get());
+
+    // Empty bitmap: every start position returns k_superbitmap_bits
+    EXPECT_EQ(sb.next_set_bit(0), k_superbitmap_bits);
+    EXPECT_EQ(sb.next_set_bit(1), k_superbitmap_bits);
+    EXPECT_EQ(sb.next_set_bit(100), k_superbitmap_bits);
+    EXPECT_EQ(sb.next_set_bit(32175), k_superbitmap_bits);
+}
+
+TEST_F(SuperBitmapTest, NextSetBitSingleBit) {
+    SuperBitmap sb(buffer.get());
+
+    sb.set_bit(42);
+
+    // Searching from before or at bit 42 finds it
+    EXPECT_EQ(sb.next_set_bit(0), 42U);
+    EXPECT_EQ(sb.next_set_bit(42), 42U);
+
+    // Searching from after bit 42 finds nothing
+    EXPECT_EQ(sb.next_set_bit(43), k_superbitmap_bits);
+    EXPECT_EQ(sb.next_set_bit(100), k_superbitmap_bits);
+}
+
+TEST_F(SuperBitmapTest, NextSetBitMultipleBits) {
+    SuperBitmap sb(buffer.get());
+
+    sb.set_bit(0);
+    sb.set_bit(7);
+    sb.set_bit(8);
+    sb.set_bit(100);
+    sb.set_bit(32175);
+
+    EXPECT_EQ(sb.next_set_bit(0), 0U);
+    EXPECT_EQ(sb.next_set_bit(1), 7U);
+    EXPECT_EQ(sb.next_set_bit(7), 7U);
+    EXPECT_EQ(sb.next_set_bit(8), 8U);
+    EXPECT_EQ(sb.next_set_bit(9), 100U);
+    EXPECT_EQ(sb.next_set_bit(100), 100U);
+    EXPECT_EQ(sb.next_set_bit(101), 32175U);
+    EXPECT_EQ(sb.next_set_bit(32175), 32175U);
+    EXPECT_EQ(sb.next_set_bit(32176), k_superbitmap_bits);
+}
+
+TEST_F(SuperBitmapTest, NextSetBitIterationPattern) {
+    SuperBitmap sb(buffer.get());
+
+    // Set bits at known positions
+    std::vector< uint32_t > const set_positions = {0, 15, 100, 500, 1000, 32175};
+    for (auto bit : set_positions) {
+        sb.set_bit(bit);
+    }
+
+    // Iterate using next_set_bit and collect found positions
+    std::vector< uint32_t > found;
+    for (auto bit = sb.next_set_bit(0); bit < k_superbitmap_bits; bit = sb.next_set_bit(bit + 1)) {
+        found.push_back(bit);
+    }
+
+    EXPECT_EQ(found, set_positions);
+}
+
+TEST_F(SuperBitmapTest, NextSetBitByteBoundary) {
+    SuperBitmap sb(buffer.get());
+
+    // Set bits at every byte boundary (bit 0 of each byte)
+    sb.set_bit(0);  // byte 0, bit 0
+    sb.set_bit(8);  // byte 1, bit 0
+    sb.set_bit(16); // byte 2, bit 0
+
+    EXPECT_EQ(sb.next_set_bit(0), 0U);
+    EXPECT_EQ(sb.next_set_bit(1), 8U);
+    EXPECT_EQ(sb.next_set_bit(8), 8U);
+    EXPECT_EQ(sb.next_set_bit(9), 16U);
+    EXPECT_EQ(sb.next_set_bit(17), k_superbitmap_bits);
+}
+
 // Integration test with actual SuperBlock
 TEST_F(SuperBitmapTest, IntegrationWithSuperBlock) {
     // Allocate a real SuperBlock
-    auto sb_ptr = static_cast<SuperBlock*>(aligned_alloc(4096, sizeof(SuperBlock)));
+    auto sb_ptr = static_cast< SuperBlock* >(aligned_alloc(4096, sizeof(SuperBlock)));
     ASSERT_NE(sb_ptr, nullptr);
     std::memset(sb_ptr, 0, sizeof(SuperBlock));
 
@@ -324,7 +396,7 @@ TEST_F(SuperBitmapTest, IntegrationWithSuperBlock) {
 
     // Verify the bits are actually in the SuperBlock memory
     EXPECT_EQ(sb_ptr->superbitmap_reserved[0] & 0x01, 0x01);
-    EXPECT_EQ(sb_ptr->superbitmap_reserved[12] & 0x10, 0x10);  // Bit 100 = byte 12, bit 4
+    EXPECT_EQ(sb_ptr->superbitmap_reserved[12] & 0x10, 0x10);   // Bit 100 = byte 12, bit 4
     EXPECT_EQ(sb_ptr->superbitmap_reserved[4021] & 0x80, 0x80); // Bit 32175 = byte 4021, bit 7
 
     free(sb_ptr);

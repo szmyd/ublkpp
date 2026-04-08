@@ -1,10 +1,9 @@
 #pragma once
 
 #include <atomic>
-#include <map>
 #include <memory>
-#include <shared_mutex>
 #include <tuple>
+#include <vector>
 
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "super_bitmap.hpp"
@@ -12,46 +11,50 @@
 namespace ublkpp::raid1 {
 
 static_assert(sizeof(uint64_t) == sizeof(std::atomic_uint64_t), "BITMAP Cannot be ATOMIC!");
+static_assert(std::atomic< uint64_t* >::is_always_lock_free, "Page pointer must be lock-free for concurrent bitmap access");
 class Bitmap {
 public:
     using word_t = std::atomic_uint64_t;
 
     struct PageData {
-        std::shared_ptr< word_t > page;
-        std::atomic< bool > loaded_from_disk; // true = loaded unchanged, false = modified/new
+        // Null ptr = page is clean (no memory allocated). Lazy-allocated on first dirty_region.
+        // atomic<word_t*> is always lock-free on 64-bit platforms, unlike atomic<shared_ptr>.
+        std::atomic< word_t* > page{nullptr};
+        void* _page_mem{nullptr};             // owns the allocation; written once, freed at destruction
+        std::atomic< bool > loaded_from_disk{false}; // true = loaded unchanged, false = modified/new
 
-        PageData(std::shared_ptr< word_t > p, bool from_disk) : page(std::move(p)), loaded_from_disk(from_disk) {}
+        PageData() = default;
+        ~PageData() { free(_page_mem); }
 
-        // Move constructor - needed because std::atomic is not movable
+        // Move constructor/assignment are needed for vector construction only (single-threaded).
+        // Not safe to move a PageData that is concurrently accessed.
         PageData(PageData&& other) noexcept :
-                page(std::move(other.page)), loaded_from_disk(other.loaded_from_disk.load(std::memory_order_relaxed)) {}
+                page(other.page.load(std::memory_order_relaxed)),
+                _page_mem(std::exchange(other._page_mem, nullptr)),
+                loaded_from_disk(other.loaded_from_disk.load(std::memory_order_relaxed)) {}
 
-        // Move assignment
         PageData& operator=(PageData&& other) noexcept {
             if (this != &other) {
-                page = std::move(other.page);
+                page.store(other.page.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                _page_mem = std::exchange(other._page_mem, nullptr);
                 loaded_from_disk.store(other.loaded_from_disk.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
             }
             return *this;
         }
 
-        // Delete copy constructor and assignment (std::atomic is not copyable)
-        PageData(const PageData&) = delete;
-        PageData& operator=(const PageData&) = delete;
+        PageData(PageData const&) = delete;
+        PageData& operator=(PageData const&) = delete;
     };
-
-    using map_type_t = std::map< uint32_t, PageData >;
 
 private:
     std::string const _id;
     uint64_t _data_size;
     uint32_t _chunk_size;
     uint32_t _align;
-    map_type_t _page_map;
-    // SharedMutex allows multiple concurrent readers (is_dirty, next_dirty) or single writer (dirty_region, dirty_pages)
-    // This protects _page_map structure from concurrent modification during resync and async I/O
-    mutable std::shared_mutex _page_map_mutex;
+    // Pre-allocated to _num_pages at construction. Slots never inserted or erased after init,
+    // eliminating all structural modifications and the need for a mutex.
+    std::vector< PageData > _page_map;
     std::shared_ptr< word_t > _clean_page;
 
     uint32_t const _page_width; // Number of bytes represented by a single page (block)
@@ -60,7 +63,7 @@ private:
     SuperBitmap _super_bitmap;
 
 private:
-    PageData* __get_page(uint64_t offset, bool creat = false);
+    PageData* __get_or_create_page(uint64_t offset);
     static size_t max_pages_per_tx(const UblkDisk& device);
 
 public:
@@ -68,19 +71,19 @@ public:
            std::string const& id = "");
 
     static uint64_t page_size() noexcept;
-    size_t dirty_pages();
+    size_t dirty_pages() noexcept;
     uint64_t dirty_data_est() const noexcept;
 
-    bool is_dirty(uint64_t addr, uint32_t len);
+    bool is_dirty(uint64_t addr, uint32_t len) noexcept;
 
     // Tuple of form [page*, page_offset, size_consumed (max len)]
     void dirty_region(uint64_t addr, uint64_t len);
-    std::tuple< word_t*, uint32_t, uint32_t > clean_region(uint64_t addr, uint32_t len);
-    std::pair< uint64_t, uint32_t > next_dirty();
+    std::tuple< word_t*, uint32_t, uint32_t > clean_region(uint64_t addr, uint32_t len) noexcept;
+    std::pair< uint64_t, uint32_t > next_dirty() noexcept;
 
     // Each bit in the BITMAP represents a single "Chunk" of size chunk_size
     static std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t >
-    calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size);
+    calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size) noexcept;
 
     void init_to(std::shared_ptr< UblkDisk > device);
     io_result sync_to(UblkDisk& device, uint64_t offset = 0UL);
