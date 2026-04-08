@@ -11,27 +11,32 @@
 namespace ublkpp::raid1 {
 
 static_assert(sizeof(uint64_t) == sizeof(std::atomic_uint64_t), "BITMAP Cannot be ATOMIC!");
+static_assert(std::atomic< uint64_t* >::is_always_lock_free, "Page pointer must be lock-free for concurrent bitmap access");
 class Bitmap {
 public:
     using word_t = std::atomic_uint64_t;
 
     struct PageData {
-        // Null shared_ptr = page is clean (no memory allocated). Lazy-allocated on first dirty_region.
-        // atomic<shared_ptr> allows lock-free CAS during concurrent lazy allocation.
-        std::atomic< std::shared_ptr< word_t > > page{nullptr};
+        // Null ptr = page is clean (no memory allocated). Lazy-allocated on first dirty_region.
+        // atomic<word_t*> is always lock-free on 64-bit platforms, unlike atomic<shared_ptr>.
+        std::atomic< word_t* > page{nullptr};
+        void* _page_mem{nullptr};             // owns the allocation; written once, freed at destruction
         std::atomic< bool > loaded_from_disk{false}; // true = loaded unchanged, false = modified/new
 
         PageData() = default;
+        ~PageData() { free(_page_mem); }
 
         // Move constructor/assignment are needed for vector construction only (single-threaded).
         // Not safe to move a PageData that is concurrently accessed.
         PageData(PageData&& other) noexcept :
                 page(other.page.load(std::memory_order_relaxed)),
+                _page_mem(std::exchange(other._page_mem, nullptr)),
                 loaded_from_disk(other.loaded_from_disk.load(std::memory_order_relaxed)) {}
 
         PageData& operator=(PageData&& other) noexcept {
             if (this != &other) {
                 page.store(other.page.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                _page_mem = std::exchange(other._page_mem, nullptr);
                 loaded_from_disk.store(other.loaded_from_disk.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
             }

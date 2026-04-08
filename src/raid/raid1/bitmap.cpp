@@ -144,7 +144,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
             batch_addr = (k_page_size * pg_off) + offset;
         }
 
-        iovs[iov_cnt++] = {.iov_base = page.get(), .iov_len = k_page_size};
+        iovs[iov_cnt++] = {.iov_base = static_cast< void* >(page), .iov_len = k_page_size};
     }
 
     // Flush remaining bitmap pages
@@ -193,8 +193,8 @@ void Bitmap::load_from(UblkDisk& device) {
         _dirty_chunks_est += (k_page_size * k_bits_in_byte);
 
         // Store directly into the pre-existing slot (mark as loaded from disk, not modified)
-        _page_map[pg_idx].page.store(std::shared_ptr< word_t >(reinterpret_cast< word_t* >(iov.iov_base), free_page()),
-                                     std::memory_order_relaxed);
+        _page_map[pg_idx]._page_mem = iov.iov_base;
+        _page_map[pg_idx].page.store(reinterpret_cast< word_t* >(iov.iov_base), std::memory_order_relaxed);
         _page_map[pg_idx].loaded_from_disk.store(true, std::memory_order_relaxed);
         iov.iov_base = nullptr;
     }
@@ -207,21 +207,23 @@ void Bitmap::load_from(UblkDisk& device) {
 Bitmap::PageData* Bitmap::__get_or_create_page(uint64_t offset) {
     auto& pd = _page_map[offset];
 
-    // Fast path: page already allocated
+    // Fast path: page already allocated (lock-free load on word_t*)
     if (pd.page.load(std::memory_order_acquire)) return &pd;
 
-    // Slow path: lazily allocate page memory and CAS it in.
+    // Slow path: lazily allocate page memory and CAS it in (lock-free CAS on word_t*).
     // Two concurrent threads may both reach here; only one wins the CAS, the other discards its allocation.
     void* new_mem{nullptr};
     if (auto err = ::posix_memalign(&new_mem, _align, k_page_size); err)
         throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     memset(new_mem, 0, k_page_size);
-    auto new_page = std::shared_ptr< word_t >(reinterpret_cast< word_t* >(new_mem), free_page());
+    auto* new_page = reinterpret_cast< word_t* >(new_mem);
 
-    std::shared_ptr< word_t > expected = nullptr;
-    pd.page.compare_exchange_strong(expected, new_page, std::memory_order_release, std::memory_order_acquire);
-    // Whether we won or lost the CAS, pd.page is now valid.
-    // If we lost, new_page destructs here and frees the allocation.
+    word_t* expected = nullptr;
+    if (pd.page.compare_exchange_strong(expected, new_page, std::memory_order_release, std::memory_order_acquire)) {
+        pd._page_mem = new_mem; // We won — record ownership for cleanup at destruction
+    } else {
+        free(new_mem); // We lost — free immediately; pd.page is now valid from the winner
+    }
     return &pd;
 }
 
@@ -233,7 +235,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
         if (!_super_bitmap.test_bit(page_offset)) continue;
         auto page = _page_map[page_offset].page.load(std::memory_order_acquire);
         if (!page) continue;
-        auto cur_word = page.get() + word_offset;
+        auto cur_word = page + word_offset;
 
         // Handle update crossing multiple words (optimization potential?)
         for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -287,7 +289,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         return std::make_tuple(nullptr, page_offset, sz);
     }
 
-    auto cur_word = page.get() + word_offset;
+    auto cur_word = page + word_offset;
 
     // Handle update crossing multiple words (optimization potential?)
     for (auto bits_left = nr_bits; 0 < bits_left;) {
@@ -309,7 +311,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     RLOGT("Bitmap CLEANED [addr:{:#0x}, len:{}KiB, dirty:{}KiB, id: {}]", addr, len / Ki, dirty_data_est() / Ki, _id)
 
     // Check if page became completely clean, and update superbitmap if so
-    if (0 == isal_zero_detect(page.get(), k_page_size)) {
+    if (0 == isal_zero_detect(page, k_page_size)) {
         // Clear superbitmap bit for this now-clean page
         _super_bitmap.clear_bit(page_offset);
         return std::make_tuple(_clean_page.get(), page_offset, sz);
@@ -337,7 +339,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
         // Find the first dirty word
         auto word = 0UL;
         for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
-            word = be64toh((page.get() + word_off)->load(std::memory_order_relaxed));
+            word = be64toh((page + word_off)->load(std::memory_order_relaxed));
             if (0 == word) continue;
             logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
 
@@ -376,7 +378,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
         if (!page_data) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
 
         auto page = page_data->page.load(std::memory_order_acquire);
-        auto cur_word = page.get() + word_offset;
+        auto cur_word = page + word_offset;
         // Handle update crossing multiple words (optimization potential?)
         for (auto bits_left = nr_bits; 0 < bits_left;) {
             auto const bits_to_write = std::min(shift_offset + 1, bits_left);
