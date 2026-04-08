@@ -682,12 +682,10 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     RouteState const local_state = state ? RouteState{} : __capture_route_state(sub_cmd);
     auto nested_retry = !!state;
     if (!state) state = &local_state;
-    if (retry) {
-        // Don't shift on retry - decode last_read from existing route bits, if nested call previous
-        // sub_cmd is in the state; not the one used as a parameter
-        last_read = (0b1 & ((nested_retry ? state->active_subcmd : sub_cmd) >> state->backup_dev->disk->route_size()))
-            ? read_route::DEVB
-            : read_route::DEVA;
+
+    // Decode last_read from existing route bits, if nested call last_route is already set correctly.
+    if (retry && !nested_retry) {
+        last_read = (0b1 & ((sub_cmd) >> state->backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
     }
 
     // Pick a device to read from (load-balancer)
