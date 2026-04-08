@@ -516,13 +516,6 @@ io_result Raid1DiskImpl::__become_clean() {
 }
 
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t failed_path, RouteState const* cur_state, bool spawn_resync) {
-    // Capture device pointers based on new route to prevent race with swap_device
-    RouteState local_state;
-    if (!cur_state) {
-        local_state = __capture_route_state();
-        cur_state = &local_state;
-    }
-
     // Determine new route based on which device failed
     auto old_route = read_route::EITHER;
     auto new_route =
