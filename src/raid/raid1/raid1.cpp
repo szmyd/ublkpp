@@ -652,12 +652,17 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     return replica_res ? active_res.value() += replica_res.value() : replica_res;
 }
 
-io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len) {
+io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
+                                         ublksrv_queue const* q) {
+    // Per-queue read load balancer state (nullptr queue key for sync I/O)
+    auto& last_read = _last_read_per_queue[q];
+    if (last_read == raid1::read_route{}) last_read = raid1::read_route::DEVB; // Initialize on first use
+
     // Capture routing state atomically at function entry
     auto const state = __capture_route_state();
     auto const retry = is_retry(sub_cmd);
     if (retry) {
-        _last_read = (0b1 & ((sub_cmd) >> state.backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
+        last_read = (0b1 & ((sub_cmd) >> state.backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
     } else
         sub_cmd = shift_route(sub_cmd, route_size());
 
@@ -667,7 +672,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     if (state.is_degraded && (!retry && state.backup_dev->unavail.test(std::memory_order_acquire))) {
         route = state.route;
     } else {
-        if (read_route::DEVB == _last_read) {
+        if (read_route::DEVB == last_read) {
             if (read_route::DEVB == state.route) need_to_test = true;
         } else {
             route = read_route::DEVB;
@@ -680,10 +685,10 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     if (state.is_degraded && need_to_test && _dirty_bitmap->is_dirty(addr, len)) route = state.route;
 
     // We've already attempted this device...we don't want to re-attempt
-    if (retry && (_last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
+    if (retry && (last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
 
     // Move load-balancer forward, this is optimistic, doesn't need to be atomic
-    _last_read = route;
+    last_read = route;
 
     // Attempt read on device using captured state shared_ptrs to avoid races with swap_device
     bool const going_to_a = (read_route::DEVA == route);
@@ -694,7 +699,7 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
-    return __failover_read(sub_cmd, std::move(func), addr, len);
+    return __failover_read(sub_cmd, std::move(func), addr, len, q);
 }
 
 io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data,
@@ -762,7 +767,7 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
             [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
                 return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
             },
-            addr, len);
+            addr, len, q);
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
@@ -788,7 +793,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
             [iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t) {
                 return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, a);
             },
-            addr, len);
+            addr, len, nullptr);
 
     _resync_task->enqueue_write();
     size_t res{0};

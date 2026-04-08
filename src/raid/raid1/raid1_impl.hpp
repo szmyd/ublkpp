@@ -42,13 +42,13 @@ class Raid1DiskImpl : public UblkDisk {
     // Runtime cached state (to avoid races on _sb bitfields)
     std::atomic_uint8_t _read_route_cache{static_cast< uint8_t >(raid1::read_route::EITHER)};
 
-    // For implementing round-robin reads
-    raid1::read_route _last_read{raid1::read_route::DEVB};
-
     // Metrics
     std::shared_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
     // Asynchronous replies that did not go through io_uring
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
+
+    // Per-queue read load balancer state (for round-robin reads)
+    std::map< ublksrv_queue const*, raid1::read_route > _last_read_per_queue;
 
     // Active Re-Sync Task
     bool _resync_enabled{true};
@@ -57,7 +57,7 @@ class Raid1DiskImpl : public UblkDisk {
     // Internal routines
     io_result __become_clean();
     io_result __become_degraded(sub_cmd_t failed_path, RouteState const* state = nullptr, bool spawn_resync = true);
-    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len);
+    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q);
     io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
                                    ublk_io_data const* async_data);
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
