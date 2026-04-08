@@ -3,32 +3,32 @@
 
 // Note: Tests assume chunk_size=32768 (32 KiB) from SISL options
 // Each bitmap page covers 1 GiB of data (32KiB × 4096 × 8)
+//
+// Memory calculation:
+//   superblock (4 KiB) + PageData_vector (num_pages × 24) + clean_page (4 KiB) + dirty_pages (num_pages × 4 KiB)
+
+TEST(Raid1MemoryEstimation, SmallVolume) {
+    uint64_t volume_size = 512ULL * 1024 * 1024;
+    uint64_t memory = ublkpp::Raid1Disk::estimate_device_overhead(volume_size);
+
+    // 1 page: 4096 + 24 + 4096 + 4096 = 12,312 bytes
+    EXPECT_EQ(memory, 12312ULL);
+}
 
 TEST(Raid1MemoryEstimation, OneTiB) {
     uint64_t volume_size = 1ULL * 1024 * 1024 * 1024 * 1024;
     uint64_t memory = ublkpp::Raid1Disk::estimate_device_overhead(volume_size);
 
-    // Expected: 4 KiB (superblock) + 24 KiB (vector) + 4 KiB (clean) + 4 MiB (dirty pages) ≈ 4.035 MiB
-    EXPECT_GT(memory, 4ULL * 1024 * 1024);
-    EXPECT_LT(memory, 4.1 * 1024 * 1024);
+    // 1024 pages: 4096 + 24576 + 4096 + 4194304 = 4,227,072 bytes
+    EXPECT_EQ(memory, 4227072ULL);
 }
 
 TEST(Raid1MemoryEstimation, TenTiB) {
     uint64_t volume_size = 10ULL * 1024 * 1024 * 1024 * 1024;
     uint64_t memory = ublkpp::Raid1Disk::estimate_device_overhead(volume_size);
 
-    // Expected: 4 KiB (superblock) + 240 KiB (vector) + 4 KiB (clean) + 40 MiB (dirty pages) ≈ 40.35 MiB
-    EXPECT_GT(memory, 40ULL * 1024 * 1024);
-    EXPECT_LT(memory, 41ULL * 1024 * 1024);
-}
-
-TEST(Raid1MemoryEstimation, SmallVolume) {
-    uint64_t volume_size = 512ULL * 1024 * 1024;
-    uint64_t memory = ublkpp::Raid1Disk::estimate_device_overhead(volume_size);
-
-    // Expected: 4 KiB (superblock) + 24 bytes (vector) + 4 KiB (clean) + 2 MiB (dirty pages) ≈ 2.008 MiB
-    EXPECT_GT(memory, 15ULL * 1024);
-    EXPECT_LT(memory, 20ULL * 1024);
+    // 10240 pages: 4096 + 245760 + 4096 + 41943040 = 42,196,992 bytes
+    EXPECT_EQ(memory, 42196992ULL);
 }
 
 TEST(Raid1MemoryEstimation, LinearScaling) {
@@ -47,6 +47,6 @@ TEST(Raid1MemoryEstimation, VeryLargeVolume) {
     uint64_t volume_size = 100ULL * 1024 * 1024 * 1024 * 1024;
     uint64_t memory = ublkpp::Raid1Disk::estimate_device_overhead(volume_size);
 
-    EXPECT_GT(memory, 400ULL * 1024 * 1024);
-    EXPECT_LT(memory, 410ULL * 1024 * 1024);
+    // 102400 pages: 4096 + 2457600 + 4096 + 419430400 = 421,896,192 bytes
+    EXPECT_EQ(memory, 421896192ULL);
 }
