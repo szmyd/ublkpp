@@ -521,13 +521,7 @@ uint64_t queue_mem = ublkpp_tgt::estimate_queue_memory();
 ### Device-Specific Memory
 
 **RAID0:**
-```cpp
-// Superblock overhead only
-uint64_t raid0_mem = Raid0Disk::estimate_device_overhead(
-    num_disks  // Number of devices in stripe
-);
-// Typically: num_disks * 4 KiB (superblocks)
-```
+No real memory requirements here.
 
 **RAID1:**
 ```cpp

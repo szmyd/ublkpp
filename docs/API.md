@@ -387,12 +387,6 @@ Raid0Disk(boost::uuids::uuid const& uuid,
 #### Methods
 
 ```cpp
-static uint64_t estimate_device_overhead(uint32_t num_disks) noexcept;
-```
-
-Estimate memory overhead (superblocks only).
-
-```cpp
 std::shared_ptr<UblkDisk> get_device(uint32_t stripe_offset) const noexcept;
 ```
 
