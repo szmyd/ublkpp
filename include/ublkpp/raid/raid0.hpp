@@ -29,10 +29,6 @@ public:
     std::shared_ptr< UblkDisk > get_device(uint32_t stripe_offset) const noexcept;
     uint32_t stripe_size() const noexcept { return _stripe_size; }
 
-    // Estimate device-specific memory overhead (SuperBlocks only)
-    // Does NOT include queue/thread overhead - use ublkpp_tgt::estimate_queue_memory() for that
-    static uint64_t estimate_device_overhead(uint32_t num_disks // Number of disks in stripe
-                                              ) noexcept;
     /// =============
 
     /// UBlkDisk Interface Overrides

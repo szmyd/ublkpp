@@ -11,7 +11,6 @@ list(APPEND RAID0_TEST_SRCS
     device_probe_differ.cpp
     discard_merge.cpp
     discard_retry.cpp
-    memory_estimation.cpp
     open_devices.cpp
     raid0_impl_tests.cpp
     split_retry.cpp
