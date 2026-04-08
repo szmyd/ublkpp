@@ -25,10 +25,8 @@ public:
 
     /// Raid0Disk API
     /// =============
-
     std::shared_ptr< UblkDisk > get_device(uint32_t stripe_offset) const noexcept;
     uint32_t stripe_size() const noexcept { return _stripe_size; }
-
     /// =============
 
     /// UBlkDisk Interface Overrides
