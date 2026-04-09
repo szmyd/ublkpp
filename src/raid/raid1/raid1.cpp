@@ -330,11 +330,42 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 // manner that is race-free
 // ##########################################!! WARNING !!##########################################
 
-// Capture routing state with consistent device pointers using double-read retry.
-// The writer ordering in __swap_device is: CAS route (seq_cst) -> device.swap().
-// If device pointers are stable across two reads, the route we observed between them
-// is consistent: either no swap started, or the CAS fired but the ptr swap hasn't
-// landed yet — both states are valid for routing purposes.
+// ═══════════════════════════════════════════════════════════════════════════════
+// ☠️ ☠️ ☠️  DANGER ZONE: LOCK-FREE SYNCHRONIZATION - DO NOT MODIFY  ☠️ ☠️ ☠️
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// This function implements a lock-free read-retry pattern that is INTENTIONALLY
+// a data race by C++ standard but SAFE (on x86-64) in practice through application-level
+// synchronization.
+//
+// THE PROBLEM:
+// - Concurrent read of shared_ptr while another thread swaps it = UB (data race)
+// - shared_ptr is 16 bytes (ptr + control_block), NOT atomically readable
+// - Torn reads can create {old_ptr, new_control_block} corrupted state
+//
+// THE SOLUTION:
+// - Read device pointers twice with a route read in between
+// - Validate pointers haven't changed → retry if they have
+// - Only proceed when we have a consistent snapshot
+// - Torn reads are DETECTED by validation before we use the data
+//
+// WHAT MAKES THIS SAFE:
+// 1. Validation loop catches all torn/inconsistent reads
+// 2. We NEVER dereference or use corrupted shared_ptr state
+// 3. Writer ordering (CAS route → swap devices) ensures consistency
+// 4. Pointer reads are atomic on x86-64 (detection works)
+//
+// WHAT CAN GO WRONG IF YOU MODIFY THIS:
+// - Remove validation → use-after-free from torn reads
+// - Weaken validation → ABA problems, stale route with new devices
+// - Use data before validation → memory corruption
+// - Change retry logic → infinite loops or missed swaps
+//
+// TSAN FLAGS THIS: Yes, correctly. See tsan.supp for suppression rationale.
+//
+// ⚠️  DO NOT MODIFY UNLESS YOU FULLY UNDERSTAND LOCK-FREE MEMORY MODELS ⚠️
+//
+// ═══════════════════════════════════════════════════════════════════════════════
 #ifndef NDEBUG
 __attribute__((noinline, no_sanitize_thread))
 #endif

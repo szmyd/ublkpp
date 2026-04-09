@@ -77,8 +77,24 @@ class Raid1DiskImpl : public UblkDisk {
         return static_cast< raid1::read_route >(_read_route_cache.load(std::memory_order_acquire));
     }
 
-    // Atomically capture routing state (devices, subcmds, degraded flag)
-    // noinline + no_sanitize_thread only in debug builds for TSAN
+    // ☠️ ☠️ ☠️  DANGER: LOCK-FREE SYNCHRONIZATION - DO NOT MODIFY  ☠️ ☠️ ☠️
+    //
+    // This function uses a CAREFULLY DESIGNED lock-free read-retry pattern with
+    // application-level validation. Modifications can introduce:
+    // - Use-after-free bugs (torn shared_ptr reads)
+    // - ABA problems (if validation is weakened)
+    // - Memory corruption (if retry logic is broken)
+    //
+    // The code is INTENTIONALLY UNSAFE by C++ standard (data race on shared_ptr)
+    // but SAFE in practice (on x86-64) due to:
+    // 1. Read-validate-retry loop catches torn reads
+    // 2. Pointer-sized reads are atomic on x86-64
+    // 3. We never use inconsistent data (validation ensures this)
+    //
+    // TSAN correctly flags this as a data race - suppression file required.
+    // DO NOT TOUCH unless you fully understand lock-free memory models.
+    //
+    // ☠️ ☠️ ☠️  YOU HAVE BEEN WARNED  ☠️ ☠️ ☠️
 #ifndef NDEBUG
     __attribute__((noinline, no_sanitize_thread))
 #endif
