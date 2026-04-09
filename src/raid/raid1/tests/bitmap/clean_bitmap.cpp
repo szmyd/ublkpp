@@ -99,8 +99,9 @@ TEST(Raid1, CleanBitmapSingleRegion) {
 
     // Enable resync and wait for completion
     raid_device.toggle_resync(true);
-    std::this_thread::sleep_for(100ms);
 
+    // Wait for devices to become clean (resync completes asynchronously)
+    ASSERT_TRUE(wait_for_clean_state(raid_device));
     cur_replica_state = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_b);
@@ -180,8 +181,9 @@ TEST(Raid1, CleanBitmapMultipleRegions) {
     }
 
     raid_device.toggle_resync(true);
-    std::this_thread::sleep_for(150ms);
 
+    // Wait for devices to become clean (resync completes asynchronously)
+    ASSERT_TRUE(wait_for_clean_state(raid_device));
     cur_replica_state = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_b);
@@ -517,8 +519,9 @@ TEST(Raid1, CleanBitmapLargeRegion) {
                            uint64_t) -> io_result { return 1; });
 
     raid_device.toggle_resync(true);
-    std::this_thread::sleep_for(150ms);
 
+    // Wait for devices to become clean (resync completes asynchronously)
+    ASSERT_TRUE(wait_for_clean_state(raid_device));
     cur_replica_state = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_b);

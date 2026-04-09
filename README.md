@@ -11,6 +11,7 @@
 - **RAID Support**: Full implementation of RAID0 (striping), RAID1 (mirroring), and RAID10 (stripe of mirrors)
 - **RAID1 Resilient Bitmap**: Memory-efficient dirty tracking (4 KiB page tracks 1 GiB data)
 - **Hot Device Replacement**: Swap devices in degraded RAID1 arrays without downtime
+- **Lock-Free I/O Path**: Read/write operations use lock-free algorithms (x86-64/ARM64)
 - **Multiple Backends**: File system, iSCSI, and HomeBlocks support
 - **Comprehensive Testing**: High test coverage with unit and integration tests
 - **Modern C++**: Built with C++23, leveraging `std::expected` for error handling

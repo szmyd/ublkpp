@@ -1,6 +1,6 @@
 #include "test_raid1_common.hpp"
 
-// Test basic __failover_read functionality
+// Test basic __failover_read functionality. Runs in isolated thread to get fresh thread_local load balancer state.
 TEST(Raid1, SyncIoReadDevAFail) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
@@ -13,9 +13,11 @@ TEST(Raid1, SyncIoReadDevAFail) {
     EXPECT_SYNC_OP(test_op, device_a, false, true, test_sz, test_off + raid_device.reserved_size());
     EXPECT_SYNC_OP(test_op, device_b, true, false, test_sz, test_off + raid_device.reserved_size());
 
-    auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
-    ASSERT_TRUE(res);
-    EXPECT_EQ(test_sz, res.value());
+    RUN_IN_THREAD({
+        auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(test_sz, res.value());
+    });
 
     // expect unmount_clean on both (READ fails do not dirty bitmap)
     EXPECT_TO_WRITE_SB(device_a);

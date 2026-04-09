@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Memory estimations for Raid0/Raid1/UblkTgt
 
 ## 0.20.x
+- Fix some more cases where __capture_route_state was being misused.
+- raid1: Make Bitmap lock-free by using pre-allocated vector.
 - raid1: Make Bitmap lock-free by using pre-allocated vector.
 - RouteState atomicity: Introduced RouteState struct and __capture_route_state() to atomically capture all 
   route-derived values (active/backup devices, subcmds, degraded flag) at function entry

@@ -13,7 +13,7 @@ public:
     explicit InMemoryDisk(uint64_t capacity) {}
     ~InMemoryDisk() override {}
 
-    std::string id() const override { return "InMemoryDisk"; }
+    std::string id() const noexcept override { return "InMemoryDisk"; }
     std::list< int > open_for_uring(int const iouring_device) override { return {}; }
 
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override { return 0; }

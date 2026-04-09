@@ -110,8 +110,10 @@ TEST(Raid1, CleanBitmap) {
         raid_device.queue_internal_resp(nullptr, &ublk_data, internal_sub_cmd, 0UL);
         remove_io_data(ublk_data);
         raid_device.toggle_resync(true);
-        std::this_thread::sleep_for(3ms);
     }
+
+    // Wait for devices to become clean (resync completes asynchronously)
+    ASSERT_TRUE(wait_for_clean_state(raid_device));
     cur_replica_state = raid_device.replica_states();
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_a);
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_state.device_b);
