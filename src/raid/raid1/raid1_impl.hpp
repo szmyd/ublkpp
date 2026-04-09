@@ -51,7 +51,6 @@ class Raid1DiskImpl : public UblkDisk {
     bool _resync_enabled{true};
     std::shared_ptr< Raid1ResyncTask > _resync_task;
 
-
     // Ensure exclusivity in __swap_device
     std::mutex _swap_lock;
 
@@ -79,6 +78,10 @@ class Raid1DiskImpl : public UblkDisk {
     }
 
     // Atomically capture routing state (devices, subcmds, degraded flag)
+    // noinline + no_sanitize_thread only in debug builds for TSAN
+#ifndef NDEBUG
+    __attribute__((noinline, no_sanitize_thread))
+#endif
     RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
 
     // CAS with uint8_t (for when caller already has uint8_t)

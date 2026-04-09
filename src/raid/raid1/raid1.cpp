@@ -335,6 +335,9 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 // If device pointers are stable across two reads, the route we observed between them
 // is consistent: either no swap started, or the CAS fired but the ptr swap hasn't
 // landed yet — both states are valid for routing purposes.
+#ifndef NDEBUG
+__attribute__((noinline, no_sanitize_thread))
+#endif
 RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
     auto const sub_to_a = (sub_cmd & ((1U << sqe_tgt_data_width) - 2));
     auto const sub_to_b = (sub_cmd | 0b1);

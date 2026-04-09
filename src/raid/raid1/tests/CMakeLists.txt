@@ -33,3 +33,10 @@ target_link_libraries (test_raid1
   ublksrv::ublksrv
 )
 add_test(NAME Raid1Test COMMAND test_raid1 -cv 2)
+
+# Set TSAN suppression file for lock-free read path false positives
+if ((DEFINED THREAD_SANITIZER_ON) AND (${THREAD_SANITIZER_ON}))
+  set_tests_properties(Raid1Test PROPERTIES
+    ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tsan.supp"
+  )
+endif()
