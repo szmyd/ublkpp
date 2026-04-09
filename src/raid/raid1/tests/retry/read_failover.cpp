@@ -1,6 +1,7 @@
 #include "test_raid1_common.hpp"
 
-// Brief: Test retrying a READ within the RAID1 Device, if the CLEAN device fails immediately
+// Brief: Test retrying a READ within the RAID1 Device, if the CLEAN device fails immediately.
+// Runs in isolated thread to get fresh thread_local load balancer state.
 TEST(Raid1, ReadFailover) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
@@ -29,11 +30,13 @@ TEST(Raid1, ReadFailover) {
             return 1;
         });
 
-    auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
-    auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
-    remove_io_data(ublk_data);
-    ASSERT_TRUE(res);
-    EXPECT_EQ(1, res.value());
+    RUN_IN_THREAD({
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
+        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(1, res.value());
+    });
 
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);

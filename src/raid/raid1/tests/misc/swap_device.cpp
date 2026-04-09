@@ -138,6 +138,43 @@ TEST(Raid1, SwapDeviceA) {
         .RetiresOnSaturation();
 }
 
+TEST(Raid1, SwapStayingWriteFail) {
+    auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
+    auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
+
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
+
+    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    // New device read returns a valid superblock with matching age → not a new device → no bitmap write
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // Staying device (device_b) write fails — triggers rollback path (lines 310-313)
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        });
+
+    EXPECT_EQ(raid_device.swap_device("DiskA", new_device), new_device);
+
+    // Rollback must have restored the original device pointers and EITHER route
+    auto [replica_a, replica_b] = raid_device.replicas();
+    EXPECT_EQ(replica_a, device_a);
+    EXPECT_EQ(replica_b, device_b);
+
+    // expect unmount_clean update (not degraded → writes to both)
+    EXPECT_TO_WRITE_SB(device_a);
+    EXPECT_TO_WRITE_SB(device_b);
+}
+
 TEST(Raid1, SwapFail) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));

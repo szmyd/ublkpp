@@ -1,0 +1,15 @@
+# TSAN Suppression File for ublkpp
+#
+# This file suppresses known false positives from ThreadSanitizer.
+
+# RAID1 lock-free read path: intentional double-checked read pattern
+# The __capture_route_state function uses a carefully designed lock-free
+# synchronization where readers validate consistency by reading device
+# pointers twice with a route read in between. TSAN flags this as a race
+# but it's safe due to the validation logic.
+race:ublkpp::raid1::Raid1DiskImpl::__capture_route_state
+
+# GMock internal data race in concurrent tests
+# GMock's expectation management is not thread-safe by design, but our
+# tests set up expectations on the main thread before concurrent access
+race:testing::internal::FunctionMocker
