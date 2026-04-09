@@ -35,8 +35,8 @@ static const ublkpp::raid1::SuperBlock normal_superblock = {
 static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
 
 // Helper for tests: allocate a SuperBitmap buffer for Bitmap constructor
-inline std::unique_ptr<uint8_t[]> make_test_superbitmap() {
-    auto buf = std::make_unique<uint8_t[]>(ublkpp::raid1::k_superbitmap_size);
+inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
+    auto buf = std::make_unique< uint8_t[] >(ublkpp::raid1::k_superbitmap_size);
     memset(buf.get(), 0x00, ublkpp::raid1::k_superbitmap_size);
     return buf;
 }
@@ -117,9 +117,24 @@ inline std::unique_ptr<uint8_t[]> make_test_superbitmap() {
 #define CREATE_DISK_B(params) CREATE_DISK((params), true)
 
 // Wrap test body in thread to get fresh thread_local state (for RAID1 load balancer isolation)
-#define RUN_IN_THREAD(body)     \
-    do {                        \
-        std::thread([&]() {     \
-            body                \
-        }).join();              \
+#define RUN_IN_THREAD(body)                                                                                            \
+    do {                                                                                                               \
+        std::thread([&]() { body }).join();                                                                            \
     } while (0)
+
+// Helper function to wait for both devices to become clean
+// Returns true if both devices are clean, false if timeout
+inline bool wait_for_clean_state(ublkpp::Raid1Disk& raid_device,
+                                 std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
+    using namespace std::chrono_literals;
+    auto const start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < timeout) {
+        auto state = raid_device.replica_states();
+        if (state.device_a == ublkpp::raid1::replica_state::CLEAN &&
+            state.device_b == ublkpp::raid1::replica_state::CLEAN && state.bytes_to_sync == 0) {
+            return true;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    return false;
+}
