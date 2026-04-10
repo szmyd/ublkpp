@@ -105,7 +105,9 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
 
 #define CREATE_DISK_F(params, dev_b, no_read, fail_read, no_write, fail_write)                                         \
     [] {                                                                                                               \
-        auto device = std::make_shared< ublkpp::TestDisk >((params));                                                  \
+        auto p = (params);                                                                                             \
+        p.is_slot_b = (dev_b);                                                                                         \
+        auto device = std::make_shared< ublkpp::TestDisk >(p);                                                         \
         /* Expect to load and write clean_unmount bit */                                                               \
         if (!no_read) { EXPECT_TO_READ_SB_F(device, (dev_b), fail_read) }                                              \
         if (!no_write && !fail_read) { EXPECT_TO_WRITE_SB_F(device, fail_write) }                                      \

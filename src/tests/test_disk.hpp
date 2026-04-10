@@ -2,6 +2,7 @@
 
 #include "ublkpp/lib/ublk_disk.hpp"
 
+#include <sisl/logging/logging.h>
 #include <ublksrv.h>
 
 using ::ublkpp::ilog2;
@@ -15,6 +16,7 @@ struct TestParams {
     uint32_t max_io{512 * Ki};
     bool can_discard{true};
     bool direct_io{true};
+    bool is_slot_b{false}; // True if device is in RAID1 slot B (expects sub_cmd bit=1)
 };
 
 namespace ublkpp {
@@ -22,7 +24,8 @@ namespace ublkpp {
 class TestDisk : public UblkDisk {
 public:
     std::string my_id;
-    explicit TestDisk(TestParams const& test_params) : UblkDisk(), my_id(test_params.id) {
+    bool expected_slot_b; // True if this device is in RAID1 slot B
+    explicit TestDisk(TestParams const& test_params) : UblkDisk(), my_id(test_params.id), expected_slot_b(test_params.is_slot_b) {
         auto& our_params = *params();
         our_params.basic.dev_sectors = test_params.capacity >> SECTOR_SHIFT;
         our_params.basic.logical_bs_shift = ilog2(test_params.l_size);
@@ -35,6 +38,25 @@ public:
         direct_io = test_params.direct_io;
     }
     std::string id() const noexcept override { return my_id; }
+
+private:
+    // Validate that sub_cmd bit matches expected slot for RAID1 devices
+    // Slot A devices should ALWAYS see bit=0, slot B should ALWAYS see bit=1
+    void validate_slot(sub_cmd_t sub_cmd, const char* method) const {
+        if (route_size() == 0) return; // Not a RAID device, skip validation
+
+        bool const sub_cmd_is_slot_b = (sub_cmd & 0b1) != 0;
+        DEBUG_ASSERT_EQ(expected_slot_b, sub_cmd_is_slot_b,
+                        "Device {} (slot {}) received {} with wrong sub_cmd bit={} (slot {})",
+                        my_id, expected_slot_b ? "B" : "A", method, sub_cmd_is_slot_b ? "1" : "0",
+                        sub_cmd_is_slot_b ? "B" : "A");
+    }
+
+public:
+    // Override on_io_complete to validate slot routing (only place with the bug)
+    void on_io_complete(ublk_io_data const*, sub_cmd_t sub_cmd, int) override {
+        validate_slot(sub_cmd, "on_io_complete");
+    }
 
     MOCK_METHOD(std::list< int >, open_for_uring, (int const), (override));
     MOCK_METHOD(io_result, handle_internal,
