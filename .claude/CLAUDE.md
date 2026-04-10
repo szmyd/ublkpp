@@ -50,9 +50,8 @@ conan build -s:h build_type=Release --build missing ublkpp
 conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
 conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 
-# Format code (ALWAYS after changes)
-./apply-clang-format.sh
-./apply-clang-format.sh -v  # validate only
+# Format code (applied automatically after edits to C/C++ files)
+# Run on each modified file: clang-format -style=file -i -fallback-style=none file.cpp
 ```
 
 ## Code Conventions
@@ -81,8 +80,15 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 **Every code change:**
 1. Write code
 2. Write tests (UNLESS ublksrv calls, docs, or build config only)
-3. Apply clang-format: `./apply-clang-format.sh`
+3. Apply clang-format to edited files automatically (see below)
 4. Build: `conan build -s:h build_type=Debug --build missing ublkpp` (auto-runs tests)
+
+**Formatting:**
+- ALWAYS run `clang-format -style=file -i -fallback-style=none` on each edited file
+- Only format files you actually modified (not entire codebase)
+- Applies to: `.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.hxx`, `.ipp` files
+- Run immediately after Edit or Write tool calls on these file types
+- Example: After editing `src/raid/raid1.cpp`, run `clang-format -style=file -i -fallback-style=none src/raid/raid1.cpp`
 
 ## Testing Guidelines
 

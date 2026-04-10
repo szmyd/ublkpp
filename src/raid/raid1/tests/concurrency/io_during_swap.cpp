@@ -23,15 +23,13 @@ TEST(Raid1Concurrency, WriteDuringSwap) {
     // Both devices handle sync writes
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     // Background thread: issue writes continuously
     std::atomic< bool > stop{false};
@@ -64,9 +62,8 @@ TEST(Raid1Concurrency, WriteDuringSwap) {
 
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     // Swap device_b for device_c while writes are in-flight
     auto old_dev = raid_device.swap_device("DiskB", device_c);
@@ -140,15 +137,13 @@ TEST(Raid1Concurrency, ReadDuringSwap) {
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     // Swap device_b for device_c while reads are in-flight
     auto old_dev = raid_device.swap_device("DiskB", device_c);

@@ -24,8 +24,7 @@ TEST(Raid1Bitmap, SyncToBatchesConsecutivePages) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
             EXPECT_EQ(4U, nr_vecs); // 4 pages batched together
-            EXPECT_EQ(4 * ublkpp::raid1::Bitmap::page_size(),
-                     ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(4 * ublkpp::raid1::Bitmap::page_size(), ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(ublkpp::raid1::Bitmap::page_size(), addr); // Starts after SuperBlock
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -43,7 +42,7 @@ TEST(Raid1Bitmap, SyncToSeparatesNonConsecutivePages) {
     // Dirty page 0 and page 2 (non-consecutive)
     bitmap.dirty_region(0, 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8); // Page 0
     bitmap.dirty_region(2 * 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8,
-                       32 * ublkpp::Ki * 4 * ublkpp::Ki * 8); // Page 2
+                        32 * ublkpp::Ki * 4 * ublkpp::Ki * 8); // Page 2
 
     // Expect 2 separate writes (not batched due to gap)
     EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
@@ -54,7 +53,7 @@ TEST(Raid1Bitmap, SyncToSeparatesNonConsecutivePages) {
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         })
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
-            EXPECT_EQ(1U, nr_vecs); // Second page alone
+            EXPECT_EQ(1U, nr_vecs);                                  // Second page alone
             EXPECT_EQ(3 * ublkpp::raid1::Bitmap::page_size(), addr); // Page 2 is at offset 3
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -95,7 +94,8 @@ TEST(Raid1Bitmap, SyncToSkipsUnmodifiedLoadedPages) {
 
     // Mark all 8 pages as dirty in the SuperBitmap so load_from will load them
     auto sb = ublkpp::raid1::SuperBitmap(superbitmap_buf.get());
-    for (int i = 0; i < 8; ++i) sb.set_bit(i);
+    for (int i = 0; i < 8; ++i)
+        sb.set_bit(i);
 
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -111,8 +111,7 @@ TEST(Raid1Bitmap, SyncToSkipsUnmodifiedLoadedPages) {
     bitmap.load_from(*device);
 
     // Now try to sync_to - should NOT write loaded pages (they're unmodified)
-    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(0); // No writes expected!
+    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _)).Times(0); // No writes expected!
 
     auto res = bitmap.sync_to(*device, ublkpp::raid1::Bitmap::page_size());
     EXPECT_TRUE(res);
@@ -125,7 +124,8 @@ TEST(Raid1Bitmap, SyncToWritesModifiedLoadedPages) {
 
     // Mark all 8 pages as dirty in the SuperBitmap so load_from will load them
     auto sb = ublkpp::raid1::SuperBitmap(superbitmap_buf.get());
-    for (int i = 0; i < 8; ++i) sb.set_bit(i);
+    for (int i = 0; i < 8; ++i)
+        sb.set_bit(i);
 
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -184,12 +184,12 @@ TEST(Raid1Bitmap, SyncToBatchesMixedPages) {
 
     // Dirty pages: 0, 1, 2 (consecutive), then 5, 6 (consecutive)
     auto page_width = 32 * ublkpp::Ki * 4 * ublkpp::Ki * 8UL;
-    bitmap.dirty_region(0 * page_width, page_width);       // Page 0
-    bitmap.dirty_region(1 * page_width, page_width);       // Page 1
-    bitmap.dirty_region(2 * page_width, page_width);       // Page 2
+    bitmap.dirty_region(0 * page_width, page_width); // Page 0
+    bitmap.dirty_region(1 * page_width, page_width); // Page 1
+    bitmap.dirty_region(2 * page_width, page_width); // Page 2
     // Gap at page 3 and 4
-    bitmap.dirty_region(5 * page_width, page_width);       // Page 5
-    bitmap.dirty_region(6 * page_width, page_width);       // Page 6
+    bitmap.dirty_region(5 * page_width, page_width); // Page 5
+    bitmap.dirty_region(6 * page_width, page_width); // Page 6
 
     int call_count = 0;
     EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
@@ -221,8 +221,7 @@ TEST(Raid1Bitmap, SyncToEmptyBitmap) {
     // Don't dirty anything
 
     // Should not write anything
-    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(0);
+    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _)).Times(0);
 
     auto res = bitmap.sync_to(*device, ublkpp::raid1::Bitmap::page_size());
     EXPECT_TRUE(res); // Returns success for empty bitmap
@@ -242,8 +241,7 @@ TEST(Raid1Bitmap, SyncToSkipsZeroPages) {
     [[maybe_unused]] auto [page, pg_off, sz] = bitmap.clean_region(0, page_width);
 
     // Should not write zero pages
-    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(0);
+    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _)).Times(0);
 
     auto res = bitmap.sync_to(*device, ublkpp::raid1::Bitmap::page_size());
     EXPECT_TRUE(res);

@@ -80,15 +80,13 @@ TEST(Raid1Concurrency, MultipleReadersDuringSwap) {
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     // Swap device_b for device_c while all readers are active
     auto old_dev = raid_device.swap_device("DiskB", device_c);

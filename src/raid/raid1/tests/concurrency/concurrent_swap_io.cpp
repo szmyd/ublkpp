@@ -32,7 +32,7 @@ TEST(Raid1, ConcurrentSwapAndSyncRead) {
 
     // Background thread: issue sync reads continuously while the swap runs
     std::atomic< bool > stop{false};
-    std::atomic< int >  read_count{0};
+    std::atomic< int > read_count{0};
     auto reader = std::thread([&] {
         while (!stop.load(std::memory_order_relaxed)) {
             auto res = raid_device.sync_io(UBLK_IO_OP_READ, nullptr, 4 * Ki, 64 * Ki);
@@ -61,14 +61,12 @@ TEST(Raid1, ConcurrentSwapAndSyncRead) {
     // Use AnyNumber so the destructor's unmount_clean writes are also covered
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     // Swap device_b for device_c while the reader thread is active
     auto old_dev = raid_device.swap_device("DiskB", device_c);
