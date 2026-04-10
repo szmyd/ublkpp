@@ -25,7 +25,8 @@ class TestDisk : public UblkDisk {
 public:
     std::string my_id;
     bool expected_slot_b; // True if this device is in RAID1 slot B
-    explicit TestDisk(TestParams const& test_params) : UblkDisk(), my_id(test_params.id), expected_slot_b(test_params.is_slot_b) {
+    explicit TestDisk(TestParams const& test_params) :
+            UblkDisk(), my_id(test_params.id), expected_slot_b(test_params.is_slot_b) {
         auto& our_params = *params();
         our_params.basic.dev_sectors = test_params.capacity >> SECTOR_SHIFT;
         our_params.basic.logical_bs_shift = ilog2(test_params.l_size);
@@ -46,10 +47,9 @@ private:
         if (route_size() == 0) return; // Not a RAID device, skip validation
 
         bool const sub_cmd_is_slot_b = (sub_cmd & 0b1) != 0;
-        DEBUG_ASSERT_EQ(expected_slot_b, sub_cmd_is_slot_b,
-                        "Device {} (slot {}) received {} with wrong sub_cmd bit={} (slot {})",
-                        my_id, expected_slot_b ? "B" : "A", method, sub_cmd_is_slot_b ? "1" : "0",
-                        sub_cmd_is_slot_b ? "B" : "A");
+        RELEASE_ASSERT_EQ(
+            expected_slot_b, sub_cmd_is_slot_b, "Device {} (slot {}) received {} with wrong sub_cmd bit={} (slot {})",
+            my_id, expected_slot_b ? "B" : "A", method, sub_cmd_is_slot_b ? "1" : "0", sub_cmd_is_slot_b ? "B" : "A");
     }
 
 public:
