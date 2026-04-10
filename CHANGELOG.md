@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.20.9
+- raid1: Fix on_io_complete metrics mapping after device swap - I/O metrics were incorrectly attributed to the wrong device when completions occurred after swap_device() changed the route.
+
 ## 0.20.8
 - Fix some more cases where __capture_route_state was being misused.
 
