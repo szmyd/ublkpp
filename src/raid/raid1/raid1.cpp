@@ -882,8 +882,10 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
           orig_route)
 
     // Pass completion notification to the underlying device for its metrics
-    ((read_route::DEVA == orig_route) ? state.active_dev->disk : state.backup_dev->disk)
-        ->on_io_complete(data, sub_cmd, res);
+    // Map orig_route to physical device accounting for potential swap
+    bool const was_slot_a = (read_route::DEVA == orig_route);
+    auto const use_active = was_slot_a ? (state.route != read_route::DEVB) : (state.route == read_route::DEVB);
+    (use_active ? state.active_dev->disk : state.backup_dev->disk)->on_io_complete(data, sub_cmd, res);
 
     // Decrement outstanding write counter for writes (not reads), but only if it was a
     // success.
