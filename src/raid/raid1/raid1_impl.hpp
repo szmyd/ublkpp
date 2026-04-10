@@ -100,16 +100,6 @@ class Raid1DiskImpl : public UblkDisk {
 #endif
     RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
 
-    // Helper: Decode logical route to physical device from captured state
-    // Maps DEVA/DEVB to the actual device currently in that physical slot,
-    // accounting for swaps that may have changed active/backup mapping
-    inline std::shared_ptr< MirrorDevice > const& __route_to_device(RouteState const& state,
-                                                                    raid1::read_route logical_route) const noexcept {
-        bool const is_slot_a = (read_route::DEVA == logical_route);
-        auto const use_active = is_slot_a ? (state.route != read_route::DEVB) : (state.route == read_route::DEVB);
-        return use_active ? state.active_dev : state.backup_dev;
-    }
-
     // CAS with uint8_t (for when caller already has uint8_t)
     bool __set_read_route(uint8_t& old_route, uint8_t new_route) noexcept {
         return _read_route_cache.compare_exchange_strong(old_route, new_route);

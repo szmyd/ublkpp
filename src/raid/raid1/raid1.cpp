@@ -387,6 +387,16 @@ RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
     }
 }
 
+// Helper: Decode logical route to physical device from captured state
+// Maps DEVA/DEVB to the actual device currently in that physical slot,
+// accounting for swaps that may have changed active/backup mapping
+static inline std::shared_ptr< MirrorDevice > const& __route_to_device(RouteState const& state,
+                                                                       raid1::read_route logical_route) noexcept {
+    bool const is_slot_a = (read_route::DEVA == logical_route);
+    auto const use_active = is_slot_a ? (state.route != read_route::DEVB) : (state.route == read_route::DEVB);
+    return use_active ? state.active_dev : state.backup_dev;
+}
+
 // RAID1 devices have the property of being replacable while maintaining
 // consistency due to the fact that the data is replicated. Swapping a device
 // may occur for a multitude of _reasons_ but the following RULES apply when
