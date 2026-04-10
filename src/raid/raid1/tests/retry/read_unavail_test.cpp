@@ -57,9 +57,8 @@ TEST(Raid1, SuccessfulReadClearsUnavail) {
         });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-            return 1;
-        });
+        .WillOnce(
+            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
 
     // First read sets UNAVAIL
     auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
@@ -111,14 +110,12 @@ TEST(Raid1, ReadFailureDoesNotDegrade) {
     // Next write should work on both devices (not degraded)
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-            return 1;
-        });
+        .WillOnce(
+            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-            return 1;
-        });
+        .WillOnce(
+            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
 
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
     res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
@@ -144,9 +141,8 @@ TEST(Raid1, WriteDegradedShowsError) {
         });
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-            return 1;
-        });
+        .WillOnce(
+            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
 
     // Write triggers degradation on device B
     EXPECT_TO_WRITE_SB(device_a); // Degradation writes superblock
@@ -173,14 +169,12 @@ TEST(Raid1, SyncIoTracksReadFailures) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Device A fails sync read, device B succeeds
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .Times(1)
-        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
-            return std::unexpected(std::make_error_condition(std::errc::io_error));
-        });
-    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .Times(1)
-        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) { return 1; });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(1).WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(1).WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
+        return 1;
+    });
 
     std::vector< iovec > iov(1);
     iov[0].iov_len = 4 * Ki;
