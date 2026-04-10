@@ -10,11 +10,11 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.20.8"
+    version = "0.21.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
-    description = "A UBlk library for CPP application"
-    topics = ("ublk")
+    description = "C++23 library providing RAID support for Linux userspace block (ublk) driver"
+    topics = ("ublk", "raid", "storage", "block-device")
     url = "https://github.com/szmyd/ublkpp"
     license = "Apache-2.0"
 

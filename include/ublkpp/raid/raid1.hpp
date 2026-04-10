@@ -31,6 +31,12 @@ public:
     uint64_t reserved_size() const noexcept;
     std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const noexcept;
     void toggle_resync(bool t);
+
+    // Estimate device-specific memory overhead (SuperBlocks + worst-case bitmap)
+    // Uses current chunk_size from SISL options
+    // Does NOT include queue/thread overhead - use ublkpp_tgt::estimate_queue_memory() for that
+    static uint64_t estimate_device_overhead(uint64_t volume_size // Volume size in bytes
+                                              ) noexcept;
     /// =============
 
     /// UBlkDisk Interface Overrides

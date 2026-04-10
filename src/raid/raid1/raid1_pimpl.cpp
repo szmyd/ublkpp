@@ -1,5 +1,9 @@
 #include "raid1_impl.hpp"
+#include "bitmap.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
+#include "ublkpp/lib/memory_constants.hpp"
+
+#include <sisl/options/options.h>
 
 namespace ublkpp {
 
@@ -58,6 +62,32 @@ io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 }
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept {
     return _impl->sync_iov(op, iovecs, nr_vecs, offset);
+}
+
+uint64_t Raid1Disk::estimate_device_overhead(uint64_t volume_size) noexcept {
+    // Read current runtime configuration
+    auto const chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
+
+    // Bitmap memory calculation (worst-case: all pages dirty)
+    // Each bitmap page covers (chunk_size × page_size × 8 bits) of data
+    constexpr uint64_t bits_per_byte = 8;
+    uint64_t page_width = static_cast< uint64_t >(chunk_size) * k_page_size * bits_per_byte;
+    uint64_t num_pages = (volume_size / page_width) + ((volume_size % page_width) ? 1 : 0);
+
+    // PageData structure overhead (atomic<word_t*> + void* + atomic<bool>)
+    // Static assert verifies structure layout matches expectations
+    static_assert(sizeof(raid1::Bitmap::PageData) == 24, "PageData size changed - update memory estimation");
+    uint64_t bitmap_vector = num_pages * sizeof(raid1::Bitmap::PageData);
+
+    // One shared clean page
+    uint64_t clean_page = k_page_size;
+
+    // Worst case: all bitmap pages are dirty (100% dirty)
+    uint64_t dirty_pages_worst = num_pages * k_page_size;
+    uint64_t bitmap_memory = bitmap_vector + clean_page + dirty_pages_worst;
+
+    // RAID-1 SuperBlock overhead (one per mirror)
+    return k_page_size + bitmap_memory;
 }
 // ================
 } // namespace ublkpp
