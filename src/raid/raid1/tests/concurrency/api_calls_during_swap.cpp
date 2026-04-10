@@ -52,23 +52,19 @@ TEST(Raid1Concurrency, ReplicaStatesDuringSwap) {
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
-            if (addr == 0) {
-                memset(iovecs->iov_base, 0, iovecs->iov_len);
-            }
+            if (addr == 0) { memset(iovecs->iov_base, 0, iovecs->iov_len); }
             return static_cast< int >(iovecs->iov_len);
         });
 
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     // Perform swap while API calls are ongoing
     auto old_dev = raid_device.swap_device("DiskB", device_c);
@@ -112,23 +108,19 @@ TEST(Raid1Concurrency, ReplicasDuringSwap) {
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
-            if (addr == 0) {
-                memset(iovecs->iov_base, 0, iovecs->iov_len);
-            }
+            if (addr == 0) { memset(iovecs->iov_base, 0, iovecs->iov_len); }
             return static_cast< int >(iovecs->iov_len);
         });
 
     EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     auto old_dev = raid_device.swap_device("DiskB", device_c);
     EXPECT_EQ(old_dev, device_b);
@@ -177,9 +169,7 @@ TEST(Raid1Concurrency, MultipleAPICallersDuringSwap) {
         EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_READ, _, _, _))
             .Times(::testing::AtLeast(1))
             .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
-                if (addr == 0) {
-                    memset(iovecs->iov_base, 0, iovecs->iov_len);
-                }
+                if (addr == 0) { memset(iovecs->iov_base, 0, iovecs->iov_len); }
                 return static_cast< int >(iovecs->iov_len);
             });
 
