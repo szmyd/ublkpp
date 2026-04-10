@@ -11,7 +11,7 @@ class UblkRaidMetrics;
 
 namespace raid1 {
 class Raid1DiskImpl;
-ENUM(replica_state, uint8_t, CLEAN = 0, SYNCING = 1, ERROR = 2);
+ENUM(replica_state, uint8_t, CLEAN = 0, SYNCING = 1, ERROR = 2, UNAVAIL = 3);
 struct array_state {
     replica_state device_a;
     replica_state device_b;
