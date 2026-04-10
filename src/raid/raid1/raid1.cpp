@@ -387,14 +387,19 @@ RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
     }
 }
 
-// Helper: Decode logical route to physical device from captured state
-// Maps DEVA/DEVB to the actual device currently in that physical slot,
+// Helper return type for route-to-device mapping
+struct RouteSelection {
+    std::shared_ptr< MirrorDevice > const& device;
+    sub_cmd_t subcmd;
+};
+
+// Helper: Decode logical route to physical device and subcmd from captured state
+// Maps DEVA/DEVB to the actual device/subcmd currently in that physical slot,
 // accounting for swaps that may have changed active/backup mapping
-static inline std::shared_ptr< MirrorDevice > const& __route_to_device(RouteState const& state,
-                                                                       raid1::read_route logical_route) noexcept {
+static inline RouteSelection __route_to_device(RouteState const& state, raid1::read_route logical_route) noexcept {
     bool const is_slot_a = (read_route::DEVA == logical_route);
     auto const use_active = is_slot_a ? (state.route != read_route::DEVB) : (state.route == read_route::DEVB);
-    return use_active ? state.active_dev : state.backup_dev;
+    return {use_active ? state.active_dev : state.backup_dev, use_active ? state.active_subcmd : state.backup_subcmd};
 }
 
 // RAID1 devices have the property of being replacable while maintaining
@@ -758,12 +763,9 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
 
     // Attempt read on device using captured state shared_ptrs to avoid races with swap_device
     // Map logical route (DEVA/DEVB) to physical device and subcmd from captured state
-    auto const& chosen_dev = __route_to_device(*state, route);
-    // Use subcmd from captured state, adding RETRIED flag if this is a retry attempt
-    bool const going_to_a = (read_route::DEVA == route);
-    auto const use_active = going_to_a ? (state->route != read_route::DEVB) : (state->route == read_route::DEVB);
-    auto chosen_sub = use_active ? state->active_subcmd : state->backup_subcmd;
-    if (retry) chosen_sub = set_flags(chosen_sub, sub_cmd_flags::RETRIED);
+    auto const [chosen_dev, chosen_sub_base] = __route_to_device(*state, route);
+    // Add RETRIED flag if this is a retry attempt
+    auto const chosen_sub = retry ? set_flags(chosen_sub_base, sub_cmd_flags::RETRIED) : chosen_sub_base;
 
     if (auto res = func(*chosen_dev->disk, chosen_sub); res || retry) { return res; }
 
@@ -893,7 +895,7 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
 
     // Pass completion notification to the underlying device for its metrics
     // Map orig_route to physical device accounting for potential swap
-    __route_to_device(state, orig_route)->disk->on_io_complete(data, sub_cmd, res);
+    __route_to_device(state, orig_route).device->disk->on_io_complete(data, sub_cmd, res);
 
     // Decrement outstanding write counter for writes (not reads), but only if it was a
     // success.
