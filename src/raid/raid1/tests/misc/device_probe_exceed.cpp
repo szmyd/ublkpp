@@ -10,8 +10,6 @@ TEST(Raid1, DevicesLargerThanAllowed) {
     auto device_b = CREATE_DISK_F(TestParams{.capacity = UINT64_MAX}, true, false, false, true, false);
 
     // Should throw exception for devices exceeding SuperBitmap capacity
-    EXPECT_THROW(
-        ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
-        std::runtime_error
-    );
+    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
 }

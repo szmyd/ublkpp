@@ -71,12 +71,8 @@ uint32_t SuperBitmap::next_set_bit(uint32_t start_page) const noexcept {
     return k_superbitmap_bits;
 }
 
-uint8_t* SuperBitmap::data() noexcept {
-    return _bits;
-}
+uint8_t* SuperBitmap::data() noexcept { return _bits; }
 
-const uint8_t* SuperBitmap::data() const noexcept {
-    return _bits;
-}
+const uint8_t* SuperBitmap::data() const noexcept { return _bits; }
 
 } // namespace ublkpp::raid1

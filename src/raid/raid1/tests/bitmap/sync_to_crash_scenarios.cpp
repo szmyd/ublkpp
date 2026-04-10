@@ -12,10 +12,8 @@ using ::testing::Return;
 // Test crash during multi-page batch write
 TEST(Raid1BitmapCrash, CrashDuringBatchWrite) {
     // Limit max_io to 8 KiB = 2 pages max per batch
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{
-        .capacity = 16 * ublkpp::Gi,
-        .max_io = 8 * ublkpp::Ki
-    });
+    auto device =
+        std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 16 * ublkpp::Gi, .max_io = 8 * ublkpp::Ki});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 

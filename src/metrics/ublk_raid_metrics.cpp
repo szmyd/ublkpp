@@ -4,15 +4,15 @@
 
 namespace ublkpp {
 
-UblkRaidMetrics::UblkRaidMetrics(std::string const& parent_id, std::string const& raid_device_id)
-    : sisl::MetricsGroup{raid_device_id, raid_device_id} {
+UblkRaidMetrics::UblkRaidMetrics(std::string const& parent_id, std::string const& raid_device_id) :
+        sisl::MetricsGroup{raid_device_id, raid_device_id} {
     // Use raid_device_id as entity name to ensure each RAID has unique metrics
     // Use parent_id (app parent_id) as label so you can filter by application in Sherlock/Prometheus
 
-    REGISTER_COUNTER(raid_degraded_count_device_a, "RAID device A degradation events", "ublk_raid_degraded_count_device_a",
-                     {"parent_id", parent_id});
-    REGISTER_COUNTER(raid_degraded_count_device_b, "RAID device B degradation events", "ublk_raid_degraded_count_device_b",
-                     {"parent_id", parent_id});
+    REGISTER_COUNTER(raid_degraded_count_device_a, "RAID device A degradation events",
+                     "ublk_raid_degraded_count_device_a", {"parent_id", parent_id});
+    REGISTER_COUNTER(raid_degraded_count_device_b, "RAID device B degradation events",
+                     "ublk_raid_degraded_count_device_b", {"parent_id", parent_id});
     REGISTER_COUNTER(device_swaps_total, "Total number of device swaps", "ublk_device_swaps_total",
                      {"parent_id", parent_id});
     // RAID1 resync metrics
@@ -22,10 +22,8 @@ UblkRaidMetrics::UblkRaidMetrics(std::string const& parent_id, std::string const
                        {"parent_id", parent_id}, HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_HISTOGRAM(resync_duration_s, "Resync duration in seconds", "ublk_resync_duration_s",
                        {"parent_id", parent_id}, HistogramBucketsType(ExponentialOfTwoBuckets));
-    REGISTER_GAUGE(active_resyncs, "Number of active resyncs", "ublk_active_resyncs",
-                   {"parent_id", parent_id});
-    REGISTER_GAUGE(dirty_pages, "Number of dirty bitmap pages", "ublk_dirty_pages",
-                   {"parent_id", parent_id});
+    REGISTER_GAUGE(active_resyncs, "Number of active resyncs", "ublk_active_resyncs", {"parent_id", parent_id});
+    REGISTER_GAUGE(dirty_pages, "Number of dirty bitmap pages", "ublk_dirty_pages", {"parent_id", parent_id});
     REGISTER_GAUGE(last_resync_size_kib, "Size of last resync in KiB", "ublk_last_resync_size_kib",
                    {"parent_id", parent_id});
     register_me_to_farm();
@@ -41,9 +39,7 @@ void UblkRaidMetrics::record_device_degraded(std::string const& device_name) {
     }
 }
 
-void UblkRaidMetrics::record_resync_start() {
-    COUNTER_INCREMENT(*this, resync_started_total, 1);
-}
+void UblkRaidMetrics::record_resync_start() { COUNTER_INCREMENT(*this, resync_started_total, 1); }
 
 void UblkRaidMetrics::record_resync_progress(uint64_t bytes) {
     // Track resync chunk sizes as histogram in KiB
@@ -56,17 +52,11 @@ void UblkRaidMetrics::record_resync_complete(uint64_t duration_seconds) {
     HISTOGRAM_OBSERVE(*this, resync_duration_s, duration_seconds);
 }
 
-void UblkRaidMetrics::record_active_resyncs(uint64_t count) {
-    GAUGE_UPDATE(*this, active_resyncs, count);
-}
+void UblkRaidMetrics::record_active_resyncs(uint64_t count) { GAUGE_UPDATE(*this, active_resyncs, count); }
 
-void UblkRaidMetrics::record_dirty_pages(uint64_t pages) {
-    GAUGE_UPDATE(*this, dirty_pages, pages);
-}
+void UblkRaidMetrics::record_dirty_pages(uint64_t pages) { GAUGE_UPDATE(*this, dirty_pages, pages); }
 
-void UblkRaidMetrics::record_device_swap() {
-    COUNTER_INCREMENT(*this, device_swaps_total, 1);
-}
+void UblkRaidMetrics::record_device_swap() { COUNTER_INCREMENT(*this, device_swaps_total, 1); }
 
 void UblkRaidMetrics::record_last_resync_size(uint64_t bytes) {
     // Track last resync size in KiB

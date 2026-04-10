@@ -4,10 +4,11 @@
 
 namespace ublkpp {
 
-UblkIOMetrics::UblkIOMetrics(std::string const& uuid)
-    : sisl::MetricsGroup{"ublk_io_metrics", uuid} {
-    REGISTER_HISTOGRAM(ublk_read_queue_distribution, "Read queue depth distribution", HistogramBucketsType(ExponentialOfTwoBuckets));
-    REGISTER_HISTOGRAM(ublk_write_queue_distribution, "Write queue depth distribution", HistogramBucketsType(ExponentialOfTwoBuckets));
+UblkIOMetrics::UblkIOMetrics(std::string const& uuid) : sisl::MetricsGroup{"ublk_io_metrics", uuid} {
+    REGISTER_HISTOGRAM(ublk_read_queue_distribution, "Read queue depth distribution",
+                       HistogramBucketsType(ExponentialOfTwoBuckets));
+    REGISTER_HISTOGRAM(ublk_write_queue_distribution, "Write queue depth distribution",
+                       HistogramBucketsType(ExponentialOfTwoBuckets));
     register_me_to_farm();
 }
 

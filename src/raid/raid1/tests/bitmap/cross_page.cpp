@@ -40,10 +40,10 @@ TEST(Raid1, WriteFailAcrossPages) {
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](uint8_t, iovec*, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(2U, nr_vecs);                                // 2 consecutive pages batched
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);           // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size());          // Expect write to bitmap!
-            return nr_vecs * ublkpp::raid1::k_page_size;          // Return total bytes written
+            EXPECT_EQ(2U, nr_vecs);                       // 2 consecutive pages batched
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
+            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
+            return nr_vecs * ublkpp::raid1::k_page_size;  // Return total bytes written
         })
         .RetiresOnSaturation();
 }

@@ -203,4 +203,3 @@ TEST(Raid1, ConcurrentIODuringResync) {
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 }
-
