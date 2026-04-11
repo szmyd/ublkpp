@@ -770,22 +770,8 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     // We've already attempted this device...we don't want to re-attempt
     if (retry && (last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
 
-    // Smart load balancing: For unavail devices, only retry ~2% of the time
-    // This allows auto-recovery while minimizing impact on failing devices
-    bool const retry_unavail = [&]() -> bool {
-        // Check if chosen device is unavailable
-        auto const& dev = __route_to_device(*state, route).device;
-        bool const chosen_unavail = dev->unavail.test(std::memory_order_acquire);
-
-        if (!chosen_unavail) return true; // Device available, always use it
-
-        // Device unavailable: retry only ~2% of the time for auto-recovery
-        static thread_local std::atomic< uint32_t > read_counter{0};
-        return (read_counter.fetch_add(1, std::memory_order_relaxed) % 50) == 0;
-    }();
-
-    if (!retry_unavail) {
-        // Skip this unavail device, try the other one
+    // Route away from unavail devices; recovery is handled by the idle probe
+    if (__route_to_device(*state, route).device->unavail.test(std::memory_order_acquire)) {
         route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
         RLOGD("Skipping unavail device, routing to alternate")
     }
