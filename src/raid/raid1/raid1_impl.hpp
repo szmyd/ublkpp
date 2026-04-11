@@ -5,6 +5,7 @@
 
 #include "ublkpp/raid/raid1.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
+#include "raid1_avail_probe.hpp"
 #include "raid1_superblock.hpp"
 
 namespace ublkpp {
@@ -53,6 +54,10 @@ class Raid1DiskImpl : public UblkDisk {
 
     // Ensure exclusivity in __swap_device
     std::mutex _swap_lock;
+
+    // Idle-scoped periodic health monitors
+    Raid1AvailProbeTask _idle_probe_a;
+    Raid1AvailProbeTask _idle_probe_b;
 
     // Internal routines
     io_result __become_clean();
@@ -136,6 +141,7 @@ public:
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
     std::list< int > open_for_uring(int const iouring_device) override;
+    void idle_transition(ublksrv_queue const* q, bool enter) override;
 
     uint8_t route_size() const noexcept override { return 1; }
 
