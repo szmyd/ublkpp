@@ -186,6 +186,14 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_metrics) { _metrics->record_dirty_pages(nr_pages); }
     while (0 < nr_pages) {
+        // Skip copies entirely if the dirty mirror is known unavailable
+        if (dirty_mirror->unavail.test(std::memory_order_acquire)) {
+            if (cur_state = __yield(unavail_delay, avail_delay); resync_state::STOPPING == cur_state) break;
+            nr_pages = _dirty_bitmap->dirty_pages();
+            if (_metrics) _metrics->record_dirty_pages(nr_pages);
+            continue;
+        }
+
         // TODO Change this so it's easier to control with a future QoS algorithm
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
