@@ -211,8 +211,9 @@ TEST(Raid1, IdleProbeRecoversSingleUnavailDevice) {
 
     // Probe on device_a succeeds — should clear UNAVAIL
     auto const rs = raid_device.reserved_size();
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, rs)).Times(1).WillOnce(
-        [](uint8_t, iovec*, uint32_t, off_t) { return ublkpp::raid1::k_page_size; });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, rs)).Times(1).WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
+        return ublkpp::raid1::k_page_size;
+    });
 
     raid_device.idle_transition(nullptr, true);
 
