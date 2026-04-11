@@ -969,7 +969,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
 
     // Immediate probe: clear UNAVAIL on any device that has recovered (edge trigger, no delay)
-    static thread_local alignas(raid1::k_page_size) uint8_t probe_buf[raid1::k_page_size];
+    alignas(raid1::k_page_size) static thread_local uint8_t probe_buf[raid1::k_page_size];
     auto const immediate_probe = [&](std::shared_ptr< MirrorDevice > const& mirror) {
         if (!mirror->unavail.test(std::memory_order_acquire)) return;
         auto iov = iovec{.iov_base = probe_buf, .iov_len = raid1::k_page_size};
