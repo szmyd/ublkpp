@@ -751,21 +751,15 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
 
     // Pick a device to read from (load-balancer)
     auto route = read_route::DEVA;
-    auto need_to_test{false};
-    if (state->is_degraded && (!retry && state->backup_dev->unavail.test(std::memory_order_acquire))) {
+    if (state->is_degraded && !retry && state->backup_dev->unavail.test(std::memory_order_acquire)) {
         route = state->route;
     } else {
-        if (read_route::DEVB == last_read) {
-            if (read_route::DEVB == state->route) need_to_test = true;
-        } else {
-            route = read_route::DEVB;
-            if (read_route::DEVA == state->route) need_to_test = true;
-        }
+        route = (read_route::DEVB == last_read) ? read_route::DEVA : read_route::DEVB;
     }
 
-    // If we are degraded and the load-balancer wants to use the dirty disk, check it for dirty bits first
-    // and if all true; then  use the current active route from the captured state
-    if (state->is_degraded && need_to_test && _dirty_bitmap->is_dirty(addr, len)) route = state->route;
+    // In degraded mode, if the load-balancer picked the backup (dirty) device, verify the region is
+    // clean before using it — otherwise fall back to the active route
+    if (state->is_degraded && route != state->route && _dirty_bitmap->is_dirty(addr, len)) route = state->route;
 
     // We've already attempted this device...we don't want to re-attempt
     if (retry && (last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -790,11 +784,9 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     if (auto res = func(*chosen_dev->disk, chosen_sub); res || retry) {
         return res;
     } else {
-        // On read failure (not retry), mark device as unavailable
-        if (!retry) {
-            if (!chosen_dev->unavail.test_and_set(std::memory_order_acquire)) {
-                RLOGW("Device marked unavailable due to read failure: {}", *chosen_dev->disk)
-            }
+        // On read failure mark device as unavailable before retrying the other side
+        if (!chosen_dev->unavail.test_and_set(std::memory_order_acquire)) {
+            RLOGW("Device marked unavailable due to read failure: {}", *chosen_dev->disk)
         }
     }
 
