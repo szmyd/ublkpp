@@ -100,10 +100,12 @@ class Raid1DiskImpl : public UblkDisk {
     // DO NOT TOUCH unless you fully understand lock-free memory models.
     //
     // ☠️ ☠️ ☠️  YOU HAVE BEEN WARNED  ☠️ ☠️ ☠️
+    // clang-format off
 #ifndef NDEBUG
     __attribute__((noinline, no_sanitize_thread))
 #endif
     RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
+    // clang-format on
 
     // CAS with uint8_t (for when caller already has uint8_t)
     bool __set_read_route(uint8_t& old_route, uint8_t new_route) noexcept {
