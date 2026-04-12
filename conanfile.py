@@ -70,6 +70,7 @@ class UBlkPPConan(ConanFile):
     def build_requirements(self):
         self.test_requires("gtest/1.17.0")
         self.test_requires("iomgr/[^12]@oss/master")
+        self.test_requires("fio/nbi.3.28")
 
     def requirements(self):
         self.requires("sisl/[^13]@oss/master", transitive_headers=True)
@@ -108,6 +109,13 @@ class UBlkPPConan(ConanFile):
         tc.variables["ENABLE_TESTS"] = "ON"
         if self.conf.get("tools.build:skip_test", default=False):
             tc.variables["ENABLE_TESTS"] = "OFF"
+        for req, dep in self.dependencies.items():
+            if dep.ref.name == "fio":
+                fio_bindirs = dep.cpp_info.bindirs
+                if fio_bindirs:
+                    import os
+                    tc.variables["FIO_EXECUTABLE"] = os.path.join(fio_bindirs[0], "fio")
+                break
         if self.settings.build_type == "Debug":
             if self.options.get_safe("coverage"):
                 tc.variables['BUILD_COVERAGE'] = 'ON'

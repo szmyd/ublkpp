@@ -1,0 +1,129 @@
+cmake_minimum_required(VERSION 3.11)
+
+find_package(fio QUIET)
+# FIO_EXECUTABLE may be injected by conanfile.py (pointing to the Conan-provided
+# binary that matches the headers we compiled against). Fall back to find_program.
+if (NOT FIO_EXECUTABLE)
+    find_program(FIO_EXECUTABLE fio)
+endif()
+
+if (NOT fio_FOUND OR NOT FIO_EXECUTABLE)
+    message(STATUS "fio package/binary not found — skipping functional tests")
+    return()
+endif()
+
+# Locate fio headers: Conan sets fio_INCLUDE_DIRS; fall back to a direct search
+if (NOT fio_INCLUDE_DIRS)
+    find_path(FIO_INCLUDE_BASE NAMES fio/ioengines.h)
+    if (NOT FIO_INCLUDE_BASE)
+        message(STATUS "fio/ioengines.h not found — skipping functional tests")
+        return()
+    endif()
+    set(fio_INCLUDE_DIRS ${FIO_INCLUDE_BASE})
+endif()
+
+# ---------------------------------------------------------------------------
+# Shared library: libublkpp_fio_engine.so
+# ---------------------------------------------------------------------------
+add_library(ublkpp_fio_engine SHARED)
+target_sources(ublkpp_fio_engine PRIVATE
+    ublkpp_fio_engine.cpp
+)
+target_link_libraries(ublkpp_fio_engine PRIVATE
+    mock_ublksrv
+    ublkpp
+    ublksrv::ublksrv
+    sisl::cache
+)
+target_include_directories(ublkpp_fio_engine PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${fio_INCLUDE_DIRS}
+)
+# Suppress warnings from fio headers and allow C-style casts common in fio APIs
+target_compile_options(ublkpp_fio_engine PRIVATE
+    -Wno-error
+    -Wno-pedantic
+)
+set_target_properties(ublkpp_fio_engine PROPERTIES
+    PREFIX ""   # produce libublkpp_fio_engine.so (fio uses the full filename)
+)
+
+# ---------------------------------------------------------------------------
+# CTest functional tests
+# ---------------------------------------------------------------------------
+set(ENGINE_SO $<TARGET_FILE:ublkpp_fio_engine>)
+set(TEST_DIR ${CMAKE_CURRENT_BINARY_DIR}/test_data)
+file(MAKE_DIRECTORY ${TEST_DIR})
+
+# Under ASan the engine .so carries the ASan runtime as a direct dependency
+# (it was compiled with -fsanitize=address), so fio's dynamic linker loads
+# libasan.so when it dlopen's our .so.  At that point libstdc++ is already
+# present, so the __cxa_throw interceptor can resolve the real symbol.
+# We only need to suppress ASan's "runtime not first" link-order warning.
+set(FUNCTIONAL_ENV "")
+if (DEFINED ADDRESS_SANITIZER_ON AND ADDRESS_SANITIZER_ON)
+    list(APPEND FUNCTIONAL_ENV "ASAN_OPTIONS=verify_asan_link_order=0")
+endif()
+
+# Setup fixture: remove stale backing images before each functional test so
+# a fresh superblock is written with the current deterministic UUID.
+add_test(NAME FunctionalCleanup
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+        ${TEST_DIR}/fsdisk.img
+        ${TEST_DIR}/raid0_a.img ${TEST_DIR}/raid0_b.img
+        ${TEST_DIR}/raid1_a.img ${TEST_DIR}/raid1_b.img
+)
+set_tests_properties(FunctionalCleanup PROPERTIES
+    FIXTURES_SETUP   FunctionalImages
+    LABELS           "Functional"
+)
+
+set(FIO_BASE_ARGS
+    --output-format=normal
+    --allow_file_create=0
+)
+
+# --- FSDisk ---
+add_test(NAME FunctionalFSDisk
+    COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/jobs/fsdisk_rw.fio
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set(FSDISK_ENV  "ENGINE_SO=${ENGINE_SO}" "TEST_FILE=${TEST_DIR}/fsdisk.img"                 ${FUNCTIONAL_ENV})
+set(RAID0_ENV   "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid0_a.img"
+                "TEST_FILE_B=${TEST_DIR}/raid0_b.img" ${FUNCTIONAL_ENV})
+set(RAID1_ENV   "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid1_a.img"
+                "TEST_FILE_B=${TEST_DIR}/raid1_b.img" ${FUNCTIONAL_ENV})
+
+set_tests_properties(FunctionalFSDisk PROPERTIES
+    ENVIRONMENT "${FSDISK_ENV}"
+    FIXTURES_REQUIRED FunctionalImages
+    TIMEOUT 120
+    LABELS "Functional"
+)
+
+# --- RAID0 ---
+add_test(NAME FunctionalRAID0
+    COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/jobs/raid0_rw.fio
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties(FunctionalRAID0 PROPERTIES
+    ENVIRONMENT "${RAID0_ENV}"
+    FIXTURES_REQUIRED FunctionalImages
+    TIMEOUT 120
+    LABELS "Functional"
+)
+
+# --- RAID1 ---
+add_test(NAME FunctionalRAID1
+    COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/jobs/raid1_rw.fio
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties(FunctionalRAID1 PROPERTIES
+    ENVIRONMENT "${RAID1_ENV}"
+    FIXTURES_REQUIRED FunctionalImages
+    TIMEOUT 180
+    LABELS "Functional"
+)
