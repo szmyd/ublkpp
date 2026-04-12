@@ -74,7 +74,9 @@ static void ensure_sisl_init() {
     std::call_once(flag, []() {
         int argc = 3;
         char prog[] = "ublkpp_fio";
-        char* argv[] = {prog, "-v", "0"};
+        char v_flag[] = "-v";
+        char v_level[] = "debug";
+        char* argv[] = {prog, v_flag, v_level};
         SISL_OPTIONS_LOAD(argc, argv, logging, fs_disk, raid1);
         sisl::logging::SetLogger("ublkpp_fio");
         // Set trace on all loggers — including SISL per-module loggers already created

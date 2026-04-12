@@ -140,8 +140,6 @@ set_tests_properties(FunctionalRAID0 PROPERTIES
 )
 
 # --- RAID1 ---
-# TODO: RAID1 verify fails with "bad header offset" — data mismatch under investigation.
-# Disabled until the root cause is identified and fixed.
 add_test(NAME FunctionalRAID1
     COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
         ${CMAKE_CURRENT_SOURCE_DIR}/jobs/raid1_rw.fio
@@ -152,5 +150,4 @@ set_tests_properties(FunctionalRAID1 PROPERTIES
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 180
     LABELS "Functional"
-    DISABLED TRUE
 )

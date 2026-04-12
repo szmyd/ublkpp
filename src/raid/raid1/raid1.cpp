@@ -671,6 +671,8 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
 
     // Queue the I/O on the active device
     auto active_res = func(*cur_disk, cur_subcmd);
+    // Inline completion (sync fallback returns 0): on_io_complete won't fire, balance the enqueue now.
+    if (async_data && active_res.has_value() && active_res.value() == 0) _resync_task->dequeue_write();
 
     // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     // This condition always returns before the nested call!
@@ -694,6 +696,8 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             if (async_data) _resync_task->dequeue_write();
             return active_res;
         }
+        // Inline completion on backup write: on_io_complete won't fire, balance the enqueue.
+        if (async_data && active_res.value() == 0) _resync_task->dequeue_write();
         return active_res.value() + backup_res.value();
     }
     if (second_write) return active_res;

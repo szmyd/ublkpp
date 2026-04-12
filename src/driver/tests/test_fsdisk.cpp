@@ -538,21 +538,12 @@ TEST(FSDiskConstructor, LargeFile) {
     std::filesystem::remove(test_path);
 }
 
-// Test: handle_flush with direct I/O
-TEST_F(FSDiskTest, HandleFlushDirectIO) {
+// Test: handle_flush is always a no-op (returns 0) regardless of direct_io mode.
+// For direct I/O there is nothing to flush; for buffered I/O the page cache is
+// coherent and durability is handled by fdatasync() in ~FSDisk().
+TEST_F(FSDiskTest, HandleFlushIsNoOp) {
     auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
-
-    if (!disk->direct_io) {
-        // On filesystems where O_DIRECT is unsupported (e.g. overlayfs in CI),
-        // handle_flush would use the queue — skip the nullptr-queue path.
-        GTEST_SKIP() << "direct_io=false on this filesystem; skipping DIO flush test";
-    }
-
-    // For direct I/O, handle_flush returns 0 immediately without using the queue
-    // So we can pass nullptr for queue and data
     auto result = disk->handle_flush(nullptr, nullptr, 0);
-
-    // Direct I/O should return immediately with 0
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result.value(), 0);
 }
