@@ -12,6 +12,15 @@ if (NOT fio_FOUND OR NOT FIO_EXECUTABLE)
     return()
 endif()
 
+# ThreadSanitizer instruments the engine .so but fio is not a TSAN binary.
+# TSAN requires being the very first library in the process and cannot be
+# loaded late via dlopen, so fio would fail to open the .so at runtime.
+# The functional tests are already covered by Debug and ASan builds.
+if (DEFINED THREAD_SANITIZER_ON AND THREAD_SANITIZER_ON)
+    message(STATUS "ThreadSanitizer build — skipping functional tests (TSAN cannot be dlopen'd into a non-TSAN fio binary)")
+    return()
+endif()
+
 # Locate fio headers: Conan sets fio_INCLUDE_DIRS; fall back to a direct search
 if (NOT fio_INCLUDE_DIRS)
     find_path(FIO_INCLUDE_BASE NAMES fio/ioengines.h)
