@@ -136,7 +136,7 @@ class UBlkPPConan(ConanFile):
         cmake.configure()
         cmake.build()
         if not self.conf.get("tools.build:skip_test", default=False):
-            cmake.test()
+            self.run(f"ctest --test-dir '{self.build_folder}' --verbose --output-on-failure")
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)
