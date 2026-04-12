@@ -633,7 +633,12 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
 
     if (is_replicate(sub_cmd)) return dirty_res;
 
-    // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
+    // We cannot return `len` directly: the target interprets positive return values as sub_cmd counts
+    // (not byte counts), and returning 0 would silently drop the byte count. The REPLICATE result is
+    // always zeroed by the target, so the byte count must come from the PRIMARY completion path.
+    // Instead, inject a synthetic async_result carrying `len` into _pending_results so it is accumulated
+    // into ret_val via the normal process_result path on the next collect_async cycle. Return +1 to
+    // signal exactly one more sub_cmd pending.
     _pending_results[q].emplace_back(async_result{async_data, sub_cmd, static_cast< int >(len)});
     if (q) {
         if (0 != ublksrv_queue_send_event(q)) { // LCOV_EXCL_START
@@ -811,6 +816,12 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data cons
 
 void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     auto const state = __capture_route_state();
+    // _pending_results[q] holds synthetic completions injected by __handle_async_retry — not backend CQEs.
+    // Each entry represents a degraded write where the PRIMARY leg failed but the write succeeded on the
+    // surviving leg. The `result` field carries the byte count that must be accumulated into ret_val via
+    // the normal process_result path. See the comment in __handle_async_retry for why this indirection is
+    // necessary (short version: positive tgt return values are sub_cmd counts, not byte counts, so the byte
+    // count cannot be delivered any other way).
     results.splice(results.end(), std::move(_pending_results[q]));
     if (!state.active_dev->disk->uses_ublk_iouring) state.active_dev->disk->collect_async(q, results);
     if (!state.backup_dev->disk->uses_ublk_iouring) state.backup_dev->disk->collect_async(q, results);
