@@ -9,6 +9,7 @@
 #include <sisl/options/options.h>
 
 #include "bitmap.hpp"
+#include "raid1_avail_probe.hpp"
 #include "raid1_impl.hpp"
 #include "raid1_resync_task.hpp"
 #include "lib/logging.hpp"
@@ -487,9 +488,11 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     }
 
     // Atomically swap the device or fail; fail if swapping sole active device
-    if (__swap_device(outgoing_device_id, incoming_mirror, state.route) && _raid_metrics) {
-        // Record successful device swap
-        _raid_metrics->record_device_swap();
+    if (__swap_device(outgoing_device_id, incoming_mirror, state.route)) {
+        if (_raid_metrics) _raid_metrics->record_device_swap();
+        // Stop stale probes — they hold a shared_ptr to the outgoing MirrorDevice
+        _idle_probe_a.stop();
+        _idle_probe_b.stop();
     }
 
     // Now set back to IDLE state and kick a resync task off
@@ -949,14 +952,9 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
 
     // Immediate probe: clear UNAVAIL on any device that has recovered (edge trigger, no delay)
-    alignas(raid1::k_page_size) static thread_local uint8_t probe_buf[raid1::k_page_size];
     auto const immediate_probe = [&](std::shared_ptr< MirrorDevice > const& mirror) {
         if (!mirror->unavail.test(std::memory_order_acquire)) return;
-        auto iov = iovec{.iov_base = probe_buf, .iov_len = raid1::k_page_size};
-        if (auto res = mirror->disk->sync_iov(UBLK_IO_OP_READ, &iov, 1, reserved_size); res) {
-            mirror->unavail.clear(std::memory_order_release);
-            RLOGD("Idle probe: device recovered: {}", *mirror->disk)
-        }
+        if (probe_mirror(*mirror, reserved_size)) RLOGD("Idle probe: device recovered: {}", *mirror->disk)
     };
     immediate_probe(state.active_dev);
     immediate_probe(state.backup_dev);

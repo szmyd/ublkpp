@@ -83,7 +83,7 @@ class Raid1ResyncTask {
         return result;
     }
 
-    resync_state __run(auto& clean_mirror, auto& dirty_mirror);
+    resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept;
 
     // Generic state transition helper - reduces duplication across launch/stop/pause
     template < typename StateHandler >
