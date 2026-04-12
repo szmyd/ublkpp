@@ -5,6 +5,7 @@
 
 #include "ublkpp/raid/raid1.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
+#include "raid1_avail_probe.hpp"
 #include "raid1_superblock.hpp"
 
 namespace ublkpp {
@@ -54,6 +55,10 @@ class Raid1DiskImpl : public UblkDisk {
     // Ensure exclusivity in __swap_device
     std::mutex _swap_lock;
 
+    // Idle-scoped periodic health monitors
+    Raid1AvailProbeTask _idle_probe_a;
+    Raid1AvailProbeTask _idle_probe_b;
+
     // Internal routines
     io_result __become_clean();
     io_result __become_degraded(sub_cmd_t failed_path, RouteState const* state, bool spawn_resync = true);
@@ -95,10 +100,12 @@ class Raid1DiskImpl : public UblkDisk {
     // DO NOT TOUCH unless you fully understand lock-free memory models.
     //
     // ☠️ ☠️ ☠️  YOU HAVE BEEN WARNED  ☠️ ☠️ ☠️
+    // clang-format off
 #ifndef NDEBUG
     __attribute__((noinline, no_sanitize_thread))
 #endif
     RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
+    // clang-format on
 
     // CAS with uint8_t (for when caller already has uint8_t)
     bool __set_read_route(uint8_t& old_route, uint8_t new_route) noexcept {
@@ -136,6 +143,7 @@ public:
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
     std::list< int > open_for_uring(int const iouring_device) override;
+    void idle_transition(ublksrv_queue const* q, bool enter) override;
 
     uint8_t route_size() const noexcept override { return 1; }
 

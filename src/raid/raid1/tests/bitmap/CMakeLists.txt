@@ -5,6 +5,7 @@ list(APPEND RAID1_TEST_SRCS
   bitmap/calc_regions.cpp
   bitmap/clean_bitmap.cpp
   bitmap/concurrent_io_resync.cpp
+  bitmap/resync_probe_mirror.cpp
   bitmap/cross_page.cpp
   bitmap/init_bitmap.cpp
   bitmap/is_dirty.cpp

@@ -6,6 +6,7 @@ list(APPEND RAID1_TEST_SRCS
   retry/double_retry.cpp
   retry/flush_retry.cpp
   retry/read_failover.cpp
+  retry/read_unavail_test.cpp
   retry/read_retry.cpp
   retry/retry_failure_deva.cpp
   #retry/write_retry.cpp
