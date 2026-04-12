@@ -37,7 +37,9 @@ static uint64_t k_io_cnt{0};
 // for tens of seconds.  When the minimum supported kernel is raised above this threshold,
 // this guard — and the sync_iov fallback in async_iov — can be removed.
 static bool buffered_uring_broken() {
+    // clang-format off
     struct utsname uts{};
+    // clang-format on
     if (uname(&uts) != 0) return true; // conservative: assume broken if uname fails
     unsigned major = 0, minor = 0;
     sscanf(uts.release, "%u.%u", &major, &minor); // NOLINT(cert-err34-c)
@@ -62,7 +64,9 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
         throw std::runtime_error("Open Failed!");
     }
 
+    // clang-format off
     struct stat st{};
+    // clang-format on
     if (fstat(_fd, &st) < 0) {
         DLOGE("fstat({}) failed: ", str_path, strerror(errno))
         throw std::runtime_error("fstat Failed!");
@@ -101,7 +105,9 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
     // pread/pwrite syscalls succeed, but io_uring I/O returns EINVAL.  Detect
     // overlayfs via statfs and skip O_DIRECT unconditionally on that filesystem.
     // For other filesystems, fall back to buffered if fcntl itself fails.
+    // clang-format off
     struct statfs sfs{};
+    // clang-format on
     constexpr unsigned long k_overlayfs_magic = 0x794c7630UL;
     bool const overlayfs = (fstatfs(_fd, &sfs) == 0 && static_cast< unsigned long >(sfs.f_type) == k_overlayfs_magic);
     if (overlayfs) {
