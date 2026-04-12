@@ -72,13 +72,12 @@ SISL_OPTIONS_ENABLE(logging, fs_disk, raid1)
 static void ensure_sisl_init() {
     static std::once_flag flag;
     std::call_once(flag, []() {
-        int argc = 1;
+        int argc = 3;
         char prog[] = "ublkpp_fio";
-        char* argv[] = {prog, nullptr};
+        char* argv[] = {prog, "-v", "0"};
         SISL_OPTIONS_LOAD(argc, argv, logging, fs_disk, raid1);
         sisl::logging::SetLogger("ublkpp_fio");
         // Set trace on all loggers — including SISL per-module loggers already created
-        spdlog::apply_all([](std::shared_ptr< spdlog::logger > l) { l->set_level(spdlog::level::trace); });
         spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
     });
 }

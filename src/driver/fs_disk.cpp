@@ -48,7 +48,7 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
         throw std::runtime_error("Open Failed!");
     }
 
-    struct stat st{};
+    struct stat st {};
     if (fstat(_fd, &st) < 0) {
         DLOGE("fstat({}) failed: ", str_path, strerror(errno))
         throw std::runtime_error("fstat Failed!");
@@ -87,7 +87,7 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
     // pread/pwrite syscalls succeed, but io_uring I/O returns EINVAL.  Detect
     // overlayfs via statfs and skip O_DIRECT unconditionally on that filesystem.
     // For other filesystems, fall back to buffered if fcntl itself fails.
-    struct statfs sfs{};
+    struct statfs sfs {};
     constexpr unsigned long k_overlayfs_magic = 0x794c7630UL;
     bool const overlayfs = (fstatfs(_fd, &sfs) == 0 && static_cast< unsigned long >(sfs.f_type) == k_overlayfs_magic);
     if (overlayfs) {
