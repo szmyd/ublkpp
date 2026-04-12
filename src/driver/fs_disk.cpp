@@ -81,11 +81,27 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
     if (st.st_blksize && can_discard()) our_params.discard.discard_granularity = static_cast< uint32_t >(st.st_blksize);
 
     // in case of buffered io, use common bs/pbs so that all FS
-    // image can be supported
-    if (!fcntl(_fd, F_SETFL, O_DIRECT))
-        direct_io = true;
-    else
+    // image can be supported.
+    // fcntl F_SETFL O_DIRECT succeeds even on filesystems that don't support it
+    // (overlayfs, tmpfs); only actual I/O reveals the failure.  Probe with a
+    // read (not write — reads don't corrupt data) to detect this before
+    // committing to direct I/O.  An empty or short file returns 0 bytes, which
+    // is not EINVAL, so the probe correctly indicates O_DIRECT is usable.
+    if (!fcntl(_fd, F_SETFL, O_DIRECT)) {
+        void* probe = nullptr;
+        if (posix_memalign(&probe, 4096, 4096) == 0) {
+            auto const r = pread(_fd, probe, 4096, 0);
+            free(probe);
+            if (r >= 0 || errno != EINVAL) {
+                direct_io = true;
+            } else {
+                fcntl(_fd, F_SETFL, 0); // clear O_DIRECT — filesystem doesn't support it
+                DLOGD("O_DIRECT accepted by fcntl but rejected by filesystem — using BUFFERED.")
+            }
+        }
+    } else {
         DLOGD("Unable to support DIRECT I/O, using BUFFERED.")
+    }
     our_params.basic.dev_sectors = bytes >> SECTOR_SHIFT;
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
