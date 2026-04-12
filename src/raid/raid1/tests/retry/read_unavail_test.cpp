@@ -24,10 +24,13 @@ TEST(Raid1, ReadFailureSetsUnavail) {
             return 1; // Success
         });
 
-    auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
-    auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
-    remove_io_data(ublk_data);
-    ASSERT_TRUE(res); // Overall success (failover worked)
+    // Use fresh thread so last_read=DEVB → routes to device_a first
+    RUN_IN_THREAD({
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
+        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res); // Overall success (failover worked)
+    });
 
     // State should show device_a as UNAVAIL
     states = raid_device.replica_states();
@@ -46,32 +49,37 @@ TEST(Raid1, SuccessfulReadClearsUnavail) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
-    // First read: Device A fails, B succeeds
+    // Device A fails read, B succeeds on failover — sets UNAVAIL on A
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
-        .Times(2) // First fails, second succeeds
+        .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
-        })
-        .WillOnce([](ublksrv_queue const* q, ublk_io_data const* data, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
-            return 1; // Success
         });
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
         .Times(1)
         .WillOnce(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
 
-    // First read sets UNAVAIL
-    auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
-    auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
-    remove_io_data(ublk_data);
-    ASSERT_TRUE(res);
+    // Use fresh thread so last_read=DEVB → routes to device_a first
+    RUN_IN_THREAD({
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
+        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        remove_io_data(ublk_data);
+        ASSERT_TRUE(res);
+    });
 
     auto states = raid_device.replica_states();
     EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::UNAVAIL);
 
-    // Second read on device A should succeed and clear UNAVAIL
-    // Note: Due to load balancing, we may need to trigger completion via on_io_complete
-    // For simplicity in this test, we assume the successful read triggers clearing
+    // Trigger auto-recovery: on_io_complete with successful READ from device_a clears UNAVAIL
+    // sub_cmd=0b100: bit0=0 → DEVA route, not INTERNAL → clears unavail flag
+    auto recovery_data = make_io_data(UBLK_IO_OP_READ);
+    raid_device.on_io_complete(&recovery_data, 0b100, 1);
+    remove_io_data(recovery_data);
+
+    states = raid_device.replica_states();
+    EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);
+    EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::CLEAN);
 
     // Expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
@@ -96,15 +104,19 @@ TEST(Raid1, ReadFailureDoesNotDegrade) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
-    auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
-    auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
-    remove_io_data(ublk_data);
-    EXPECT_FALSE(res); // Overall failure
+    // Use fresh thread so last_read=DEVB → routes to device_a first
+    RUN_IN_THREAD({
+        auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
+        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        remove_io_data(ublk_data);
+        EXPECT_FALSE(res); // Overall failure
+    });
 
-    // Both devices should be UNAVAIL, but NOT degraded
+    // Only the first-tried device (A) gets UNAVAIL; the failover device (B) fails on the
+    // retry path which returns the error without marking UNAVAIL. Neither degrades the array.
     auto states = raid_device.replica_states();
     EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::UNAVAIL);
-    EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::UNAVAIL);
+    EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::CLEAN);
     EXPECT_EQ(states.bytes_to_sync, 0); // Route still EITHER
 
     // Next write should work on both devices (not degraded)
@@ -118,7 +130,11 @@ TEST(Raid1, ReadFailureDoesNotDegrade) {
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
 
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
-    res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
+    auto res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
+    // Both device writes completed; dequeue their outstanding async writes
+    // sub_cmd=0b100 → DEVA (device_a active write), sub_cmd=0b101 → DEVB (device_b replica)
+    raid_device.on_io_complete(&write_data, 0b100, 0);
+    raid_device.on_io_complete(&write_data, 0b101, 0);
     remove_io_data(write_data);
     EXPECT_TRUE(res);
 
@@ -132,6 +148,7 @@ TEST(Raid1, WriteDegradedShowsError) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     // Degrade device B (write failure)
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
@@ -148,6 +165,9 @@ TEST(Raid1, WriteDegradedShowsError) {
     EXPECT_TO_WRITE_SB(device_a); // Degradation writes superblock
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
     auto res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
+    // Device A's write completed successfully; dequeue its outstanding async write
+    // sub_cmd=0b100: bit0=0 → DEVA route (device_a), not INTERNAL
+    raid_device.on_io_complete(&write_data, 0b100, 0);
     remove_io_data(write_data);
     ASSERT_TRUE(res);
 
@@ -157,9 +177,17 @@ TEST(Raid1, WriteDegradedShowsError) {
     EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::ERROR);
     EXPECT_GT(states.bytes_to_sync, 0);
 
-    // Expect unmount_clean update
+    // Expect degraded unmount: bitmap sync + SB write to active device only
+    // Declare SB write first (lower GMock priority), bitmap last (higher priority)
+    // so the bitmap write at addr=k_page_size matches before the SB write at addr=0
     EXPECT_TO_WRITE_SB(device_a);
-    EXPECT_TO_WRITE_SB(device_b);
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([&raid_device](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
+            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
+            return ublkpp::raid1::k_page_size;
+        })
+        .RetiresOnSaturation();
 }
 
 // Test: Sync I/O path also tracks read failures
@@ -176,10 +204,10 @@ TEST(Raid1, SyncIoTracksReadFailures) {
         return 1;
     });
 
+    // Use fresh thread so last_read=DEVB → routes to device_a first
     std::vector< iovec > iov(1);
     iov[0].iov_len = 4 * Ki;
-    auto res = raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki);
-    ASSERT_TRUE(res);
+    RUN_IN_THREAD({ ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki)); });
 
     auto states = raid_device.replica_states();
     EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::UNAVAIL);
@@ -204,9 +232,10 @@ TEST(Raid1, IdleProbeRecoversSingleUnavailDevice) {
         return 1;
     });
 
+    // Use fresh thread so last_read=DEVB → routes to device_a first
     std::vector< iovec > iov(1);
     iov[0].iov_len = 4 * Ki;
-    ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki));
+    RUN_IN_THREAD({ ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki)); });
     ASSERT_EQ(raid_device.replica_states().device_a, ublkpp::raid1::replica_state::UNAVAIL);
 
     // Probe on device_a succeeds — should clear UNAVAIL
@@ -240,9 +269,10 @@ TEST(Raid1, IdleProbeKeepsUnavailOnProbeFailure) {
         return 1;
     });
 
+    // Use fresh thread so last_read=DEVB → routes to device_a first
     std::vector< iovec > iov(1);
     iov[0].iov_len = 4 * Ki;
-    ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki));
+    RUN_IN_THREAD({ ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki)); });
 
     // Probe on device_a fails again — UNAVAIL must remain
     auto const rs = raid_device.reserved_size();
@@ -275,9 +305,10 @@ TEST(Raid1, IdleExitSkipsProbe) {
         return 1;
     });
 
+    // Use fresh thread so last_read=DEVB → routes to device_a first
     std::vector< iovec > iov(1);
     iov[0].iov_len = 4 * Ki;
-    ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki));
+    RUN_IN_THREAD({ ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki)); });
 
     // Exit idle — no probe sync_iov expected (GMock will catch unexpected calls)
     raid_device.idle_transition(nullptr, false);
@@ -297,6 +328,7 @@ TEST(Raid1, IdleProbeSkipsWhenDegraded) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    raid_device.toggle_resync(false);
 
     // Degrade device_b via write failure
     EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
@@ -312,6 +344,9 @@ TEST(Raid1, IdleProbeSkipsWhenDegraded) {
 
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
     ASSERT_TRUE(raid_device.queue_tgt_io(nullptr, &write_data, 0b10));
+    // Device A's write completed successfully; dequeue its outstanding async write
+    // sub_cmd=0b100: bit0=0 → DEVA route (device_a), not INTERNAL
+    raid_device.on_io_complete(&write_data, 0b100, 0);
     remove_io_data(write_data);
 
     ASSERT_EQ(raid_device.replica_states().device_b, ublkpp::raid1::replica_state::ERROR);
@@ -322,9 +357,17 @@ TEST(Raid1, IdleProbeSkipsWhenDegraded) {
     // Route still degraded
     EXPECT_GT(raid_device.replica_states().bytes_to_sync, 0);
 
-    // Expect unmount_clean update
+    // Expect degraded unmount: bitmap sync + SB write to active device only
+    // Declare SB write first (lower GMock priority), bitmap last (higher priority)
+    // so the bitmap write at addr=k_page_size matches before the SB write at addr=0
     EXPECT_TO_WRITE_SB(device_a);
-    EXPECT_TO_WRITE_SB(device_b);
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .WillOnce([&raid_device](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  // Expect write to bitmap!
+            EXPECT_LT(addr, raid_device.reserved_size()); // Expect write to bitmap!
+            return ublkpp::raid1::k_page_size;
+        })
+        .RetiresOnSaturation();
 }
 
 // Test: Idle probe is no-op when both devices are clean
