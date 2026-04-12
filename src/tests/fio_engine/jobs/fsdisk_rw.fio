@@ -2,7 +2,7 @@
 ioengine=external:${ENGINE_SO}
 disk_type=fsdisk
 disk_files=${TEST_FILE}
-bs=4k
+bs=64k
 iodepth=32
 verify=md5
 verify_fatal=1

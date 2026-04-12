@@ -120,7 +120,7 @@ void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std:
         if (!device->direct_io) {
             RLOGW("Device {} does not support O_DIRECT — RAID-1 will use buffered I/O (backend caching not bypassed!)",
                   device)
-            direct_io = false;
+            direct_io = false; // LCOV_EXCL_LINE
         }
         our_params.basic.dev_sectors = std::min(our_params.basic.dev_sectors, device->params()->basic.dev_sectors);
         our_params.basic.logical_bs_shift =

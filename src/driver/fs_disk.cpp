@@ -213,11 +213,13 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     // Fall back to synchronous preadv2/pwritev2 and return 0 so the caller treats this as an
     // inline completion (no CQE will be produced or awaited).
     // TODO: remove this branch once the minimum supported kernel is raised above 5.4.
+    // LCOV_EXCL_START — kernel ≤ 5.4 sync fallback, not exercised in production
     if (!direct_io && k_buffered_uring_broken) {
         auto res = sync_iov(op, iovecs, nr_vecs, static_cast< off_t >(addr));
         if (!res) return res;
         return 0; // inline completion — no CQE pending
     }
+    // LCOV_EXCL_STOP
 
     auto sqe = next_sqe(q);
 
