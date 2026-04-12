@@ -53,6 +53,9 @@ target_compile_options(ublkpp_fio_engine PRIVATE
     -Wno-error
     -Wno-pedantic
 )
+if (DEFINED BUILD_COVERAGE AND BUILD_COVERAGE)
+    target_compile_definitions(ublkpp_fio_engine PRIVATE BUILD_COVERAGE)
+endif()
 set_target_properties(ublkpp_fio_engine PROPERTIES
     PREFIX ""   # produce libublkpp_fio_engine.so (fio uses the full filename)
 )

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -60,19 +61,24 @@ extern "C" {
 // ---------------------------------------------------------------------------
 // SISL initialisation — required before constructing any UblkDisk
 // ---------------------------------------------------------------------------
+#ifdef BUILD_COVERAGE
+// Forward-declare at file scope — extern "C" is not allowed inside a function body.
+extern "C" void __gcov_dump(void);
+#endif
+
 SISL_LOGGING_INIT(ublk_drivers, ublk_raid, ublksrv)
 SISL_OPTIONS_ENABLE(logging, fs_disk, raid1)
 
 static void ensure_sisl_init() {
-    static bool done{false};
-    if (done) return;
-    done = true;
-    int argc = 1;
-    char prog[] = "ublkpp_fio";
-    char* argv[] = {prog, nullptr};
-    SISL_OPTIONS_LOAD(argc, argv, logging, fs_disk, raid1);
-    sisl::logging::SetLogger("ublkpp_fio");
-    spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        int argc = 1;
+        char prog[] = "ublkpp_fio";
+        char* argv[] = {prog, nullptr};
+        SISL_OPTIONS_LOAD(argc, argv, logging, fs_disk, raid1);
+        sisl::logging::SetLogger("ublkpp_fio");
+        spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +277,13 @@ static void ublkpp_cleanup(struct thread_data* td) {
     if (!ed) return;
     delete ed;
     td->io_ops_data = nullptr;
+#ifdef BUILD_COVERAGE
+    // fio calls dlclose() on the engine .so after cleanup, which happens before
+    // the process-level atexit() handlers run.  Flush gcov coverage data here,
+    // while the .so is still mapped, so the io_uring I/O paths exercised by the
+    // functional tests are included in the coverage report.
+    __gcov_dump();
+#endif
 }
 
 static enum fio_q_status ublkpp_queue(struct thread_data* td, struct io_u* io_u) {
@@ -354,6 +367,11 @@ static struct io_u* ublkpp_event(struct thread_data* td, int event) {
     return ed->events[static_cast< size_t >(event)];
 }
 
+// fio 3.28 asserts that open_file/close_file are non-null even with FIO_DISKLESSIO.
+// Provide no-ops so fio doesn't crash during job setup.
+static int ublkpp_open_file(struct thread_data* /*td*/, struct fio_file* /*f*/) { return 0; }
+static int ublkpp_close_file(struct thread_data* /*td*/, struct fio_file* /*f*/) { return 0; }
+
 // ---------------------------------------------------------------------------
 // Engine ops registration
 // ---------------------------------------------------------------------------
@@ -361,7 +379,7 @@ static struct ioengine_ops ioengine = {
     .name = "ublkpp",
     .version = FIO_IOOPS_VERSION,
     // FIO_RAWIO:     sector-aligned buffer allocation
-    // FIO_DISKLESSIO: skip fio's file-open/size-check path entirely
+    // FIO_DISKLESSIO: skip fio's file size-check; open_file/close_file are still called
     // FIO_NOEXTEND:  don't try to extend files
     .flags = FIO_RAWIO | FIO_DISKLESSIO | FIO_NOEXTEND,
     .init = ublkpp_init,
@@ -369,6 +387,8 @@ static struct ioengine_ops ioengine = {
     .getevents = ublkpp_getevents,
     .event = ublkpp_event,
     .cleanup = ublkpp_cleanup,
+    .open_file = ublkpp_open_file,
+    .close_file = ublkpp_close_file,
     .option_struct_size = sizeof(struct ublkpp_options),
     .options = engine_options,
 };
