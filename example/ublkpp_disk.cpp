@@ -51,7 +51,7 @@ SISL_OPTION_GROUP(
 #define HOMEBLKS_OPTIONS
 #endif
 
-#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, fs_disk, ublkpp_disk HOMEBLKS_OPTIONS
+#define ENABLED_OPTIONS logging, ublkpp_tgt, raid1, ublkpp_disk HOMEBLKS_OPTIONS
 
 SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 

@@ -67,7 +67,7 @@ extern "C" void __gcov_dump(void);
 #endif
 
 SISL_LOGGING_INIT(ublk_drivers, ublk_raid, ublksrv)
-SISL_OPTIONS_ENABLE(logging, fs_disk, raid1)
+SISL_OPTIONS_ENABLE(logging, raid1)
 
 static void ensure_sisl_init() {
     static std::once_flag flag;
@@ -77,7 +77,7 @@ static void ensure_sisl_init() {
         char v_flag[] = "-v";
         char v_level[] = "debug";
         char* argv[] = {prog, v_flag, v_level};
-        SISL_OPTIONS_LOAD(argc, argv, logging, fs_disk, raid1);
+        SISL_OPTIONS_LOAD(argc, argv, logging, raid1);
         sisl::logging::SetLogger("ublkpp_fio");
         // Set trace on all loggers — including SISL per-module loggers already created
         spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");

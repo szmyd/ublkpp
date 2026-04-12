@@ -24,10 +24,6 @@ extern "C" {
 
 namespace ublkpp {
 
-static uint64_t k_rand_cnt{0};
-static uint64_t k_rand_error{0};
-static uint64_t k_io_cnt{0};
-
 // Returns true when io_uring CQE delivery for buffered (non-O_DIRECT) I/O is known to be
 // unreliable.  On overlayfs + kernel <= 5.4, cross-stripe writes can stall CQE arrival
 // for tens of seconds.  When the minimum supported kernel is raised above this threshold,
@@ -136,7 +132,7 @@ FSDisk::~FSDisk() {
 static inline auto next_sqe(ublksrv_queue const* q) {
     auto r = q->ring_ptr;
     if (0 == io_uring_sq_space_left(r)) [[unlikely]]
-        io_uring_submit(r);
+        io_uring_submit(r); // LCOV_EXCL_LINE
     auto sqe = io_uring_get_sqe(r);
     //    if (sqe) [[likely]]
     //        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
