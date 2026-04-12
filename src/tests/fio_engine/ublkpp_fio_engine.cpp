@@ -100,7 +100,7 @@ static fio_option engine_options[] = {
         .lname = "Disk type",
         .type = FIO_OPT_STR_STORE,
         .off1 = offsetof(struct ublkpp_options, disk_type),
-        .help = "Disk type: fsdisk, raid0, raid1",
+        .help = "Disk type: fsdisk, raid0, raid1, raid10",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -246,6 +246,22 @@ static int ublkpp_init(struct thread_data* td) {
             disk = std::make_shared< ublkpp::Raid1Disk >(uuid_for_paths(paths),
                                                          std::make_shared< ublkpp::FSDisk >(paths[0]),
                                                          std::make_shared< ublkpp::FSDisk >(paths[1]));
+        } else if (type == "raid10") {
+            if (paths.size() != 4) {
+                log_err("ublkpp_fio: raid10 requires exactly 4 disk_files\n");
+                return -1;
+            }
+            // RAID10: two mirrored pairs striped together
+            std::vector< std::string > const pair_a_paths{paths[0], paths[1]};
+            std::vector< std::string > const pair_b_paths{paths[2], paths[3]};
+            auto pair_a = std::make_shared< ublkpp::Raid1Disk >(uuid_for_paths(pair_a_paths),
+                                                                std::make_shared< ublkpp::FSDisk >(paths[0]),
+                                                                std::make_shared< ublkpp::FSDisk >(paths[1]));
+            auto pair_b = std::make_shared< ublkpp::Raid1Disk >(uuid_for_paths(pair_b_paths),
+                                                                std::make_shared< ublkpp::FSDisk >(paths[2]),
+                                                                std::make_shared< ublkpp::FSDisk >(paths[3]));
+            std::vector< std::shared_ptr< ublkpp::UblkDisk > > members{std::move(pair_a), std::move(pair_b)};
+            disk = std::make_shared< ublkpp::Raid0Disk >(uuid_for_paths(paths), chunk_size, std::move(members));
         } else {
             log_err("ublkpp_fio: unknown disk_type '%s'\n", disk_type);
             return -1;

@@ -96,6 +96,8 @@ add_test(NAME FunctionalCleanup
         ${TEST_DIR}/fsdisk.img
         ${TEST_DIR}/raid0_a.img ${TEST_DIR}/raid0_b.img
         ${TEST_DIR}/raid1_a.img ${TEST_DIR}/raid1_b.img
+        ${TEST_DIR}/raid10_a.img ${TEST_DIR}/raid10_b.img
+        ${TEST_DIR}/raid10_c.img ${TEST_DIR}/raid10_d.img
 )
 set_tests_properties(FunctionalCleanup PROPERTIES
     FIXTURES_SETUP   FunctionalImages
@@ -118,6 +120,9 @@ set(RAID0_ENV   "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid0_a.img"
                 "TEST_FILE_B=${TEST_DIR}/raid0_b.img" ${FUNCTIONAL_ENV})
 set(RAID1_ENV   "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid1_a.img"
                 "TEST_FILE_B=${TEST_DIR}/raid1_b.img" ${FUNCTIONAL_ENV})
+set(RAID10_ENV  "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid10_a.img"
+                "TEST_FILE_B=${TEST_DIR}/raid10_b.img" "TEST_FILE_C=${TEST_DIR}/raid10_c.img"
+                "TEST_FILE_D=${TEST_DIR}/raid10_d.img" ${FUNCTIONAL_ENV})
 
 set_tests_properties(FunctionalFSDisk PROPERTIES
     ENVIRONMENT "${FSDISK_ENV}"
@@ -147,6 +152,19 @@ add_test(NAME FunctionalRAID1
 )
 set_tests_properties(FunctionalRAID1 PROPERTIES
     ENVIRONMENT "${RAID1_ENV}"
+    FIXTURES_REQUIRED FunctionalImages
+    TIMEOUT 180
+    LABELS "Functional"
+)
+
+# --- RAID10 ---
+add_test(NAME FunctionalRAID10
+    COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/jobs/raid10_rw.fio
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties(FunctionalRAID10 PROPERTIES
+    ENVIRONMENT "${RAID10_ENV}"
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 180
     LABELS "Functional"
