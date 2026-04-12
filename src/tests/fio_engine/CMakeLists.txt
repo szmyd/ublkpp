@@ -98,6 +98,9 @@ add_test(NAME FunctionalCleanup
         ${TEST_DIR}/raid1_a.img ${TEST_DIR}/raid1_b.img
         ${TEST_DIR}/raid10_a.img ${TEST_DIR}/raid10_b.img
         ${TEST_DIR}/raid10_c.img ${TEST_DIR}/raid10_d.img
+        ${TEST_DIR}/raid0xs_a.img ${TEST_DIR}/raid0xs_b.img
+        ${TEST_DIR}/raid10xs_a.img ${TEST_DIR}/raid10xs_b.img
+        ${TEST_DIR}/raid10xs_c.img ${TEST_DIR}/raid10xs_d.img
 )
 set_tests_properties(FunctionalCleanup PROPERTIES
     FIXTURES_SETUP   FunctionalImages
@@ -123,6 +126,11 @@ set(RAID1_ENV   "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid1_a.img"
 set(RAID10_ENV  "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid10_a.img"
                 "TEST_FILE_B=${TEST_DIR}/raid10_b.img" "TEST_FILE_C=${TEST_DIR}/raid10_c.img"
                 "TEST_FILE_D=${TEST_DIR}/raid10_d.img" ${FUNCTIONAL_ENV})
+set(RAID0XS_ENV  "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid0xs_a.img"
+                 "TEST_FILE_B=${TEST_DIR}/raid0xs_b.img" ${FUNCTIONAL_ENV})
+set(RAID10XS_ENV "ENGINE_SO=${ENGINE_SO}" "TEST_FILE_A=${TEST_DIR}/raid10xs_a.img"
+                 "TEST_FILE_B=${TEST_DIR}/raid10xs_b.img" "TEST_FILE_C=${TEST_DIR}/raid10xs_c.img"
+                 "TEST_FILE_D=${TEST_DIR}/raid10xs_d.img" ${FUNCTIONAL_ENV})
 
 set_tests_properties(FunctionalFSDisk PROPERTIES
     ENVIRONMENT "${FSDISK_ENV}"
@@ -165,6 +173,32 @@ add_test(NAME FunctionalRAID10
 )
 set_tests_properties(FunctionalRAID10 PROPERTIES
     ENVIRONMENT "${RAID10_ENV}"
+    FIXTURES_REQUIRED FunctionalImages
+    TIMEOUT 180
+    LABELS "Functional"
+)
+
+# --- RAID0 cross-stripe (bs=96k forces iovec accumulation in __distribute) ---
+add_test(NAME FunctionalRAID0CrossStripe
+    COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/jobs/raid0_cross_stripe.fio
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties(FunctionalRAID0CrossStripe PROPERTIES
+    ENVIRONMENT "${RAID0XS_ENV}"
+    FIXTURES_REQUIRED FunctionalImages
+    TIMEOUT 180
+    LABELS "Functional"
+)
+
+# --- RAID10 cross-stripe (same pattern through RAID0+RAID1 stack) ---
+add_test(NAME FunctionalRAID10CrossStripe
+    COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/jobs/raid10_cross_stripe.fio
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties(FunctionalRAID10CrossStripe PROPERTIES
+    ENVIRONMENT "${RAID10XS_ENV}"
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 180
     LABELS "Functional"

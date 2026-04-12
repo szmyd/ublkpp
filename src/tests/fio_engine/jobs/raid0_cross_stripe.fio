@@ -1,0 +1,26 @@
+# Cross-stripe boundary exercise for RAID0's __distribute logic.
+#
+# bs=96k = 3 x chunk_size (32k). With 2 devices each IO maps as:
+#   [0..32k)  -> device 0   (iovec #1 for dev0)
+#   [32k..64k) -> device 1  (iovec #1 for dev1, flushed immediately)
+#   [64k..96k) -> device 0  (iovec #2 for dev0, flushed with 2-iovec scatter)
+#
+# Every IO therefore exercises:
+#   - cross-stripe splitting  (a single fio IO becomes sub-IOs on 2 devices)
+#   - iovec accumulation/wrap (device 0 accumulates 2 non-contiguous iovecs
+#                              before __distribute issues the combined call)
+[global]
+ioengine=external:${ENGINE_SO}
+disk_type=raid0
+disk_files=${TEST_FILE_A}:${TEST_FILE_B}
+raid_chunk_size=32768
+bs=96k
+iodepth=32
+verify=md5
+verify_fatal=1
+time_based=0
+direct=0
+
+[write-verify]
+rw=write
+size=24m
