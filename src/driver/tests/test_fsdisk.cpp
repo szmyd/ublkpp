@@ -542,6 +542,12 @@ TEST(FSDiskConstructor, LargeFile) {
 TEST_F(FSDiskTest, HandleFlushDirectIO) {
     auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
 
+    if (!disk->direct_io) {
+        // On filesystems where O_DIRECT is unsupported (e.g. overlayfs in CI),
+        // handle_flush would use the queue — skip the nullptr-queue path.
+        GTEST_SKIP() << "direct_io=false on this filesystem; skipping DIO flush test";
+    }
+
     // For direct I/O, handle_flush returns 0 immediately without using the queue
     // So we can pass nullptr for queue and data
     auto result = disk->handle_flush(nullptr, nullptr, 0);

@@ -77,6 +77,8 @@ static void ensure_sisl_init() {
         char* argv[] = {prog, nullptr};
         SISL_OPTIONS_LOAD(argc, argv, logging, fs_disk, raid1);
         sisl::logging::SetLogger("ublkpp_fio");
+        // Set trace on all loggers — including SISL per-module loggers already created
+        spdlog::apply_all([](std::shared_ptr< spdlog::logger > l) { l->set_level(spdlog::level::trace); });
         spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
     });
 }

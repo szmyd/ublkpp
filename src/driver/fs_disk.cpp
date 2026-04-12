@@ -4,6 +4,7 @@ extern "C" {
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/uio.h>
 #include <unistd.h>
 }
@@ -82,23 +83,17 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
 
     // in case of buffered io, use common bs/pbs so that all FS
     // image can be supported.
-    // fcntl F_SETFL O_DIRECT succeeds even on filesystems that don't support it
-    // (overlayfs, tmpfs); only actual I/O reveals the failure.  Probe with a
-    // read (not write — reads don't corrupt data) to detect this before
-    // committing to direct I/O.  An empty or short file returns 0 bytes, which
-    // is not EINVAL, so the probe correctly indicates O_DIRECT is usable.
-    if (!fcntl(_fd, F_SETFL, O_DIRECT)) {
-        void* probe = nullptr;
-        if (posix_memalign(&probe, 4096, 4096) == 0) {
-            auto const r = pread(_fd, probe, 4096, 0);
-            free(probe);
-            if (r >= 0 || errno != EINVAL) {
-                direct_io = true;
-            } else {
-                fcntl(_fd, F_SETFL, 0); // clear O_DIRECT — filesystem doesn't support it
-                DLOGD("O_DIRECT accepted by fcntl but rejected by filesystem — using BUFFERED.")
-            }
-        }
+    // On overlayfs (common in Docker/CI), fcntl F_SETFL O_DIRECT succeeds and
+    // pread/pwrite syscalls succeed, but io_uring I/O returns EINVAL.  Detect
+    // overlayfs via statfs and skip O_DIRECT unconditionally on that filesystem.
+    // For other filesystems, fall back to buffered if fcntl itself fails.
+    struct statfs sfs{};
+    constexpr unsigned long k_overlayfs_magic = 0x794c7630UL;
+    bool const overlayfs = (fstatfs(_fd, &sfs) == 0 && static_cast< unsigned long >(sfs.f_type) == k_overlayfs_magic);
+    if (overlayfs) {
+        DLOGD("overlayfs detected — O_DIRECT not supported by io_uring on this fs, using BUFFERED.")
+    } else if (!fcntl(_fd, F_SETFL, O_DIRECT)) {
+        direct_io = true;
     } else {
         DLOGD("Unable to support DIRECT I/O, using BUFFERED.")
     }
@@ -199,15 +194,10 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!");
 
     if (UBLK_IO_OP_READ == op) {
-        if (1 == nr_vecs)
-            io_uring_prep_rw(IORING_OP_READ, sqe, _fd, iovecs->iov_base, iovecs->iov_len, addr);
-        else
-            io_uring_prep_readv(sqe, _fd, iovecs, nr_vecs, addr);
+        // IORING_OP_READ/WRITE require kernel >= 5.6; use readv/writev for compatibility.
+        io_uring_prep_readv(sqe, _fd, iovecs, nr_vecs, addr);
     } else {
-        if (1 == nr_vecs)
-            io_uring_prep_rw(IORING_OP_WRITE, sqe, _fd, iovecs->iov_base, iovecs->iov_len, addr);
-        else
-            io_uring_prep_writev(sqe, _fd, iovecs, nr_vecs, addr);
+        io_uring_prep_writev(sqe, _fd, iovecs, nr_vecs, addr);
     }
 
     // Set ForceUnitAccess bit to bypass caches
