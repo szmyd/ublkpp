@@ -74,6 +74,18 @@ if (DEFINED ADDRESS_SANITIZER_ON AND ADDRESS_SANITIZER_ON)
     list(APPEND FUNCTIONAL_ENV "ASAN_OPTIONS=verify_asan_link_order=0")
 endif()
 
+# tcmalloc (used by sisl in Release builds) is statically linked into our .so
+# with the initial-exec TLS model (~88 KiB of per-thread cache storage).
+# When fio dlopen's our .so at runtime the static TLS block is already
+# finalised, so glibc reports "cannot allocate memory in static TLS block".
+# Work-around: LD_PRELOAD the engine .so so the dynamic linker allocates its
+# TLS in the initial (startup) block before fio's own code runs.  When fio
+# later dlopen's the same path the linker returns the already-loaded handle
+# with no second TLS allocation needed.
+if (DEFINED TCMALLOC_ON AND TCMALLOC_ON)
+    list(APPEND FUNCTIONAL_ENV "LD_PRELOAD=${ENGINE_SO}")
+endif()
+
 # Setup fixture: remove stale backing images before each functional test so
 # a fresh superblock is written with the current deterministic UUID.
 add_test(NAME FunctionalCleanup

@@ -124,6 +124,8 @@ class UBlkPPConan(ConanFile):
                     tc.variables['THREAD_SANITIZER_ON'] = 'ON'
                 else:  # address
                     tc.variables['ADDRESS_SANITIZER_ON'] = 'ON'
+        if self.settings.build_type != "Debug":
+            tc.variables['TCMALLOC_ON'] = 'ON'
         tc.generate()
 
         deps = CMakeDeps(self)
