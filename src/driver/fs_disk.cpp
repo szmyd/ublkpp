@@ -11,7 +11,6 @@ extern "C" {
 }
 
 #include <fstream>
-#include <random>
 
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
@@ -23,9 +22,6 @@ extern "C" {
 #include "metrics/ublk_fsdisk_metrics.hpp"
 #include "target/ublkpp_tgt_impl.hpp"
 
-SISL_OPTION_GROUP(fs_disk,
-                  (random_errors, "", "random_errors", "Inject random errors into some devices",
-                   cxxopts::value< uint32_t >()->default_value("0"), ""))
 namespace ublkpp {
 
 static uint64_t k_rand_cnt{0};
@@ -50,13 +46,6 @@ static bool const k_buffered_uring_broken = buffered_uring_broken();
 FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) : UblkDisk(), _path(path) {
     // Create metrics with parent_id for correlation
     if (!parent_id.empty()) { _metrics = std::make_unique< UblkFSDiskMetrics >(parent_id, _path.string()); }
-    if (0 != SISL_OPTIONS["random_errors"].count()) {
-        std::random_device r;
-        std::default_random_engine e1(r());
-        std::uniform_int_distribution< uint64_t > uniform_dist(1, 4);
-        if (0 == k_rand_error) k_rand_error = uniform_dist(e1) * 17;
-    }
-
     auto const str_path = _path.native();
     _fd = open(str_path.c_str(), O_RDWR);
     if (_fd < 0) {
@@ -197,17 +186,6 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     auto const op = ublksrv_get_op(data->iod);
     DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), data->tag, addr, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
-    if (0 != SISL_OPTIONS["random_errors"].count()) [[unlikely]] {
-        if (k_rand_cnt < SISL_OPTIONS["random_errors"].as< uint32_t >()) {
-            // Random errors on even disks
-            if ((UBLK_IO_OP_WRITE == op) && !is_internal(sub_cmd) && !is_retry(sub_cmd) && (0 == sub_cmd % 2) &&
-                (0 == (k_io_cnt++ % k_rand_error))) {
-                DLOGW("Returning random error from: {} @ [addr:{:#0x}] [len:{:#0x}] [cnt:{}]", _path.native(), addr,
-                      __iovec_len(iovecs, iovecs + nr_vecs), ++k_rand_cnt)
-                return std::unexpected(std::make_error_condition(std::errc::io_error));
-            }
-        }
-    }
     // On kernel <= 5.4, io_uring CQE delivery for buffered (non-O_DIRECT) I/O is unreliable:
     // cross-stripe writes can stall CQE arrival for 30+ seconds (observed on overlayfs/CI).
     // Fall back to synchronous preadv2/pwritev2 and return 0 so the caller treats this as an
