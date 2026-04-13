@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.21.2
+- raid1: Fix the bringing up a degraded array with a defunct disk in slot A.
+
 ## 0.21.1
 - New functional testing framework. See `docs/functional_testing.md` for details.
 
