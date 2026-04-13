@@ -9,6 +9,7 @@
 #include <sisl/options/options.h>
 
 #include "bitmap.hpp"
+#include "raid1_avail_probe.hpp"
 #include "raid1_impl.hpp"
 #include "raid1_resync_task.hpp"
 #include "lib/logging.hpp"
@@ -487,9 +488,11 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     }
 
     // Atomically swap the device or fail; fail if swapping sole active device
-    if (__swap_device(outgoing_device_id, incoming_mirror, state.route) && _raid_metrics) {
-        // Record successful device swap
-        _raid_metrics->record_device_swap();
+    if (__swap_device(outgoing_device_id, incoming_mirror, state.route)) {
+        if (_raid_metrics) _raid_metrics->record_device_swap();
+        // Stop stale probes — they hold a shared_ptr to the outgoing MirrorDevice
+        _idle_probe_a.stop();
+        _idle_probe_b.stop();
     }
 
     // Now set back to IDLE state and kick a resync task off
@@ -503,23 +506,38 @@ raid1::array_state Raid1DiskImpl::replica_states() const noexcept {
     auto const sz_to_sync = _dirty_bitmap->dirty_data_est();
     auto const state = __capture_route_state();
 
+    // Helper: compute state for a device
+    auto const get_state = [&state](MirrorDevice const* dev, bool is_active, uint64_t sync_bytes) -> replica_state {
+        bool const is_unavail = dev->unavail.test(std::memory_order_acquire);
+
+        if (!is_active && (sync_bytes > 0 || state.route != read_route::EITHER)) {
+            // Device is degraded (doesn't have all data or route not yet restored)
+            return is_unavail ? replica_state::ERROR : replica_state::SYNCING;
+        }
+
+        if (is_unavail && state.route == read_route::EITHER) {
+            // Healthy array, but device has read failures
+            return replica_state::UNAVAIL; // Has data, can't reach it
+        }
+
+        return replica_state::CLEAN;
+    };
+
     switch (state.route) {
-    case read_route::DEVA:
-        return raid1::array_state{.device_a = replica_state::CLEAN,
-                                  .device_b = state.backup_dev->unavail.test(std::memory_order_acquire)
-                                      ? replica_state::ERROR
-                                      : replica_state::SYNCING,
-                                  .bytes_to_sync = sz_to_sync};
-    case read_route::DEVB:
-        return raid1::array_state{.device_a = state.backup_dev->unavail.test(std::memory_order_acquire)
-                                      ? replica_state::ERROR
-                                      : replica_state::SYNCING,
-                                  .device_b = replica_state::CLEAN,
-                                  .bytes_to_sync = sz_to_sync};
-    case read_route::EITHER:
+    case read_route::DEVA: // Device B is write-degraded
+        return {.device_a = get_state(state.active_dev.get(), true, sz_to_sync),
+                .device_b = get_state(state.backup_dev.get(), false, sz_to_sync),
+                .bytes_to_sync = sz_to_sync};
+    case read_route::DEVB: // Device A is write-degraded
+        return {.device_a = get_state(state.backup_dev.get(), false, sz_to_sync),
+                .device_b = get_state(state.active_dev.get(), true, sz_to_sync),
+                .bytes_to_sync = sz_to_sync};
+    case read_route::EITHER: // Healthy array
     default:
-        return raid1::array_state{
-            .device_a = replica_state::CLEAN, .device_b = replica_state::CLEAN, .bytes_to_sync = 0};
+        // For EITHER route: active_dev==device_a, backup_dev==device_b by convention
+        return {.device_a = get_state(state.active_dev.get(), true, 0),
+                .device_b = get_state(state.backup_dev.get(), true, 0),
+                .bytes_to_sync = 0};
     }
 }
 
@@ -736,24 +754,26 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
 
     // Pick a device to read from (load-balancer)
     auto route = read_route::DEVA;
-    auto need_to_test{false};
-    if (state->is_degraded && (!retry && state->backup_dev->unavail.test(std::memory_order_acquire))) {
+    if (state->is_degraded && !retry && state->backup_dev->unavail.test(std::memory_order_acquire)) {
         route = state->route;
     } else {
-        if (read_route::DEVB == last_read) {
-            if (read_route::DEVB == state->route) need_to_test = true;
-        } else {
-            route = read_route::DEVB;
-            if (read_route::DEVA == state->route) need_to_test = true;
-        }
+        route = (read_route::DEVB == last_read) ? read_route::DEVA : read_route::DEVB;
     }
 
-    // If we are degraded and the load-balancer wants to use the dirty disk, check it for dirty bits first
-    // and if all true; then  use the current active route from the captured state
-    if (state->is_degraded && need_to_test && _dirty_bitmap->is_dirty(addr, len)) route = state->route;
+    // In degraded mode, if the load-balancer picked the backup (dirty) device, verify the region is
+    // clean before using it — otherwise fall back to the active route
+    if (state->is_degraded && route != state->route && _dirty_bitmap->is_dirty(addr, len)) route = state->route;
 
     // We've already attempted this device...we don't want to re-attempt
     if (retry && (last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
+
+    // Route away from unavail devices; recovery is handled by the idle probe.
+    // In degraded mode unavail is set on the backup device as part of degradation — routing is
+    // already handled by the is_degraded block above, so skip this check there.
+    if (!state->is_degraded && __route_to_device(*state, route).device->unavail.test(std::memory_order_acquire)) {
+        route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
+        RLOGD("Skipping unavail device, routing to alternate")
+    }
 
     // Move load-balancer forward, this is optimistic, doesn't need to be atomic
     last_read = route;
@@ -764,7 +784,14 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     // Add RETRIED flag if this is a retry attempt
     auto const chosen_sub = retry ? set_flags(chosen_sub_base, sub_cmd_flags::RETRIED) : chosen_sub_base;
 
-    if (auto res = func(*chosen_dev->disk, chosen_sub); res || retry) { return res; }
+    if (auto res = func(*chosen_dev->disk, chosen_sub); res || retry) {
+        return res;
+    } else {
+        // On read failure mark device as unavailable before retrying the other side
+        if (!chosen_dev->unavail.test_and_set(std::memory_order_acquire)) {
+            RLOGW("Device marked unavailable due to read failure: {}", *chosen_dev->disk)
+        }
+    }
 
     // Otherwise fail over the device and attempt the READ again marking this a retry
     sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
@@ -894,6 +921,16 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
     // Map orig_route to physical device accounting for potential swap
     __route_to_device(state, orig_route).device->disk->on_io_complete(data, sub_cmd, res);
 
+    // Auto-recovery: Clear unavail flag on successful READ completions (user I/O only, not internal/resync)
+    if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod) && res >= 0 && !is_internal(sub_cmd)) {
+        auto const& device = __route_to_device(state, orig_route).device;
+
+        if (device->unavail.test(std::memory_order_acquire)) {
+            device->unavail.clear(std::memory_order_release);
+            RLOGD("Device auto-recovered from read failure: {}", *device->disk)
+        }
+    }
+
     // Decrement outstanding write counter for writes (not reads), but only if it was a
     // success.
     // Error cases will be handled by __handle_async_retry
@@ -902,6 +939,32 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
         DEBUG_ASSERT(!is_retry(sub_cmd), "Retried a WRITE command?!");
         if (0 <= res && !is_internal(sub_cmd)) _resync_task->dequeue_write();
     }
+}
+
+void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
+    if (!enter) {
+        _idle_probe_a.stop();
+        _idle_probe_b.stop();
+        return;
+    }
+
+    auto const state = __capture_route_state();
+    if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
+
+    // Immediate probe: clear UNAVAIL on any device that has recovered (edge trigger, no delay).
+    // TOCTOU note: on_io_complete() may clear unavail between the test() and probe_mirror().
+    // If so, probe_mirror() still succeeds (device reachable) and the log fires spuriously.
+    // This is benign — the probe is idempotent and the worst case is one redundant log entry.
+    auto const immediate_probe = [&](std::shared_ptr< MirrorDevice > const& mirror) {
+        if (!mirror->unavail.test(std::memory_order_acquire)) return;
+        if (probe_mirror(*mirror, reserved_size)) RLOGD("Idle probe: device recovered: {}", *mirror->disk)
+    };
+    immediate_probe(state.active_dev);
+    immediate_probe(state.backup_dev);
+
+    // Periodic probe: both directions (recovery + new failures), stopped when idle exits
+    _idle_probe_a.launch(state.active_dev, reserved_size);
+    _idle_probe_b.launch(state.backup_dev, reserved_size);
 }
 
 void Raid1DiskImpl::toggle_resync(bool t) {

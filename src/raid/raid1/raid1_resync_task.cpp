@@ -5,6 +5,7 @@
 
 #include "lib/logging.hpp"
 #include "bitmap.hpp"
+#include "raid1_avail_probe.hpp"
 #include "raid1_impl.hpp"
 
 namespace ublkpp::raid1 {
@@ -51,6 +52,15 @@ bool Raid1ResyncTask::__transition_to(resync_state initial, resync_state target,
 
 void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                              std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete) {
+    // Set ourselves up with a buffer to do all the read/write operations from
+    auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
+    if (auto err = ::posix_memalign(&iov.iov_base, _io_size, _max_size); 0 != err || nullptr == iov.iov_base)
+        [[unlikely]] { // LCOV_EXCL_START
+        RLOGE("Could not allocate memory for I/O: {}", strerror(err))
+        if (iov.iov_base) free(iov.iov_base);
+        return;
+    } // LCOV_EXCL_STOP
+
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
     auto const resync_start = std::chrono::steady_clock::now();
     auto cur_state = resync_state::IDLE;
@@ -62,6 +72,15 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         _metrics->record_resync_start();
         _metrics->record_active_resyncs(active_count);
     }
+
+    // Wait for the device to become available
+    auto nr_pages = _dirty_bitmap->dirty_pages();
+    if (_metrics) { _metrics->record_dirty_pages(nr_pages); }
+    while (dirty_mirror->unavail.test(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >()));
+        probe_mirror(*dirty_mirror, _offset);
+    }
+
     // Wait to become IDLE
     while (!__cas_state_weak(cur_state, resync_state::ACTIVE)) {
         // If we're stopped or another task was started we should exit
@@ -75,7 +94,8 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     }
 
     // We are now guaranteed to be the only active thread performing I/O on the device
-    cur_state = __run(clean_mirror, dirty_mirror);
+    cur_state = __run(clean_mirror, dirty_mirror, &iov);
+    free(iov.iov_base);
 
     // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
     auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
@@ -169,39 +189,40 @@ static inline io_result __copy_region(iovec* iovec, int nr_vecs, uint64_t addr, 
     return res;
 }
 
-resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
+resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept {
     static auto const unavail_delay = std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
     static auto const avail_delay = std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >());
 
     auto cur_state = resync_state::ACTIVE;
-    // Set ourselves up with a buffer to do all the read/write operations from
-    auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
-    if (auto err = ::posix_memalign(&iov.iov_base, _io_size, _max_size); 0 != err || nullptr == iov.iov_base)
-        [[unlikely]] { // LCOV_EXCL_START
-        RLOGE("Could not allocate memory for I/O: {}", strerror(err))
-        if (iov.iov_base) free(iov.iov_base);
-        return cur_state;
-    } // LCOV_EXCL_STOP
+    uint32_t consecutive_unavail = 0;
 
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_metrics) { _metrics->record_dirty_pages(nr_pages); }
     while (0 < nr_pages) {
+        // Skip copies entirely if the dirty mirror is known unavailable
+        if (dirty_mirror->unavail.test(std::memory_order_acquire)) {
+            if (++consecutive_unavail % 10 == 0)
+                RLOGW("Resync blocked: dirty mirror unreachable for ~{}s (probe reads failing) [{}]",
+                      consecutive_unavail * SISL_OPTIONS["avail_delay"].as< uint32_t >(), *dirty_mirror->disk)
+            if (cur_state = __yield(unavail_delay, avail_delay); resync_state::STOPPING == cur_state) break;
+            probe_mirror(*dirty_mirror, _offset);
+            nr_pages = _dirty_bitmap->dirty_pages();
+            if (_metrics) _metrics->record_dirty_pages(nr_pages);
+            continue;
+        }
+        consecutive_unavail = 0;
+
         // TODO Change this so it's easier to control with a future QoS algorithm
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
-            iov.iov_len = std::min(sz, _max_size);
+            iov->iov_len = std::min(sz, _max_size);
             // Copy Region from clean to dirty
-            if (auto res = __copy_region(&iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
+            if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
-                // Clear Bitmap and set device as available if successful
-                if (dirty_mirror->unavail.test(std::memory_order_acquire)) {
-                    RLOGI("Mirror became available again: {}", *dirty_mirror->disk)
-                    dirty_mirror->unavail.clear(std::memory_order_release);
-                }
-                clean_region(logical_off, iov.iov_len, *clean_mirror);
+                clean_region(logical_off, iov->iov_len, *clean_mirror);
                 // Record resync progress
-                if (_metrics) { _metrics->record_resync_progress(iov.iov_len); }
+                if (_metrics) { _metrics->record_resync_progress(iov->iov_len); }
             } else {
                 dirty_mirror->unavail.test_and_set(std::memory_order_acquire);
                 break;
@@ -219,7 +240,6 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) {
         nr_pages = _dirty_bitmap->dirty_pages();
         if (_metrics) _metrics->record_dirty_pages(nr_pages);
     }
-    free(iov.iov_base);
     return cur_state;
 }
 
