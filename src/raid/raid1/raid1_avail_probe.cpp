@@ -11,6 +11,9 @@
 
 namespace ublkpp::raid1 {
 
+// Probes mirror reachability with a single synchronous page read.
+// Returns true  — device is reachable; unavail flag has been cleared.
+// Returns false — device failed the probe; unavail flag has been set.
 bool probe_mirror(MirrorDevice& mirror, uint64_t reserved_size) noexcept {
     alignas(k_page_size) uint8_t probe_buf[k_page_size];
     auto iov = iovec{.iov_base = probe_buf, .iov_len = k_page_size};

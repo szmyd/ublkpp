@@ -941,7 +941,7 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
     }
 }
 
-void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
+void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     if (!enter) {
         _idle_probe_a.stop();
         _idle_probe_b.stop();
@@ -951,7 +951,10 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) {
     auto const state = __capture_route_state();
     if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
 
-    // Immediate probe: clear UNAVAIL on any device that has recovered (edge trigger, no delay)
+    // Immediate probe: clear UNAVAIL on any device that has recovered (edge trigger, no delay).
+    // TOCTOU note: on_io_complete() may clear unavail between the test() and probe_mirror().
+    // If so, probe_mirror() still succeeds (device reachable) and the log fires spuriously.
+    // This is benign — the probe is idempotent and the worst case is one redundant log entry.
     auto const immediate_probe = [&](std::shared_ptr< MirrorDevice > const& mirror) {
         if (!mirror->unavail.test(std::memory_order_acquire)) return;
         if (probe_mirror(*mirror, reserved_size)) RLOGD("Idle probe: device recovered: {}", *mirror->disk)
