@@ -75,7 +75,138 @@ TEST(Raid1, BothDevicesSameSlot) {
                  std::runtime_error);
 }
 
-// Test 4: Unclean shutdown while degraded
+// Test 4: Unclean shutdown while degraded — both devices valid, route persisted, clean_unmount=0.
+// Exercises the (read_route != EITHER && clean_unmount == 0) branch: full bitmap dirty + age bump.
+TEST(Raid1, UncleanShutdownWhileDegraded) {
+    // device_a wins pick_superblock (higher age); its read_route=DEVA is used.
+    // Age diff of 1 keeps device_b marked valid (not new_device).
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = true});
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
+            sb->fields.device_b = 0;
+            sb->fields.clean_unmount = 0;
+            sb->fields.bitmap.age = htobe64(2);
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.device_b = 1;
+            sb->fields.clean_unmount = 0;
+            sb->fields.bitmap.age = htobe64(1);
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // device_a: SB from __become_active, bitmap page from sync_to at shutdown, SB from destructor
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(3)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            // __become_active: SB written with age bumped +16, route=DEVA, clean_unmount=0
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVA, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
+            EXPECT_EQ(htobe64(18), sb->fields.bitmap.age); // age 2 + 16 bump
+            return ublkpp::raid1::k_page_size;
+        })
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            // sync_to at shutdown: bitmap page written to active device
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size); // bitmap area, not SB
+            return ublkpp::raid1::k_page_size;
+        })
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            // destructor: SB written with clean_unmount=1
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            EXPECT_EQ(1, sb->fields.clean_unmount);
+            return ublkpp::raid1::k_page_size;
+        });
+    // device_b: only SB from __become_active (backup device not written at shutdown when degraded)
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            return ublkpp::raid1::k_page_size;
+        });
+
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+}
+
+// Test 5: Unclean shutdown while healthy — route=EITHER, clean_unmount=0.
+// Exercises the final (clean_unmount == 0) branch: just a log warning, no bitmap changes.
+TEST(Raid1, UncleanShutdownWhileHealthy) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = true});
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.clean_unmount = 0;
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.device_b = 1;
+            sb->fields.clean_unmount = 0;
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // __become_active writes SB to both (clean_unmount=0); destructor writes SB to both (clean_unmount=1).
+    // No bitmap sync — route=EITHER means not degraded, so sync_to is not called at shutdown.
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            return ublkpp::raid1::k_page_size;
+        });
+
+    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    EXPECT_TO_WRITE_SB(device_a);
+    EXPECT_TO_WRITE_SB(device_b);
+}
+
+// Test 6: Unclean shutdown while degraded (original broken test kept for documentation)
 TEST(Raid1, UncleanShutdownDegraded) {
     // Create devices without setting up any expectations
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});

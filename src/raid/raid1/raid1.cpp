@@ -214,8 +214,7 @@ void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Unclean shutdown in degraded mode! Dirty all of BITMAP")
         _dirty_bitmap->dirty_region(0, capacity());
-    } else if (read_route::EITHER != __get_read_route()) {
-        auto const route = __get_read_route();
+    } else if (auto const route = __get_read_route(); read_route::EITHER != route) {
         auto const& active_dev = (route == read_route::DEVB) ? _device_b : _device_a;
         auto const& backup_dev = (route == read_route::DEVB) ? _device_a : _device_b;
         RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *backup_dev->disk)

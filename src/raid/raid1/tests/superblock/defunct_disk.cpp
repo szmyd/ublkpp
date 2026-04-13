@@ -52,6 +52,7 @@ TEST(Raid1, DefunctRemountA) {
 
     auto device_a = std::make_shared< ublkpp::DefunctDisk >();
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    // Set up destructor's clean-unmount write expectation (fires before raid_device leaves scope)
     EXPECT_TO_WRITE_SB(device_b);
 }
 
@@ -85,6 +86,7 @@ TEST(Raid1, DefunctRemountB) {
 
     auto device_b = std::make_shared< ublkpp::DefunctDisk >();
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    // Set up destructor's clean-unmount write expectation (fires before raid_device leaves scope)
     EXPECT_TO_WRITE_SB(device_a);
 }
 
