@@ -46,8 +46,7 @@ TEST(Raid1, DefunctRemountA) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
-            EXPECT_EQ(ublkpp::raid1::read_route::DEVB,
-                      static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVB, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
             return ublkpp::raid1::k_page_size;
         });
 
@@ -80,8 +79,7 @@ TEST(Raid1, DefunctRemountB) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
-            EXPECT_EQ(ublkpp::raid1::read_route::DEVA,
-                      static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVA, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
             return ublkpp::raid1::k_page_size;
         });
 
