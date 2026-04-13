@@ -184,37 +184,41 @@ void Raid1DiskImpl::__load_and_select_superblock(boost::uuids::uuid const& uuid,
 }
 
 void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
-    auto const state = __capture_route_state();
     // Read in existing dirty BITMAP pages
     _dirty_bitmap = std::make_shared< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size(),
                                                _sb->superbitmap_reserved, _str_uuid);
-    if (state.active_dev->new_device) _dirty_bitmap->init_to(state.active_dev->disk);
-    if (state.backup_dev->new_device) _dirty_bitmap->init_to(state.backup_dev->disk);
+    // Initialize bitmap pages for any new (or defunct) device slots
+    if (_device_a->new_device) _dirty_bitmap->init_to(_device_a->disk);
+    if (_device_b->new_device) _dirty_bitmap->init_to(_device_b->disk);
 
-    // We need to completely dirty one side if either is new when the other is not, this will also
-    // apply to when a DefunctDisk is provided, load_from will be skipped in this case.
-    if ((DEFUNCT_DEVICE(state.active_dev->disk) || DEFUNCT_DEVICE(state.backup_dev->disk))) {
+    // Use physical slot references (_device_a/_device_b) directly to avoid the ambiguity of
+    // role-relative state captured by __capture_route_state(). The read_route enum refers to
+    // physical slots (DEVA=_device_a, DEVB=_device_b), so mapping must be slot-based.
+    if (DEFUNCT_DEVICE(_device_a->disk) || DEFUNCT_DEVICE(_device_b->disk)) {
         RLOGW("RAID1 device [uuid:{}] is running with a defunct device!", _str_uuid)
-        // Defunct disks are marked NEW
-        __store_read_route(state.active_dev->new_device ? read_route::DEVB : read_route::DEVA);
-        // We still want to load from the BITMAP and not bump the age, maybe we'll get the orig
-        // disk back in a swap when it becomes available?
-        _dirty_bitmap->load_from(*state.active_dev->disk);
-    } else if (state.active_dev->new_device xor state.backup_dev->new_device) {
+        bool const a_is_defunct = DEFUNCT_DEVICE(_device_a->disk);
+        // Route reads to whichever physical slot is live
+        __store_read_route(a_is_defunct ? read_route::DEVB : read_route::DEVA);
+        // Load bitmap from the live slot; don't bump age — we may get the original disk back via swap
+        _dirty_bitmap->load_from(*(a_is_defunct ? _device_b : _device_a)->disk);
+    } else if (_device_a->new_device xor _device_b->new_device) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Device is replacement {}, dirty all of BITMAP",
-              *(state.active_dev->new_device ? state.active_dev->disk : state.backup_dev->disk))
+              *(_device_a->new_device ? _device_a->disk : _device_b->disk))
         _dirty_bitmap->dirty_region(0, capacity());
-        __store_read_route(state.active_dev->new_device ? read_route::DEVB : read_route::DEVA);
+        // Route reads to the existing (non-new) physical slot
+        __store_read_route(_device_a->new_device ? read_route::DEVB : read_route::DEVA);
     } else if ((read_route::EITHER != __get_read_route()) && (0 == _sb->fields.clean_unmount)) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Unclean shutdown in degraded mode! Dirty all of BITMAP")
         _dirty_bitmap->dirty_region(0, capacity());
-    } else if (read_route::EITHER != __get_read_route()) {
-        RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *state.backup_dev->disk)
-        _dirty_bitmap->load_from(*state.active_dev->disk);
+    } else if (auto const route = __get_read_route(); read_route::EITHER != route) {
+        auto const& active_dev = (route == read_route::DEVB) ? _device_b : _device_a;
+        auto const& backup_dev = (route == read_route::DEVB) ? _device_a : _device_b;
+        RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *backup_dev->disk)
+        _dirty_bitmap->load_from(*active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
         RLOGW("Raid1 was not cleanly shutdown last time [uuid:{}]!", _str_uuid)
     }
