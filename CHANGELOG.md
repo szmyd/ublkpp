@@ -4,42 +4,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.20.9
+## 0.21.0
+- raid1: Introduce `UNAVAIL` replica state for transient read failures, routing I/O away from replicas that fail reads without marking them fully offline. A new periodic health monitor (`Raid1AvailProbeTask`) probes unavailable replicas during idle periods and restores them to active routing once they recover. Resync logic is updated to skip copies to unavailable mirrors and to wait for a device to become available before proceeding.
+
+## 0.20.x
 - raid1: Fix on_io_complete metrics mapping after device swap - I/O metrics were incorrectly attributed to the wrong device when completions occurred after swap_device() changed the route.
-
-## 0.20.8
 - Fix some more cases where __capture_route_state was being misused.
-
-## 0.20.7
 - raid1: Make Bitmap lock-free by using pre-allocated vector.
-
-## 0.20.6
 - RouteState atomicity: Introduced RouteState struct and __capture_route_state() to atomically capture all 
   route-derived values (active/backup devices, subcmds, degraded flag) at function entry
 - Eliminated unsafe macros: Removed CLEAN_DEVICE, DIRTY_DEVICE, IS_DEGRADED, CLEAN_SUBCMD, DIRTY_SUBCMD macros that
   could evaluate differently mid-operation when swap_device changes the route
-
-## 0.20.5
 - raid1: Fix some device swap races by consolidating atomic loads
-
-## 0.20.4
 - raid1: Refactor the Raid1ResyncTask to its own component
-
-## 0.20.3
 - raid1: Consolidate state machine logic.
 - raid1: Add outstanding write counter, trigger resync on this.
-
-## 0.20.2
 - **CRITICAL FIX**: raid1: Add thread-safe synchronization to bitmap page map
   - Protects bitmap `_page_map` structure from race conditions between resync thread and async I/O
   - Shared locks for readers (`is_dirty`, `next_dirty`, `clean_region`, `sync_to`) allow concurrent reads
   - Exclusive locks for writers (`dirty_region`, `dirty_pages`, `load_from`) prevent structural corruption
   - Fixes potential crashes and data corruption from concurrent map modification during resync
-
-## 0.20.1
 - raid1: Stop resync before touching bitmap during swap.
-
-## 0.20.0
 - raid1: Ability to bring RAID1 online with missing device.
 
 ## 0.19.x
