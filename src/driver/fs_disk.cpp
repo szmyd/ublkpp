@@ -6,6 +6,7 @@ extern "C" {
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/uio.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 }
 
@@ -22,6 +23,26 @@ extern "C" {
 #include "target/ublkpp_tgt_impl.hpp"
 
 namespace ublkpp {
+
+// On kernel <= 5.4, io_uring CQE delivery for buffered (non-O_DIRECT) I/O has a write-ordering
+// bug: the CQE is returned before the data is committed to the page cache.  A subsequent buffered
+// read can therefore see stale data, causing verify failures.  This is distinct from the fio
+// engine getevents() bug (fixed via completion_cache) and is a genuine kernel defect.
+// Production deployments are unaffected because ublk_drv requires kernel >= 5.19, but test
+// environments (MockUblksrv) may run on older kernels.  Fall back to synchronous preadv2/pwritev2
+// on affected kernels so CQE delivery implies the data is already visible to page-cache readers.
+// When the minimum supported test kernel is raised above 5.4, this guard and the sync_iov
+// fallback in async_iov can be removed.
+static bool buffered_uring_broken() {
+    // clang-format off
+    struct utsname uts{};
+    // clang-format on
+    if (uname(&uts) != 0) return true; // conservative: assume broken if uname fails
+    unsigned major = 0, minor = 0;
+    sscanf(uts.release, "%u.%u", &major, &minor); // NOLINT(cert-err34-c)
+    return major < 5 || (major == 5 && minor <= 4);
+}
+static bool const k_buffered_uring_broken = buffered_uring_broken();
 
 FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) : UblkDisk(), _path(path) {
     // Create metrics with parent_id for correlation
@@ -166,6 +187,13 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     auto const op = ublksrv_get_op(data->iod);
     DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), data->tag, addr, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
+    // LCOV_EXCL_START — kernel ≤ 5.4 sync fallback, not exercised in production
+    if (!direct_io && k_buffered_uring_broken) {
+        auto res = sync_iov(op, iovecs, nr_vecs, static_cast< off_t >(addr));
+        if (!res) return res;
+        return 0; // inline completion — no CQE pending
+    }
+    // LCOV_EXCL_STOP
 
     auto sqe = next_sqe(q);
 
