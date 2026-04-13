@@ -203,3 +203,18 @@ set_tests_properties(FunctionalRAID10CrossStripe PROPERTIES
     TIMEOUT 180
     LABELS "Functional"
 )
+
+# ---------------------------------------------------------------------------
+# Convenience target: cmake --build <dir> --target functional
+# Runs only Functional-labelled tests without re-invoking Conan.
+# ---------------------------------------------------------------------------
+add_custom_target(functional
+    COMMAND ${CMAKE_CTEST_COMMAND}
+        --test-dir ${CMAKE_BINARY_DIR}
+        -L Functional
+        --output-on-failure
+        --verbose
+    USES_TERMINAL
+    COMMENT "Running functional fio tests"
+)
+add_dependencies(functional ublkpp_fio_engine)
