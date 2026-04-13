@@ -17,4 +17,4 @@ target_link_libraries (test_logging
   sisl::cache
   ublksrv::ublksrv
 )
-add_test(NAME LoggingTest COMMAND test_logging -cv 2 --log_mods ublksrv:0)
+add_test(NAME LoggingTest COMMAND test_logging -cv warning --log_mods ublksrv:0)

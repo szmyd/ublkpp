@@ -16,4 +16,4 @@ target_link_libraries (test_fsdisk
   sisl::cache
   ublksrv::ublksrv
 )
-add_test(NAME FSDiskTest COMMAND test_fsdisk -cv 2)
+add_test(NAME FSDiskTest COMMAND test_fsdisk -cv warning)

@@ -70,6 +70,7 @@ class UBlkPPConan(ConanFile):
     def build_requirements(self):
         self.test_requires("gtest/1.17.0")
         self.test_requires("iomgr/[^12]@oss/master")
+        self.test_requires("fio/nbi.3.28")
 
     def requirements(self):
         self.requires("sisl/[^13]@oss/master", transitive_headers=True)
@@ -108,6 +109,13 @@ class UBlkPPConan(ConanFile):
         tc.variables["ENABLE_TESTS"] = "ON"
         if self.conf.get("tools.build:skip_test", default=False):
             tc.variables["ENABLE_TESTS"] = "OFF"
+        for req, dep in self.dependencies.items():
+            if dep.ref.name == "fio":
+                fio_bindirs = dep.cpp_info.bindirs
+                if fio_bindirs:
+                    import os
+                    tc.variables["FIO_EXECUTABLE"] = os.path.join(fio_bindirs[0], "fio")
+                break
         if self.settings.build_type == "Debug":
             if self.options.get_safe("coverage"):
                 tc.variables['BUILD_COVERAGE'] = 'ON'
@@ -116,6 +124,8 @@ class UBlkPPConan(ConanFile):
                     tc.variables['THREAD_SANITIZER_ON'] = 'ON'
                 else:  # address
                     tc.variables['ADDRESS_SANITIZER_ON'] = 'ON'
+        if self.settings.build_type != "Debug":
+            tc.variables['TCMALLOC_ON'] = 'ON'
         tc.generate()
 
         deps = CMakeDeps(self)
@@ -126,7 +136,7 @@ class UBlkPPConan(ConanFile):
         cmake.configure()
         cmake.build()
         if not self.conf.get("tools.build:skip_test", default=False):
-            cmake.test()
+            self.run(f"ctest --test-dir '{self.build_folder}' --verbose --output-on-failure")
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)

@@ -44,4 +44,4 @@ target_link_libraries (test_raid0
   GTest::gmock
   sisl::cache
 )
-add_test(NAME Raid0Test COMMAND test_raid0 -cv 2)
+add_test(NAME Raid0Test COMMAND test_raid0 -cv warning)

@@ -103,7 +103,7 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b) {
     RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
 
-    direct_io = true; // RAID-1 requires DIO
+    direct_io = true; // RAID-1 prefers DIO; downgraded below if any member doesn't support it
     // We enqueue async responses for RAID1 retries even if our underlying devices use uring
     uses_ublk_iouring = false;
 
@@ -117,7 +117,11 @@ void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std:
 
     // Now find the what size we should actually set based on the smallest provided device
     for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
-        if (!device->direct_io) throw std::runtime_error(fmt::format("Device does not support O_DIRECT! {}", device));
+        if (!device->direct_io) {
+            RLOGW("Device {} does not support O_DIRECT — RAID-1 will use buffered I/O (backend caching not bypassed!)",
+                  device)
+            direct_io = false; // LCOV_EXCL_LINE
+        }
         our_params.basic.dev_sectors = std::min(our_params.basic.dev_sectors, device->params()->basic.dev_sectors);
         our_params.basic.logical_bs_shift =
             std::max(our_params.basic.logical_bs_shift, device->params()->basic.logical_bs_shift);
@@ -429,7 +433,11 @@ static inline RouteSelection __route_to_device(RouteState const& state, raid1::r
 // bit in the Bitmap and do a FULL resync.
 std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoing_device_id,
                                                        std::shared_ptr< UblkDisk > incoming_device) {
-    if (!incoming_device->direct_io) return incoming_device;
+    if (!incoming_device->direct_io) {
+        RLOGW("Replacement device {} does not support O_DIRECT — RAID-1 will use buffered I/O (backend caching not "
+              "bypassed!)",
+              incoming_device)
+    }
     auto& our_params = *params();
     if ((our_params.basic.dev_sectors + (reserved_size >> SECTOR_SHIFT)) >
             incoming_device->params()->basic.dev_sectors ||
@@ -625,7 +633,12 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
 
     if (is_replicate(sub_cmd)) return dirty_res;
 
-    // Bitmap is marked dirty, queue a new asynchronous "reply" for this original cmd
+    // We cannot return `len` directly: the target interprets positive return values as sub_cmd counts
+    // (not byte counts), and returning 0 would silently drop the byte count. The REPLICATE result is
+    // always zeroed by the target, so the byte count must come from the PRIMARY completion path.
+    // Instead, inject a synthetic async_result carrying `len` into _pending_results so it is accumulated
+    // into ret_val via the normal process_result path on the next collect_async cycle. Return +1 to
+    // signal exactly one more sub_cmd pending.
     _pending_results[q].emplace_back(async_result{async_data, sub_cmd, static_cast< int >(len)});
     if (q) {
         if (0 != ublksrv_queue_send_event(q)) { // LCOV_EXCL_START
@@ -663,6 +676,8 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
 
     // Queue the I/O on the active device
     auto active_res = func(*cur_disk, cur_subcmd);
+    // Inline completion (sync fallback returns 0): on_io_complete won't fire, balance the enqueue now.
+    if (async_data && active_res.has_value() && active_res.value() == 0) _resync_task->dequeue_write();
 
     // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     // This condition always returns before the nested call!
@@ -686,6 +701,8 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             if (async_data) _resync_task->dequeue_write();
             return active_res;
         }
+        // Inline completion on backup write: on_io_complete won't fire, balance the enqueue.
+        if (async_data && active_res.value() == 0) _resync_task->dequeue_write();
         return active_res.value() + backup_res.value();
     }
     if (second_write) return active_res;
@@ -799,6 +816,12 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data cons
 
 void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     auto const state = __capture_route_state();
+    // _pending_results[q] holds synthetic completions injected by __handle_async_retry — not backend CQEs.
+    // Each entry represents a degraded write where the PRIMARY leg failed but the write succeeded on the
+    // surviving leg. The `result` field carries the byte count that must be accumulated into ret_val via
+    // the normal process_result path. See the comment in __handle_async_retry for why this indirection is
+    // necessary (short version: positive tgt return values are sub_cmd counts, not byte counts, so the byte
+    // count cannot be delivered any other way).
     results.splice(results.end(), std::move(_pending_results[q]));
     if (!state.active_dev->disk->uses_ublk_iouring) state.active_dev->disk->collect_async(q, results);
     if (!state.backup_dev->disk->uses_ublk_iouring) state.backup_dev->disk->collect_async(q, results);

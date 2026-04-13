@@ -16,4 +16,4 @@ target_link_libraries (test_ublkpp_tgt
   sisl::cache
   ublksrv::ublksrv
 )
-add_test(NAME TgtTest COMMAND test_ublkpp_tgt -cv 2)
+add_test(NAME TgtTest COMMAND test_ublkpp_tgt -cv warning)

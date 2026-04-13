@@ -32,7 +32,7 @@ target_link_libraries (test_raid1
   sisl::cache
   ublksrv::ublksrv
 )
-add_test(NAME Raid1Test COMMAND test_raid1 -cv 2)
+add_test(NAME Raid1Test COMMAND test_raid1 -cv warning)
 
 # Set TSAN suppression file for lock-free read path false positives
 if ((DEFINED THREAD_SANITIZER_ON) AND (${THREAD_SANITIZER_ON}))
