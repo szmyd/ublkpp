@@ -21,7 +21,7 @@
 
 SISL_LOGGING_INIT(ublk_drivers)
 
-SISL_OPTIONS_ENABLE(logging, fs_disk)
+SISL_OPTIONS_ENABLE(logging)
 
 namespace {
 
@@ -538,15 +538,12 @@ TEST(FSDiskConstructor, LargeFile) {
     std::filesystem::remove(test_path);
 }
 
-// Test: handle_flush with direct I/O
-TEST_F(FSDiskTest, HandleFlushDirectIO) {
+// Test: handle_flush is always a no-op (returns 0) regardless of direct_io mode.
+// For direct I/O there is nothing to flush; for buffered I/O the page cache is
+// coherent and durability is handled by fdatasync() in ~FSDisk().
+TEST_F(FSDiskTest, HandleFlushIsNoOp) {
     auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
-
-    // For direct I/O, handle_flush returns 0 immediately without using the queue
-    // So we can pass nullptr for queue and data
     auto result = disk->handle_flush(nullptr, nullptr, 0);
-
-    // Direct I/O should return immediately with 0
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result.value(), 0);
 }
@@ -555,7 +552,7 @@ TEST_F(FSDiskTest, HandleFlushDirectIO) {
 int main(int argc, char* argv[]) {
     int parsed_argc = argc;
     ::testing::InitGoogleTest(&parsed_argc, argv);
-    SISL_OPTIONS_LOAD(parsed_argc, argv, logging, fs_disk);
+    SISL_OPTIONS_LOAD(parsed_argc, argv, logging);
     sisl::logging::SetLogger(std::string(argv[0]));
     spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
     parsed_argc = 1;

@@ -1,0 +1,15 @@
+[global]
+ioengine=external:${ENGINE_SO}
+disk_type=raid10
+disk_files=${TEST_FILE_A}:${TEST_FILE_B}:${TEST_FILE_C}:${TEST_FILE_D}
+raid_chunk_size=32768
+bsrange=4k-64k
+iodepth=32
+verify=md5
+verify_fatal=1
+time_based=0
+direct=0
+
+[write-verify]
+rw=write
+size=64m

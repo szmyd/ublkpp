@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.21.1
+- New functional testing framework. See `docs/functional_testing.md` for details.
+
 ## 0.21.0
 - raid1: Introduce `UNAVAIL` replica state for transient read failures, routing I/O away from replicas that fail reads without marking them fully offline. A new periodic health monitor (`Raid1AvailProbeTask`) probes unavailable replicas during idle periods and restores them to active routing once they recover. Resync logic is updated to skip copies to unavailable mirrors and to wait for a device to become available before proceeding.
 

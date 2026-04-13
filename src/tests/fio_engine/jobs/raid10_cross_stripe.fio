@@ -1,0 +1,28 @@
+# Cross-stripe boundary exercise for RAID10's __distribute logic.
+#
+# RAID10 = RAID0 over two RAID1 pairs. The RAID0 top layer has 2 members
+# (each a RAID1 pair) and chunk_size=32k, so stride_width=64k.
+#
+# bs=96k = 3 x chunk_size. Each IO maps as:
+#   [0..32k)   -> RAID1 pair A, device 0  (iovec #1 for pair A)
+#   [32k..64k) -> RAID1 pair B, device 0  (iovec #1 for pair B, flushed)
+#   [64k..96k) -> RAID1 pair A, device 0  (iovec #2 for pair A, flushed with
+#                                           2-iovec scatter through RAID1)
+#
+# Exercises __distribute splitting + accumulation at the RAID0 layer, then
+# RAID1 replication of the 2-iovec scatter-gather call into each mirror pair.
+[global]
+ioengine=external:${ENGINE_SO}
+disk_type=raid10
+disk_files=${TEST_FILE_A}:${TEST_FILE_B}:${TEST_FILE_C}:${TEST_FILE_D}
+raid_chunk_size=32768
+bs=96k
+iodepth=32
+verify=md5
+verify_fatal=1
+time_based=0
+direct=0
+
+[write-verify]
+rw=write
+size=96m

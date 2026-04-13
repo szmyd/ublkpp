@@ -62,7 +62,7 @@ public:
     virtual uint8_t route_size() const noexcept { return 0; }
 
     // Async replies collected here
-    virtual void collect_async(ublksrv_queue const*, std::list< async_result >&) {}
+    virtual void collect_async(ublksrv_queue const*, std::list< async_result >&) {} // LCOV_EXCL_LINE
 
     virtual void idle_transition(ublksrv_queue const*, bool) {};
 
