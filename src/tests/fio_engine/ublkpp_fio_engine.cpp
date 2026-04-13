@@ -360,7 +360,10 @@ static int ublkpp_getevents(struct thread_data* td, unsigned int min_events, uns
     }
 
     int const want = static_cast< int >(std::min(min_events, max_events));
+    fprintf(stderr, "[DBG] getevents min=%u max=%u want=%d timeout_ms=%lld\n", min_events, max_events, want,
+            (long long)timeout.count());
     auto completions = ed->mock->poll(want, timeout);
+    fprintf(stderr, "[DBG] getevents poll returned %zu completions\n", completions.size());
 
     for (auto const& c : completions) {
         io_u* u = ed->pending[c.tag];
