@@ -25,4 +25,4 @@ direct=0
 
 [write-verify]
 rw=write
-size=24m
+size=96m
