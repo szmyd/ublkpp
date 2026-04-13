@@ -437,7 +437,11 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 }
 
 static void deinit_tgt(const struct ublksrv_dev*) { TLOGD("Deinit tgt!") }
-static void idle_transition(ublksrv_queue const*, bool enter) { TLOGT("Idle Trans: {}", enter) }
+static void idle_transition(ublksrv_queue const* q, bool enter) {
+    TLOGT("Idle Trans: {}", enter)
+    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    device->idle_transition(q, enter);
+}
 static int init_queue(const struct ublksrv_queue*, void**) {
     TLOGD("Init Queue")
     return 0;
