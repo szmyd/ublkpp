@@ -4,7 +4,6 @@ extern "C" {
 #include <unistd.h>
 }
 
-#include <cstdio>
 #include <stdexcept>
 
 #include <ublksrv.h>
@@ -81,8 +80,7 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     if (!res) return res;
 
     // Commit all SQEs queued by queue_tgt_io before we start polling
-    int submit_ret = io_uring_submit(&_ring);
-    fprintf(stderr, "[DBG] submit_io tag=%d sub_cmds=%d io_uring_submit=%d\n", tag, res.value(), submit_ret);
+    io_uring_submit(&_ring);
 
     ts.sub_cmds_remaining = static_cast< int >(res.value());
     return res;
@@ -112,9 +110,6 @@ void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out)
         ts.sub_cmds_remaining--;
     }
 
-    fprintf(stderr, "[DBG] process_cqe tag=%d sub_cmd=0x%x res=%d remaining=%d completion=%s\n", tag, sub_cmd, res,
-            ts.sub_cmds_remaining, ts.sub_cmds_remaining == 0 ? "YES" : "no");
-
     if (ts.sub_cmds_remaining == 0) { out.push_back({tag, ts.result}); }
 }
 
@@ -132,8 +127,6 @@ std::vector< MockUblksrv::Completion > MockUblksrv::poll(int min_completions, st
 
         io_uring_cqe* cqe = nullptr;
         int r = io_uring_wait_cqe_timeout(&_ring, &cqe, &ts);
-        fprintf(stderr, "[DBG] poll wait returned r=%d cqe=%p completions_so_far=%zu\n", r, (void*)cqe,
-                completions.size());
         if (r == -ETIME || r == -EINTR || r < 0 || cqe == nullptr) break;
 
         // Process this CQE then drain any additional ones that are ready

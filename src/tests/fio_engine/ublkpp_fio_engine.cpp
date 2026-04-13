@@ -11,6 +11,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -135,6 +136,10 @@ struct EngineData {
     std::vector< io_u* > pending; // indexed by tag
     std::vector< io_u* > events;  // completions from last getevents()
     std::vector< int > free_tags; // available tag slots
+    // poll() drains all available CQEs at once; if that exceeds max_events we
+    // cache the surplus here so subsequent getevents() calls can return them
+    // without re-entering the ring.
+    std::deque< ublkpp::MockUblksrv::Completion > completion_cache;
 };
 
 static EngineData* engine_data(struct thread_data* td) { return reinterpret_cast< EngineData* >(td->io_ops_data); }
@@ -359,18 +364,12 @@ static int ublkpp_getevents(struct thread_data* td, unsigned int min_events, uns
                                                                           std::chrono::nanoseconds{t->tv_nsec});
     }
 
-    int const want = static_cast< int >(std::min(min_events, max_events));
-    fprintf(stderr, "[DBG] getevents min=%u max=%u want=%d timeout_ms=%lld\n", min_events, max_events, want,
-            (long long)timeout.count());
-    auto completions = ed->mock->poll(want, timeout);
-    fprintf(stderr, "[DBG] getevents poll returned %zu completions\n", completions.size());
-
-    for (auto const& c : completions) {
+    // Helper: move one Completion into ed->events (updates pending/free_tags)
+    auto consume = [&](ublkpp::MockUblksrv::Completion const& c) {
         io_u* u = ed->pending[c.tag];
         assert(u);
         ed->pending[c.tag] = nullptr;
         ed->free_tags.push_back(c.tag);
-
         if (c.result < 0) {
             u->error = -c.result;
         } else {
@@ -378,7 +377,29 @@ static int ublkpp_getevents(struct thread_data* td, unsigned int min_events, uns
             u->resid = 0;
         }
         ed->events.push_back(u);
-        if (static_cast< unsigned >(ed->events.size()) >= max_events) break;
+    };
+
+    // Drain cached surplus completions from a previous poll() call first
+    while (!ed->completion_cache.empty() && ed->events.size() < max_events) {
+        consume(ed->completion_cache.front());
+        ed->completion_cache.pop_front();
+    }
+
+    // If the cache already satisfied min_events we are done
+    if (ed->events.size() >= min_events) return static_cast< int >(ed->events.size());
+
+    // Still need more — ask the ring for them
+    int const still_need = static_cast< int >(min_events - ed->events.size());
+    auto completions = ed->mock->poll(still_need, timeout);
+
+    for (auto const& c : completions) {
+        if (ed->events.size() < max_events) {
+            consume(c);
+        } else {
+            // poll() drained more CQEs than fio asked for; cache them so they
+            // are returned on the next getevents() call instead of being lost
+            ed->completion_cache.push_back(c);
+        }
     }
 
     return static_cast< int >(ed->events.size());
