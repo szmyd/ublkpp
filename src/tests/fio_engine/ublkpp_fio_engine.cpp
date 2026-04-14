@@ -177,7 +177,9 @@ static std::vector< std::string > split_colon(char const* s) {
 static bool ensure_file_size(std::string const& path, uint64_t size) {
     // Block devices are passed directly to FSDisk which handles them natively.
     // Skip sizing and pre-population — they already have fixed capacity.
+    // clang-format off
     struct stat st{};
+    // clang-format on
     if (stat(path.c_str(), &st) == 0 && S_ISBLK(st.st_mode)) return true;
 
     int fd = open(path.c_str(), O_RDWR | O_CREAT, 0644);
