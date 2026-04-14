@@ -171,15 +171,37 @@ static std::vector< std::string > split_colon(char const* s) {
     return result;
 }
 
-// Pre-allocate a backing file to the requested size using fallocate/truncate
+// Pre-allocate a backing file to the requested size using fallocate/truncate,
+// then pre-populate with zeros to convert unwritten extents to written and
+// warm the page cache, eliminating first-write overhead during tests.
 static bool ensure_file_size(std::string const& path, uint64_t size) {
+    // Block devices are passed directly to FSDisk which handles them natively.
+    // Skip sizing and pre-population — they already have fixed capacity.
+    struct stat st{};
+    if (stat(path.c_str(), &st) == 0 && S_ISBLK(st.st_mode)) return true;
+
     int fd = open(path.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd < 0) return false;
+
     int r = posix_fallocate(fd, 0, static_cast< off_t >(size));
     if (r != 0) {
         // fall back to truncate (works on tmpfs which doesn't support fallocate)
         r = ftruncate(fd, static_cast< off_t >(size));
     }
+
+    if (r == 0) {
+        // Pre-populate with zeros to convert any unwritten extents to written
+        // and warm the page cache, eliminating first-write overhead during tests.
+        static constexpr size_t k_chunk = 4UL << 20; // 4 MiB
+        std::vector< char > const zeros(std::min(k_chunk, static_cast< size_t >(size)), 0);
+        bool ok = true;
+        for (uint64_t off = 0; off < size && ok; off += k_chunk) {
+            auto const n = static_cast< size_t >(std::min(k_chunk, size - off));
+            ok = pwrite(fd, zeros.data(), n, static_cast< off_t >(off)) == static_cast< ssize_t >(n);
+        }
+        if (!ok) r = -1;
+    }
+
     close(fd);
     return r == 0;
 }
