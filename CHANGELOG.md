@@ -6,6 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.21.2
 - raid1: Fix remount failure when bringing up a degraded array with a defunct device
+- fio_engine: Pre-populate backing files with zeros after allocation to convert unwritten extents to written state, eliminating first-write journal cost and page fault overhead that inflated write latency on fresh files. Raw block devices are detected and skipped.
 
 ## 0.21.1
 - New functional testing framework. See `docs/functional_testing.md` for details.
