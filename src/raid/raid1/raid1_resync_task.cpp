@@ -148,6 +148,11 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
         return;
     }
 
+    // The previous resync thread may still be joinable even though state is IDLE — there is a
+    // window between _start() setting state to IDLE and the thread actually returning. Assigning
+    // to a joinable std::thread calls std::terminate(), so join here first.
+    if (_resync_task.joinable()) _resync_task.join();
+
     _resync_task = sisl::named_thread(
         fmt::format("r_{}", str_uuid.substr(0, 13)),
         [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
