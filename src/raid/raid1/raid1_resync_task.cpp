@@ -52,74 +52,73 @@ bool Raid1ResyncTask::__transition_to(resync_state initial, resync_state target,
 
 void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                              std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete) {
-    // Set ourselves up with a buffer to do all the read/write operations from
-    auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
-    if (auto err = ::posix_memalign(&iov.iov_base, _io_size, _max_size); 0 != err || nullptr == iov.iov_base)
-        [[unlikely]] { // LCOV_EXCL_START
-        RLOGE("Could not allocate memory for I/O: {}", strerror(err))
-        if (iov.iov_base) free(iov.iov_base);
-        return;
-    } // LCOV_EXCL_STOP
-
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
-    auto const resync_start = std::chrono::steady_clock::now();
+    // Wait to become Available & IDLE
     auto cur_state = resync_state::IDLE;
-    // Record resync start - increment global and per-device counters
-    auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
-    // Capture the initial size of data to resync
-    auto const initial_resync_size = _dirty_bitmap->dirty_data_est();
-    if (_metrics) {
-        _metrics->record_resync_start();
-        _metrics->record_active_resyncs(active_count);
-    }
+    while (dirty_mirror->unavail.test(std::memory_order_acquire) ||
+           !__cas_state_weak(cur_state, resync_state::ACTIVE)) {
+        // If we're stopped or another we should exit
+        if (resync_state::STOPPING == cur_state) break;
 
-    // Wait for the device to become available
-    auto nr_pages = _dirty_bitmap->dirty_pages();
-    if (_metrics) { _metrics->record_dirty_pages(nr_pages); }
-    while (dirty_mirror->unavail.test(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >()));
-        probe_mirror(*dirty_mirror, _offset);
-    }
-
-    // Wait to become IDLE
-    while (!__cas_state_weak(cur_state, resync_state::ACTIVE)) {
-        // If we're stopped or another task was started we should exit
-        if ((resync_state::STOPPING == cur_state) || (resync_state::ACTIVE == cur_state) ||
-            (resync_state::SLEEPING == cur_state)) {
-            RLOGD("Resync Task aborted for [uuid:{}] state: {}", str_uuid, cur_state)
-            return;
-        }
         cur_state = resync_state::IDLE;
-        std::this_thread::sleep_for(std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >()));
+        if (dirty_mirror->unavail.test(std::memory_order_acquire)) {
+            cur_state = __load_state();
+            if (resync_state::STOPPING == cur_state) break;
+            std::this_thread::sleep_for(std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >()));
+            probe_mirror(*dirty_mirror, _offset);
+        } else
+            std::this_thread::sleep_for(std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >()));
     }
+    cur_state = __load_state();
 
     // We are now guaranteed to be the only active thread performing I/O on the device
-    cur_state = __run(clean_mirror, dirty_mirror, &iov);
-    free(iov.iov_base);
+    if (resync_state::STOPPING != cur_state) {
+        auto const initial_resync_size = _dirty_bitmap->dirty_data_est();
+        // Set ourselves up with a buffer to do all the read/write operations from
+        auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
+        if (auto err = ::posix_memalign(&iov.iov_base, _io_size, _max_size); 0 != err || nullptr == iov.iov_base)
+            [[unlikely]] { // LCOV_EXCL_START
+            RLOGE("Could not allocate memory for I/O: {}", strerror(err))
+            if (iov.iov_base) free(iov.iov_base);
+            return;
+        } // LCOV_EXCL_STOP
 
-    // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
-    auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
-    if (_metrics) _metrics->record_active_resyncs(final_count);
+        auto const resync_start = std::chrono::steady_clock::now();
+        // Record resync start - increment global and per-device counters
+        // Capture the initial size of data to resync
+        if (_metrics) {
+            auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
+            _metrics->record_resync_start();
+            _metrics->record_active_resyncs(active_count);
+        }
+
+        cur_state = __run(clean_mirror, dirty_mirror, &iov);
+        free(iov.iov_base);
+
+        if (_metrics) {
+            auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
+            auto const resync_end = std::chrono::steady_clock::now();
+            auto const duration_seconds =
+                std::chrono::duration_cast< std::chrono::seconds >(resync_end - resync_start).count();
+            if (duration_seconds > 0) { _metrics->record_resync_complete(duration_seconds); }
+            // Record the size of data that was resynced (initial size before resync started)
+            _metrics->record_last_resync_size(initial_resync_size);
+            _metrics->record_active_resyncs(final_count);
+        }
+    }
 
     // If stopped, end now.
     if (resync_state::STOPPING == cur_state) {
-        RLOGD("Resync Task Stopped for [uuid:{}]", str_uuid)
+        RLOGD("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         __cas_state_strong(cur_state, resync_state::IDLE);
         return;
     }
 
     // Otherwise we _should_ be active (not paused or idle), if the bitmap is clean call complete
     DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state");
-    if (_metrics) {
-        auto const resync_end = std::chrono::steady_clock::now();
-        auto const duration_seconds =
-            std::chrono::duration_cast< std::chrono::seconds >(resync_end - resync_start).count();
-        if (duration_seconds > 0) { _metrics->record_resync_complete(duration_seconds); }
-        // Record the size of data that was resynced (initial size before resync started)
-        _metrics->record_last_resync_size(initial_resync_size);
-    }
+    // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
     if (0 == _dirty_bitmap->dirty_pages()) complete();
-    RLOGD("Resync Task Finished for [uuid:{}]", str_uuid)
+    RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
 
     // Open up I/O Again
     __cas_state_strong(cur_state, resync_state::IDLE);
@@ -127,6 +126,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                              std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
+    auto lg = std::scoped_lock< std::mutex >(_launch_lock);
     // First we must become IDLE
     auto transitioned =
         __transition_to(resync_state::IDLE, resync_state::IDLE, [](resync_state state) -> transition_result {
@@ -266,11 +266,15 @@ void Raid1ResyncTask::__pause() noexcept {
 
 // Abort any on-going resync task by moving to STOPPING and rejoin the thread
 uint32_t Raid1ResyncTask::stop() noexcept {
+    auto lg = std::scoped_lock< std::mutex >(_launch_lock);
     RLOGI("Terminating Resync Task")
     // Terminate any ongoing resync task
-    __transition_to(resync_state::PAUSE, resync_state::STOPPING, [](resync_state state) -> transition_result {
+    __transition_to(resync_state::PAUSE, resync_state::STOPPING, [this](resync_state state) -> transition_result {
         switch (state) {
-        case resync_state::IDLE:
+        case resync_state::IDLE: {
+            if (_resync_task.joinable()) return {state, transition_action::RETRY_WITH_SLEEP};
+            [[fallthrough]];
+        }
         case resync_state::STOPPING:
             return {state, transition_action::SUCCESS};
         case resync_state::ACTIVE:

@@ -56,6 +56,7 @@ class Raid1ResyncTask {
 
     std::atomic_uint8_t _resync_state;
     std::atomic_uint32_t _outstanding_writes;
+    std::mutex _launch_lock;
     std::thread _resync_task;
 
     // State access helpers to eliminate casting noise

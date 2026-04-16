@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.21.4
+- raid1: Fix resync task hang when stop() is called during unavail wait loop
+- raid1: Fix concurrent launch()/stop() race on resync task thread assignment
+- raid1: Fix incorrect device logged as degraded in __become_degraded (DEVB route)
+
 ## 0.21.3
 - raid1: Fix Raid1ResyncTask::launch() crash on joinable thread reassignment
 
