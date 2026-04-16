@@ -7,5 +7,7 @@ list(APPEND RAID1_TEST_SRCS
   concurrency/api_calls_during_swap.cpp
   concurrency/multi_reader_swap.cpp
   concurrency/resync_relaunch_after_complete.cpp
+  concurrency/stop_during_unavail_wait.cpp
+  concurrency/concurrent_launch.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)
