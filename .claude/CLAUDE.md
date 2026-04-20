@@ -145,3 +145,20 @@ example/         # ublkpp_disk
 - Main branch: `main`
 - PR-based workflow with descriptive titles
 - Update CHANGELOG.md and version in conanfile.py (minor for features, patch for fixes)
+
+## Code Review
+
+When asked to review a PR, use `gh pr view` and `gh pr diff` to fetch details, then work through these questions before posting comments.
+
+### Questions to always ask
+- Does this code break anything?
+- Are there race conditions?
+- Are there logic issues?
+- Could this be done better or made smaller?
+- Is this part designed correctly, or could it be improved?
+- Are responsibilities correctly separated, or are two concerns coupled in one place?
+
+### How to Post Comments
+- Post comments on **specific diff lines**, not as top-level PR comments
+- Discuss critical findings with the user before posting
+- Always include a suggested fix when raising a bug, not just the problem
