@@ -162,3 +162,4 @@ When asked to review a PR, use `gh pr view` and `gh pr diff` to fetch details, t
 - Post comments on **specific diff lines**, not as top-level PR comments
 - Discuss critical findings with the user before posting
 - Always include a suggested fix when raising a bug, not just the problem
+- Don't reject or approve PR yourself.
