@@ -283,7 +283,7 @@ std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
     fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
 
     // Enable resync only on the first call (first queue thread).
-    if (++_nr_hw_queues == 1) toggle_resync(true);
+    if (_nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
 
     return fds;
 }
@@ -982,7 +982,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
 
     // Start probes only when all queue threads are idle.
     auto const prev = _idle_queue_count.fetch_add(1, std::memory_order_acq_rel);
-    if (prev + 1 < _nr_hw_queues) return;
+    if (prev + 1 < _nr_hw_queues.load(std::memory_order_acquire)) return;
 
     auto const state = __capture_route_state();
     if (state.is_degraded) return; // Resync task handles avail probing in degraded mode

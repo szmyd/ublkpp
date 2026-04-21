@@ -56,7 +56,7 @@ class Raid1DiskImpl : public UblkDisk {
     std::mutex _swap_lock;
 
     // Multi-queue idle tracking: probe starts when all queues are idle, stops on any active transition
-    uint16_t _nr_hw_queues{0};
+    std::atomic_uint16_t _nr_hw_queues{0};
     std::atomic_uint16_t _idle_queue_count{0};
 
     // Idle-scoped periodic health monitors
