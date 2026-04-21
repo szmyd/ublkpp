@@ -235,8 +235,6 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
             sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
             DEBUG_ASSERT_LE(alive_cmds, UINT32_MAX) // LCOV_EXCL_LINE
             auto res = func(stripe_off, new_sub_cmd, io_array.data(), alive_cmds, io_addr);
-            // Set this back to zero so the next command can reuse
-            alive_cmds = 0;
             if (!res) return res;
             cnt += res.value();
         }
