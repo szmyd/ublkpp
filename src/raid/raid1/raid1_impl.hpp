@@ -49,7 +49,7 @@ class Raid1DiskImpl : public UblkDisk {
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
 
     // Active Re-Sync Task
-    bool _resync_enabled{true};
+    std::atomic< bool > _resync_enabled{true};
     std::shared_ptr< Raid1ResyncTask > _resync_task;
 
     // Ensure exclusivity in __swap_device

@@ -487,7 +487,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     } catch (std::runtime_error const& e) { return incoming_device; }
 
     // Terminate any ongoing resync task BEFORE clearing bitmap to avoid race condition
-    auto old_resync_flag = _resync_enabled;
+    auto old_resync_flag = _resync_enabled.load(std::memory_order_relaxed);
     toggle_resync(false);
 
     // Now safe to clear bitmap (resync stopped, no concurrent access)
@@ -630,7 +630,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t failed_path, RouteState con
         return sync_res;
     }
     failed_device->unavail.test_and_set(std::memory_order_acquire);
-    if (spawn_resync && _resync_enabled) toggle_resync(true); // Launch a Resync Task
+    if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
     return 0;
 }
 
@@ -1005,8 +1005,8 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
 }
 
 void Raid1DiskImpl::toggle_resync(bool t) {
-    _resync_enabled = t;
-    if (_resync_enabled) {
+    _resync_enabled.store(t, std::memory_order_relaxed);
+    if (t) {
         auto const state = __capture_route_state();
         if (read_route::EITHER != state.route && !DEFUNCT_DEVICE(state.backup_dev->disk)) {
             _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); });
