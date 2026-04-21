@@ -90,10 +90,10 @@ std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const 
     return _stripe_array[stripe_offset]->disk;
 }
 
-std::list< int > Raid0Disk::open_for_uring(int const iouring_device_start) {
+std::list< int > Raid0Disk::open_for_uring(ublksrv_queue const* q, int const iouring_device_start) {
     auto fds = std::list< int >();
     for (auto& stripe : _stripe_array) {
-        fds.splice(fds.end(), stripe->disk->open_for_uring(iouring_device_start + fds.size()));
+        fds.splice(fds.end(), stripe->disk->open_for_uring(q, iouring_device_start + fds.size()));
     }
     return fds;
 }

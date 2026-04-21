@@ -147,7 +147,7 @@ public:
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
-    std::list< int > open_for_uring(int const iouring_device) override;
+    std::list< int > open_for_uring(ublksrv_queue const* q, int const iouring_device) override;
     void idle_transition(ublksrv_queue const* q, bool enter) noexcept override;
 
     uint8_t route_size() const noexcept override { return 1; }

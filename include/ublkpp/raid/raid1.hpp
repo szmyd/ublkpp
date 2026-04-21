@@ -43,7 +43,7 @@ public:
     ublk_params* params() noexcept override;
     ublk_params const* params() const noexcept override;
     std::string id() const noexcept override;
-    std::list< int > open_for_uring(int const iouring_device) override;
+    std::list< int > open_for_uring(ublksrv_queue const*, int const iouring_device) override;
 
     uint8_t route_size() const noexcept override;
 

@@ -276,11 +276,18 @@ Raid1DiskImpl::~Raid1DiskImpl() {
         write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
-std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
+std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
     // Always collect FDs from child disks — each queue thread may need its own set.
-    auto fds = _device_a->disk->open_for_uring(iouring_device_start);
-    fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
+    auto fds = _device_a->disk->open_for_uring(q, iouring_device_start);
+    fds.splice(fds.end(), _device_b->disk->open_for_uring(q, iouring_device_start + fds.size()));
+
+    // Pre-populate _pending_results so runtime access never inserts (map insertion is not thread-safe).
+    // _swap_lock serializes concurrent open_for_uring calls from different queue threads.
+    if (q) {
+        auto lk = std::unique_lock{_swap_lock};
+        _pending_results.emplace(q, std::list< async_result >{});
+    }
 
     // Enable resync only on the first call (first queue thread).
     if (_nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
@@ -664,7 +671,7 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
     // Instead, inject a synthetic async_result carrying `len` into _pending_results so it is accumulated
     // into ret_val via the normal process_result path on the next collect_async cycle. Return +1 to
     // signal exactly one more sub_cmd pending.
-    _pending_results[q].emplace_back(async_result{async_data, sub_cmd, static_cast< int >(len)});
+    _pending_results.at(q).emplace_back(async_result{async_data, sub_cmd, static_cast< int >(len)});
     if (q) {
         if (0 != ublksrv_queue_send_event(q)) { // LCOV_EXCL_START
             RLOGE("Failed to send event!");
@@ -856,7 +863,8 @@ void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_resul
     // the normal process_result path. See the comment in __handle_async_retry for why this indirection is
     // necessary (short version: positive tgt return values are sub_cmd counts, not byte counts, so the byte
     // count cannot be delivered any other way).
-    results.splice(results.end(), std::move(_pending_results[q]));
+    if (auto it = _pending_results.find(q); it != _pending_results.end())
+        results.splice(results.end(), std::move(it->second));
     if (!state.active_dev->disk->uses_ublk_iouring) state.active_dev->disk->collect_async(q, results);
     if (!state.backup_dev->disk->uses_ublk_iouring) state.backup_dev->disk->collect_async(q, results);
 }

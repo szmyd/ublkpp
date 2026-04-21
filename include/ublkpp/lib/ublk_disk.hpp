@@ -56,7 +56,7 @@ public:
     virtual std::string id() const noexcept = 0;
 
     /// Device Specific I/O Handlers
-    virtual std::list< int > open_for_uring(int const) { return {}; }
+    virtual std::list< int > open_for_uring(ublksrv_queue const*, int const) { return {}; }
 
     // Number of bits for sub_cmd routing in the sqe user_data
     virtual uint8_t route_size() const noexcept { return 0; }

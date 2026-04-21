@@ -31,7 +31,7 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
     // Simulate init_queue: call open_for_uring once per queue thread so the disk can count queues
     // and perform per-queue initialization (e.g. Raid1DiskImpl sets _nr_hw_queues and enables resync).
     for (int qi = 0; qi < nr_queues; ++qi) {
-        for (auto const fd : _disk->open_for_uring(_dev.tgt.nr_fds)) {
+        for (auto const fd : _disk->open_for_uring(&_queues[qi], _dev.tgt.nr_fds)) {
             if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;
         }
     }

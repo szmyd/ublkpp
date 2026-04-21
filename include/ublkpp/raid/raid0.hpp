@@ -15,7 +15,6 @@ class Raid0Disk : public UblkDisk {
     uint32_t _stripe_size{0};
     uint32_t _stride_width{0};
 
-
     io_result __distribute(iovec* iov, uint64_t addr, auto&& func, bool retry = false, sub_cmd_t sub_cmd = 0) const;
 
 public:
@@ -32,7 +31,7 @@ public:
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const noexcept override { return "RAID0"; }
-    std::list< int > open_for_uring(int const iouring_device) override;
+    std::list< int > open_for_uring(ublksrv_queue const*, int const iouring_device) override;
 
     uint8_t route_size() const noexcept override { return ilog2(_max_stripe_cnt); }
     void idle_transition(ublksrv_queue const*, bool) override;

@@ -444,7 +444,7 @@ static void idle_transition(ublksrv_queue const* q, bool enter) {
 static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
     auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
-    device->open_for_uring(0);
+    device->open_for_uring(q, 0);
     return 0;
 }
 static void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}

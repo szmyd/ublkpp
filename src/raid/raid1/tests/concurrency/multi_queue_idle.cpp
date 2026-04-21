@@ -26,8 +26,8 @@ TEST(Raid1Concurrency, MultiQueueIdleSequential) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Simulate 2 queue threads initializing (sets _nr_hw_queues = 2)
-    raid_device.open_for_uring(0); // queue 0: enables resync, _nr_hw_queues = 1
-    raid_device.open_for_uring(0); // queue 1: _nr_hw_queues = 2
+    raid_device.open_for_uring(nullptr, 0); // queue 0: enables resync, _nr_hw_queues = 1
+    raid_device.open_for_uring(nullptr, 0); // queue 1: _nr_hw_queues = 2
 
     // Queue 0 idle: count = 1 < 2, probe should NOT start yet
     raid_device.idle_transition(nullptr, true);
@@ -62,7 +62,7 @@ TEST(Raid1Concurrency, MultiQueueIdleConcurrent) {
 
     // Simulate k_queues queue threads (sets _nr_hw_queues = k_queues)
     for (int i = 0; i < k_queues; ++i)
-        raid_device.open_for_uring(0);
+        raid_device.open_for_uring(nullptr, 0);
 
     // Allow any number of sync_iov calls in case the periodic probe fires unexpectedly
     EXPECT_CALL(*device_a, sync_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_))
@@ -107,7 +107,7 @@ TEST(Raid1Concurrency, MultiQueueIdleRapidToggle) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Single queue (default: _nr_hw_queues = 0, treated as 1 for backward compat)
-    raid_device.open_for_uring(0);
+    raid_device.open_for_uring(nullptr, 0);
 
     // Allow any number of sync_iov calls in case the periodic probe fires
     EXPECT_CALL(*device_a, sync_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_))
