@@ -109,7 +109,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
 
     // If stopped, end now.
     if (resync_state::STOPPING == cur_state) {
-        RLOGD("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
+        RLOGI("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         __cas_state_strong(cur_state, resync_state::IDLE);
         return;
     }
@@ -267,7 +267,6 @@ void Raid1ResyncTask::__pause() noexcept {
 // Abort any on-going resync task by moving to STOPPING and rejoin the thread
 uint32_t Raid1ResyncTask::stop() noexcept {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
-    RLOGI("Terminating Resync Task")
     // Terminate any ongoing resync task
     __transition_to(resync_state::PAUSE, resync_state::STOPPING, [this](resync_state state) -> transition_result {
         switch (state) {
