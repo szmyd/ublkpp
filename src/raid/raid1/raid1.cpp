@@ -278,18 +278,13 @@ Raid1DiskImpl::~Raid1DiskImpl() {
 
 std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
-    ++_nr_hw_queues;
-
-    // Only initialize on the first call (first queue thread)
-    if (_nr_hw_queues > 1) return {};
-
-    // Now that we're up and the target wants to begin I/O let's unpause our resync task, there are no i/o threads
-    // yet so we can continue to access _device_a and b directly
-    auto fds = (_device_a->disk->open_for_uring(iouring_device_start));
+    // Always collect FDs from child disks — each queue thread may need its own set.
+    auto fds = _device_a->disk->open_for_uring(iouring_device_start);
     fds.splice(fds.end(), _device_b->disk->open_for_uring(iouring_device_start + fds.size()));
 
-    // I/O will start comming in now, enable resync
-    toggle_resync(true);
+    // Enable resync only on the first call (first queue thread).
+    if (++_nr_hw_queues == 1) toggle_resync(true);
+
     return fds;
 }
 
