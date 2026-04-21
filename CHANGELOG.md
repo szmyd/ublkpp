@@ -4,29 +4,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.21.6
+## 0.22.0
 
 - raid1: Fix multi-queue idle probe race conditions — probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
 
-## 0.21.5
+## 0.21.x
 - raid1: Only log in reference to Resync if it was actually running.
-
-## 0.21.4
 - raid1: Fix resync task hang when stop() is called during unavail wait loop
 - raid1: Fix concurrent launch()/stop() race on resync task thread assignment
 - raid1: Fix incorrect device logged as degraded in __become_degraded (DEVB route)
-
-## 0.21.3
 - raid1: Fix Raid1ResyncTask::launch() crash on joinable thread reassignment
-
-## 0.21.2
 - raid1: Fix remount failure when bringing up a degraded array with a defunct device
 - fio_engine: Pre-populate backing files with zeros after allocation to convert unwritten extents to written state, eliminating first-write journal cost and page fault overhead that inflated write latency on fresh files. Raw block devices are detected and skipped.
-
-## 0.21.1
 - New functional testing framework. See `docs/functional_testing.md` for details.
-
-## 0.21.0
 - raid1: Introduce `UNAVAIL` replica state for transient read failures, routing I/O away from replicas that fail reads without marking them fully offline. A new periodic health monitor (`Raid1AvailProbeTask`) probes unavailable replicas during idle periods and restores them to active routing once they recover. Resync logic is updated to skip copies to unavailable mirrors and to wait for a device to become available before proceeding.
 
 ## 0.20.x
