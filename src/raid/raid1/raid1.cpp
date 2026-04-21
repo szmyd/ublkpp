@@ -295,15 +295,26 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
     return fds;
 }
 
-// Care must be taken in this routine as we need the correct order of the read_route, swap() and unavil calls.
-// Ensure that these are left in the order as they appear to prevent breaking the read-retry loop in
-// __capture_route_state(...)! While this occurs when threaded, it must access the _device_a and _device_b
-// pointers directly to mutate them. This is safe as long as we follow this requirement and hold the lock
-// throughout the "relative quick" operation (double sync I/O).
+// ── Mutual exclusion between __swap_device and __become_degraded ─────────────────────────────────
+// Both functions advance the RAID1 state machine by atomically CAS-ing _read_route_cache via
+// __set_read_route(). Because compare_exchange_strong() is atomic, exactly one caller wins:
+//
+//   • __swap_device    CAS: EITHER → DEVA/DEVB  (replacing a device with a healthy one)
+//   • __become_degraded CAS: EITHER → DEVA/DEVB  (marking a failed device as unavailable)
+//
+// If both race, the loser sees the CAS fail and returns early — no further state is mutated.
+// No additional lock is needed between them; the CAS IS the synchronization gate.
+//
+// __swap_device also holds _swap_lock so that two concurrent swap_device() callers don't race
+// on the _device_a/_device_b pointer mutations.  __become_degraded does NOT need _swap_lock
+// because it only reads those pointers via a captured RouteState snapshot and never mutates them.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// The order of __set_read_route(), swap(), and unavail.clear() below must be preserved to keep
+// the read-retry loop in __capture_route_state() correct.
 bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
                                   std::shared_ptr< MirrorDevice >& incoming_mirror,
                                   raid1::read_route const& cur_route) {
-    // Make this routine exclusive
     auto lg = std::scoped_lock< std::mutex >(_swap_lock);
 
     bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
@@ -604,6 +615,10 @@ io_result Raid1DiskImpl::__become_clean() {
     return 0;
 }
 
+// See the comment above __swap_device for the CAS-based mutual exclusion between this function
+// and __swap_device.  The __set_read_route() CAS below is the synchronization gate: if
+// __swap_device wins the CAS first, this call sees old_route != EITHER and returns early (already
+// degraded or concurrent swap in progress).  No additional lock is required.
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t failed_path, RouteState const* cur_state, bool spawn_resync) {
     // Determine new route based on which device failed
     auto old_route = read_route::EITHER;
