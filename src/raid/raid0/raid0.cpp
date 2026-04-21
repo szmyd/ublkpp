@@ -175,9 +175,24 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd) const {
-    // Each thread has a 2-dimensional block of iovecs that we can split into
+    // Each thread has a 2-dimensional block of iovecs that we can split into.
     thread_local auto sub_cmds =
         std::array< std::tuple< uint64_t, uint32_t, std::array< iovec, 16 > >, _max_stripe_cnt >();
+    // Reset only the stripes we touch (cheaper than zeroing all _max_stripe_cnt on every call).
+    // A previous call that returned early on error leaves non-zero alive_cmds behind; stale iov_base
+    // pointers in those entries would corrupt the next I/O on this thread if not cleared.
+    static_assert(_max_stripe_cnt <= 64, "dirty_mask requires _max_stripe_cnt <= 64");
+    uint64_t dirty_mask{0};
+    struct DirtyGuard {
+        decltype(sub_cmds)& cmds;
+        uint64_t& mask;
+        ~DirtyGuard() noexcept {
+            while (mask) {
+                std::get< 1 >(cmds[std::countr_zero(mask)]) = 0;
+                mask &= mask - 1;
+            }
+        }
+    } _guard{sub_cmds, dirty_mask};
 
     // Special case for single device
     if (1 == _stripe_array.size()) return func(0, sub_cmd, iovecs, 1, addr);
@@ -205,6 +220,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
             if (stripe_off != ((sub_cmd >> device->route_size()) & route_mask)) continue;
         }
 
+        dirty_mask |= 1ULL << stripe_off;
         auto& [io_addr, alive_cmds, io_array] = sub_cmds[stripe_off];
         { // Fillout iovec
             auto& iov = io_array[alive_cmds++];
