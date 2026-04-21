@@ -503,7 +503,9 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     // Atomically swap the device or fail; fail if swapping sole active device
     if (__swap_device(outgoing_device_id, incoming_mirror, state.route)) {
         if (_raid_metrics) _raid_metrics->record_device_swap();
-        // Stop stale probes — they hold a shared_ptr to the outgoing MirrorDevice
+        // Stop stale probes — they hold a shared_ptr to the outgoing MirrorDevice.
+        // _idle_probe_lock guards _probe members against concurrent launch() in idle_transition.
+        auto lk = std::unique_lock{_idle_probe_lock};
         _idle_probe_a.stop();
         _idle_probe_b.stop();
     }
