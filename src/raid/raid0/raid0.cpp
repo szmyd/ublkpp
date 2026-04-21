@@ -1,5 +1,6 @@
 #include "ublkpp/raid/raid0.hpp"
 
+#include <bit>
 #include <boost/uuid/uuid_io.hpp>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
@@ -32,6 +33,9 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
 Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
                      std::vector< std::shared_ptr< UblkDisk > >&& disks) :
         UblkDisk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
+    if (disks.size() > _max_stripe_cnt)
+        throw std::invalid_argument(
+            fmt::format("Raid0Disk: too many disks ({}), max is {}", disks.size(), _max_stripe_cnt));
     // Discover overall Device parameters
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
@@ -175,68 +179,53 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd) const {
-    // Each thread has a 2-dimensional block of iovecs that we can split into.
-    thread_local auto sub_cmds =
-        std::array< std::tuple< uint64_t, uint32_t, std::array< iovec, 16 > >, _max_stripe_cnt >();
-    // Reset only the stripes we touch (cheaper than zeroing all _max_stripe_cnt on every call).
-    // A previous call that returned early on error leaves non-zero alive_cmds behind; stale iov_base
-    // pointers in those entries would corrupt the next I/O on this thread if not cleared.
-    static_assert(_max_stripe_cnt <= 64, "dirty_mask requires _max_stripe_cnt <= 64");
+    struct StripeAccum {
+        uint64_t io_addr{0};
+        uint32_t alive_cmds{0};
+        std::array< iovec, 16 > io_array{};
+    };
+    // Reset only touched stripes on exit; a failed call leaves non-zero alive_cmds that would corrupt the next I/O.
+    static_assert(_max_stripe_cnt == 64, "dirty_mask must be exactly uint64_t");
+    thread_local auto sub_cmds = std::array< StripeAccum, _max_stripe_cnt >();
     uint64_t dirty_mask{0};
     struct DirtyGuard {
         decltype(sub_cmds)& cmds;
         uint64_t& mask;
         ~DirtyGuard() noexcept {
             while (mask) {
-                std::get< 1 >(cmds[std::countr_zero(mask)]) = 0;
-                mask &= mask - 1;
+                cmds[std::countr_zero(mask)].alive_cmds = 0;
+                mask &= mask - 1; // clear lowest set bit
             }
         }
-    } _guard{sub_cmds, dirty_mask};
+    } guard{sub_cmds, dirty_mask};
 
-    // Special case for single device
     if (1 == _stripe_array.size()) return func(0, sub_cmd, iovecs, 1, addr);
 
     auto const route_mask = _max_stripe_cnt - 1;
-
     DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
-    auto const len = (uint32_t)iovecs->iov_len;
+    auto const len = static_cast< uint32_t >(iovecs->iov_len);
     uint32_t cnt{0};
     for (auto off = 0U; len > off;) {
         auto const [stripe_off, logical_off, sz] =
-            raid0::next_subcmd(_stride_width, _stripe_size, addr + off, (len - off));
-
-        // Ensure we advance here in case we _continue_ or anything later
-        auto buf_cursor = (uint8_t*)iovecs->iov_base + off;
+            raid0::next_subcmd(_stride_width, _stripe_size, addr + off, len - off);
+        auto buf_cursor = static_cast< uint8_t* >(iovecs->iov_base) + off;
         off += sz;
 
-        // Get the device
         auto const& device = _stripe_array[stripe_off]->disk;
-
-        // If this is a retry, we only want to re-issue the operation whose route matches the one passed in
-        if (retry) [[unlikely]] {
-            // Mask off to get "our" portion of the original route and see if the device that processed this
-            // operation matches the current RAID-0 sub-operation; if not then skip.
-            if (stripe_off != ((sub_cmd >> device->route_size()) & route_mask)) continue;
-        }
+        // On retry, re-issue only the stripe whose route bits match the original sub_cmd.
+        if (retry && stripe_off != ((sub_cmd >> device->route_size()) & route_mask)) [[unlikely]]
+            continue;
 
         dirty_mask |= 1ULL << stripe_off;
-        auto& [io_addr, alive_cmds, io_array] = sub_cmds[stripe_off];
-        { // Fillout iovec
-            auto& iov = io_array[alive_cmds++];
-            iov.iov_base = (void*)buf_cursor;
-            iov.iov_len = sz;
-        }
-        if (1 == alive_cmds) [[likely]]
-            io_addr = logical_off;
+        auto& acc = sub_cmds[stripe_off];
+        if (!acc.alive_cmds) acc.io_addr = logical_off;
+        acc.io_array[acc.alive_cmds++] = {buf_cursor, sz};
 
-        // Last sub_cmd for this device, issue now
+        // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
+        // guaranteeing this stripe cannot accumulate more iovecs in the same call.
         if ((_stride_width - _stripe_size) >= (len - off)) {
             sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
-            DEBUG_ASSERT_LE(alive_cmds, UINT32_MAX) // LCOV_EXCL_LINE
-            auto res = func(stripe_off, new_sub_cmd, io_array.data(), alive_cmds, io_addr);
-            // Set this back to zero so the next command can reuse
-            alive_cmds = 0;
+            auto res = func(stripe_off, new_sub_cmd, acc.io_array.data(), acc.alive_cmds, acc.io_addr);
             if (!res) return res;
             cnt += res.value();
         }

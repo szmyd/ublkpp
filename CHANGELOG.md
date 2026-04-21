@@ -5,10 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## 0.22.0
-
 - raid1: Fix multi-queue idle probe race conditions — probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
 
 ## 0.21.x
+- raid0: Fix stale alive_cmds in __distribute() corrupting the next I/O on the same thread after a failed multi-stride operation
 - raid1: Only log in reference to Resync if it was actually running.
 - raid1: Fix resync task hang when stop() is called during unavail wait loop
 - raid1: Fix concurrent launch()/stop() race on resync task thread assignment
