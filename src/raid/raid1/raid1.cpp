@@ -493,11 +493,12 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
         incoming_mirror->unavail.test_and_set(std::memory_order_acquire);
     } catch (std::runtime_error const& e) { return incoming_device; }
 
-    // Terminate any ongoing resync task BEFORE clearing bitmap to avoid race condition
+    // Stop resync before touching the bitmap so the resync task doesn't race set_bit/clear_bit
+    // against our init_to() below. Write I/Os can still call set_bit() concurrently; clear_all()
+    // uses atomic byte stores to avoid UB with those.
     auto old_resync_flag = _resync_enabled.load(std::memory_order_relaxed);
     toggle_resync(false);
 
-    // Now safe to clear bitmap (resync stopped, no concurrent access)
     try {
         // TODO we need to save the SuperBitmap Here!
         if (!DEFUNCT_DEVICE(incoming_mirror->disk) && incoming_mirror->new_device)
