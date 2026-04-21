@@ -978,11 +978,9 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
         return;
     }
 
-    // Start probes only when all queue threads are idle (_nr_hw_queues == 0 treated as 1 for
-    // backward compat with tests that skip open_for_uring).
-    auto const nr = _nr_hw_queues ? _nr_hw_queues : uint16_t{1};
+    // Start probes only when all queue threads are idle.
     auto const prev = _idle_queue_count.fetch_add(1, std::memory_order_acq_rel);
-    if (prev + 1 < nr) return;
+    if (prev + 1 < _nr_hw_queues) return;
 
     auto const state = __capture_route_state();
     if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
