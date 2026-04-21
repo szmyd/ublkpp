@@ -428,11 +428,10 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     ublksrv_tgt->dev_size = ublk_disk->params()->basic.dev_sectors << SECTOR_SHIFT;
     ublksrv_tgt->tgt_ring_depth = ublksrv_ctrl_get_dev_info(ublksrv_get_ctrl_dev(dev))->queue_depth;
 
-    // iouring FD 0 is reserved for the ublkc device, so start gathering from there
+    // iouring FD 0 is reserved for the ublkc device; open_for_uring is called per queue in init_queue.
+    // NOTE: if future disks export non-empty FDs they must be registered here (before ublksrv_queue_init
+    // calls io_uring_register_files). For now all disks return empty so init_queue suffices.
     ublksrv_tgt->nr_fds = 1;
-    for (auto const fd : ublk_disk->open_for_uring(ublksrv_tgt->nr_fds)) {
-        ublksrv_tgt->fds[ublksrv_tgt->nr_fds++] = fd;
-    }
     return 0;
 }
 
@@ -442,8 +441,10 @@ static void idle_transition(ublksrv_queue const* q, bool enter) {
     auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
     device->idle_transition(q, enter);
 }
-static int init_queue(const struct ublksrv_queue*, void**) {
+static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
+    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    device->open_for_uring(0);
     return 0;
 }
 static void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}

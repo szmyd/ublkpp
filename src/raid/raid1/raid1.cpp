@@ -277,6 +277,12 @@ Raid1DiskImpl::~Raid1DiskImpl() {
 }
 
 std::list< int > Raid1DiskImpl::open_for_uring(int const iouring_device_start) {
+    // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
+    ++_nr_hw_queues;
+
+    // Only initialize on the first call (first queue thread)
+    if (_nr_hw_queues > 1) return {};
+
     // Now that we're up and the target wants to begin I/O let's unpause our resync task, there are no i/o threads
     // yet so we can continue to access _device_a and b directly
     auto fds = (_device_a->disk->open_for_uring(iouring_device_start));
@@ -970,10 +976,18 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
 
 void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     if (!enter) {
+        _idle_queue_count.fetch_sub(1, std::memory_order_acq_rel);
+        auto lk = std::unique_lock{_idle_probe_lock};
         _idle_probe_a.stop();
         _idle_probe_b.stop();
         return;
     }
+
+    // Start probes only when all queue threads are idle (_nr_hw_queues == 0 treated as 1 for
+    // backward compat with tests that skip open_for_uring).
+    auto const nr = _nr_hw_queues ? _nr_hw_queues : uint16_t{1};
+    auto const prev = _idle_queue_count.fetch_add(1, std::memory_order_acq_rel);
+    if (prev + 1 < nr) return;
 
     auto const state = __capture_route_state();
     if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
@@ -989,7 +1003,8 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     immediate_probe(state.active_dev);
     immediate_probe(state.backup_dev);
 
-    // Periodic probe: both directions (recovery + new failures), stopped when idle exits
+    // Periodic probe: both directions (recovery + new failures), stopped when any queue exits idle
+    auto lk = std::unique_lock{_idle_probe_lock};
     _idle_probe_a.launch(state.active_dev, reserved_size);
     _idle_probe_b.launch(state.backup_dev, reserved_size);
 }
