@@ -999,6 +999,8 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
 
 void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     if (!enter) {
+        DEBUG_ASSERT(_idle_queue_count.load(std::memory_order_relaxed) > 0,                      // LCOV_EXCL_LINE
+                     "idle_transition exit without matching enter — ublksrv contract violated"); // LCOV_EXCL_LINE
         _idle_queue_count.fetch_sub(1, std::memory_order_acq_rel);
         auto lk = std::unique_lock{_idle_probe_lock};
         _idle_probe_a.stop();
