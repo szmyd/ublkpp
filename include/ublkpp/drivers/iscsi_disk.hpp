@@ -22,7 +22,7 @@ public:
     ~iSCSIDisk() override;
 
     std::string id() const noexcept override;
-    std::list< int > open_for_uring(int const) override;
+    std::list< int > open_for_uring(ublksrv_queue const*, int const) override;
 
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;

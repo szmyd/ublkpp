@@ -26,9 +26,10 @@ public:
         int result;
     };
 
-    /// @param disk   Disk to drive (FSDisk, Raid0Disk, Raid1Disk, …)
-    /// @param q_depth  Number of concurrent I/O slots (must be >= fio iodepth)
-    explicit MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth = 128);
+    /// @param disk       Disk to drive (FSDisk, Raid0Disk, Raid1Disk, …)
+    /// @param q_depth    Number of concurrent I/O slots (must be >= fio iodepth)
+    /// @param nr_queues  Number of simulated queue threads (calls open_for_uring once per queue)
+    explicit MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth = 128, int nr_queues = 1);
     ~MockUblksrv();
 
     MockUblksrv(MockUblksrv const&) = delete;
@@ -52,6 +53,8 @@ public:
     void* io_buf(int tag);
 
     int q_depth() const noexcept { return _q_depth; }
+    int nr_queues() const noexcept { return static_cast< int >(_queues.size()); }
+    ublksrv_queue const* queue(int q_id = 0) const noexcept { return &_queues[q_id]; }
     uint64_t capacity_sectors() const noexcept;
 
 private:
@@ -66,7 +69,7 @@ private:
 
     int _q_depth;
     ublksrv_dev _dev{};
-    ublksrv_queue _q{};
+    std::vector< ublksrv_queue > _queues;
     io_uring _ring{};
     std::shared_ptr< UblkDisk > _disk;
     std::vector< TagState > _tags;

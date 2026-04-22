@@ -1,7 +1,6 @@
 #include "super_bitmap.hpp"
 
 #include <atomic>
-#include <cstring>
 
 #include "lib/logging.hpp"
 
@@ -45,10 +44,11 @@ bool SuperBitmap::test_bit(uint32_t page_idx) const noexcept {
 
 void SuperBitmap::clear_all() noexcept {
     if (!_bits) return;
-    // NOTE: clear_all() should only be called during initialization (init_to) when
-    // no concurrent access is happening. Using memset here is safe in that context.
-    // If concurrent access is possible, the caller must provide external synchronization.
-    memset(_bits, 0x00, k_superbitmap_size);
+    // Use byte-by-byte atomic stores so concurrent set_bit() calls (from write I/Os that arrive
+    // during a device swap) don't produce UB via memset's potentially-wider stores racing with
+    // the per-byte atomic_ref operations on the same memory.
+    for (size_t i = 0; i < k_superbitmap_size; ++i)
+        std::atomic_ref< uint8_t >(_bits[i]).store(0, std::memory_order_relaxed);
 }
 
 uint32_t SuperBitmap::next_set_bit(uint32_t start_page) const noexcept {

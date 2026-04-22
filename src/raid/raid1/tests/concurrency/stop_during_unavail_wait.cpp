@@ -30,9 +30,7 @@ TEST(Raid1Concurrency, StopDuringUnavailWait) {
 
     EXPECT_CALL(*device_a, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(sync_iov_zero_on_read());
     // First call: superblock read during MirrorDevice construction — must succeed.
     // Subsequent calls: probe reads during unavail loop — always fail to keep mirror_b unavail.
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))

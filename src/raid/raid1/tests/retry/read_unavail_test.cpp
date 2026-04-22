@@ -310,7 +310,13 @@ TEST(Raid1, IdleExitSkipsProbe) {
     iov[0].iov_len = 4 * Ki;
     RUN_IN_THREAD({ ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, iov.data(), 1, 12 * Ki)); });
 
-    // Exit idle — no probe sync_iov expected (GMock will catch unexpected calls)
+    // Simulate 2 queues so idle_transition(true) returns early (count 1 < 2) without probing
+    // the UNAVAIL device — we want to verify that idle exit alone skips the probe.
+    raid_device.open_for_uring(nullptr, 0);
+    raid_device.open_for_uring(nullptr, 0);
+    // Queue 0 enters idle: count = 1 < 2, no probe fired (satisfies the enter-before-exit contract)
+    raid_device.idle_transition(nullptr, true);
+    // Queue 0 exits idle — no probe sync_iov expected (GMock will catch unexpected calls)
     raid_device.idle_transition(nullptr, false);
 
     // UNAVAIL must remain unchanged

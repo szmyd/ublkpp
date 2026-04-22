@@ -34,6 +34,16 @@ static const ublkpp::raid1::SuperBlock normal_superblock = {
 
 static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
 
+// Helper for tests that create MirrorDevice directly: zero the buffer on READ so that
+// posix_memalign's uninitialised memory cannot accidentally look like a superblock with
+// a mismatched UUID.
+inline auto sync_iov_zero_on_read() {
+    return [](uint8_t op, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+        if (op == UBLK_IO_OP_READ && iovecs->iov_base) memset(iovecs->iov_base, 0, iovecs->iov_len);
+        return static_cast< int >(iovecs->iov_len);
+    };
+}
+
 // Helper for tests: allocate a SuperBitmap buffer for Bitmap constructor
 inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
     auto buf = std::make_unique< uint8_t[] >(ublkpp::raid1::k_superbitmap_size);

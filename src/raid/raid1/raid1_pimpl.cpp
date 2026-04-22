@@ -31,7 +31,9 @@ uint64_t Raid1Disk::capacity() const noexcept { return _impl->capacity(); }
 ublk_params* Raid1Disk::params() noexcept { return _impl->params(); }
 ublk_params const* Raid1Disk::params() const noexcept { return _impl->params(); }
 std::string Raid1Disk::id() const noexcept { return _impl->id(); }
-std::list< int > Raid1Disk::open_for_uring(int const iouring_device) { return _impl->open_for_uring(iouring_device); }
+std::list< int > Raid1Disk::open_for_uring(ublksrv_queue const* q, int const iouring_device) {
+    return _impl->open_for_uring(q, iouring_device);
+}
 uint8_t Raid1Disk::route_size() const noexcept { return _impl->route_size(); }
 void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
 void Raid1Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {

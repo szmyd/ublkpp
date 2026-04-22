@@ -1,8 +1,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <atomic>
+#include <barrier>
 #include <thread>
 #include <vector>
-#include <atomic>
 
 #include "raid/raid1/super_bitmap.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
@@ -261,11 +262,14 @@ TEST_F(SuperBitmapTest, ConcurrentSetAndClearDifferentBits) {
 TEST_F(SuperBitmapTest, ConcurrentReadWhileWrite) {
     SuperBitmap sb(buffer.get());
 
+    constexpr int k_readers = 4;
     std::atomic< bool > stop{false};
     std::atomic< int > read_count{0};
+    std::barrier sync_point{k_readers + 1}; // writer + readers all rendezvous before work starts
 
     // Writer thread: sets bits 0-99
     std::thread writer([&]() {
+        sync_point.arrive_and_wait(); // don't start until all readers are alive
         for (int i = 0; i < 1000; ++i) {
             for (int bit = 0; bit < 100; ++bit) {
                 sb.set_bit(bit);
@@ -276,11 +280,12 @@ TEST_F(SuperBitmapTest, ConcurrentReadWhileWrite) {
 
     // Reader threads: read bits 0-99
     std::vector< std::thread > readers;
-    for (int t = 0; t < 4; ++t) {
+    for (int t = 0; t < k_readers; ++t) {
         readers.emplace_back([&]() {
+            sync_point.arrive_and_wait(); // signal ready, then start together with writer
             while (!stop.load()) {
                 for (int bit = 0; bit < 100; ++bit) {
-                    (void)sb.test_bit(bit); // Just read, don't care about result
+                    (void)sb.test_bit(bit);
                     read_count.fetch_add(1, std::memory_order_relaxed);
                 }
             }

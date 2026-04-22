@@ -29,17 +29,12 @@ TEST(Raid1Concurrency, ResyncRelaunchAfterComplete) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
-    // All sync I/O succeeds (bitmap page reads/writes during resync)
     EXPECT_CALL(*device_a, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(sync_iov_zero_on_read());
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            return static_cast< int >(iovecs->iov_len);
-        });
+        .WillRepeatedly(sync_iov_zero_on_read());
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);

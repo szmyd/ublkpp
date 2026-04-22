@@ -58,7 +58,7 @@ public:
         validate_slot(sub_cmd, "on_io_complete");
     }
 
-    MOCK_METHOD(std::list< int >, open_for_uring, (int const), (override));
+    MOCK_METHOD(std::list< int >, open_for_uring, (ublksrv_queue const*, int const), (override));
     MOCK_METHOD(io_result, handle_internal,
                 (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t, int), (override));
     MOCK_METHOD(void, collect_async, (ublksrv_queue const*, std::list< async_result >&), (override));

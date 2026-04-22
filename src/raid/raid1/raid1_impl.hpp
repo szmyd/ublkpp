@@ -49,13 +49,19 @@ class Raid1DiskImpl : public UblkDisk {
     std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
 
     // Active Re-Sync Task
-    bool _resync_enabled{true};
+    std::atomic< bool > _resync_enabled{true};
     std::shared_ptr< Raid1ResyncTask > _resync_task;
 
-    // Ensure exclusivity in __swap_device
-    std::mutex _swap_lock;
+    // Guards: (1) swap_device() — serializes concurrent callers on _device_a/_device_b mutations.
+    //         (2) _pending_results — serializes open_for_uring() insertions across queue threads.
+    std::mutex _ctrl_lock;
+
+    // Multi-queue idle tracking: probe starts when all queues are idle, stops on any active transition
+    std::atomic_uint16_t _nr_hw_queues{0};
+    std::atomic_uint16_t _idle_queue_count{0};
 
     // Idle-scoped periodic health monitors
+    std::mutex _idle_probe_lock;
     Raid1AvailProbeTask _idle_probe_a;
     Raid1AvailProbeTask _idle_probe_b;
 
@@ -142,7 +148,7 @@ public:
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
-    std::list< int > open_for_uring(int const iouring_device) override;
+    std::list< int > open_for_uring(ublksrv_queue const* q, int const iouring_device) override;
     void idle_transition(ublksrv_queue const* q, bool enter) noexcept override;
 
     uint8_t route_size() const noexcept override { return 1; }

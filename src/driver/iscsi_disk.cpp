@@ -140,7 +140,7 @@ iSCSIDisk::~iSCSIDisk() = default;
 std::string iSCSIDisk::id() const noexcept { return _session->url->target; }
 
 // Initialize our event loop before we start getting I/O
-std::list< int > iSCSIDisk::open_for_uring(int const) {
+std::list< int > iSCSIDisk::open_for_uring(ublksrv_queue const*, int const) {
     using namespace std::chrono_literals;
     _session->ev_loop = sisl::named_thread("iscsi_evloop", [ctx = _session->ctx, evfd = _session->evfd] {
         pollfd ev_pfd[2] = {{.fd = evfd, .events = POLLIN, .revents = 0},

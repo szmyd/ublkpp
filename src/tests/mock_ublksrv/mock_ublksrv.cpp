@@ -16,8 +16,8 @@ namespace ublkpp {
 static constexpr size_t k_max_io_size = DEF_BUF_SIZE;
 static constexpr size_t k_sector_align = 512;
 
-MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth) :
-        _q_depth(q_depth), _disk(std::move(disk)), _tags(q_depth) {
+MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_queues) :
+        _q_depth(q_depth), _disk(std::move(disk)), _tags(q_depth), _queues(nr_queues) {
     // q_depth * 4 gives headroom for RAID1 write amplification (2x replicas +
     // 2x bitmap SQEs per user write) without false "ring full" auto-submits.
     if (io_uring_queue_init(q_depth * 4, &_ring, 0) < 0) throw std::runtime_error("io_uring_queue_init failed");
@@ -28,19 +28,23 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth) :
     _dev.tgt.tgt_ring_depth = static_cast< unsigned >(q_depth);
     _dev.tgt.nr_fds = 1; // slot 0 reserved (mirrors ublkpp_tgt convention)
 
-    // Register any FDs the disk exports (Raid0/Raid1 forward from FsDisks;
-    // FSDisk currently returns empty since fixed-file support is disabled)
-    for (auto const fd : _disk->open_for_uring(_dev.tgt.nr_fds)) {
-        if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;
+    // Populate ublksrv_queue structs before calling open_for_uring so that any implementation
+    // which reads ring_ptr or dev inside open_for_uring sees valid values.
+    for (int qi = 0; qi < nr_queues; ++qi) {
+        _queues[qi].q_id = qi;
+        _queues[qi].q_depth = q_depth;
+        _queues[qi].ring_ptr = &_ring;
+        _queues[qi].dev = &_dev;
+        _queues[qi].private_data = nullptr;
     }
 
-    // Populate ublksrv_queue — the only fields disk code actually reads are
-    // ring_ptr (for io_uring_get_sqe) and dev (for dev->tgt.tgt_data)
-    _q.q_id = 0;
-    _q.q_depth = q_depth;
-    _q.ring_ptr = &_ring;
-    _q.dev = &_dev;
-    _q.private_data = nullptr;
+    // Simulate init_queue: call open_for_uring once per queue thread so the disk can count queues
+    // and perform per-queue initialization (e.g. Raid1DiskImpl sets _nr_hw_queues and enables resync).
+    for (int qi = 0; qi < nr_queues; ++qi) {
+        for (auto const fd : _disk->open_for_uring(&_queues[qi], _dev.tgt.nr_fds)) {
+            if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;
+        }
+    }
 
     // Wire up per-tag data.iod pointers
     for (int tag = 0; tag < q_depth; ++tag) {
@@ -76,7 +80,7 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     ts.sub_cmds_remaining = 0;
     ts.result = 0;
 
-    auto res = _disk->queue_tgt_io(&_q, &ts.data, 0);
+    auto res = _disk->queue_tgt_io(&_queues[0], &ts.data, 0);
     if (!res) return res;
 
     // Commit all SQEs queued by queue_tgt_io before we start polling
@@ -100,7 +104,7 @@ void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out)
     if (is_internal(sub_cmd)) {
         // RAID1 bitmap completion — respond and potentially enqueue more SQEs
         ts.sub_cmds_remaining--;
-        auto io_res = _disk->queue_internal_resp(&_q, &ts.data, sub_cmd, res);
+        auto io_res = _disk->queue_internal_resp(&_queues[0], &ts.data, sub_cmd, res);
         if (io_res && io_res.value() > 0) {
             ts.sub_cmds_remaining += static_cast< int >(io_res.value());
             io_uring_submit(&_ring);
