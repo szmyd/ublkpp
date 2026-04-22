@@ -444,7 +444,9 @@ static void idle_transition(ublksrv_queue const* q, bool enter) {
 static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
     auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
-    device->open_for_uring(q, 0);
+    // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
+    // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
+    if (!device->open_for_uring(q, 0).empty()) return -1;
     return 0;
 }
 static void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}

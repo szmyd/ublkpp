@@ -283,9 +283,9 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
     fds.splice(fds.end(), _device_b->disk->open_for_uring(q, iouring_device_start + fds.size()));
 
     // Pre-populate _pending_results so runtime access never inserts (map insertion is not thread-safe).
-    // _swap_lock serializes concurrent open_for_uring calls from different queue threads.
+    // _ctrl_lock serializes concurrent open_for_uring calls from different queue threads.
     if (q) {
-        auto lk = std::unique_lock{_swap_lock};
+        auto lk = std::unique_lock{_ctrl_lock};
         _pending_results.emplace(q, std::list< async_result >{});
     }
 
@@ -305,8 +305,8 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
 // If both race, the loser sees the CAS fail and returns early — no further state is mutated.
 // No additional lock is needed between them; the CAS IS the synchronization gate.
 //
-// __swap_device also holds _swap_lock so that two concurrent swap_device() callers don't race
-// on the _device_a/_device_b pointer mutations.  __become_degraded does NOT need _swap_lock
+// __swap_device also holds _ctrl_lock so that two concurrent swap_device() callers don't race
+// on the _device_a/_device_b pointer mutations.  __become_degraded does NOT need _ctrl_lock
 // because it only reads those pointers via a captured RouteState snapshot and never mutates them.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 //
@@ -315,7 +315,7 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
 bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
                                   std::shared_ptr< MirrorDevice >& incoming_mirror,
                                   raid1::read_route const& cur_route) {
-    auto lg = std::scoped_lock< std::mutex >(_swap_lock);
+    auto lg = std::scoped_lock< std::mutex >(_ctrl_lock);
 
     bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
     auto new_read_route = swapping_device_a ? read_route::DEVB : read_route::DEVA;
@@ -687,7 +687,9 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
     // Instead, inject a synthetic async_result carrying `len` into _pending_results so it is accumulated
     // into ret_val via the normal process_result path on the next collect_async cycle. Return +1 to
     // signal exactly one more sub_cmd pending.
-    _pending_results.at(q).emplace_back(async_result{async_data, sub_cmd, static_cast< int >(len)});
+    auto it = _pending_results.find(q);
+    DEBUG_ASSERT(it != _pending_results.end(), "queue not registered in _pending_results") // LCOV_EXCL_LINE
+    it->second.emplace_back(async_result{async_data, sub_cmd, static_cast< int >(len)});
     if (q) {
         if (0 != ublksrv_queue_send_event(q)) { // LCOV_EXCL_START
             RLOGE("Failed to send event!");
@@ -1011,10 +1013,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     auto const state = __capture_route_state();
     if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
 
-    // Immediate probe: clear UNAVAIL on any device that has recovered (edge trigger, no delay).
-    // TOCTOU note: on_io_complete() may clear unavail between the test() and probe_mirror().
-    // If so, probe_mirror() still succeeds (device reachable) and the log fires spuriously.
-    // This is benign — the probe is idempotent and the worst case is one redundant log entry.
+    // Immediate synchronous probe: clear UNAVAIL on any device that has already recovered.
     auto const immediate_probe = [&](std::shared_ptr< MirrorDevice > const& mirror) {
         if (!mirror->unavail.test(std::memory_order_acquire)) return;
         if (probe_mirror(*mirror, reserved_size)) RLOGD("Idle probe: device recovered: {}", *mirror->disk)
@@ -1022,10 +1021,14 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     immediate_probe(state.active_dev);
     immediate_probe(state.backup_dev);
 
-    // Periodic probe: both directions (recovery + new failures), stopped when any queue exits idle
+    // Re-capture state under the lock so launch() uses the device that is actually current.
+    // swap_device() holds _idle_probe_lock while calling stop(), so acquiring the lock here
+    // ensures we cannot start a background probe for a device that was just swapped out.
     auto lk = std::unique_lock{_idle_probe_lock};
-    _idle_probe_a.launch(state.active_dev, reserved_size);
-    _idle_probe_b.launch(state.backup_dev, reserved_size);
+    auto const locked_state = __capture_route_state();
+    if (locked_state.is_degraded) return;
+    _idle_probe_a.launch(locked_state.active_dev, reserved_size);
+    _idle_probe_b.launch(locked_state.backup_dev, reserved_size);
 }
 
 void Raid1DiskImpl::toggle_resync(bool t) {
