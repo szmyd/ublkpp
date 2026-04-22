@@ -15,8 +15,8 @@ TEST(Raid1, IdleTransitionEnter) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
-// Test: idle_transition exit (manages resync state, doesn't propagate to devices)
-TEST(Raid1, IdleTransitionExit) {
+// Test: idle_transition enter+exit round trip (manages resync state, doesn't propagate to devices)
+TEST(Raid1, IdleTransitionRoundTrip) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 

@@ -1009,6 +1009,9 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     }
 
     // Start probes only when all queue threads are idle.
+    // When _nr_hw_queues == 0 (no open_for_uring call yet), prev+1 < 0 is always false for
+    // uint16_t, so the probe fires unconditionally — preserving compat with zero-queue callers
+    // that skip open_for_uring (e.g. tests that call idle_transition directly).
     auto const prev = _idle_queue_count.fetch_add(1, std::memory_order_acq_rel);
     if (prev + 1 < _nr_hw_queues.load(std::memory_order_acquire)) return;
 
