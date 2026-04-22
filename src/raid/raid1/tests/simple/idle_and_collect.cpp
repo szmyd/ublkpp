@@ -23,6 +23,9 @@ TEST(Raid1, IdleTransitionExit) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Should not crash - manages internal resync state
+    // enter must precede exit to satisfy the ublksrv contract (both devices are available
+    // so the immediate probe inside idle_transition(true) is a no-op)
+    raid_device.idle_transition(nullptr, true);
     raid_device.idle_transition(nullptr, false);
 
     // Expect unmount_clean update
