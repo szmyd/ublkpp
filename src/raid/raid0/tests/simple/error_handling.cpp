@@ -51,7 +51,7 @@ TEST(Raid0, FailedMultiStrideIoDoesNotLeaveStaleAliveCount) {
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(1)
-        .WillOnce([](uint8_t, iovec*, uint32_t nr_vecs, off_t) -> io_result {
+        .WillOnce([stripe_sz](uint8_t, iovec*, uint32_t nr_vecs, off_t) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             return stripe_sz;
         });
@@ -109,8 +109,8 @@ TEST(Raid0, FailedMultiStrideIoDoesNotLeaveStaleAliveCount_Async) {
 
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t nr_vecs,
-                     uint64_t) -> io_result {
+        .WillOnce([stripe_sz](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t nr_vecs,
+                              uint64_t) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             return stripe_sz;
         });
