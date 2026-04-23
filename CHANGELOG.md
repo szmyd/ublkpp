@@ -11,14 +11,20 @@ Coroutine I/O refactor (issue #210): replace the ublksrv process-io loop and leg
 - target: `ublkpp_tgt::destroy()` renamed to `static remove(unique_ptr<ublkpp_tgt>)`; destructor intentionally leaves the device live for pod-restart recovery via `UBLK_F_USER_RECOVERY`
 - **Breaking**: removed `handle_rw`, `queue_tgt_io`, `handle_discard`, `sub_cmd_t`, and the `open_for_uring`/`handle_io_async`/`handle_iov_async` virtual surface -- replaced by `prepare` and `async_iov`
 
+## 0.23.0
+- **Breaking**: Migrate to sisl v14, requires C++23, drops folly dependency
+- **Breaking**: Remove homeblocks support pending its own sisl v14 migration
+- example: Replace iomgr http_server with `sisl::HttpServer`; drop iomgr dependency from example binary
+- ci: Update all sisl action refs to `dev/v14.x`, drop iomgr build step
+
 ## 0.22.2
-- raid1: Fix `stop()` IDLE→STOPPING race - when the resync thread finishes naturally and
+- raid1: Fix `stop()` IDLE->STOPPING race - when the resync thread finishes naturally and
   `stop()` is called before `join()`, the `IDLE+joinable` handler now returns `SUCCESS` instead
-  of `RETRY_WITH_SLEEP`, preventing an accidental `CAS(IDLE→STOPPING)` that left no thread to
+  of `RETRY_WITH_SLEEP`, preventing an accidental `CAS(IDLE->STOPPING)` that left no thread to
   clear the state; subsequent `launch()` call in `swap_device()` would spin forever.
 
 ## 0.22.1
-- raid1: Fix dequeue/resume race - `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed.
+- raid1: Fix dequeue/resume race - `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE->ACTIVE transition are one indivisible CAS; `__resume()` is removed.
 - raid1: Fix enqueue/pause race - `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
 - raid1: Replace GCC `__builtin_popcount`/`__builtin_clz`/`__builtin_ctz` with C++23 `std::popcount`/`std::countl_zero`/`std::countr_zero`
 - build: `libatomic` is now declared as a Conan system lib on Linux - propagated automatically to consumers, no downstream changes required

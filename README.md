@@ -12,7 +12,7 @@
 - **RAID1 Resilient Bitmap**: Memory-efficient dirty tracking (4 KiB page tracks 1 GiB data)
 - **Hot Device Replacement**: Swap devices in degraded RAID1 arrays without downtime
 - **Lock-Free I/O Path**: Read/write operations use lock-free algorithms (x86-64/ARM64)
-- **Multiple Backends**: File system, iSCSI, and HomeBlocks support
+- **Multiple Backends**: File system and iSCSI support
 - **Comprehensive Testing**: High test coverage with unit and integration tests
 - **Modern C++**: Built with C++23, leveraging `std::expected` for error handling
 - **Production Ready**: Thread-safe, handles degraded modes, optimistic recovery
@@ -59,8 +59,7 @@ conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
 conan build -s:h build_type=Debug -o sanitize=address --build missing ublkpp
 conan build -s:h build_type=Debug -o sanitize=thread --build missing ublkpp
 
-# Optional backends
-conan build -o homeblocks=True --build missing ublkpp
+# Optional iSCSI backend
 conan build -o iscsi=True --build missing ublkpp
 ```
 
@@ -72,7 +71,7 @@ conan build -o iscsi=True --build missing ublkpp
 ublkpp/
 ├── include/ublkpp/       # Public headers
 │   ├── raid/             # RAID0, RAID1 interfaces
-│   └── drivers/          # FSDisk, iSCSIDisk, HomeBlkDisk
+│   └── drivers/          # FSDisk, iSCSIDisk
 ├── src/
 │   ├── driver/           # Backend implementations
 │   ├── lib/              # Core UblkDisk base classes
@@ -282,15 +281,13 @@ TEST(Raid1, YourTestName) {
 
 ### Core Dependencies
 
-- **[sisl](https://github.com/eBay/sisl)**: Logging, options, utilities
+- **[sisl](https://github.com/eBay/sisl)** v14+: Logging, options, metrics, HTTP server
 - **[ublksrv](https://github.com/ublk-org/ublksrv)**: ublk driver interface
 - **boost**: UUID generation
 - **liburing**: io_uring support
 
 ### Optional Dependencies
 
-- **[iomgr](https://github.com/eBay/IOManager)**: Async I/O (for testing)
-- **[homeblks](https://github.com/eBay/HomeBlocks)**: HomeBlocks backend
 - **libiscsi**: iSCSI backend support
 
 ### Build Tools

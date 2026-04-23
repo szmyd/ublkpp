@@ -25,12 +25,14 @@ class UBlkPPConan(ConanFile):
                 "fPIC": ['True', 'False'],
                 "coverage": ['True', 'False'],
                 "sanitize": ['address', 'thread', 'False'],
+                "iscsi": ['True', 'False'],
                 }
     default_options = {
                 'shared': False,
                 'fPIC': True,
                 'coverage': False,
                 'sanitize': False,
+                'iscsi': False,
             }
 
     exports_sources = (
@@ -65,11 +67,10 @@ class UBlkPPConan(ConanFile):
 
     def build_requirements(self):
         self.test_requires("gtest/[^1.17]")
-        self.test_requires("iomgr/[^12.0]")
         self.test_requires("fio/nbi.3.28")
 
     def requirements(self):
-        self.requires("sisl/[^13.2]", transitive_headers=True)
+        self.requires("sisl/[^14.0]@oss/dev", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
         self.requires("ublksrv/nbi.1.5.0.1")
@@ -140,6 +141,8 @@ class UBlkPPConan(ConanFile):
         self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
         if self.settings.os == "Linux":
             self.cpp_info.system_libs = ["atomic"]
+        if (self.options.get_safe("iscsi")):
+            self.cpp_info.requires.extend(["libiscsi::libiscsi"])
         if self.options.get_safe("sanitize") and self.options.sanitize != "False":
             if self.options.sanitize == "thread":
                 self.cpp_info.sharedlinkflags.append("-fsanitize=thread")

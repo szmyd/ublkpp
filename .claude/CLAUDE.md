@@ -43,12 +43,13 @@ Build environment configured in `~/.claude/CLAUDE.md` (local vs SSH).
 
 ```bash
 # Build Debug (auto-runs tests)
-conan build -s:h build_type=Debug --build missing ublkpp
+conan build -s:h build_type=Debug --build missing .
 
 # Release / Coverage / Sanitizers
-conan build -s:h build_type=Release --build missing ublkpp
-conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
-conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
+conan build -s:h build_type=Release --build missing .
+conan build -s:h build_type=Debug -o ublkpp/*:coverage=True --build missing .
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=address --build missing .
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=thread --build missing .
 
 # Format code (applied automatically after edits to C/C++ files)
 # Run on each modified file: clang-format -style=file -i -fallback-style=none file.cpp
@@ -123,14 +124,15 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 
 ## Dependencies
 
-**Core:** `sisl` (logging/options), `ublksrv` ([GitHub](https://github.com/ublk-org/ublksrv)), `iomgr` (test)
-**Build:** Conan 2.0, CMake 3.x, C++23 compiler, clang-format
+**Core:** `sisl` v14+ (logging, options, metrics, HTTP server), `ublksrv`, `isa-l`
+**Optional:** `libiscsi` (iSCSI backend; `-o ublkpp/*:iscsi=True`)
+**Build:** Conan 2.0, CMake 3.x, C++23 (GCC 14+ or Clang 17+), clang-format
 
 ## Project Structure
 
 ```
 src/
-├── driver/   # FSDisk, iSCSIDisk, HomeBlkDisk
+├── driver/   # FSDisk, iSCSIDisk
 ├── lib/      # UblkDisk base, utilities
 ├── metrics/  # IO, FSDisk, RAID metrics
 ├── raid/     # RAID0, RAID1 (bitmap, superblock)
@@ -139,6 +141,19 @@ src/
 include/ublkpp/  # Public headers
 example/         # ublkpp_disk
 ```
+
+## CI
+
+Four named jobs on `ubuntu-24.04`, triggered on push to `main` and PRs targeting `main`/`feature/*`. All use `conan-channel: "dev"` (sisl@oss/dev).
+
+| Job | Compiler | Build type | Sanitizer |
+|---|---|---|---|
+| GccAddressSanitize | GCC | Debug | address |
+| GccThreadSanitize | GCC | Debug | thread |
+| GccCoverage | GCC | Debug | none (coverage=True) |
+| ClangRelease | Clang | Release | none |
+
+`SislDeps` (builds/caches sisl upstream) runs before `UblkPPDeps` on non-PR events; on PRs it still runs but skips the cache-save step.
 
 ## Git Workflow
 
