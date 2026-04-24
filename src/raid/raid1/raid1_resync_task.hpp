@@ -109,13 +109,15 @@ public:
     uint32_t stop() noexcept; // Returns the _outstanding_writes cnt here
 
     inline void enqueue_write() noexcept {
-        bool was_zero{false};
-        _state_and_writes.set_atomic_value([&was_zero](auto& cnt, auto& /*status*/) {
-            was_zero = (cnt == 0);
+        _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
             ++cnt;
             return true;
         });
-        if (was_zero) __pause();
+        // Always call __pause() — not just on the first enqueue. A concurrent first enqueuer may
+        // still be spinning inside __pause() when a second thread increments the counter; skipping
+        // __pause() here would let the second write proceed before PAUSE is established, allowing
+        // resync to overwrite it with stale data. __pause() is cheap when already PAUSE (O(1) CAS).
+        __pause();
         DEBUG_ASSERT_LT(_state_and_writes.count(), INT32_MAX, "Outstanding Write Count Overflowed!");
     }
 
