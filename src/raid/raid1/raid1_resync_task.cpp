@@ -17,8 +17,6 @@ Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint6
         _io_size(io_size),
         _max_size(max_io),
         _offset(offset),
-        _resync_state(static_cast< uint8_t >(resync_state::IDLE)), // Initial store, can't use helper
-        _outstanding_writes(0U),
         _resync_task() {
     if (!_dirty_bitmap) throw std::runtime_error("No Bitmap");
 }
@@ -30,7 +28,7 @@ Raid1ResyncTask::~Raid1ResyncTask() noexcept {
 template < typename StateHandler >
 bool Raid1ResyncTask::__transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept {
     auto cur_state = initial;
-    while (!__cas_state_weak(cur_state, target)) {
+    while (!__cas_state(cur_state, target)) {
         auto [next_state, action] = handler(cur_state);
 
         switch (action) {
@@ -55,8 +53,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
     // Wait to become Available & IDLE
     auto cur_state = resync_state::IDLE;
-    while (dirty_mirror->unavail.test(std::memory_order_acquire) ||
-           !__cas_state_weak(cur_state, resync_state::ACTIVE)) {
+    while (dirty_mirror->unavail.test(std::memory_order_acquire) || !__cas_state(cur_state, resync_state::ACTIVE)) {
         // If we're stopped or another we should exit
         if (resync_state::STOPPING == cur_state) break;
 
@@ -110,7 +107,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     // If stopped, end now.
     if (resync_state::STOPPING == cur_state) {
         RLOGI("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
-        __cas_state_strong(cur_state, resync_state::IDLE);
+        _state_and_writes.xchng_status(cur_state, resync_state::IDLE);
         return;
     }
 
@@ -121,7 +118,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
 
     // Open up I/O Again
-    __cas_state_strong(cur_state, resync_state::IDLE);
+    _state_and_writes.xchng_status(cur_state, resync_state::IDLE);
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
@@ -285,7 +282,7 @@ uint32_t Raid1ResyncTask::stop() noexcept {
         std::unreachable();
     });
     if (_resync_task.joinable()) _resync_task.join();
-    return _outstanding_writes.load(std::memory_order_acquire);
+    return static_cast< uint32_t >(_state_and_writes.count());
 }
 
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
@@ -293,7 +290,7 @@ resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
     auto cur_state = resync_state::ACTIVE;
 
     // Phase 1: Transition ACTIVE→SLEEPING (give I/O a chance to interrupt)
-    while (!__cas_state_weak(cur_state, resync_state::SLEEPING)) {
+    while (!__cas_state(cur_state, resync_state::SLEEPING)) {
         if (resync_state::STOPPING == cur_state) return cur_state;
     }
     cur_state = resync_state::SLEEPING;
@@ -306,7 +303,7 @@ resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
     }
 
     // Phase 3: Transition SLEEPING→ACTIVE (resume resync)
-    while (!__cas_state_weak(cur_state, resync_state::ACTIVE)) {
+    while (!__cas_state(cur_state, resync_state::ACTIVE)) {
         if (resync_state::STOPPING == cur_state) return cur_state;
 
         if (resync_state::PAUSE == cur_state) {
