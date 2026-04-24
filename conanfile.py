@@ -68,19 +68,19 @@ class UBlkPPConan(ConanFile):
             self.options['sisl/*'].malloc_impl = 'tcmalloc'
 
     def build_requirements(self):
-        self.test_requires("gtest/1.17.0")
-        self.test_requires("iomgr/[^12]@oss/master")
+        self.test_requires("gtest/[^1.17]")
+        self.test_requires("iomgr/[^12.0]")
         self.test_requires("fio/nbi.3.28")
 
     def requirements(self):
-        self.requires("sisl/[^13]@oss/master", transitive_headers=True)
+        self.requires("sisl/[^13.2]", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
         if (self.options.get_safe("homeblocks")):
-            self.requires("homeblocks/[^5.0]@oss/main")
+            self.requires("homeblocks/[^5.0]")
         self.requires("ublksrv/nbi.1.5.0")
         if (self.options.get_safe("iscsi")):
-            self.requires("libiscsi/1.20.3")
+            self.requires("libiscsi/[^1.20]")
 
     def layout(self):
         self.folders.source = "."
@@ -136,7 +136,7 @@ class UBlkPPConan(ConanFile):
         cmake.configure()
         cmake.build()
         if not self.conf.get("tools.build:skip_test", default=False):
-            self.run(f"ctest --test-dir '{self.build_folder}' --verbose --output-on-failure")
+            self.run(f"ctest --test-dir '{self.build_folder}' --output-on-failure")
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)
