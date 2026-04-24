@@ -291,7 +291,9 @@ resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
 
     // Phase 1: Transition ACTIVE→SLEEPING (give I/O a chance to interrupt)
     while (!__cas_state(cur_state, resync_state::SLEEPING)) {
-        if (resync_state::STOPPING == cur_state) return cur_state;
+        // STOPPING here is unreachable: stop() only CAS SLEEPING→STOPPING or PAUSE→STOPPING,
+        // never ACTIVE→STOPPING, so this loop exits on the first successful CAS.
+        DEBUG_ASSERT_NE(cur_state, resync_state::STOPPING, "impossible ACTIVE→STOPPING transition"); // LCOV_EXCL_LINE
     }
     cur_state = resync_state::SLEEPING;
 
