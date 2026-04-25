@@ -84,8 +84,6 @@ class Raid1DiskImpl : public UblkDisk {
     void __init_bitmap_and_degraded_route();
     void __become_active();
 
-    raid1::read_route __get_read_route() const noexcept { return _read_route_cache.load(std::memory_order_acquire); }
-
     // ☠️ ☠️ ☠️  DANGER: LOCK-FREE SYNCHRONIZATION - DO NOT MODIFY  ☠️ ☠️ ☠️
     //
     // This function uses a CAREFULLY DESIGNED lock-free read-retry pattern with
@@ -110,15 +108,6 @@ class Raid1DiskImpl : public UblkDisk {
 #endif
     RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
     // clang-format on
-
-    bool __set_read_route(raid1::read_route& old_route, raid1::read_route new_route) noexcept {
-        return _read_route_cache.compare_exchange_strong(old_route, new_route);
-    }
-
-    // Direct store (for initialization/non-CAS updates)
-    void __store_read_route(raid1::read_route route) noexcept {
-        _read_route_cache.store(route, std::memory_order_release);
-    }
 
 public:
     Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
