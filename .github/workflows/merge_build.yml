@@ -40,12 +40,12 @@ jobs:
       conan-channel: "dev"
       tooling: "Coverage"
 
-  ClangRelease:
+  GccRelease:
     uses: ./.github/workflows/build_commit.yml
     with:
       platform: "ubuntu-24.04"
       build-type: "Release"
-      malloc-impl: "libc"
-      compiler: "clang"
+      malloc-impl: "tcmalloc"
+      compiler: "gcc"
       conan-channel: "dev"
       tooling: "None"
