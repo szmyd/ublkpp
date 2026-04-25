@@ -5,7 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## 0.22.1
-- raid1: Fix enqueue_write/dequeue_write pause race — `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the decrement-and-resume is one indivisible CAS, closing the window where resync could run concurrently with an in-flight write (SDSTOR-21927)
+- raid1: Fix dequeue/resume race — `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed (SDSTOR-21927)
+- raid1: Fix enqueue/pause race — `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
 - raid1: Replace GCC `__builtin_popcount`/`__builtin_clz`/`__builtin_ctz` with C++23 `std::popcount`/`std::countl_zero`/`std::countr_zero`
 - build: `libatomic` is now declared as a Conan system lib on Linux — propagated automatically to consumers, no downstream changes required
 

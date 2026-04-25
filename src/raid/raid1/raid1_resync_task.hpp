@@ -106,7 +106,7 @@ public:
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
     // Generic method to move Resync StateMachine to STOPPING
-    uint32_t stop() noexcept; // Returns the _outstanding_writes cnt here
+    uint32_t stop() noexcept; // Returns outstanding write count at time of stop
 
     inline void enqueue_write() noexcept {
         _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {

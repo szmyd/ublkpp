@@ -309,9 +309,10 @@ resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
         if (resync_state::STOPPING == cur_state) return cur_state;
 
         if (resync_state::PAUSE == cur_state) {
-            // I/O started during sleep - wait for it to complete
-            // Set to IDLE anticipating __resume() will transition PAUSE→ACTIVE
-            // This prevents busy-spinning and gives I/O threads priority
+            // A write is in flight; wait for dec_xchng_status_ifz to drive PAUSE→ACTIVE.
+            // Use IDLE as a sentinel so the next CAS always fails and reloads the real state —
+            // using PAUSE here would let __cas_state bypass the counter check and race with
+            // dec_xchng_status_ifz. Sleep to yield bandwidth to the write path.
             cur_state = resync_state::IDLE;
             std::this_thread::sleep_for(yield_for);
         }
