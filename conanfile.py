@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.22.0"
+    version = "0.23.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -25,7 +25,6 @@ class UBlkPPConan(ConanFile):
                 "fPIC": ['True', 'False'],
                 "coverage": ['True', 'False'],
                 "sanitize": ['address', 'thread', 'False'],
-                "homeblocks": ['True', 'False'],
                 "iscsi": ['True', 'False'],
                 }
     default_options = {
@@ -33,7 +32,6 @@ class UBlkPPConan(ConanFile):
                 'fPIC': True,
                 'coverage': False,
                 'sanitize': False,
-                'homeblocks': False,
                 'iscsi': False,
             }
 
@@ -47,7 +45,7 @@ class UBlkPPConan(ConanFile):
                         )
 
     def _min_cppstd(self):
-        return 20
+        return 23
 
     def validate(self):
         if self.settings.compiler.get_safe("cppstd"):
@@ -69,11 +67,10 @@ class UBlkPPConan(ConanFile):
 
     def build_requirements(self):
         self.test_requires("gtest/[^1.17]")
-        self.test_requires("iomgr/[^12.0]")
         self.test_requires("fio/nbi.3.28")
 
     def requirements(self):
-        self.requires("sisl/[^13.2]", transitive_headers=True)
+        self.requires("sisl/[^14.0]@oss/dev", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
         if (self.options.get_safe("homeblocks")):
@@ -148,8 +145,6 @@ class UBlkPPConan(ConanFile):
         self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
         if (self.options.get_safe("iscsi")):
             self.cpp_info.requires.extend(["libiscsi::libiscsi"])
-        if (self.options.get_safe("homeblocks")):
-            self.cpp_info.requires.extend(["homeblocks::homeblocks"])
         if self.options.get_safe("sanitize") and self.options.sanitize != "False":
             if self.options.sanitize == "thread":
                 self.cpp_info.sharedlinkflags.append("-fsanitize=thread")

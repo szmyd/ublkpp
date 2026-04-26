@@ -14,7 +14,7 @@ namespace ublkpp {
 //
 // Constructor parameters:
 //   uuid: The volume/target UUID for this ublkpp target instance.
-struct UblkIOMetrics : public sisl::MetricsGroupWrapper {
+struct UblkIOMetrics : public sisl::MetricsGroup {
     explicit UblkIOMetrics(std::string const& uuid);
     ~UblkIOMetrics();
 

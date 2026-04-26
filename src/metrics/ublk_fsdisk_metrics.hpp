@@ -25,7 +25,7 @@ struct io_timing {
 //              to correlate metrics across the device hierarchy (e.g., RAID -> FSDisk).
 //              For standalone disks not part of a RAID, you can use the disk's own ID.
 //   disk_path: The filesystem path or identifier for this specific disk instance.
-struct UblkFSDiskMetrics : public sisl::MetricsGroupWrapper {
+struct UblkFSDiskMetrics : public sisl::MetricsGroup {
     UblkFSDiskMetrics(std::string const& parent_id, std::string const& disk_path);
     ~UblkFSDiskMetrics();
 
