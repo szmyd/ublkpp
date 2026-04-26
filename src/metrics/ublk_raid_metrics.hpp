@@ -14,7 +14,7 @@ namespace ublkpp {
 //              to correlate metrics across the device hierarchy (e.g., volume -> RAID -> disks).
 //              For standalone RAID arrays, you can use the RAID's own ID.
 //   raid_device_id: The unique identifier for this specific RAID instance.
-struct UblkRaidMetrics : public sisl::MetricsGroupWrapper {
+struct UblkRaidMetrics : public sisl::MetricsGroup {
     UblkRaidMetrics(std::string const& parent_id, std::string const& raid_device_id);
     ~UblkRaidMetrics();
 
