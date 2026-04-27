@@ -144,7 +144,8 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     return sqe;
 }
 
-io_result FSDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+io_result FSDisk::handle_flush(ublksrv_queue const*, [[maybe_unused]] ublk_io_data const* data,
+                               [[maybe_unused]] sub_cmd_t sub_cmd) {
 
     DLOGT("Flush {} : [tag:{:#0x}] ublk io [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
     // Page cache is coherent for buffered I/O; reads see writes immediately.
@@ -223,7 +224,7 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         DLOGE("Direct read on un-opened device!")
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
-    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
+    [[maybe_unused]] auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
     DLOGT("{} {} : [INTERNAL] ublk io [addr:{:#0x}|len:{:#0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), addr, len)
     DEBUG_ASSERT_GE(capacity(), len + addr, "Access beyond device bounds!");

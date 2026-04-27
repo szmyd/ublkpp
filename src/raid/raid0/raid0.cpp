@@ -240,10 +240,9 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
 
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-    auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [tag:{:#0x}] ublk io [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, iovecs->iov_len,
-          ublkpp::to_string(sub_cmd))
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
+          addr >> params()->basic.logical_bs_shift, iovecs->iov_len, ublkpp::to_string(sub_cmd))
 
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     addr += _stride_width;
@@ -252,11 +251,11 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
         iovecs, addr,
         [q, data, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
                         uint64_t logical_off) {
-            auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
             RLOGT("Perform {}: [tag:{:#0x}] ublk aysnc_io -> "
                   "[stripe_off:{}|logical_lba:{:#0x}|logical_len:{:#0x}|sub_cmd:{}]",
-                  ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, stripe_off, logical_lba,
-                  __iovec_len(iov, iov + nr_iovs), ublkpp::to_string(new_sub_cmd))
+                  ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, stripe_off,
+                  logical_off >> params()->basic.logical_bs_shift, __iovec_len(iov, iov + nr_iovs),
+                  ublkpp::to_string(new_sub_cmd))
             return _stripe_array[stripe_off]->disk->async_iov(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
         },
         retry, sub_cmd);
