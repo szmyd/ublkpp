@@ -155,7 +155,7 @@ jobs:
         testing: 'False'
         path: import/sisl
         key_prefix: SislDeps14-${{ inputs.platform }}-${{ inputs.build-type }}-${{ inputs.malloc-impl }}-${{ inputs.compiler }}
-        fail_on_cache_miss: false
+        fail_on_cache_miss: true
       if: ${{ inputs.testing == 'True' || steps.restore-cache.outputs.cache-hit != 'true' }}
 
     - name: Retrieve Dependencies
