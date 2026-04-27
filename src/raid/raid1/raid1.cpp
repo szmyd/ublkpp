@@ -890,8 +890,8 @@ void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_resul
 
 io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                         uint32_t len, uint64_t addr) {
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", data->tag, lba, len, _str_uuid)
+    RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", data->tag,
+          addr >> params()->basic.logical_bs_shift, len, _str_uuid)
 
     if (is_retry(sub_cmd)) [[unlikely]]
         return __handle_async_retry(sub_cmd, addr, len, q, data);
@@ -935,9 +935,8 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
 
 io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
     auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
-          _str_uuid)
+    RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+          addr >> params()->basic.logical_bs_shift, len, _str_uuid)
 
     // READs are a special sub_cmd that just go to one side we'll do explicitly
     if (UBLK_IO_OP_READ == op)
