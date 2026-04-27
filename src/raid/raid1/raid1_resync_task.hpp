@@ -68,10 +68,12 @@ class Raid1ResyncTask {
     // Verify that resync_state is still 32-bit so the combined struct stays lock-free.
     static_assert(
         [] {
+#pragma pack(1)
             struct s {
                 int32_t c;
                 resync_state st;
             };
+#pragma pack()
             return std::atomic< s >::is_always_lock_free;
         }(),
         "_state_and_writes must be lock-free — did resync_state change away from uint32_t?");
@@ -118,7 +120,7 @@ public:
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
     // Generic method to move Resync StateMachine to STOPPING
-    void stop() noexcept; // Returns outstanding write count at time of stop
+    void stop() noexcept;
 
     inline void enqueue_write() noexcept {
         // Increment first, then establish pause. Safe because the caller submits I/O only after
