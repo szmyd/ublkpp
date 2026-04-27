@@ -1,5 +1,6 @@
 #include "bitmap.hpp"
 
+#include <bit>
 #include <isa-l/mem_routines.h>
 #include <ublk_cmd.h>
 
@@ -305,9 +306,10 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
         auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_relaxed);
-        _dirty_chunks_est.fetch_sub(std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
-                                             (uint64_t)__builtin_popcountll(old_word xor (old_word & clear_mask))),
-                                    std::memory_order_relaxed);
+        _dirty_chunks_est.fetch_sub(
+            std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
+                     static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)))),
+            std::memory_order_relaxed);
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
@@ -346,14 +348,14 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
         logical_off = static_cast< uint64_t >(_page_width) * pg_off;
 
         // Find the first dirty word
-        auto word = 0UL;
+        uint64_t word = 0;
         for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
             word = be64toh((page + word_off)->load(std::memory_order_relaxed));
             if (0 == word) continue;
             logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
 
             // How long does the dirt stretch?
-            auto set_bit = __builtin_clzl(word);
+            auto set_bit = std::countl_zero(word);
             logical_off += set_bit * _chunk_size; // Adjust for bit within word
             // Consume as many consecutive set-bits as we can in the rest of the word
             while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
@@ -396,7 +398,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
             auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_relaxed);
-            _dirty_chunks_est.fetch_add(__builtin_popcountll(old_word xor (old_word | bits_to_set)),
+            _dirty_chunks_est.fetch_add(std::popcount(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
