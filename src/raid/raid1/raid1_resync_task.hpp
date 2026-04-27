@@ -26,7 +26,7 @@ class MirrorDevice;
 //   PAUSE → ACTIVE (I/O finished, resync can proceed)
 //   any → STOPPING (shutdown requested)
 //   STOPPING → IDLE (shutdown complete)
-ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
+ENUM(resync_state, uint32_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
 
 // State transition actions for __transition_to helper
 enum class transition_action : uint8_t {
@@ -57,12 +57,24 @@ class Raid1ResyncTask {
     // This is the offset we should copy the disks @ to avoid writing on the BITMAP itself.
     uint64_t const _offset;
 
-    // Packs resync_state (status) + outstanding-write count (int32_t counter) into one 64-bit
-    // word operated on with a single CAS. Key guarantee: dec_xchng_status_ifz() decrements the
-    // counter and, only if it reaches zero AND status==PAUSE, atomically transitions to ACTIVE —
-    // eliminating the window where a concurrent enqueue_write() could see count==0 while state
-    // remains PAUSE, early-exit __pause(), and then race with a __resume() that fires afterward.
+    // Packs resync_state (uint32_t status) + outstanding-write count (int32_t counter) into one
+    // 64-bit word operated on with a single lock-free CAS (resync_state is 32-bit so the packed
+    // struct is 8 bytes, natively atomic on x86-64 via CMPXCHG8B). Key guarantee:
+    // dec_xchng_status_ifz() decrements the counter and, only if it reaches zero AND
+    // status==PAUSE, atomically transitions to ACTIVE — eliminating the window where a concurrent
+    // enqueue_write() could see count==0 while state remains PAUSE, early-exit __pause(), and
+    // then race with a __resume() that fires afterward.
     sisl::atomic_status_counter< resync_state, resync_state::IDLE > _state_and_writes;
+    // Verify that resync_state is still 32-bit so the combined struct stays lock-free.
+    static_assert(
+        [] {
+            struct s {
+                int32_t c;
+                resync_state st;
+            };
+            return std::atomic< s >::is_always_lock_free;
+        }(),
+        "_state_and_writes must be lock-free — did resync_state change away from uint32_t?");
     std::mutex _launch_lock;
     std::thread _resync_task;
 
@@ -109,6 +121,8 @@ public:
     uint32_t stop() noexcept; // Returns outstanding write count at time of stop
 
     inline void enqueue_write() noexcept {
+        // Increment first, then establish pause. Safe because the caller submits I/O only after
+        // this function returns, so no disk I/O is in-flight during the increment→pause window.
         _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
             ++cnt;
             return true;
@@ -122,6 +136,8 @@ public:
     }
 
     inline void dequeue_write() noexcept {
+        // Release builds: this assert is elided; callers must guarantee balanced enqueue/dequeue
+        // (unbalanced calls cause the counter to go negative, preventing the PAUSE→ACTIVE transition).
         DEBUG_ASSERT_GT(_state_and_writes.count(), 0, "Outstanding Write Count Underflowed!");
         // Atomically decrement; if counter hits zero while state is PAUSE, transition to ACTIVE.
         // This single CAS closes the race where a concurrent enqueue could see old_val==0,

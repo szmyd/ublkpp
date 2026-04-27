@@ -44,7 +44,14 @@ using namespace ublkpp::raid1;
 // invariant was violated. The ordering avoids false positives (no inflation before
 // enqueue returns) and detects the bug (inflation happens before __resume() fires).
 //
-// TSAN on nublox2_dev is the authoritative correctness signal for this race.
+// Detection limits:
+//   Race 1 (2–5 instruction window between old fetch_sub and __resume()): cannot be triggered
+//   probabilistically — its fix is analytically correct, not test-verified by this test. A
+//   plain Debug run cannot detect it.
+//   Race 2 (__pause() spin window): reliably detected under ASan/TSan where instrumentation
+//   widens the window; a green plain-Debug run is NOT a regression guard for Race 2.
+// CI configurations that skip sanitizers should treat this test as a smoke check only.
+// TSAN on nublox2_dev is the authoritative correctness signal for both races.
 TEST(Raid1Concurrency, EnqueueDequeueRace) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
@@ -64,10 +71,12 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
 
     std::atomic< int > writes_in_flight{0};
     std::atomic< bool > overlap_detected{false};
+    std::atomic< bool > resync_started{false};
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            resync_started.store(true, std::memory_order_release);
             if (writes_in_flight.load(std::memory_order_acquire) > 0) {
                 overlap_detected.store(true, std::memory_order_release);
             }
@@ -90,7 +99,8 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
 
-    std::this_thread::sleep_for(10ms); // Allow resync to start copying
+    while (!resync_started.load(std::memory_order_acquire))
+        std::this_thread::yield(); // Wait until resync has begun copying to device_b
 
     constexpr int k_n_threads = 4;
     constexpr int k_iterations = 200;

@@ -348,7 +348,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
         logical_off = static_cast< uint64_t >(_page_width) * pg_off;
 
         // Find the first dirty word
-        auto word = 0UL;
+        uint64_t word = 0;
         for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
             word = be64toh((page + word_off)->load(std::memory_order_relaxed));
             if (0 == word) continue;

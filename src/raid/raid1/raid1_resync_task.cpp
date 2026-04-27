@@ -264,7 +264,9 @@ void Raid1ResyncTask::__pause() noexcept {
 // Abort any on-going resync task by moving to STOPPING and rejoin the thread
 uint32_t Raid1ResyncTask::stop() noexcept {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
-    // Terminate any ongoing resync task
+    // Targets SLEEPING or PAUSE → STOPPING (waits out ACTIVE first via RETRY_WITH_SLEEP).
+    // Never CAS-es ACTIVE→STOPPING directly — this is what makes the ACTIVE→STOPPING
+    // assert in __yield Phase 1 unreachable.
     __transition_to(resync_state::PAUSE, resync_state::STOPPING, [this](resync_state state) -> transition_result {
         switch (state) {
         case resync_state::IDLE: {
@@ -282,6 +284,8 @@ uint32_t Raid1ResyncTask::stop() noexcept {
         std::unreachable();
     });
     if (_resync_task.joinable()) _resync_task.join();
+    // I/O threads may still be between enqueue_write() and dequeue_write() at join time.
+    // Callers that care (e.g., ~Raid1DiskImpl) must drain all I/O before calling stop().
     return static_cast< uint32_t >(_state_and_writes.count());
 }
 
