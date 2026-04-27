@@ -34,12 +34,12 @@ TEST(Raid1, ReadRetryA) {
     // Now test the normal path
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)
-        .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
+        .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t io_sub_cmd, iovec* iovecs,
                                  uint32_t, uint64_t addr) {
             // The route has changed to point to device_b
-            EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
+            EXPECT_EQ(io_sub_cmd & ublkpp::_route_mask, 0b100);
             // It should not have the RETRIED bit set
-            EXPECT_FALSE(ublkpp::is_retry(sub_cmd));
+            EXPECT_FALSE(ublkpp::is_retry(io_sub_cmd));
             EXPECT_EQ(iovecs->iov_len, 4 * Ki);
             EXPECT_EQ(addr, (12 * Ki) + raid_device.reserved_size());
             return 1;

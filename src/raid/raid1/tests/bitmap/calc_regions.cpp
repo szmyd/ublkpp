@@ -119,7 +119,7 @@ TEST(Raid1, CalcBitmapRegions) {
         EXPECT_EQ(1, nr_bits);
         EXPECT_EQ(4 * Ki, sz);
         {
-            auto [pg_offset2, word_offset2, shift_offset2, nr_bits, sz2] =
+            auto [pg_offset2, word_offset2, shift_offset2, nr_bits2, sz2] =
                 Bitmap::calc_bitmap_region(page_width - (4 * Ki) + (sz), (2 * chunk_size) - sz, chunk_size);
             EXPECT_EQ(1, pg_offset2);
             EXPECT_EQ(0, word_offset2);

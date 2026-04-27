@@ -43,6 +43,7 @@ target_link_libraries(ublkpp_fio_engine PRIVATE
     ublkpp
     ublksrv::ublksrv
     sisl::cache
+    $<$<PLATFORM_ID:Linux>:atomic>
 )
 target_include_directories(ublkpp_fio_engine PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

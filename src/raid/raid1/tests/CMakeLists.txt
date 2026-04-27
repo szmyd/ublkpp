@@ -31,6 +31,7 @@ target_link_libraries (test_raid1
   isa-l::isa-l
   sisl::cache
   ublksrv::ublksrv
+  $<$<PLATFORM_ID:Linux>:atomic>
 )
 add_test(NAME Raid1Test COMMAND test_raid1 -cv warning)
 

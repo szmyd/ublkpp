@@ -1,6 +1,6 @@
 cmake_minimum_required (VERSION 3.11)
 
-add_compile_options(-Wall -Wextra -Werror)
+add_compile_options(-Wall -Wextra -Wshadow -Wnon-virtual-dtor -Wlogical-op -Werror)
 
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 

@@ -11,6 +11,7 @@ target_sources(raid1 PRIVATE
     super_bitmap.cpp
 )
 target_link_libraries(raid1
+    $<$<PLATFORM_ID:Linux>:atomic>
     isa-l::isa-l
     sisl::cache
     ublksrv::ublksrv

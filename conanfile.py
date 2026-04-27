@@ -143,6 +143,8 @@ class UBlkPPConan(ConanFile):
 
     def package_info(self):
         self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
+        if self.settings.os == "Linux":
+            self.cpp_info.system_libs = ["atomic"]
         if (self.options.get_safe("iscsi")):
             self.cpp_info.requires.extend(["libiscsi::libiscsi"])
         if self.options.get_safe("sanitize") and self.options.sanitize != "False":

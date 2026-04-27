@@ -1,6 +1,7 @@
 #include "super_bitmap.hpp"
 
 #include <atomic>
+#include <bit>
 
 #include "lib/logging.hpp"
 
@@ -60,13 +61,13 @@ uint32_t SuperBitmap::next_set_bit(uint32_t start_page) const noexcept {
     if (byte_idx < k_superbitmap_size) {
         auto byte_val = std::atomic_ref< const uint8_t >(_bits[byte_idx]).load(std::memory_order_acquire);
         byte_val &= ~static_cast< uint8_t >((1U << start_bit) - 1);
-        if (byte_val != 0) { return byte_idx * 8 + __builtin_ctz(byte_val); }
+        if (byte_val != 0) { return byte_idx * 8 + std::countr_zero(byte_val); }
         ++byte_idx;
     }
 
     for (; byte_idx < k_superbitmap_size; ++byte_idx) {
         auto const byte_val = std::atomic_ref< const uint8_t >(_bits[byte_idx]).load(std::memory_order_acquire);
-        if (byte_val != 0) { return byte_idx * 8 + __builtin_ctz(byte_val); }
+        if (byte_val != 0) { return byte_idx * 8 + std::countr_zero(byte_val); }
     }
     return k_superbitmap_bits;
 }

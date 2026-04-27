@@ -10,5 +10,6 @@ list(APPEND RAID1_TEST_SRCS
   concurrency/stop_during_unavail_wait.cpp
   concurrency/concurrent_launch.cpp
   concurrency/multi_queue_idle.cpp
+  concurrency/concurrent_enqueue_dequeue.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)

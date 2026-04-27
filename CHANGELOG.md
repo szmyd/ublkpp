@@ -10,15 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - example: Replace iomgr http_server with `sisl::HttpServer`; drop iomgr dependency from example binary
 - ci: Update all sisl action refs to `dev/v14.x`, drop iomgr build step
 
-## 0.22.0
-- raid1: Fix multi-queue idle probe race conditions — probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
+## 0.22.x
 - **Breaking**: `UblkDisk::open_for_uring` signature changed from `(int)` to `(ublksrv_queue const*, int)` — out-of-tree subclasses must update their override
-
-## 0.21.6
-- raid0: Fix stale alive_cmds in __distribute() corrupting the next I/O on the same thread after a failed multi-stride operation
-
-## 0.21.5
-- raid1: Only log in reference to Resync if it was actually running.
+- raid1: Fix dequeue/resume race — `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed (SDSTOR-21927)
+- raid1: Fix enqueue/pause race — `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
+- raid1: Replace GCC `__builtin_popcount`/`__builtin_clz`/`__builtin_ctz` with C++23 `std::popcount`/`std::countl_zero`/`std::countr_zero`
+- build: `libatomic` is now declared as a Conan system lib on Linux — propagated automatically to consumers, no downstream changes required
+- raid1: Fix multi-queue idle probe race conditions — probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
 
 ## 0.21.x
 - raid0: Fix stale alive_cmds in __distribute() corrupting the next I/O on the same thread after a failed multi-stride operation
