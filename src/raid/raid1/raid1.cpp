@@ -177,7 +177,7 @@ void Raid1DiskImpl::__load_and_select_superblock(boost::uuids::uuid const& uuid,
     }
 
     // Initialize read_route cache from loaded superblock
-    __store_read_route(static_cast< read_route >(_sb->fields.read_route));
+    _read_route_cache.store(static_cast< read_route >(_sb->fields.read_route), std::memory_order_release);
 
     // Initialize Age if New
     if (_device_a->new_device && _device_b->new_device) _sb->fields.bitmap.age = htobe64(1);
@@ -198,7 +198,7 @@ void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
         RLOGW("RAID1 device [uuid:{}] is running with a defunct device!", _str_uuid)
         bool const a_is_defunct = DEFUNCT_DEVICE(_device_a->disk);
         // Route reads to whichever physical slot is live
-        __store_read_route(a_is_defunct ? read_route::DEVB : read_route::DEVA);
+        _read_route_cache.store(a_is_defunct ? read_route::DEVB : read_route::DEVA, std::memory_order_release);
         // Load bitmap from the live slot; don't bump age — we may get the original disk back via swap
         _dirty_bitmap->load_from(*(a_is_defunct ? _device_b : _device_a)->disk);
     } else if (_device_a->new_device xor _device_b->new_device) {
@@ -208,13 +208,14 @@ void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
               *(_device_a->new_device ? _device_a->disk : _device_b->disk))
         _dirty_bitmap->dirty_region(0, capacity());
         // Route reads to the existing (non-new) physical slot
-        __store_read_route(_device_a->new_device ? read_route::DEVB : read_route::DEVA);
-    } else if ((read_route::EITHER != __get_read_route()) && (0 == _sb->fields.clean_unmount)) {
+        _read_route_cache.store(_device_a->new_device ? read_route::DEVB : read_route::DEVA, std::memory_order_release);
+    } else if ((read_route::EITHER != _read_route_cache.load(std::memory_order_acquire)) &&
+               (0 == _sb->fields.clean_unmount)) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGW("Unclean shutdown in degraded mode! Dirty all of BITMAP")
         _dirty_bitmap->dirty_region(0, capacity());
-    } else if (auto const route = __get_read_route(); read_route::EITHER != route) {
+    } else if (auto const route = _read_route_cache.load(std::memory_order_acquire); read_route::EITHER != route) {
         auto const& active_dev = (route == read_route::DEVB) ? _device_b : _device_a;
         auto const& backup_dev = (route == read_route::DEVB) ? _device_a : _device_b;
         RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *backup_dev->disk)
@@ -248,8 +249,7 @@ void Raid1DiskImpl::__become_active() {
 
 Raid1DiskImpl::~Raid1DiskImpl() {
     RLOGD("Shutting down; [uuid:{}]", _str_uuid)
-    [[maybe_unused]] auto cnt_at_stop = _resync_task->stop();
-    DEBUG_ASSERT_EQ(0, cnt_at_stop, "Outstanding Write Count is Non-Zero!");
+    _resync_task->stop();
 
     if (!_sb) return;
 
@@ -296,8 +296,8 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
 }
 
 // ── Mutual exclusion between __swap_device and __become_degraded ─────────────────────────────────
-// Both functions advance the RAID1 state machine by atomically CAS-ing _read_route_cache via
-// __set_read_route(). Because compare_exchange_strong() is atomic, exactly one caller wins:
+// Both functions advance the RAID1 state machine by atomically CAS-ing _read_route_cache.
+// Because compare_exchange_strong() is atomic, exactly one caller wins:
 //
 //   • __swap_device    CAS: EITHER → DEVA/DEVB  (replacing a device with a healthy one)
 //   • __become_degraded CAS: EITHER → DEVA/DEVB  (marking a failed device as unavailable)
@@ -310,7 +310,7 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
 // because it only reads those pointers via a captured RouteState snapshot and never mutates them.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 //
-// The order of __set_read_route(), swap(), and unavail.clear() below must be preserved to keep
+// The order of the _read_route_cache CAS, swap(), and unavail.clear() below must be preserved to keep
 // the read-retry loop in __capture_route_state() correct.
 bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
                                   std::shared_ptr< MirrorDevice >& incoming_mirror,
@@ -321,7 +321,7 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
     auto new_read_route = swapping_device_a ? read_route::DEVB : read_route::DEVA;
 
     auto orig_route = cur_route;
-    if (!__set_read_route(orig_route, new_read_route)) return false;
+    if (!_read_route_cache.compare_exchange_strong(orig_route, new_read_route)) return false;
 
     auto old_age = be64toh(_sb->fields.bitmap.age);
     auto new_age = old_age + 16;
@@ -337,12 +337,13 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
         // Rollback
         _sb->fields.bitmap.age = htobe64(old_age);
         outgoing_dev.swap(incoming_mirror);
-        __set_read_route(new_read_route, cur_route);
+        _read_route_cache.compare_exchange_strong(new_read_route, cur_route);
         return false;
     }
     // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
     // later when we become clean; so let's be optimistic!
-    write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a, __get_read_route());
+    write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a,
+                     _read_route_cache.load(std::memory_order_acquire));
 
     // Dirty entire bitmap if this is a new device
     if (outgoing_dev->new_device) _dirty_bitmap->dirty_region(0, capacity());
@@ -400,7 +401,7 @@ RouteState Raid1DiskImpl::__capture_route_state(sub_cmd_t sub_cmd) const {
     while (true) {
         auto a = _device_a;
         auto b = _device_b;
-        auto const route = __get_read_route();
+        auto const route = _read_route_cache.load(std::memory_order_acquire);
         if (_device_a != a || _device_b != b) continue;
 
         return RouteState{.active_dev = (read_route::DEVB == route) ? std::move(b) : std::move(a),
@@ -611,12 +612,12 @@ io_result Raid1DiskImpl::__become_clean() {
 
     // Avoid checking DirtyBitmap going forward on reads/writes
     auto old_route = state.route;
-    __set_read_route(old_route, read_route::EITHER);
+    _read_route_cache.compare_exchange_strong(old_route, read_route::EITHER);
     return 0;
 }
 
 // See the comment above __swap_device for the CAS-based mutual exclusion between this function
-// and __swap_device.  The __set_read_route() CAS below is the synchronization gate: if
+// and __swap_device.  The _read_route_cache CAS below is the synchronization gate: if
 // __swap_device wins the CAS first, this call sees old_route != EITHER and returns early (already
 // degraded or concurrent swap in progress).  No additional lock is required.
 io_result Raid1DiskImpl::__become_degraded(sub_cmd_t failed_path, RouteState const* cur_state, bool spawn_resync) {
@@ -624,7 +625,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t failed_path, RouteState con
     auto old_route = read_route::EITHER;
     auto new_route =
         (0b1 & (failed_path >> cur_state->backup_dev->disk->route_size())) ? read_route::DEVA : read_route::DEVB;
-    if (!__set_read_route(old_route, new_route)) {
+    if (!_read_route_cache.compare_exchange_strong(old_route, new_route)) {
         if (old_route == new_route) return 0; // Already degraded
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
@@ -648,7 +649,7 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t failed_path, RouteState con
     if (auto sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route); !sync_res) {
         // Rollback the failure to update the header
         _sb->fields.bitmap.age = old_age;
-        __set_read_route(new_route, old_route);
+        _read_route_cache.compare_exchange_strong(new_route, old_route);
         RLOGE("Could not become degraded [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }

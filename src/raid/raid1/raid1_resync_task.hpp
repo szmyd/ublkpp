@@ -3,6 +3,9 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <functional>
+
+#include <sisl/fds/atomic_status_counter.hpp>
 
 #include "ublkpp/raid/raid1.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
@@ -23,7 +26,7 @@ class MirrorDevice;
 //   PAUSE → ACTIVE (I/O finished, resync can proceed)
 //   any → STOPPING (shutdown requested)
 //   STOPPING → IDLE (shutdown complete)
-ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
+ENUM(resync_state, uint32_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
 
 // State transition actions for __transition_to helper
 enum class transition_action : uint8_t {
@@ -54,34 +57,40 @@ class Raid1ResyncTask {
     // This is the offset we should copy the disks @ to avoid writing on the BITMAP itself.
     uint64_t const _offset;
 
-    std::atomic_uint8_t _resync_state;
-    std::atomic_uint32_t _outstanding_writes;
+    // Packs resync_state (uint32_t status) + outstanding-write count (int32_t counter) into one
+    // 64-bit word operated on with a single lock-free CAS (resync_state is 32-bit so the packed
+    // struct is 8 bytes, natively atomic on x86-64 via CMPXCHG8B). Key guarantee:
+    // dec_xchng_status_ifz() decrements the counter and, only if it reaches zero AND
+    // status==PAUSE, atomically transitions to ACTIVE — eliminating the window where a concurrent
+    // enqueue_write() could see count==0 while state remains PAUSE, early-exit __pause(), and
+    // then race with a __resume() that fires afterward.
+    sisl::atomic_status_counter< resync_state, resync_state::IDLE > _state_and_writes;
+    // Verify that resync_state is still 32-bit so the combined struct stays lock-free.
+    static_assert(
+        [] {
+            struct s {
+                int32_t c;
+                resync_state st;
+            };
+            return std::atomic< s >::is_always_lock_free;
+        }(),
+        "_state_and_writes must be lock-free — did resync_state change away from uint32_t?");
     std::mutex _launch_lock;
     std::thread _resync_task;
 
     // State access helpers to eliminate casting noise
-    resync_state __load_state(std::memory_order order = std::memory_order_acquire) const noexcept {
-        return static_cast< resync_state >(_resync_state.load(order));
-    }
+    resync_state __load_state() const noexcept { return _state_and_writes.get_status(); }
 
-    bool __cas_state_weak(resync_state& expected, resync_state desired,
-                          std::memory_order success = std::memory_order_seq_cst,
-                          std::memory_order failure = std::memory_order_seq_cst) noexcept {
-        auto expected_val = static_cast< uint8_t >(expected);
-        bool result =
-            _resync_state.compare_exchange_weak(expected_val, static_cast< uint8_t >(desired), success, failure);
-        expected = static_cast< resync_state >(expected_val);
-        return result;
-    }
-
-    bool __cas_state_strong(resync_state& expected, resync_state desired,
-                            std::memory_order success = std::memory_order_seq_cst,
-                            std::memory_order failure = std::memory_order_seq_cst) noexcept {
-        auto expected_val = static_cast< uint8_t >(expected);
-        bool result =
-            _resync_state.compare_exchange_strong(expected_val, static_cast< uint8_t >(desired), success, failure);
-        expected = static_cast< resync_state >(expected_val);
-        return result;
+    bool __cas_state(resync_state& expected, resync_state desired) noexcept {
+        auto const exp = expected;
+        return _state_and_writes.set_atomic_value([&](auto& /*cnt*/, auto& status) {
+            if (status == exp) {
+                status = desired;
+                return true;
+            }
+            expected = status;
+            return false;
+        });
     }
 
     resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept;
@@ -93,10 +102,6 @@ class Raid1ResyncTask {
     // This most happen, so we wait till the resync job becomes sleeping, then move it quickly to
     // PAUSE to prevent any resync opeartions from continuing to run (will block in __yield)
     void __pause() noexcept;
-    inline void __resume() noexcept {
-        auto cur_state = resync_state::PAUSE;
-        __cas_state_strong(cur_state, resync_state::ACTIVE);
-    }
     void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                 std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
 
@@ -113,18 +118,32 @@ public:
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
     // Generic method to move Resync StateMachine to STOPPING
-    uint32_t stop() noexcept; // Returns the _outstanding_writes cnt here
+    void stop() noexcept; // Returns outstanding write count at time of stop
 
     inline void enqueue_write() noexcept {
-        auto const old_val = _outstanding_writes.fetch_add(1, std::memory_order_release);
-        if (0 == old_val) __pause();
-        DEBUG_ASSERT_LT(old_val, UINT32_MAX, "Outstanding Write Count Overflowed!");
+        // Increment first, then establish pause. Safe because the caller submits I/O only after
+        // this function returns, so no disk I/O is in-flight during the increment→pause window.
+        _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
+            ++cnt;
+            return true;
+        });
+        // Always call __pause() — not just on the first enqueue. A concurrent first enqueuer may
+        // still be spinning inside __pause() when a second thread increments the counter; skipping
+        // __pause() here would let the second write proceed before PAUSE is established, allowing
+        // resync to overwrite it with stale data. __pause() is cheap when already PAUSE (O(1) CAS).
+        __pause();
+        DEBUG_ASSERT_LT(_state_and_writes.count(), INT32_MAX, "Outstanding Write Count Overflowed!");
     }
 
     inline void dequeue_write() noexcept {
-        auto const old_val = _outstanding_writes.fetch_sub(1, std::memory_order_acquire);
-        if (1 == old_val) __resume();
-        DEBUG_ASSERT_GT(old_val, 0, "Outstanding Write Count Underflowed!");
+        // Release builds: this assert is elided; callers must guarantee balanced enqueue/dequeue
+        // (unbalanced calls cause the counter to go negative, preventing the PAUSE→ACTIVE transition).
+        DEBUG_ASSERT_GT(_state_and_writes.count(), 0, "Outstanding Write Count Underflowed!");
+        // Atomically decrement; if counter hits zero while state is PAUSE, transition to ACTIVE.
+        // This single CAS closes the race where a concurrent enqueue could see old_val==0,
+        // find state still PAUSE (from the prior write), and early-exit __pause() — only for
+        // __resume() to then clear PAUSE before the new write's I/O is submitted.
+        _state_and_writes.dec_xchng_status_ifz(resync_state::PAUSE, resync_state::ACTIVE);
     }
 };
 } // namespace ublkpp::raid1

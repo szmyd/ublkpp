@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.22.0"
+    version = "0.22.1"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -47,7 +47,7 @@ class UBlkPPConan(ConanFile):
                         )
 
     def _min_cppstd(self):
-        return 20
+        return 23
 
     def validate(self):
         if self.settings.compiler.get_safe("cppstd"):
@@ -146,6 +146,8 @@ class UBlkPPConan(ConanFile):
 
     def package_info(self):
         self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
+        if self.settings.os == "Linux":
+            self.cpp_info.system_libs = ["atomic"]
         if (self.options.get_safe("iscsi")):
             self.cpp_info.requires.extend(["libiscsi::libiscsi"])
         if (self.options.get_safe("homeblocks")):
