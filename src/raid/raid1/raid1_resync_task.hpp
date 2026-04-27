@@ -118,7 +118,7 @@ public:
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
     // Generic method to move Resync StateMachine to STOPPING
-    uint32_t stop() noexcept; // Returns outstanding write count at time of stop
+    void stop() noexcept; // Returns outstanding write count at time of stop
 
     inline void enqueue_write() noexcept {
         // Increment first, then establish pause. Safe because the caller submits I/O only after

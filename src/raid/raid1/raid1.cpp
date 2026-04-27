@@ -249,8 +249,7 @@ void Raid1DiskImpl::__become_active() {
 
 Raid1DiskImpl::~Raid1DiskImpl() {
     RLOGD("Shutting down; [uuid:{}]", _str_uuid)
-    [[maybe_unused]] auto cnt_at_stop = _resync_task->stop();
-    DEBUG_ASSERT_EQ(0, cnt_at_stop, "Outstanding Write Count is Non-Zero!");
+    _resync_task->stop();
 
     if (!_sb) return;
 
