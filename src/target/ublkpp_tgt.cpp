@@ -397,7 +397,7 @@ static void handle_event(ublksrv_queue const* q) {
     }
 }
 
-static void handle_io_background(const struct ublksrv_queue*, int nr_queued_io) {
+static void handle_io_background(const struct ublksrv_queue*, [[maybe_unused]] int nr_queued_io) {
     TLOGT("HandleIOBackground: {}", nr_queued_io)
 }
 
