@@ -72,7 +72,7 @@ pipeline {
                     .collect { it.replaceAll(/\x1B\[[0-9;]*[a-zA-Z]/, '') }
                     .dropRight(15)
                     .join('\n')
-                slackSend color: '#E43237', channel: "${SLACK_THREAD}", replyBroadcast: true, message: "💀 *${PROJECT}* `${VER}` (`${BRANCH_NAME}`) build #${BUILD_NUMBER} didn't make it\nHeld on for _${currentBuild.durationString}_ before calling it quits\n<${BUILD_URL}|Post-mortem>\n🪦\n```${log}```"
+                slackSend color: '#E43237', channel: "${SLACK_THREAD}", replyBroadcast: true, message: "💀 *${PROJECT}* `${VER}` (`${BRANCH_NAME}`) build #${BUILD_NUMBER} didn't make it\nHeld on for _${currentBuild.durationString}_ before calling it quits\n<${BUILD_URL}|Post-mortem>\n🪦\n\`\`\`${log}\`\`\`"
             }
         }
         success {
