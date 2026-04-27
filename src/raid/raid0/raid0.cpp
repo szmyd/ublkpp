@@ -241,8 +241,8 @@ io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data,
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
     RLOGT("Received {}: [tag:{:#0x}] ublk io [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> params()->basic.logical_bs_shift, iovecs->iov_len,
-          ublkpp::to_string(sub_cmd))
+          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
+          addr >> params()->basic.logical_bs_shift, iovecs->iov_len, ublkpp::to_string(sub_cmd))
 
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     addr += _stride_width;
