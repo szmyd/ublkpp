@@ -12,7 +12,6 @@ using namespace std::chrono_literals;
 using namespace ublkpp::raid1;
 
 // Regression test for: Raid1ResyncTask::launch() crash on joinable thread reassignment.
-// SDSTOR-21864
 //
 // Root cause: stop() is only called during swap or shutdown — never between resyncs. So
 // after any completed resync, _resync_task remains joinable (join()/detach() not called).
@@ -71,7 +70,7 @@ TEST(Raid1Concurrency, ResyncRelaunchAfterComplete) {
     task.stop();
 }
 
-// Regression test for SDSTOR-21927 / GH #205.
+// Regression test for GH #205.
 //
 // Root cause: stop() CAS's IDLE→STOPPING when the resync thread has already finished
 // (state=IDLE, thread still joinable). State gets stuck at STOPPING with no running thread
@@ -144,7 +143,7 @@ TEST(Raid1Concurrency, StopAndRelaunchAfterComplete) {
         // launch() is stuck. Detach: shared_ptr keeps task alive so the spinning thread
         // never touches freed memory. The test process cleans up on exit.
         t.detach();
-        FAIL() << "launch() hung after stop()+relaunch — SDSTOR-21927 IDLE→STOPPING race in stop()";
+        FAIL() << "launch() hung after stop()+relaunch — GH #205 IDLE→STOPPING race in stop()";
         return;
     }
     t.join();

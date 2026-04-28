@@ -8,10 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - raid1: Fix `stop()` IDLE→STOPPING race — when the resync thread finishes naturally and
   `stop()` is called before `join()`, the `IDLE+joinable` handler now returns `SUCCESS` instead
   of `RETRY_WITH_SLEEP`, preventing an accidental `CAS(IDLE→STOPPING)` that left no thread to
-  clear the state; subsequent `launch()` call in `swap_device()` would spin forever (SDSTOR-21927)
+  clear the state; subsequent `launch()` call in `swap_device()` would spin forever.
 
 ## 0.22.1
-- raid1: Fix dequeue/resume race — `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed (SDSTOR-21927)
+- raid1: Fix dequeue/resume race — `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed.
 - raid1: Fix enqueue/pause race — `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
 - raid1: Replace GCC `__builtin_popcount`/`__builtin_clz`/`__builtin_ctz` with C++23 `std::popcount`/`std::countl_zero`/`std::countr_zero`
 - build: `libatomic` is now declared as a Conan system lib on Linux — propagated automatically to consumers, no downstream changes required
