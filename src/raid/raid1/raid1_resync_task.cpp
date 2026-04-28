@@ -284,6 +284,11 @@ void Raid1ResyncTask::stop() noexcept {
         std::unreachable();
     });
     if (_resync_task.joinable()) _resync_task.join();
+    // If the thread finished naturally (ACTIVE→IDLE) before stop() CAS'd IDLE→STOPPING,
+    // it returned without ever seeing STOPPING and never cleared it. _launch_lock is held
+    // so no concurrent caller can observe this window; reset to IDLE so launch() isn't stuck.
+    auto stopping = resync_state::STOPPING;
+    __cas_state(stopping, resync_state::IDLE);
 }
 
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,

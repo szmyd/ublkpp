@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.22.2
+- raid1: Fix `stop()` IDLE→STOPPING race — when the resync thread finishes naturally and
+  `stop()` is called before `join()`, the `IDLE+joinable` handler now returns `SUCCESS` instead
+  of `RETRY_WITH_SLEEP`, preventing an accidental `CAS(IDLE→STOPPING)` that left no thread to
+  clear the state; subsequent `launch()` call in `swap_device()` would spin forever (SDSTOR-21927)
+
 ## 0.22.1
 - raid1: Fix dequeue/resume race — `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed (SDSTOR-21927)
 - raid1: Fix enqueue/pause race — `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
