@@ -12,7 +12,6 @@ using namespace std::chrono_literals;
 using namespace ublkpp::raid1;
 
 // Regression test for: Raid1ResyncTask::launch() crash on joinable thread reassignment.
-// SDSTOR-21864
 //
 // Root cause: stop() is only called during swap or shutdown — never between resyncs. So
 // after any completed resync, _resync_task remains joinable (join()/detach() not called).
@@ -69,4 +68,90 @@ TEST(Raid1Concurrency, ResyncRelaunchAfterComplete) {
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
 
     task.stop();
+}
+
+// Regression test for GH #205.
+//
+// Root cause: stop() CAS's IDLE→STOPPING when the resync thread has already finished
+// (state=IDLE, thread still joinable). State gets stuck at STOPPING with no running thread
+// to advance it back. The next launch() call spins forever in __transition_to.
+//
+// This sequence occurs in swap_device():
+//   toggle_resync(false)  [stop hits IDLE+joinable → CAS IDLE→STOPPING]
+//   __swap_device()       [sets route≠EITHER, dirties bitmap]
+//   toggle_resync(true)   [launch() loops forever on STOPPING]
+//
+// Without the fix: launch() spins forever and the test fails after 2s.
+// With the fix: stop() returns SUCCESS from IDLE+joinable (no CAS), state stays IDLE,
+// and the second launch() starts the new resync normally.
+//
+// task is a shared_ptr so the detached stuck thread (in the failing case) holds a reference
+// and never accesses freed memory, avoiding UB after the test body returns.
+TEST(Raid1Concurrency, StopAndRelaunchAfterComplete) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
+
+    EXPECT_CALL(*device_a, sync_iov(::testing::_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
+    auto mirror_b = std::make_shared< MirrorDevice >(uuid, device_b);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
+
+    constexpr uint32_t io_size = 4 * Ki;
+    auto task = std::make_shared< Raid1ResyncTask >(bitmap, Bitmap::page_size(), io_size, io_size);
+
+    // First launch: empty bitmap → resync completes immediately.
+    std::atomic< bool > first_complete{false};
+    task->launch(test_uuid, mirror_a, mirror_b,
+                 [&first_complete] { first_complete.store(true, std::memory_order_release); });
+
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!first_complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    ASSERT_TRUE(first_complete.load(std::memory_order_acquire)) << "First resync did not complete";
+
+    // Let the IDLE CAS in _start() execute before stop() runs, landing in the
+    // IDLE+joinable window that triggers the bug.
+    std::this_thread::sleep_for(5ms);
+
+    // Mirrors swap_device(): stop the old resync, then relaunch for the new device.
+    task->stop();
+
+    // Run the second launch() in a thread so we can detect if it hangs.
+    // Without the fix: stop() left state=STOPPING and launch() spins forever.
+    auto launched = std::make_shared< std::atomic< bool > >(false);
+    auto second_complete = std::make_shared< std::atomic< bool > >(false);
+    auto t = std::thread([task, launched, second_complete, mirror_a, mirror_b]() mutable {
+        task->launch(test_uuid, mirror_a, mirror_b,
+                     [second_complete] { second_complete->store(true, std::memory_order_release); });
+        launched->store(true, std::memory_order_release);
+    });
+
+    deadline = std::chrono::steady_clock::now() + 2s;
+    while (!launched->load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    if (!launched->load(std::memory_order_acquire)) {
+        // launch() is stuck. Detach: shared_ptr keeps task alive so the spinning thread
+        // never touches freed memory. The test process cleans up on exit.
+        t.detach();
+        FAIL() << "launch() hung after stop()+relaunch — GH #205 IDLE→STOPPING race in stop()";
+        return;
+    }
+    t.join();
+
+    deadline = std::chrono::steady_clock::now() + 2s;
+    while (!second_complete->load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    EXPECT_TRUE(second_complete->load(std::memory_order_acquire)) << "Second resync did not call complete()";
+
+    task->stop();
 }
