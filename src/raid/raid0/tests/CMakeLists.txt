@@ -9,15 +9,11 @@ include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 list(APPEND RAID0_TEST_SRCS
     device_probe.cpp
     device_probe_differ.cpp
-    discard_merge.cpp
-    discard_retry.cpp
-    open_devices.cpp
     raid0_impl_tests.cpp
-    split_retry.cpp
-    split_write.cpp
     tuple_tests.cpp
 )
 
+add_subdirectory (asyncio)
 add_subdirectory (simple)
 add_subdirectory (superblock)
 
@@ -42,6 +38,7 @@ target_sources(test_raid0 PRIVATE
 )
 target_link_libraries (test_raid0
   GTest::gmock
+  mock_ublksrv
   sisl::cache
 )
 add_test(NAME Raid0Test COMMAND test_raid0 -cv warning)

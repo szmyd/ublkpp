@@ -37,7 +37,7 @@ static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0
 
 constexpr auto SB_VERSION = 1;
 
-static raid1::SuperBlock* read_superblock(UblkDisk& device) {
+static raid1::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
@@ -56,7 +56,7 @@ static raid1::SuperBlock* read_superblock(UblkDisk& device) {
     return static_cast< raid1::SuperBlock* >(iov.iov_base);
 }
 
-io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_b, raid1::read_route read_route) {
+io_result write_superblock(ublk_disk& device, raid1::SuperBlock* sb, bool device_b, raid1::read_route read_route) {
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
@@ -73,7 +73,7 @@ io_result write_superblock(UblkDisk& device, raid1::SuperBlock* sb, bool device_
 // Read and load the RAID1 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
 std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
-load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
+load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
     auto sb = read_superblock(device);
     if (!sb) return std::unexpected(std::make_error_condition(std::errc::io_error));
     bool was_new{false};

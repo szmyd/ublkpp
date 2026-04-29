@@ -14,21 +14,21 @@ using namespace std::chrono_literals;
 //   2. Any single queue going idle started the probe; any single queue exiting idle stopped it.
 //
 // Fix:
-//   - _idle_probe_lock (mutex in Raid1DiskImpl) serializes all probe launch/stop calls.
+//   - _idle_probe_lock (mutex in Raid1Disk) serializes all probe launch/stop calls.
 //   - _idle_queue_count (atomic) gates probe start until all queues are idle; stops on first exit.
-//   - _nr_hw_queues is set by counting open_for_uring() calls (one per queue thread, via init_queue).
+//   - _nr_hw_queues is set by counting prepare() calls (one per queue thread, via init_queue).
 
 // Test: With nr_hw_queues=2, sequential idle_transition calls follow correct counting semantics.
 // Verifies: no crash, no deadlock, correct enter/exit sequencing.
 TEST(Raid1Concurrency, MultiQueueIdleSequential) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Simulate 2 queue threads initializing (sets _nr_hw_queues = 2)
     ublksrv_queue queues[2]{};
-    raid_device.open_for_uring(&queues[0], 0); // queue 0: enables resync, _nr_hw_queues = 1
-    raid_device.open_for_uring(&queues[1], 0); // queue 1: _nr_hw_queues = 2
+    raid_device.prepare(&queues[0], 0); // queue 0: enables resync, _nr_hw_queues = 1
+    raid_device.prepare(&queues[1], 0); // queue 1: _nr_hw_queues = 2
 
     // Queue 0 idle: count = 1 < 2, probe should NOT start yet
     raid_device.idle_transition(&queues[0], true);
@@ -56,7 +56,7 @@ TEST(Raid1Concurrency, MultiQueueIdleSequential) {
 TEST(Raid1Concurrency, MultiQueueIdleConcurrent) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     constexpr int k_queues = 4;
     constexpr int k_iters = 50;
@@ -64,7 +64,7 @@ TEST(Raid1Concurrency, MultiQueueIdleConcurrent) {
     // Simulate k_queues queue threads (sets _nr_hw_queues = k_queues)
     ublksrv_queue queues[k_queues]{};
     for (int i = 0; i < k_queues; ++i)
-        raid_device.open_for_uring(&queues[i], 0);
+        raid_device.prepare(&queues[i], 0);
 
     // Allow any number of sync_iov calls in case the periodic probe fires unexpectedly
     EXPECT_CALL(*device_a, sync_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_))
@@ -102,11 +102,11 @@ TEST(Raid1Concurrency, MultiQueueIdleConcurrent) {
 TEST(Raid1Concurrency, MultiQueueIdleRapidToggle) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Single queue with a real pointer so _pending_results.emplace is exercised
     ublksrv_queue q{};
-    raid_device.open_for_uring(&q, 0);
+    raid_device.prepare(&q, 0);
 
     // Allow any number of sync_iov calls in case the periodic probe fires
     EXPECT_CALL(*device_a, sync_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_))
@@ -133,12 +133,12 @@ TEST(Raid1Concurrency, MultiQueueIdleRapidToggle) {
 TEST(Raid1Concurrency, SwapDeviceWhileIdleTransitioning) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // 2 queues with real pointers so _nr_hw_queues == 2 and _pending_results is populated
     ublksrv_queue queues[2]{};
-    raid_device.open_for_uring(&queues[0], 0);
-    raid_device.open_for_uring(&queues[1], 0);
+    raid_device.prepare(&queues[0], 0);
+    raid_device.prepare(&queues[1], 0);
 
     // Cover probe and swap I/O for device_a (stays throughout) and device_b (swapped out)
     EXPECT_CALL(*device_a, sync_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_))

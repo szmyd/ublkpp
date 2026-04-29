@@ -15,7 +15,7 @@ struct ublksrv_tgt_type;
 
 namespace ublkpp {
 
-class UblkDisk;
+class ublk_disk;
 
 struct ublkpp_tgt_impl {
     bool device_added{false};
@@ -23,7 +23,7 @@ struct ublkpp_tgt_impl {
     boost::uuids::uuid volume_uuid;
     std::filesystem::path device_path;
     // Owned by us
-    std::shared_ptr< UblkDisk > device;
+    std::shared_ptr< ublk_disk > device;
     std::unique_ptr< ublksrv_tgt_type const > tgt_type;
 
     // Owned by libublksrv
@@ -38,7 +38,7 @@ struct ublkpp_tgt_impl {
     std::unique_ptr< ublksrv_dev_data > dev_data;
     std::vector< std::thread > queue_handlers;
 
-    ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d);
+    ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d);
     ~ublkpp_tgt_impl();
     void destroy();
 };

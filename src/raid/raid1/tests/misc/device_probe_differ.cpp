@@ -10,13 +10,13 @@ TEST(Raid1, DiffereingDeviceProbing) {
     auto device_b =
         CREATE_DISK_B((TestParams{.capacity = 3 * Gi, .l_size = 4 * Ki, .p_size = 4 * Ki, .can_discard = false}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     // Smallest disk was 3GiB
     EXPECT_EQ(raid_device.capacity(), (3 * Gi) - raid_device.reserved_size());
 
     // LBS/PBS represent by shift size, not raw byte count
     EXPECT_EQ(raid_device.block_size(), 4 * Ki);
-    EXPECT_EQ(raid_device.params()->basic.physical_bs_shift, ilog2(8 * Ki));
+    EXPECT_EQ(raid_device.physical_block_size(), 8 * Ki);
 
     // Device B lacks Discard support
     EXPECT_EQ(raid_device.can_discard(), false);

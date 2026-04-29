@@ -23,7 +23,7 @@ TEST(Raid1Concurrency, FailoverRetryDuringSwap) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     std::mutex mtx;
@@ -61,7 +61,8 @@ TEST(Raid1Concurrency, FailoverRetryDuringSwap) {
 
     // Thread 1: Issue a read that will trigger failover
     auto reader = std::thread([&] {
-        auto res = raid_device.sync_io(UBLK_IO_OP_READ, nullptr, 4 * Ki, 64 * Ki);
+        auto iov = iovec{.iov_base = nullptr, .iov_len = 4 * Ki};
+        auto res = raid_device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 64 * Ki);
         EXPECT_TRUE(res); // Failover should succeed despite device_a failure
     });
 

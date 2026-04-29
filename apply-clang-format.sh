@@ -23,6 +23,7 @@ while getopts "v" opt; do
 done
 
 find ./src -iname '*.h' -o -iname '*.cpp' -o -iname '*.hpp' -o -iname '*.cc' | xargs clang-format -style=file -i -fallback-style=none
+find ./include -iname '*.h' -o -iname '*.hpp' | xargs clang-format -style=file -i -fallback-style=none
 
 if [ $VALIDATE ]; then
     EXIT_CODE=0

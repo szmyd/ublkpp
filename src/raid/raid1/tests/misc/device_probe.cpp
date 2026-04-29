@@ -9,13 +9,13 @@ TEST(Raid1, IdenticalDeviceProbing) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     EXPECT_EQ(raid_device.capacity(), (Gi)-raid_device.reserved_size()); // 504KiB is for alignment!
     EXPECT_STREQ(raid_device.id().c_str(), "RAID1");
 
     // CanDiscard and DirectIO `true` be default.
     EXPECT_EQ(raid_device.can_discard(), true);
-    EXPECT_EQ(raid_device.direct_io, true);
+    EXPECT_EQ(raid_device.direct_io(), true);
 
     // expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);

@@ -27,7 +27,7 @@ TEST(Raid1BitmapCrash, CrashDuringBatchWrite) {
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             // First batch writes successfully
             EXPECT_EQ(2U, nr_vecs); // Max 2 pages per batch
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         })
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
             // Second batch fails (simulates crash/power failure)
@@ -58,7 +58,7 @@ TEST(Raid1BitmapCrash, PartialBatchWrite) {
         .WillOnce([&call_count](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             call_count++;
             // First batch succeeds
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         })
         .WillOnce([&call_count](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
             call_count++;
@@ -120,7 +120,7 @@ TEST(Raid1BitmapCrash, BatchSizeWithDeviceLimits) {
         .Times(3)
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             EXPECT_LE(nr_vecs, 2U); // Max 2 pages per batch
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
 
     auto res = bitmap.sync_to(*device, ublkpp::raid1::Bitmap::page_size());
@@ -146,7 +146,7 @@ TEST(Raid1BitmapCrash, FailureInMiddleBatch) {
         .WillOnce([&call_count](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             call_count++;
             EXPECT_EQ(2U, nr_vecs); // First batch: pages 0-1
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         })
         .WillOnce([&call_count](uint8_t, iovec*, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             call_count++;
@@ -178,7 +178,7 @@ TEST(Raid1BitmapCrash, SyncToWithOffset) {
             EXPECT_EQ(1U, nr_vecs);
             // Verify offset is after SuperBlock
             EXPECT_EQ(SUPERBLOCK_SIZE, addr);
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
 
     auto res = bitmap.sync_to(*device, SUPERBLOCK_SIZE);
@@ -206,19 +206,19 @@ TEST(Raid1BitmapCrash, ConsecutivePageDetection) {
             call_count++;
             EXPECT_EQ(3U, nr_vecs); // Pages 0,1,2
             EXPECT_EQ(ublkpp::raid1::Bitmap::page_size(), addr);
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         })
         .WillOnce([&call_count](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
             call_count++;
             EXPECT_EQ(2U, nr_vecs); // Pages 4,5
             EXPECT_EQ(5 * ublkpp::raid1::Bitmap::page_size(), addr);
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         })
         .WillOnce([&call_count](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
             call_count++;
             EXPECT_EQ(1U, nr_vecs); // Page 7
             EXPECT_EQ(8 * ublkpp::raid1::Bitmap::page_size(), addr);
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
 
     auto res = bitmap.sync_to(*device, ublkpp::raid1::Bitmap::page_size());

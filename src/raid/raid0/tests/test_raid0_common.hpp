@@ -7,7 +7,7 @@
 #include <gtest/gtest.h>
 #include <ublksrv.h>
 
-#include "ublkpp/raid/raid0.hpp"
+#include "ublkpp/raid.hpp"
 #include "raid/raid0/raid0_impl.hpp"
 #include "tests/test_disk.hpp"
 
@@ -15,7 +15,7 @@ using ::testing::_;
 using ::testing::Return;
 using ::ublkpp::Gi;
 using ::ublkpp::io_result;
-using ::ublkpp::UblkDisk;
+using ::ublkpp::ublk_disk;
 
 // This RAID0 header is copied to simulate loading a previous clean device
 static const ublkpp::raid0::SuperBlock normal_superblock =
@@ -38,7 +38,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
         .WillOnce([op = (OP), f = (fail), s = (sz), o = (off)](uint8_t, iovec* iovecs, uint32_t nr_vecs,               \
                                                                off_t addr) -> io_result {                              \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
-            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
+            EXPECT_EQ(s, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));                                                 \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \

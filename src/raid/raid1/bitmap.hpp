@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "ublkpp/lib/ublk_disk.hpp"
+
+#include "lib/common.hpp"
 #include "super_bitmap.hpp"
 
 namespace ublkpp::raid1 {
@@ -65,7 +67,7 @@ private:
 
 private:
     PageData* __get_or_create_page(uint64_t offset);
-    static size_t max_pages_per_tx(const UblkDisk& device);
+    static size_t max_pages_per_tx(const ublk_disk& device);
 
 public:
     Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved,
@@ -86,9 +88,9 @@ public:
     static std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t >
     calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size) noexcept;
 
-    void init_to(std::shared_ptr< UblkDisk > device);
-    io_result sync_to(UblkDisk& device, uint64_t offset = 0UL);
-    void load_from(UblkDisk& device);
+    void init_to(std::shared_ptr< ublk_disk > device);
+    io_result sync_to(ublk_disk& device, uint64_t offset = 0UL);
+    void load_from(ublk_disk& device);
 };
 
 } // namespace ublkpp::raid1

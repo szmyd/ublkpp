@@ -1,7 +1,9 @@
-#include "ublkpp/ublkpp.hpp"
+#include "ublkpp/target.hpp"
 
-#include <coroutine>
-#include <cstring>
+#include <exec/async_scope.hpp>
+#include <exec/inline_scheduler.hpp>
+#include <exec/task.hpp>
+#include <stdexec/execution.hpp>
 #include <thread>
 
 #include <boost/uuid/uuid_io.hpp>
@@ -13,7 +15,15 @@
 
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "lib/logging.hpp"
+#include "lib/common.hpp"
+#include <ublkpp/lib/cqe_state.hpp>
 #include "ublkpp_tgt_impl.hpp"
+
+namespace ublkpp::detail {
+struct params_access {
+    static ublk_params const* of(ublk_disk const& d) noexcept { return d.params(); }
+};
+} // namespace ublkpp::detail
 
 SISL_OPTION_GROUP(ublkpp_tgt,
                   (max_io_size, "", "max_io_size", "Maximum I/O size before split",
@@ -21,14 +31,14 @@ SISL_OPTION_GROUP(ublkpp_tgt,
                   (nr_hw_queues, "", "nr_hw_queues", "Number of Hardware Queues (threads) per target",
                    cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
                   (qdepth, "", "qdepth", "I/O Queue Depth per target",
-                   cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"),
+                   cxxopts::value< std::uint16_t >()->default_value("32"), "<qd>"),
                   (feature_zero_copy, "", "feature_zero_copy", "Enable ZeroCopy Feature", cxxopts::value< bool >(), ""))
 
 using namespace std::chrono_literals;
 
 namespace ublkpp {
 
-ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d) :
+ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d) :
         volume_uuid(vol_id), device(std::move(d)), metrics(UblkIOMetrics(to_string(vol_id))) {}
 
 static std::mutex _map_lock;
@@ -52,40 +62,70 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
     return false;
 }
 
-static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
-    cpu_set_t set;
+// Matches UBLKSRV_IO_IDLE_SECS defined privately in ublksrv.c
+static constexpr int k_io_idle_secs = 20;
 
-    CPU_ZERO(&set);
-    if (sched_getaffinity(0, sizeof(set), &set) == -1) {
-        TLOGE("sched_getaffinity, {}", strerror(errno))
-        return;
-    }
+struct ublkpp_queue_state {
+    ublkpp_tgt_impl* tgt;
+    exec::async_scope scope;
 
-    srand(ublksrv_gettid());
-    auto idx = rand() % CPU_COUNT(&set);
+    explicit ublkpp_queue_state(ublkpp_tgt_impl* t) : tgt(t) {}
+};
 
-    int32_t j = 0;
-    for (auto i = 0; i < CPU_SETSIZE; ++i) {
-        if (CPU_ISSET(i, &set)) {
-            if (j++ == idx) continue;
-            CPU_CLR(i, &set);
+// Our own CQE processing loop, replacing ublksrv_process_io.
+// Target CQEs carry a raw cqe_state* in bits 62:0 with bit 63 set; decoded via pointer cast.
+// Ublk command CQEs delegate to ublksrv.
+//
+// Drain correctness: ublksrv_queue_is_done returns true only when ublksrv has no pending I/O
+// commands. We call ublksrv_complete_io at the end of __handle_io_async, after co_await
+// device->async_iov returns, so the scope is already empty when the loop exits. on_empty()
+// completes synchronously via its fast path.
+static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_state* qs) {
+    auto* ring = q->ring_ptr;
+    // clang-format off
+    struct __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
+    // clang-format on
+    bool queue_done = false;
+
+    while (!queue_done) {
+        io_uring_cqe* cqe{};
+        auto const ret = io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
+
+        unsigned head{};
+        int count{0};
+        io_uring_for_each_cqe(ring, head, cqe) {
+            if (cqe->user_data & k_target_bit) {
+                // target io_uring CQE -- user_data is a raw cqe_state* | k_target_bit
+                auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
+                state->_result = cqe->res;
+                state->_result_ready = true;
+                try {
+                    if (auto h = std::exchange(state->_waiter, {})) h.resume(); // per-state resume (disk_task path)
+                } catch (std::exception const& e) {
+                    TLOGE("I/O threw exception: [{}]", e.what())
+                    ublksrv_complete_io(q, state->_owner->_tag, -EIO);
+                }
+            } else {
+                // ublk command CQE (FETCH/COMMIT) -- delegate to libublksrv
+                ublksrv_handle_cmd_cqe(q, cqe);
+            }
+            ++count;
         }
+        io_uring_cq_advance(ring, count);
+        ublksrv_queue_update_idle(q, ret, count);
+        queue_done = ublksrv_queue_is_done(q);
     }
 
-    sched_setaffinity(0, sizeof(set), &set);
+    co_await qs->scope.on_empty();
 }
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
-    // Find our /dev/ublk-control file descriptor
-    auto cdev = ublksrv_get_ctrl_dev(target->ublk_dev);
+    auto qs = std::make_unique< ublkpp_queue_state >(target.get());
 
-    // Prevent rescheduling this thread to another CPU
-    set_queue_thread_affinity(cdev);
-
-    // Initialize UBlkSrv IOUring queue and bind target pointer
+    // Initialize UBlkSrv IOUring queue and bind queue state pointer
     // NOTE: Removed IORING_SETUP_DEFER_TASK as it was blocking ublksrv_ctrl_del_dev,
     // look at adding this back as it theoretically could improve performance.
-    auto q = ublksrv_queue_init_flags(target->ublk_dev, q_id, target.get(),
+    auto q = ublksrv_queue_init_flags(target->ublk_dev, q_id, qs.get(),
                                       IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
 
     // Wake up ::start() thread
@@ -99,9 +139,7 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     }
 
     TLOGD("tid {}: ublk dev queue {} started", ublksrv_gettid(), q->q_id)
-    do {
-        if (ublksrv_process_io(q) < 0) break;
-    } while (1);
+    stdexec::sync_wait(run_queue_loop(q, qs.get()));
     TLOGD("ublk dev queue {} exited", q->q_id)
     ublksrv_queue_deinit(q);
     return NULL;
@@ -188,7 +226,11 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 
     // Start processing I/Os
     if (!recovery) {
-        if (auto err = ublksrv_ctrl_set_params(ctrl_dev, dev_ptr->params()); err)
+        // ublksrv_ctrl_set_params is missing const-correctness in the C header; the call does
+        // not mutate. Cast away const at the kernel-API boundary only.
+        if (auto err =
+                ublksrv_ctrl_set_params(ctrl_dev, const_cast< ublk_params* >(detail::params_access::of(*dev_ptr)));
+            err)
             return std::unexpected(std::error_condition(err, std::system_category()));
         if (auto err = ublksrv_ctrl_start_dev(ctrl_dev, getpid()); 0 > err)
             return std::unexpected(std::error_condition(err, std::system_category()));
@@ -202,203 +244,45 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     return res;
 }
 
-using co_handle_type = std::coroutine_handle<>;
-struct co_io_job {
-    struct promise_type {
-        co_io_job get_return_object() { return {std::coroutine_handle< promise_type >::from_promise(*this)}; }
-        std::suspend_never initial_suspend() { return {}; }
-        std::suspend_never final_suspend() noexcept { return {}; }
-        void return_void() {}
-        [[noreturn]] void unhandled_exception() const { throw std::current_exception(); }
-    };
+static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
+    auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
 
-    co_handle_type coro;
-
-    co_io_job(co_handle_type h) : coro(h) {}
-
-    operator co_handle_type() const { return coro; }
-};
-
-struct async_io {
-    co_handle_type co;
-    uint32_t sub_cmds;
-    int ret_val;
-    io_uring_cqe const* tgt_io_cqe;
-    async_result const* async_completion;
-};
-
-// Process the result codes from the CQE or Async Completiong
-static inline int retrieve_result(sub_cmd_t cmd, async_io* io) {
-    int res{-EIO};
-    if (auto cqe = io->tgt_io_cqe; cqe) {
-        res = cqe->res;
-    } else {
-        DEBUG_ASSERT_NOTNULL(io->async_completion, "No completion to process!");
-        auto a_result = *io->async_completion;
-        res = a_result.result;
-    }
-    // Only return Errors from DEPENDENT or REPLICATE commands
-    if ((0 < res) && (is_dependent(cmd) || is_replicate(cmd))) return 0;
-    return res;
-}
-
-static void process_result(ublksrv_queue const* q, ublk_io_data const* data) {
-    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
-    auto ublkpp_io = reinterpret_cast< async_io* >(data->private_data);
-    --ublkpp_io->sub_cmds;
-    sub_cmd_t const old_cmd = (ublkpp_io->tgt_io_cqe ? user_data_to_tgt_data(ublkpp_io->tgt_io_cqe->user_data)
-                                                     : ublkpp_io->async_completion->sub_cmd);
-
-    // If >= 0, the sub_cmd succeeded, aggregate the repsonses from each sum_cmd into the final io result.
-    auto sub_cmd_res = retrieve_result(old_cmd, ublkpp_io);
-
-    // Record I/O completion for device latency tracking
-    // Notify the device about I/O completion for device-specific metrics
-    device->on_io_complete(data, old_cmd, sub_cmd_res);
-
-    // Internal commands are not part of the result like a replicate command, but we do inform the devices of the result
-    if (is_internal(old_cmd)) {
-        auto io_res = device->queue_internal_resp(q, data, old_cmd, sub_cmd_res);
-        DEBUG_ASSERT(io_res, "HandleInternal return error!") // LCOV_EXCL_LINE
-        // Could enqueue more requeusts
-        if (io_res) ublkpp_io->sub_cmds += io_res.value();
-        sub_cmd_res = 0;
-    }
-
-    // Error should be returned regardless of other responses
-    if (0 > ublkpp_io->ret_val) {
-        TLOGT("I/O result ignored [tag:{:#0x}|sub_cmd:{}] [sub_cmds_remain:{}]", data->tag, to_string(old_cmd),
-              ublkpp_io->sub_cmds)
-        return;
-    }
-    TLOGT("I/O result: [{}] [tag:{:#0x}|sub_cmd:{}] [sub_cmds_remain:{}]", sub_cmd_res, data->tag, to_string(old_cmd),
-          ublkpp_io->sub_cmds)
-
-    if (0 <= sub_cmd_res) {
-        ublkpp_io->ret_val += sub_cmd_res;
-        return;
-    }
-
-    // Do not retry a already Retried or Dependent commands
-    if (is_retry(old_cmd) || is_dependent(old_cmd)) {
-        ublkpp_io->ret_val = sub_cmd_res;
-        return;
-    }
-
-    // If retriable, pass the original sub_cmd the sub_cmd took in addition to re-queuing the original
-    // operation. This provides the context to the RAID layers to make intelligent decisions for a retried
-    // sub_cmd.
-    auto const sub_cmd = set_flags(old_cmd, sub_cmd_flags::RETRIED);
-    TLOGD("Retrying portion of I/O [res:{}] [tag:{:#0x}] [sub_cmd:{}]", sub_cmd_res, data->tag, to_string(sub_cmd))
-    auto io_res = device->queue_tgt_io(q, data, sub_cmd);
-
-    // Submit to io_uring before yielding to make iovecs that are thread_local stable
-    io_uring_submit(q->ring_ptr);
-
-    if (!io_res) {
-        TLOGE("Retry Failed Immediately on I/O [tag:{:#0x}] [sub_cmd:{}] [err:{}]", data->tag, to_string(sub_cmd),
-              io_res.error().message())
-        ublkpp_io->ret_val = sub_cmd_res;
-        return;
-    }
-    // New sub_cmds to wait for in the co-routine
-    ublkpp_io->sub_cmds += io_res.value();
-}
-
-static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
-    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
-    auto ublkpp_io = reinterpret_cast< async_io* >(data->private_data);
-    ublkpp_io->ret_val = -EIO;
-    ublkpp_io->sub_cmds = 0;
-    ublkpp_io->tgt_io_cqe = nullptr;
-    ublkpp_io->async_completion = nullptr;
+    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
+    auto io = reinterpret_cast< async_io* >(data->private_data);
+    io->_pool.clear();
+    io->_tag = data->tag;
 
     auto const op = ublksrv_get_op(data->iod);
+    qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
-    // Record queue depth increment
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    tgt->metrics.record_queue_depth_change(q, op, true);
-
-    // First we submit the IO to the UblkDisk device. It in turn will return the number
-    // of sub_cmd's it enqueued to the io_uring queue to satisfy the request. RAID levels will
-    // cause this amplification of operations.
-    auto io_res = device->queue_tgt_io(q, data, 0);
-
-    // Submit to io_uring before yielding to make iovecs that are thread_local stable
-    io_uring_submit(q->ring_ptr);
-
-    if (io_res) {
-        ublkpp_io->ret_val = 0;
-        ublkpp_io->sub_cmds = io_res.value();
-        TLOGT("I/O [tag:{:#0x}] [sub_ios:{}]", data->tag, ublkpp_io->sub_cmds)
-    } else
-        TLOGD("IO Failed Immediately to queue io [tag:{:#0x}], err: [{}]", data->tag, io_res.error().message())
-
-    // For each sub_cmd enqueued, we expect a response to be processed.
-    while (0 < ublkpp_io->sub_cmds) {
-        { co_await std::suspend_always(); }
-        process_result(q, data);
-    }
-
-    // Record queue depth decrement
-    tgt->metrics.record_queue_depth_change(q, op, false);
-
-    // Operation is complete, result is in io_res
-    if (0 > ublkpp_io->ret_val) [[unlikely]] {
-        TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, ublkpp_io->ret_val)
+    int result;
+    if (op == UBLK_IO_OP_FLUSH) {
+        result = 0;
     } else {
-        TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, ublkpp_io->ret_val)
+        auto const* iod = data->iod;
+        // Frame-local: io_uring reads iov contents at submit time (deferred to the queue loop's
+        // submit_and_wait_timeout). thread_local would be overwritten by sibling __handle_io_async
+        // coroutines spawned in the same CQE batch before the kernel sees the SQE. The coroutine
+        // frame is alive across co_await, so the iov is valid through the whole IO lifetime.
+        iovec iov{.iov_base = reinterpret_cast< void* >(iod->addr), .iov_len = iod->nr_sectors << SECTOR_SHIFT};
+        result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
     }
-    ublksrv_complete_io(q, data->tag, ublkpp_io->ret_val);
+
+    qs->tgt->metrics.record_queue_depth_change(q, op, false);
+
+    if (0 > result) [[unlikely]] {
+        TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)
+    } else {
+        TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, result)
+    }
+    ublksrv_complete_io(q, data->tag, result);
 }
 
 // I/O Handler, first entry-point to us for all I/O
 static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
-    // Construct a co-routine and set it to the private data, we call resume in `tgt_io_done` once complete
-    reinterpret_cast< async_io* >(data->private_data)->co = __handle_io_async(q, data);
+    auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
+    qs->scope.spawn(stdexec::on(exec::inline_scheduler{}, __handle_io_async(q, data)));
     return 0;
-}
-
-// Called when the I/O we have scheduled on the ublksrv uring (e.g. FSDisk) have completed
-static void tgt_io_done(ublksrv_queue const* q, ublk_io_data const* data, io_uring_cqe const* cqe) {
-    auto tag = static_cast< int32_t >(user_data_to_tag(cqe->user_data));
-    auto io = reinterpret_cast< async_io* >(data->private_data);
-
-    RELEASE_ASSERT_EQ(data->tag, tag, "Tag mismatch!")
-    io->tgt_io_cqe = cqe;
-    try {
-        io->co.resume();
-    } catch (std::exception const& e) {
-        TLOGE("I/O threw exception: [{}]", e.what())
-        ublksrv_complete_io(q, data->tag, -EIO);
-    }
-}
-
-// Called when some async UblkDisk has called send_event to notify of a sub_cmd completion
-static void handle_event(ublksrv_queue const* q) {
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    auto completed = std::list< async_result >();
-    tgt->device->collect_async(q, completed);
-
-    // Clear the event from efd first, as we may cause new events by retrying failed sub_cmds
-    ublksrv_queue_handled_event(q);
-    for (auto& result : completed) {
-        try {
-            auto ublkpp_io = reinterpret_cast< async_io* >(result.io->private_data);
-            // We set this to indicate to the co-routine this is an async result
-            // not something to parse from io_uring
-            ublkpp_io->tgt_io_cqe = nullptr;
-            ublkpp_io->async_completion = &result;
-            ublkpp_io->co.resume();
-        } catch (std::exception const& e) {
-            TLOGE("Async event threw exception: [{}]", e.what())
-            ublksrv_complete_io(q, result.io->tag, -EIO);
-        }
-    }
-}
-
-static void handle_io_background(const struct ublksrv_queue*, int nr_queued_io) {
-    TLOGT("HandleIOBackground: {}", nr_queued_io)
 }
 
 // Called in the context of start by ublksrv_dev_init()
@@ -425,10 +309,10 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 
     auto ublksrv_tgt = &dev->tgt;
     ublksrv_tgt->io_data_size = sizeof(struct async_io);
-    ublksrv_tgt->dev_size = ublk_disk->params()->basic.dev_sectors << SECTOR_SHIFT;
-    ublksrv_tgt->tgt_ring_depth = ublksrv_ctrl_get_dev_info(ublksrv_get_ctrl_dev(dev))->queue_depth;
+    ublksrv_tgt->dev_size = ublk_disk->capacity();
+    ublksrv_tgt->tgt_ring_depth = 256;
 
-    // iouring FD 0 is reserved for the ublkc device; open_for_uring is called per queue in init_queue.
+    // iouring FD 0 is reserved for the ublkc device; prepare is called per queue in init_queue.
     // NOTE: if future disks export non-empty FDs they must be registered here (before ublksrv_queue_init
     // calls io_uring_register_files). For now all disks return empty so init_queue suffices.
     ublksrv_tgt->nr_fds = 1;
@@ -438,21 +322,29 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 static void deinit_tgt(const struct ublksrv_dev*) { TLOGD("Deinit tgt!") }
 static void idle_transition(ublksrv_queue const* q, bool enter) {
     TLOGT("Idle Trans: {}", enter)
-    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     device->idle_transition(q, enter);
 }
 static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
-    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
     // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
-    if (!device->open_for_uring(q, 0).empty()) return -1;
+    if (!device->prepare(q, 0).empty()) return -1;
+    // async_io contains std::deque members; ublksrv allocates raw bytes via calloc, so we must
+    // placement-new to properly construct each IO slot's async_io.
+    for (int i = 0; i < q->q_depth; ++i)
+        new (ublksrv_io_private_data(q, i)) async_io{};
     return 0;
 }
-static void deinit_queue(const struct ublksrv_queue*){TLOGD("Deinit Queue")}
+static void deinit_queue(const struct ublksrv_queue* q) {
+    TLOGD("Deinit Queue")
+    for (int i = 0; i < q->q_depth; ++i)
+        static_cast< async_io* >(ublksrv_io_private_data(q, i))->~async_io();
+}
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
-ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device,
+ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > device,
                                          int device_id) {
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
     if (0 <= device_id) tgt->device_recovering = true;
@@ -465,11 +357,9 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
 
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
-        .tgt_io_done = tgt_io_done,
-        .handle_event = device->uses_ublk_iouring
-            ? nullptr
-            : handle_event, // Device specific, determines *if* ublksrv_complete_io() will be called by device
-        .handle_io_background = handle_io_background,
+        .tgt_io_done = nullptr,  // handled inline in run_queue_loop
+        .handle_event = nullptr, // handled inline in run_queue_loop
+        .handle_io_background = nullptr,
         .usage_for_add = nullptr, // Not Implemented
         .init_tgt = init_tgt,
         .deinit_tgt = deinit_tgt,
@@ -478,8 +368,8 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .idle_fn = idle_transition, // Called when I/O has stopped
         .type = 0,                  // Deprecated *DO NOT USE*
         .ublk_flags = ublk_flags,
-        .ublksrv_flags = (device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
-        .pad = 0,                                                                             // Currently Clear
+        .ublksrv_flags = 0,
+        .pad = 0, // Currently Clear
         .name = "ublkpp",
         .recovery_tgt = nullptr, // Deprecated *DO NOT USE*
         .init_queue = init_queue,
@@ -487,8 +377,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .reserved = {0, 0, 0, 0, 0} // Reserved
     });
 
-    TLOGD("Starting {} {} evfd [uuid:{}]", static_pointer_cast< UblkDisk >(device),
-          (nullptr == tgt->tgt_type->handle_event) ? "WITHOUT" : "WITH", to_string(vol_id))
+    TLOGD("Starting {} [uuid:{}]", static_pointer_cast< ublk_disk >(device), to_string(vol_id))
     tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
         .dev_id = device_id,
         .max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >(),
@@ -519,10 +408,10 @@ ublkpp_tgt::ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p) : _p(p) {}
 ublkpp_tgt::~ublkpp_tgt() = default;
 
 std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; }
-std::shared_ptr< UblkDisk > ublkpp_tgt::device() const { return _p->device; }
+std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
-void ublkpp_tgt::destroy() { _p->destroy(); }
+void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 
 void ublkpp_tgt_impl::destroy() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));

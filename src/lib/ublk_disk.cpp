@@ -4,10 +4,10 @@
 #include <ublk_cmd.h>
 
 #include "logging.hpp"
-
+#include "common.hpp"
 namespace ublkpp {
 
-UblkDisk::UblkDisk() :
+ublk_disk::ublk_disk() :
         _params(std::make_unique< ublk_params >(ublk_params{
             .len = 0,
             .types = UBLK_PARAM_TYPE_BASIC | UBLK_PARAM_TYPE_DMA_ALIGN,
@@ -42,92 +42,30 @@ UblkDisk::UblkDisk() :
                 },
         })) {}
 
-UblkDisk::~UblkDisk() = default;
+ublk_disk::~ublk_disk() = default;
 
-io_result UblkDisk::handle_internal(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t,
-                                    int) {
-    return 0;
-}
+uint32_t ublk_disk::block_size() const noexcept { return 1 << _params->basic.logical_bs_shift; }
+uint32_t ublk_disk::physical_block_size() const noexcept { return 1 << _params->basic.physical_bs_shift; }
+uint32_t ublk_disk::max_tx() const noexcept { return _params->basic.max_sectors << SECTOR_SHIFT; }
+bool ublk_disk::can_discard() const noexcept { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
+uint32_t ublk_disk::discard_granularity() const noexcept { return _params->discard.discard_granularity; }
+uint64_t ublk_disk::capacity() const noexcept { return _params->basic.dev_sectors << SECTOR_SHIFT; }
 
-io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
-                              uint32_t const len, uint64_t const addr) {
-    DLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")
-    auto iov = iovec{.iov_base = buf, .iov_len = len};
-    return async_iov(q, data, sub_cmd, &iov, 1, addr);
-}
-
-io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) noexcept {
-    DLOGW("Use of deprecated ::sync_io(...)! Please convert to using ::sync_iov(...)")
-    auto iov = iovec{.iov_base = buf, .iov_len = len};
-    return sync_iov(op, &iov, 1, addr);
-}
-
-io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    thread_local auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
-
-    DLOGT("Queue I/O [tag:{:#0x}] [sub_cmd:{}]", data->tag, ublkpp::to_string(sub_cmd))
-    ublksrv_io_desc const* iod = data->iod;
-    switch (ublksrv_get_op(iod)) {
-    case UBLK_IO_OP_FLUSH:
-        return handle_flush(q, data, sub_cmd);
-    case UBLK_IO_OP_WRITE_ZEROES:
-    case UBLK_IO_OP_DISCARD:
-        return handle_discard(q, data, sub_cmd, iod->nr_sectors << SECTOR_SHIFT, iod->start_sector << SECTOR_SHIFT);
-    case UBLK_IO_OP_READ:
-    case UBLK_IO_OP_WRITE: {
-        iov.iov_base = (void*)iod->addr;
-        iov.iov_len = (iod->nr_sectors << SECTOR_SHIFT);
-        return async_iov(q, data, sub_cmd, &iov, 1, (iod->start_sector << SECTOR_SHIFT));
+namespace {
+// Implementation shim for make_missing_disk(). Lives entirely in this TU; callers see only
+// the base ublk_disk through the shared_ptr returned by the factory.
+struct missing_disk_impl : ublk_disk {
+    missing_disk_impl() noexcept {
+        _is_missing = true;
+        _direct_io = true;
+        auto& our_params = *params();
+        our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+        our_params.basic.logical_bs_shift = 9;
+        our_params.basic.physical_bs_shift = 9;
     }
-    default:
-        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
-    }
-}
+};
+} // namespace
 
-io_result UblkDisk::queue_internal_resp(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
-    thread_local auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
-    ublksrv_io_desc const* iod = data->iod;
-    iov.iov_base = (void*)iod->addr;
-    iov.iov_len = (iod->nr_sectors << SECTOR_SHIFT);
-    return handle_internal(q, data, sub_cmd, &iov, 1, iod->start_sector << SECTOR_SHIFT, res);
-}
-
-std::string UblkDisk::to_string() const {
-    auto const cap_denom = capacity() >= Ti ? Gi : Mi;
-    return fmt::format("[{}, size={}{}, lbs={:#0x}]", id(), capacity() / cap_denom, cap_denom == Gi ? "Gi" : "Mi",
-                       block_size());
-}
-uint32_t UblkDisk::block_size() const noexcept { return 1 << _params->basic.logical_bs_shift; }
-uint32_t UblkDisk::max_tx() const noexcept { return _params->basic.max_sectors << SECTOR_SHIFT; }
-bool UblkDisk::can_discard() const noexcept { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
-uint64_t UblkDisk::capacity() const noexcept { return _params->basic.dev_sectors << SECTOR_SHIFT; }
-
-DefunctDisk::DefunctDisk() : UblkDisk() {
-    direct_io = true;
-    auto& our_params = *params();
-    our_params.types |= UBLK_PARAM_TYPE_DISCARD;
-    our_params.basic.logical_bs_shift = 9;
-    our_params.basic.physical_bs_shift = 9;
-}
-
-std::string DefunctDisk::id() const noexcept { return "~DEFUNCT~"; }
-
-// LCOV_EXCL_START
-io_result DefunctDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
-
-io_result DefunctDisk::handle_discard(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, uint32_t, uint64_t) {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
-
-io_result DefunctDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t) {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
-// LCOV_EXCL_STOP
-
-io_result DefunctDisk::sync_iov(uint8_t, iovec*, uint32_t, off_t) noexcept {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
+std::shared_ptr< ublk_disk > make_missing_disk() { return std::make_shared< missing_disk_impl >(); }
 
 } // namespace ublkpp

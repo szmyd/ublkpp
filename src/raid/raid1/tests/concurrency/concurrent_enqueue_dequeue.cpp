@@ -61,12 +61,12 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAB, iovecs->iov_len);
             std::this_thread::sleep_for(1ms);
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
 
     std::atomic< int > writes_in_flight{0};
@@ -81,7 +81,7 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
                 overlap_detected.store(true, std::memory_order_release);
             }
             std::this_thread::sleep_for(1ms);
-            return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())

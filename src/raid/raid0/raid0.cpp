@@ -1,14 +1,18 @@
-#include "ublkpp/raid/raid0.hpp"
+#include "ublkpp/raid.hpp"
 
 #include <bit>
 #include <boost/uuid/uuid_io.hpp>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
 
+#include <ublkpp/lib/disk_task.hpp>
+#include <ublkpp/lib/ublk_disk.hpp>
+
 #include "raid0_impl.hpp"
 #include "lib/logging.hpp"
 
 namespace ublkpp {
+constexpr uint32_t _max_stripe_cnt{64};
 
 class StripeDevice {
     struct destroy_sb {
@@ -19,20 +23,50 @@ class StripeDevice {
     };
 
 public:
-    StripeDevice(std::shared_ptr< UblkDisk > device, raid0::SuperBlock* super) :
+    StripeDevice(std::shared_ptr< ublk_disk > device, raid0::SuperBlock* super) :
             disk(std::move(device)), _sb(super, destroy_sb()) {}
-    std::shared_ptr< UblkDisk > disk;
+    std::shared_ptr< ublk_disk > disk;
     std::unique_ptr< raid0::SuperBlock, destroy_sb > _sb;
 };
 
-static raid0::SuperBlock* read_superblock(UblkDisk& device);
-static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb);
+static raid0::SuperBlock* read_superblock(ublk_disk& device);
+static io_result write_superblock(ublk_disk& device, raid0::SuperBlock* sb);
 static std::expected< raid0::SuperBlock*, std::error_condition >
-load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off);
+load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off);
+
+// File-local concrete ublk_disk; constructed only via the make_raid0_disk factory below. The
+// public header exposes only the factory + raid0:: free functions; consumers operate against
+// the ublk_disk virtual interface.
+class Raid0Disk : public ublk_disk {
+    std::vector< std::unique_ptr< StripeDevice > > _stripe_array;
+
+    uint32_t _stripe_size{0};
+    uint32_t _stride_width{0};
+
+    io_result __distribute(iovec* iov, uint64_t addr, auto&& func) const;
+
+public:
+    Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
+              std::vector< std::shared_ptr< ublk_disk > >&& disks);
+    ~Raid0Disk() override;
+
+    std::shared_ptr< ublk_disk > get_device(uint32_t stripe_offset) const noexcept;
+    uint32_t stripe_size() const noexcept { return _stripe_size; }
+
+    std::string id() const noexcept override { return "RAID0"; }
+    std::vector< int > prepare(ublksrv_queue const*, int const iouring_device) override;
+
+    disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                               uint64_t addr) override;
+
+    void idle_transition(ublksrv_queue const*, bool) override;
+
+    io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
+};
 
 Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
-                     std::vector< std::shared_ptr< UblkDisk > >&& disks) :
-        UblkDisk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
+                     std::vector< std::shared_ptr< ublk_disk > >&& disks) :
+        ublk_disk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
     if (disks.size() > _max_stripe_cnt)
         throw std::invalid_argument(
             fmt::format("Raid0Disk: too many disks ({}), max is {}", disks.size(), _max_stripe_cnt));
@@ -40,24 +74,23 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
     our_params.basic.dev_sectors = UINT64_MAX;
-    direct_io = true;
+    _direct_io = true;
 
     auto alt_stripe = false;
     our_params.basic.physical_bs_shift = ilog2(stripe_size_bytes);
     our_params.basic.io_opt_shift = ilog2(_stride_width);
     for (auto&& device : disks) {
-        auto const& dev_params = *device->params();
         // We'll use dev_sectors to track the smallest array device we have
-        our_params.basic.dev_sectors = std::min(our_params.basic.dev_sectors, dev_params.basic.dev_sectors);
+        our_params.basic.dev_sectors =
+            std::min< uint64_t >(our_params.basic.dev_sectors, device->capacity() >> SECTOR_SHIFT);
         our_params.basic.logical_bs_shift =
-            std::max(our_params.basic.logical_bs_shift, dev_params.basic.logical_bs_shift);
-        our_params.basic.max_sectors = std::min(our_params.basic.max_sectors,
-                                                static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
+            std::max(our_params.basic.logical_bs_shift, static_cast< uint8_t >(ilog2(device->block_size())));
+        our_params.basic.max_sectors = std::min(
+            our_params.basic.max_sectors, static_cast< uint32_t >((device->max_tx() >> SECTOR_SHIFT) * disks.size()));
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
-        if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
 
-        direct_io = direct_io ? device->direct_io : false;
+        _direct_io = _direct_io ? device->direct_io() : false;
 
         auto this_alt_stripe = _stripe_size;
         auto sb = load_superblock(*device, uuid, this_alt_stripe, _stripe_array.size());
@@ -86,7 +119,7 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
 
 Raid0Disk::~Raid0Disk() = default;
 
-std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const noexcept {
+std::shared_ptr< ublk_disk > Raid0Disk::get_device(uint32_t stripe_offset) const noexcept {
     if (auto const width = _stripe_array.size(); width <= stripe_offset) {
         RLOGW("Stripe offset [{}] larger than array width [{}]", stripe_offset, width)
         return nullptr;
@@ -94,26 +127,13 @@ std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const 
     return _stripe_array[stripe_offset]->disk;
 }
 
-std::list< int > Raid0Disk::open_for_uring(ublksrv_queue const* q, int const iouring_device_start) {
-    auto fds = std::list< int >();
+std::vector< int > Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
+    auto fds = std::vector< int >();
     for (auto& stripe : _stripe_array) {
-        fds.splice(fds.end(), stripe->disk->open_for_uring(q, iouring_device_start + fds.size()));
+        auto child = stripe->disk->prepare(q, iouring_device_start + fds.size());
+        fds.insert(fds.end(), child.begin(), child.end());
     }
     return fds;
-}
-
-io_result Raid0Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                                     uint32_t nr_vecs, uint64_t addr, int res) {
-    if (1 > nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
-    addr += _stride_width;
-    return __distribute(
-        iovecs, addr,
-        [q, data, res, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
-                             uint32_t logical_off) {
-            return _stripe_array[stripe_off]->disk->handle_internal(q, data, new_sub_cmd, iov, nr_iovs, logical_off,
-                                                                    res);
-        },
-        true, sub_cmd);
 }
 
 void Raid0Disk::idle_transition(ublksrv_queue const* q, bool enter) {
@@ -122,86 +142,38 @@ void Raid0Disk::idle_transition(ublksrv_queue const* q, bool enter) {
     }
 }
 
-void Raid0Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
-    for (auto const& stripe : _stripe_array) {
-        if (!stripe->disk->uses_ublk_iouring) stripe->disk->collect_async(q, results);
-    }
-}
-
-io_result Raid0Disk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    bool const retry{is_retry(sub_cmd)};
-    if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-    auto cnt{0UL};
-    auto stripe_off{0U};
-    for (auto const& stripe : _stripe_array) {
-        auto const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0U);
-        auto res = stripe->disk->handle_flush(q, data, new_sub_cmd);
-        if (!res) return res;
-        cnt += res.value();
-        ++stripe_off;
-    }
-    return cnt;
-}
-
-io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                                    uint64_t addr) {
-    bool const retry{is_retry(sub_cmd)};
-    if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-
-    auto const route_mask = _max_stripe_cnt - 1;
-
-    // Adjust the address for our superblock area, do not use _addr_ beyond this.
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    addr += _stride_width;
-
-    auto cnt{0U};
-    for (auto const& [stripe_off, region] : raid0::merged_subcmds(_stride_width, _stripe_size, addr, len)) {
-        auto const& [logical_off, logical_len] = region;
-        auto const& device = _stripe_array[stripe_off]->disk;
-        if (retry && (stripe_off != ((sub_cmd >> device->route_size()) & route_mask))) [[unlikely]]
-            continue;
-        sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
-        auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
-
-        RLOGD("Received DISCARD: [tag:{:#0x}] ublk io [lba:{:#0x}|len:{:#0x}] -> "
-              "[stripe_off:{}|logical_lba:{:#0x}|logical_len:{:#0x}|sub_cmd:{}]",
-              data->tag, lba, len, stripe_off, logical_lba, logical_len, ublkpp::to_string(new_sub_cmd))
-        auto res = device->handle_discard(q, data, new_sub_cmd, logical_len, logical_off);
-        if (!res) return res;
-        cnt += res.value();
-    }
-    return cnt;
-}
-
 /// This is the primary I/O handler call for RAID0
 //
-//  RAID0 is primary responsible for splitting an I/O request across several stripes. These operations can cross
+//  RAID0 is primarily responsible for splitting an I/O request across several stripes. These operations can cross
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
-io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd) const {
+io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) const {
+    // We gather all the pieces of each I/O intended to dispatch using this structure
     struct StripeAccum {
-        uint64_t io_addr{0};
-        uint32_t alive_cmds{0};
-        std::array< iovec, 16 > io_array{};
+        uint64_t io_addr{0};                // Starting address
+        uint32_t nr_vecs{0};                // How many iovecs are valid
+        std::array< iovec, 16 > io_array{}; // The scatter-list
     };
-    // Reset only touched stripes on exit; a failed call leaves non-zero alive_cmds that would corrupt the next I/O.
     static_assert(_max_stripe_cnt == 64, "dirty_mask must be exactly uint64_t");
+
+    // Then when allocated (once) an array of accumulators for the thread (1-thread per i/o queue)
     thread_local auto sub_cmds = std::array< StripeAccum, _max_stripe_cnt >();
+
+    // Reset only touched stripes on exit; a failed call leaves non-zero nr_vecs that would corrupt the next I/O.
     uint64_t dirty_mask{0};
     struct DirtyGuard {
         decltype(sub_cmds)& cmds;
         uint64_t& mask;
         ~DirtyGuard() noexcept {
             while (mask) {
-                cmds[std::countr_zero(mask)].alive_cmds = 0;
+                cmds[std::countr_zero(mask)].nr_vecs = 0;
                 mask &= mask - 1; // clear lowest set bit
             }
         }
     } guard{sub_cmds, dirty_mask};
 
-    if (1 == _stripe_array.size()) return func(0, sub_cmd, iovecs, 1, addr);
+    if (1 == _stripe_array.size()) return func(0, iovecs, 1, addr);
 
-    auto const route_mask = _max_stripe_cnt - 1;
     DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
     auto const len = static_cast< uint32_t >(iovecs->iov_len);
     uint32_t cnt{0};
@@ -211,55 +183,20 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
         auto buf_cursor = static_cast< uint8_t* >(iovecs->iov_base) + off;
         off += sz;
 
-        auto const& device = _stripe_array[stripe_off]->disk;
-        // On retry, re-issue only the stripe whose route bits match the original sub_cmd.
-        if (retry && stripe_off != ((sub_cmd >> device->route_size()) & route_mask)) [[unlikely]]
-            continue;
-
         dirty_mask |= 1ULL << stripe_off;
         auto& acc = sub_cmds[stripe_off];
-        if (!acc.alive_cmds) acc.io_addr = logical_off;
-        acc.io_array[acc.alive_cmds++] = {buf_cursor, sz};
+        if (!acc.nr_vecs) acc.io_addr = logical_off;
+        acc.io_array[acc.nr_vecs++] = {buf_cursor, sz};
 
         // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
         // guaranteeing this stripe cannot accumulate more iovecs in the same call.
         if ((_stride_width - _stripe_size) >= (len - off)) {
-            sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
-            auto res = func(stripe_off, new_sub_cmd, acc.io_array.data(), acc.alive_cmds, acc.io_addr);
+            auto res = func(stripe_off, acc.io_array.data(), acc.nr_vecs, acc.io_addr);
             if (!res) return res;
             cnt += res.value();
         }
     }
     return cnt;
-}
-
-io_result Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                               uint32_t nr_vecs, uint64_t addr) {
-    // RAID-0 only supports not-scattered I/O currently!
-    if (1 > nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
-
-    bool const retry{is_retry(sub_cmd)};
-    if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("Received {}: [tag:{:#0x}] ublk io [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, lba, iovecs->iov_len,
-          ublkpp::to_string(sub_cmd))
-
-    // Adjust the address for our superblock area, do not use _addr_ beyond this.
-    addr += _stride_width;
-
-    return __distribute(
-        iovecs, addr,
-        [q, data, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
-                        uint64_t logical_off) {
-            auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
-            RLOGT("Perform {}: [tag:{:#0x}] ublk aysnc_io -> "
-                  "[stripe_off:{}|logical_lba:{:#0x}|logical_len:{:#0x}|sub_cmd:{}]",
-                  ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, stripe_off, logical_lba,
-                  __iovec_len(iov, iov + nr_iovs), ublkpp::to_string(new_sub_cmd))
-            return _stripe_array[stripe_off]->disk->async_iov(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
-        },
-        retry, sub_cmd);
 }
 
 io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
@@ -270,20 +207,75 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     addr += _stride_width;
 
     return __distribute(iovecs, addr,
-                        [op, this](uint32_t stripe_off, sub_cmd_t, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
+                        [op, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
                                   "[stripe_off:{}|logical_sector:{}|logical_len:{:#0x}]",
                                   op == UBLK_IO_OP_READ ? "READ" : "WRITE", stripe_off, logical_off >> SECTOR_SHIFT,
-                                  __iovec_len(iov, iov + nr_iovs))
+                                  iovec_len(iov, iov + nr_iovs))
                             return _stripe_array[stripe_off]->disk->sync_iov(op, iov, nr_iovs, logical_off);
                         });
+}
+
+disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                      uint64_t addr) {
+    auto const op = ublksrv_get_op(data->iod);
+
+    if (op == UBLK_IO_OP_FLUSH) co_return 0;
+
+    addr += _stride_width;
+
+    // Eagerly start each child task so all SQEs are in-flight before the first co_await,
+    // preserving kernel parallelism. All tasks must be drained even on error to avoid
+    // dangling _waiter handles in cqe_state.
+    std::vector< hot_task< int > > stripe_tasks;
+
+    if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
+        uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
+
+        // No data buffer: contiguous stripe ranges can be coalesced rather than scattered per-stripe.
+        for (auto const& [stripe_off, region] : raid0::merged_subcmds(_stride_width, _stripe_size, addr, len)) {
+            auto const& [logical_off, logical_len] = region;
+            // stripe_iov is a loop-local variable; start() advances async_iov past the iov_len
+            // read before suspending, so the stack variable is safe.
+            auto stripe_iov = iovec{.iov_base = nullptr, .iov_len = logical_len};
+            stripe_tasks.push_back(
+                _stripe_array[stripe_off]->disk->async_iov(q, data, &stripe_iov, 1, logical_off).start());
+        }
+    } else {
+        // READ / WRITE: fan out across stripes via __distribute.
+        auto res = __distribute(
+            iovecs, addr,
+            [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
+                                           uint64_t logical_off) -> io_result {
+                stripe_tasks.push_back(
+                    _stripe_array[stripe_off]->disk->async_iov(q, data, iov, nr_iovs, logical_off).start());
+                return 1;
+            });
+
+        if (!res) co_return -EIO;
+    }
+
+    // Submit now so the kernel snapshots leaf-staged iovecs that point into thread_local sub_cmds
+    // (in __distribute) before this coroutine suspends. Without this submit, sibling Raid0 IOs on
+    // the same thread would overwrite sub_cmds before the queue loop's submit_and_wait_timeout
+    // hands the SQEs to the kernel, corrupting in-flight writev/readv. One extra syscall per
+    // multi-stripe RAID0 IO; FSDisk-only and single-stripe paths are unaffected.
+    if (q && q->ring_ptr) io_uring_submit(q->ring_ptr);
+
+    int total = 0;
+    for (auto& t : stripe_tasks) {
+        auto r = co_await t;
+        if (r < 0) co_return r;
+        total += r;
+    }
+    co_return total;
 }
 
 static const uint8_t magic_bytes[16] = {0127, 0345, 072,  0211, 0254, 033,  070,  0146,
                                         0125, 0377, 0204, 065,  0131, 0120, 0306, 047};
 constexpr auto SB_VERSION = 1;
 
-static raid0::SuperBlock* read_superblock(UblkDisk& device) {
+static raid0::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid0::SuperBlock);
     RLOGT("Reading Superblock from: [{}] {}%{} == {}", device, sb_size, device.block_size(),
           sb_size % device.block_size())
@@ -304,7 +296,7 @@ static raid0::SuperBlock* read_superblock(UblkDisk& device) {
     return static_cast< raid0::SuperBlock* >(iov.iov_base);
 }
 
-static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb) {
+static io_result write_superblock(ublk_disk& device, raid0::SuperBlock* sb) {
     auto const sb_size = sizeof(raid0::SuperBlock);
     RLOGT("Writing Superblock to: [{}]", device)
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
@@ -318,7 +310,7 @@ static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb) {
 // Read and load the RAID0 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
 static std::expected< raid0::SuperBlock*, std::error_condition >
-load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off) {
+load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off) {
     auto sb = read_superblock(device);
     if (!sb) return std::unexpected(std::make_error_condition(std::errc::io_error));
 
@@ -368,20 +360,18 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
     return sb;
 }
 
-void Raid0Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
-    // First, let the underlying device handle its portion of the routing
-    // We need to determine which stripe handled this I/O by extracting our routing bits
-    // from sub_cmd, accounting for the underlying device's routing bits.
-    auto const route_mask = _max_stripe_cnt - 1;
-
-    // Extract stripe index from sub_cmd (shift past underlying device's route bits)
-    auto const stripe_idx = static_cast< size_t >((sub_cmd >> _stripe_array[0]->disk->route_size()) & route_mask);
-
-    RLOGT("Raid0Disk::on_io_complete [tag:{:#0x}] [sub_cmd:{}] stripe_idx:{}", data->tag, ublkpp::to_string(sub_cmd),
-          stripe_idx)
-
-    // Pass completion notification to the underlying device for its metrics
-    if (stripe_idx < _stripe_array.size()) { _stripe_array[stripe_idx]->disk->on_io_complete(data, sub_cmd, res); }
+std::shared_ptr< ublk_disk > make_raid0_disk(boost::uuids::uuid const& uuid, uint32_t stripe_size_bytes,
+                                             std::vector< std::shared_ptr< ublk_disk > >&& disks) {
+    return std::make_shared< Raid0Disk >(uuid, stripe_size_bytes, std::move(disks));
 }
 
+namespace raid0 {
+
+std::shared_ptr< ublk_disk > get_device(ublk_disk const& disk, uint32_t stripe_offset) noexcept {
+    auto const* r0 = dynamic_cast< Raid0Disk const* >(&disk);
+    if (!r0) return nullptr;
+    return r0->get_device(stripe_offset);
+}
+
+} // namespace raid0
 } // namespace ublkpp

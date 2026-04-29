@@ -1,0 +1,134 @@
+diff --git a/include/ublksrv.h b/include/ublksrv.h
+index edaa4e9..7e58f2a 100644
+--- a/include/ublksrv.h
++++ b/include/ublksrv.h
+@@ -1155,6 +1155,21 @@ extern int ublksrv_complete_io(const struct ublksrv_queue *q, unsigned tag, int
+  */
+ extern int ublksrv_queue_reap_events(const struct ublksrv_queue *tq);
+ 
++/**
++ * ublksrv_handle_cmd_cqe - handle one ublk command CQE (non-target IO).
++ * Caller must verify is_target_io(cqe->user_data) == 0 before calling.
++ */
++extern void ublksrv_handle_cmd_cqe(const struct ublksrv_queue *tq,
++		const struct io_uring_cqe *cqe);
++
++/**
++ * ublksrv_queue_update_idle - update idle/stopping state after draining CQEs.
++ * @ret:    return value of io_uring_submit_and_wait_timeout
++ * @reapped: number of CQEs consumed in this batch
++ */
++extern void ublksrv_queue_update_idle(const struct ublksrv_queue *tq,
++		int ret, int reapped);
++
+ /** @} */ // end of ublksrv_queue group
+ 
+ #ifdef __cplusplus
+diff --git a/lib/ublksrv.c b/lib/ublksrv.c
+index e004b22..6472ebc 100644
+--- a/lib/ublksrv.c
++++ b/lib/ublksrv.c
+@@ -467,12 +467,6 @@ static int ublksrv_setup_eventfd(struct _ublksrv_queue *q)
+ 		return -EINVAL;
+ 	}
+ 
+-	if (!q->dev->tgt.ops->handle_event) {
+-		ublk_err("ublk dev %d/%d not define ->handle_event",
+-			info->dev_id, q->q_id);
+-		return -EINVAL;
+-	}
+-
+ 	q->efd = eventfd(0, 0);
+ 	if (q->efd < 0)
+ 		return -errno;
+@@ -829,30 +823,14 @@ static inline void ublksrv_handle_tgt_cqe(struct _ublksrv_queue *q,
+ 	}
+ }
+ 
+-static void ublksrv_handle_cqe(struct io_uring *r,
+-		struct io_uring_cqe *cqe, void *data)
++static void ublksrv_handle_cmd_cqe_impl(struct _ublksrv_queue *q,
++		const struct io_uring_cqe *cqe)
+ {
+-	struct _ublksrv_queue *q = container_of(r, struct _ublksrv_queue, ring);
+ 	unsigned tag = user_data_to_tag(cqe->user_data);
+-	unsigned cmd_op = user_data_to_op(cqe->user_data);
+ 	int fetch = (cqe->res != UBLK_IO_RES_ABORT) &&
+ 		!(q->state & UBLKSRV_QUEUE_STOPPING);
+-	struct ublk_io *io;
+-
+-	ublk_dbg(UBLK_DBG_IO_CMD, "%s: res %d (qid %d tag %u cmd_op %u target %d/%x event %d) stopping %d\n",
+-			__func__, cqe->res, q->q_id, tag, cmd_op,
+-			is_target_io(cqe->user_data),
+-			user_data_to_tgt_data(cqe->user_data),
+-			is_eventfd_io(cqe->user_data),
+-			(q->state & UBLKSRV_QUEUE_STOPPING));
+-
+-	/* Don't retrieve io in case of target io */
+-	if (is_target_io(cqe->user_data)) {
+-		ublksrv_handle_tgt_cqe(q, cqe);
+-		return;
+-	}
++	struct ublk_io *io = &q->ios[tag];
+ 
+-	io = &q->ios[tag];
+ 	q->cmd_inflight--;
+ 
+ 	if (!fetch) {
+@@ -885,6 +863,29 @@ static void ublksrv_handle_cqe(struct io_uring *r,
+ 	}
+ }
+ 
++static void ublksrv_handle_cqe(struct io_uring *r,
++		struct io_uring_cqe *cqe, void *data)
++{
++	struct _ublksrv_queue *q = container_of(r, struct _ublksrv_queue, ring);
++	unsigned tag = user_data_to_tag(cqe->user_data);
++	unsigned cmd_op = user_data_to_op(cqe->user_data);
++
++	ublk_dbg(UBLK_DBG_IO_CMD, "%s: res %d (qid %d tag %u cmd_op %u target %d/%x event %d) stopping %d\n",
++			__func__, cqe->res, q->q_id, tag, cmd_op,
++			is_target_io(cqe->user_data),
++			user_data_to_tgt_data(cqe->user_data),
++			is_eventfd_io(cqe->user_data),
++			(q->state & UBLKSRV_QUEUE_STOPPING));
++
++	/* Don't retrieve io in case of target io */
++	if (is_target_io(cqe->user_data)) {
++		ublksrv_handle_tgt_cqe(q, cqe);
++		return;
++	}
++
++	ublksrv_handle_cmd_cqe_impl(q, cqe);
++}
++
+ static int ublksrv_reap_events_uring(struct io_uring *r)
+ {
+ 	struct io_uring_cqe *cqe;
+@@ -939,6 +940,26 @@ static inline void ublksrv_queue_idle_exit(struct _ublksrv_queue *q)
+ 			q->tgt_ops->idle_fn(local_to_tq(q), false);
+ 	}
+ }
++void ublksrv_handle_cmd_cqe(const struct ublksrv_queue *tq,
++		const struct io_uring_cqe *cqe)
++{
++	ublksrv_handle_cmd_cqe_impl(tq_to_local(tq), cqe);
++}
++
++void ublksrv_queue_update_idle(const struct ublksrv_queue *tq, int ret,
++		int reapped)
++{
++	struct _ublksrv_queue *q = tq_to_local(tq);
++
++	if (q->state & UBLKSRV_QUEUE_STOPPING) {
++		ublksrv_kill_eventfd(q);
++	} else {
++		if (ret == -ETIME && reapped == 0 && !io_uring_sq_ready(&q->ring))
++			ublksrv_queue_idle_enter(q);
++		else
++			ublksrv_queue_idle_exit(q);
++	}
++}
+ 
+ static void ublksrv_reset_aio_batch(struct _ublksrv_queue *q)
+ {

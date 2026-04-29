@@ -26,12 +26,8 @@ list(APPEND LIBRARY_OBJECTS
 list(APPEND LIBRARY_LINKS
     isa-l::isa-l
     ublksrv::ublksrv
+    STDEXEC::stdexec
   )
-
-if(${homeblocks_FOUND})
-    list(APPEND LIBRARY_OBJECTS $<TARGET_OBJECTS:homeblk_disk>)
-    list(APPEND LIBRARY_LINKS homeblocks::homeblocks)
-endif()
 
 if(${libiscsi_FOUND})
     list(APPEND LIBRARY_OBJECTS $<TARGET_OBJECTS:iscsi_disk>)

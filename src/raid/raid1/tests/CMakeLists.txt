@@ -9,6 +9,7 @@ list(APPEND RAID1_TEST_SRCS
   raid1_test.cpp
 )
 
+add_subdirectory (asyncio)
 add_subdirectory (bitmap)
 add_subdirectory (concurrency)
 add_subdirectory (failures)
@@ -28,6 +29,7 @@ target_sources(test_raid1 PRIVATE
 )
 target_link_libraries (test_raid1
   GTest::gmock
+  mock_ublksrv
   isa-l::isa-l
   sisl::cache
   ublksrv::ublksrv

@@ -2,6 +2,7 @@
 .idea/**
 .cache
 .clangd
+.claude/scheduled_tasks*
 
 # Settings generated files and build files
 compile_commands.json

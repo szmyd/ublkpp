@@ -1,16 +1,14 @@
 #pragma once
 
-#include <map>
 #include <memory>
+#include <optional>
 
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/raid.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_avail_probe.hpp"
 #include "raid1_superblock.hpp"
 
 namespace ublkpp {
-
-struct UblkSystemMetrics;
 
 namespace raid1 {
 
@@ -20,18 +18,18 @@ class Raid1ResyncTask;
 struct RouteState;
 
 struct MirrorDevice {
-    MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device);
-    std::shared_ptr< UblkDisk > const disk;
+    MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > device);
+    std::shared_ptr< ublk_disk > const disk;
     std::shared_ptr< SuperBlock > sb; // Only used during load_superblock time
     std::atomic_flag unavail;
 
     bool new_device{true};
 };
 
-class Raid1DiskImpl : public UblkDisk {
+class Raid1Disk : public ublk_disk {
     boost::uuids::uuid const _uuid;
     std::string const _str_uuid;
-    uint64_t reserved_size{0UL};
+    uint64_t _reserved_size{0UL};
 
     std::shared_ptr< MirrorDevice > _device_a;
     std::shared_ptr< MirrorDevice > _device_b;
@@ -45,15 +43,12 @@ class Raid1DiskImpl : public UblkDisk {
 
     // Metrics
     std::shared_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
-    // Asynchronous replies that did not go through io_uring
-    std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
-
     // Active Re-Sync Task
     std::atomic< bool > _resync_enabled{true};
     std::shared_ptr< Raid1ResyncTask > _resync_task;
 
-    // Guards: (1) swap_device() — serializes concurrent callers on _device_a/_device_b mutations.
-    //         (2) _pending_results — serializes open_for_uring() insertions across queue threads.
+    // Guards: (1) swap_device() - serializes concurrent callers on _device_a/_device_b mutations.
+    //         (2) _pending_results - serializes prepare() insertions across queue threads.
     std::mutex _ctrl_lock;
 
     // Multi-queue idle tracking: probe starts when all queues are idle, stops on any active transition
@@ -65,22 +60,27 @@ class Raid1DiskImpl : public UblkDisk {
     Raid1AvailProbeTask _idle_probe_a;
     Raid1AvailProbeTask _idle_probe_b;
 
+    // Shared read/write routing helpers used by both async_iov and sync_iov.
+    // Returns {primary_dev, failover_dev}. failover_dev is nullopt when the backup holds stale
+    // data for this region (degraded array + dirty bitmap) -- callers must not read from it.
+    std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
+    __select_read_devices(RouteState const& state, uint64_t addr, uint32_t len) const noexcept;
+    enum class WriteBackupMode { SKIP, WRITE, OPTIMISTIC };
+    WriteBackupMode __compute_backup_mode(RouteState const& state, uint64_t addr, uint32_t len,
+                                          bool is_discard) const noexcept;
+
     // Internal routines
     io_result __become_clean();
-    io_result __become_degraded(sub_cmd_t failed_path, RouteState const* state, bool spawn_resync = true);
-    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
-                              RouteState const* state = nullptr);
-    io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                   ublk_io_data const* async_data);
-    io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
-                          ublk_io_data const* async_data = nullptr, RouteState* state = nullptr);
+    io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
+    disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+                                           uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
                        raid1::read_route const& cur_route);
 
     // Constructor helpers
-    void __init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b);
-    void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                                      std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id);
+    void __init_params(std::shared_ptr< ublk_disk > const& dev_a, std::shared_ptr< ublk_disk > const& dev_b);
+    void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
+                                      std::shared_ptr< ublk_disk > dev_b, std::string const& parent_id);
     void __init_bitmap_and_degraded_route();
     void __become_active();
 
@@ -103,46 +103,46 @@ class Raid1DiskImpl : public UblkDisk {
     //
     // ☠️ ☠️ ☠️  YOU HAVE BEEN WARNED  ☠️ ☠️ ☠️
     // clang-format off
+    // noinline: required in all builds so the compiler cannot cache _device_a/_device_b across
+    // the retry loop's consistency check (plain shared_ptrs, not atomic).
 #ifndef NDEBUG
-    __attribute__((noinline, no_sanitize_thread))
+    // no_sanitize_thread: intentional lock-free race, validated by retry loop (see tsan.supp).
+    // no_sanitize("address"): shared_ptr copy has a sub-nanosecond UAF window during swap_device.
+    // The race cannot corrupt on-disk state (MirrorDevice dtor writes nothing to disk); worst case
+    // is a process crash, which pod restart / UBLK_F_USER_RECOVERY handles. Locking this hot path
+    // is not worth the cost for a swap that happens at most once per device lifetime.
+    // NOTE: attribute must appear on both declaration and definition for GCC to suppress
+    // instrumentation of the function body.
+    __attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
+#else
+    __attribute__((noinline))
 #endif
-    RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
+    RouteState __capture_route_state() const;
     // clang-format on
 
 public:
-    Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
-                  std::string const& parent_id = "");
-    ~Raid1DiskImpl() override;
+    Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a, std::shared_ptr< ublk_disk > dev_b,
+              std::string const& parent_id = "");
+    ~Raid1Disk() override;
 
     /// Raid1Disk API
     /// =============
-    std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
+    std::shared_ptr< ublk_disk > swap_device(std::string const& old_device_id, std::shared_ptr< ublk_disk > new_device);
     raid1::array_state replica_states() const noexcept;
-    uint64_t get_reserved_size() const noexcept { return reserved_size; }
+    uint64_t reserved_size() const noexcept { return _reserved_size; }
     void toggle_resync(bool t);
-    std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const noexcept;
+    std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > replicas() const noexcept;
     /// =============
 
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
-    std::list< int > open_for_uring(ublksrv_queue const* q, int const iouring_device) override;
+    std::vector< int > prepare(ublksrv_queue const* q, int const iouring_device) override;
     void idle_transition(ublksrv_queue const* q, bool enter) noexcept override;
 
-    uint8_t route_size() const noexcept override { return 1; }
+    disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                               uint64_t addr) override;
 
-    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
-
-    io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
-                              uint32_t nr_vecs, uint64_t addr, int res) override;
-    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
-    // RAID-1 Devices can not sit on-top of non-O_DIRECT devices, so there's nothing to flush
-    io_result handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) override { return 0; }
-    io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr) override;
-
-    io_result async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                        uint32_t nr_vecs, uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
     /// ============================
 };

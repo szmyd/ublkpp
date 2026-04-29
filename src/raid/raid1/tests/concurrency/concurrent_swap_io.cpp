@@ -13,7 +13,7 @@ TEST(Raid1, ConcurrentSwapAndSyncRead) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     // Both devices serve reads for the duration of the test
@@ -35,7 +35,8 @@ TEST(Raid1, ConcurrentSwapAndSyncRead) {
     std::atomic< int > read_count{0};
     auto reader = std::thread([&] {
         while (!stop.load(std::memory_order_relaxed)) {
-            auto res = raid_device.sync_io(UBLK_IO_OP_READ, nullptr, 4 * Ki, 64 * Ki);
+            auto iov = iovec{.iov_base = nullptr, .iov_len = 4 * Ki};
+            auto res = raid_device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 64 * Ki);
             EXPECT_TRUE(res);
             read_count.fetch_add(1, std::memory_order_relaxed);
         }

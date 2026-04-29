@@ -4,39 +4,32 @@
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
 
-#include "ublkpp/lib/sub_cmd.hpp"
+#include "ublkpp/lib/cqe_state.hpp"
 
 SISL_LOGGING_INIT(ublk_tgt)
 
 SISL_OPTIONS_ENABLE(logging)
 
-using ublkpp::sub_cmd_flags;
-using ublkpp::sub_cmd_t;
+TEST(cqe_state, NextStateAllocatesDistinctStates) {
+    ublkpp::async_io io{};
+    auto* s1 = io.next_state();
+    auto* s2 = io.next_state();
+    EXPECT_NE(s1, s2);
+    EXPECT_EQ(s1->_owner, &io);
+    EXPECT_EQ(s2->_owner, &io);
+    EXPECT_EQ(io._pool.size(), 2u);
+}
 
-TEST(SubCmd, FlagSetting) {
-    auto repl_set = ublkpp::set_flags(0, sub_cmd_flags::REPLICATE);
-    EXPECT_TRUE(ublkpp::is_replicate(repl_set));
-    EXPECT_FALSE(ublkpp::is_retry(repl_set));
-
-    auto both_set = ublkpp::set_flags(repl_set, sub_cmd_flags::RETRIED);
-    EXPECT_TRUE(ublkpp::is_replicate(both_set));
-    EXPECT_TRUE(ublkpp::is_retry(both_set));
-
-    auto retry_set = ublkpp::unset_flags(both_set, sub_cmd_flags::REPLICATE);
-    EXPECT_FALSE(ublkpp::is_replicate(retry_set));
-    EXPECT_TRUE(ublkpp::is_retry(retry_set));
-
-    auto neither_set = ublkpp::unset_flags(retry_set, sub_cmd_flags::RETRIED);
-    EXPECT_FALSE(ublkpp::is_replicate(neither_set));
-    EXPECT_FALSE(ublkpp::is_retry(neither_set));
-
-    auto multi_set = ublkpp::set_flags(0, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATE);
-    EXPECT_TRUE(ublkpp::is_replicate(multi_set));
-    EXPECT_TRUE(ublkpp::is_retry(multi_set));
-
-    auto multi_unset = ublkpp::unset_flags(multi_set, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATE);
-    EXPECT_FALSE(ublkpp::is_replicate(multi_unset));
-    EXPECT_FALSE(ublkpp::is_retry(multi_unset));
+TEST(cqe_state, BuildCqeStateDataEncodesTargetBit) {
+    ublkpp::async_io io{};
+    ublk_io_data fake{};
+    fake.private_data = &io;
+    auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
+    // bit 63 is the target-io marker checked by run_queue_loop
+    EXPECT_NE(user_data & (1ULL << 63), 0ULL);
+    auto* decoded = reinterpret_cast< ublkpp::cqe_state* >(user_data & ~(1ULL << 63));
+    EXPECT_EQ(state, decoded);
+    EXPECT_EQ(state->_owner, &io);
 }
 
 int main(int argc, char* argv[]) {
