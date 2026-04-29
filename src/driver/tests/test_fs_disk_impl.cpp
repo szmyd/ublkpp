@@ -15,10 +15,9 @@
 #include <sisl/options/options.h>
 #include <ublksrv.h>
 
-// Include sub_cmd.hpp first to get the constants
 #include "ublkpp/lib/sub_cmd.hpp"
-// Now include fs_disk_impl.hpp which depends on those constants
 #include "../fs_disk_impl.hpp"
+#include <ublkpp/lib/cqe_state.hpp>
 #include "ublkpp/lib/common.hpp"
 
 namespace {
