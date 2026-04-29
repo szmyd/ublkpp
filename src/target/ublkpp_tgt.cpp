@@ -2,6 +2,7 @@
 
 #include <coroutine>
 #include <cstring>
+#include <list>
 #include <thread>
 
 #include <boost/uuid/uuid_io.hpp>
@@ -76,6 +77,72 @@ static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
     sched_setaffinity(0, sizeof(set), &set);
 }
 
+// bit 63 = is_target_io; bit 62 = is_eventfd_io (matches ublksrv_priv.h encoding)
+static constexpr uint64_t k_target_bit = 1ULL << 63;
+static constexpr uint64_t k_eventfd_bit = 1ULL << 62;
+// Matches UBLKSRV_IO_IDLE_SECS defined privately in ublksrv.c
+static constexpr int k_io_idle_secs = 20;
+
+// Our own CQE processing loop, replacing ublksrv_process_io.
+// Target CQEs are dispatched inline; ublk command CQEs delegate to ublksrv.
+// sub_cmd encoding in user_data is preserved (Phase 2 — no pointer encoding yet).
+static void run_queue_loop(ublksrv_queue const* q) {
+    auto* ring = q->ring_ptr;
+    struct __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
+    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
+
+    while (!ublksrv_queue_is_done(q)) {
+        io_uring_cqe* cqe{};
+        auto const ret = io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
+
+        unsigned head{};
+        int count{0};
+        io_uring_for_each_cqe(ring, head, cqe) {
+            if (cqe->user_data & k_target_bit) {
+                if (cqe->user_data & k_eventfd_bit) {
+                    // eventfd notification — collect async completions (RAID1/iSCSI)
+                    auto completed = std::list< async_result >();
+                    tgt->device->collect_async(q, completed);
+                    ublksrv_queue_handled_event(q);
+                    for (auto& r : completed) {
+                        auto* io = reinterpret_cast< async_io* >(r.io->private_data);
+                        auto* state = io->ensure(r.sub_cmd);
+                        state->result = r.result;
+                        try {
+                            io->push_completion(state);
+                        } catch (std::exception const& e) {
+                            TLOGE("Async event threw exception: [{}]", e.what())
+                            ublksrv_complete_io(q, r.io->tag, -EIO);
+                        }
+                    }
+                } else {
+                    // target io_uring CQE — route by sub_cmd to CqeState
+                    auto* data =
+                        reinterpret_cast< ublk_io_data* >(ublksrv_io_private_data(q, user_data_to_tag(cqe->user_data)));
+                    RELEASE_ASSERT_EQ(data->tag, static_cast< int32_t >(user_data_to_tag(cqe->user_data)),
+                                      "Tag mismatch!")
+                    auto* io = reinterpret_cast< async_io* >(data->private_data);
+                    auto cmd = static_cast< sub_cmd_t >(user_data_to_tgt_data(cqe->user_data));
+                    auto* state = io->ensure(cmd);
+                    state->result = cqe->res;
+                    try {
+                        io->push_completion(state);
+                    } catch (std::exception const& e) {
+                        TLOGE("I/O threw exception: [{}]", e.what())
+                        ublksrv_complete_io(q, data->tag, -EIO);
+                    }
+                }
+            } else {
+                // ublk command CQE (FETCH/COMMIT) — delegate to libublksrv
+                ublksrv_handle_cmd_cqe(q, cqe);
+            }
+            ++count;
+        }
+        io_uring_cq_advance(ring, count);
+        ublksrv_queue_update_idle(q, ret, count);
+    }
+}
+
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
     // Find our /dev/ublk-control file descriptor
     auto cdev = ublksrv_get_ctrl_dev(target->ublk_dev);
@@ -100,9 +167,7 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     }
 
     TLOGD("tid {}: ublk dev queue {} started", ublksrv_gettid(), q->q_id)
-    do {
-        if (ublksrv_process_io(q) < 0) break;
-    } while (1);
+    run_queue_loop(q);
     TLOGD("ublk dev queue {} exited", q->q_id)
     ublksrv_queue_deinit(q);
     return NULL;
@@ -350,42 +415,6 @@ static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     return 0;
 }
 
-// Called when the I/O we have scheduled on the ublksrv uring (e.g. FSDisk) have completed
-static void tgt_io_done(ublksrv_queue const* q, ublk_io_data const* data, io_uring_cqe const* cqe) {
-    RELEASE_ASSERT_EQ(data->tag, static_cast< int32_t >(user_data_to_tag(cqe->user_data)), "Tag mismatch!")
-    auto* io = reinterpret_cast< async_io* >(data->private_data);
-    auto cmd = static_cast< sub_cmd_t >(user_data_to_tgt_data(cqe->user_data));
-    auto* state = io->ensure(cmd);
-    state->result = cqe->res;
-    try {
-        io->push_completion(state);
-    } catch (std::exception const& e) {
-        TLOGE("I/O threw exception: [{}]", e.what())
-        ublksrv_complete_io(q, data->tag, -EIO);
-    }
-}
-
-// Called when some async UblkDisk has called send_event to notify of a sub_cmd completion
-static void handle_event(ublksrv_queue const* q) {
-    auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
-    auto completed = std::list< async_result >();
-    tgt->device->collect_async(q, completed);
-
-    // Clear the event from efd first, as we may cause new events by retrying failed sub_cmds
-    ublksrv_queue_handled_event(q);
-    for (auto& result : completed) {
-        auto* io = reinterpret_cast< async_io* >(result.io->private_data);
-        auto* state = io->ensure(result.sub_cmd);
-        state->result = result.result;
-        try {
-            io->push_completion(state);
-        } catch (std::exception const& e) {
-            TLOGE("Async event threw exception: [{}]", e.what())
-            ublksrv_complete_io(q, result.io->tag, -EIO);
-        }
-    }
-}
-
 static void handle_io_background(const struct ublksrv_queue*, int nr_queued_io) {
     TLOGT("HandleIOBackground: {}", nr_queued_io)
 }
@@ -462,10 +491,8 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
 
     tgt->tgt_type = std::make_unique< ublksrv_tgt_type >(ublksrv_tgt_type{
         .handle_io_async = handle_io_async,
-        .tgt_io_done = tgt_io_done,
-        .handle_event = device->uses_ublk_iouring
-            ? nullptr
-            : handle_event, // Device specific, determines *if* ublksrv_complete_io() will be called by device
+        .tgt_io_done = nullptr,  // handled inline in run_queue_loop
+        .handle_event = nullptr, // handled inline in run_queue_loop
         .handle_io_background = handle_io_background,
         .usage_for_add = nullptr, // Not Implemented
         .init_tgt = init_tgt,
@@ -475,8 +502,11 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .idle_fn = idle_transition, // Called when I/O has stopped
         .type = 0,                  // Deprecated *DO NOT USE*
         .ublk_flags = ublk_flags,
-        .ublksrv_flags = (device->uses_ublk_iouring ? 0U : (unsigned)UBLKSRV_F_NEED_EVENTFD), // See handle_event
-        .pad = 0,                                                                             // Currently Clear
+        .ublksrv_flags =
+            (device->uses_ublk_iouring
+                 ? 0U
+                 : (unsigned)UBLKSRV_F_NEED_EVENTFD), // eventfd set up by ublksrv, handled inline in run_queue_loop
+        .pad = 0,                                     // Currently Clear
         .name = "ublkpp",
         .recovery_tgt = nullptr, // Deprecated *DO NOT USE*
         .init_queue = init_queue,
