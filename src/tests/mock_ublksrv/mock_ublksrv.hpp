@@ -7,6 +7,7 @@
 #include <liburing.h>
 #include <ublksrv.h>
 
+#include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/lib/sub_cmd.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
 
@@ -73,6 +74,9 @@ private:
     io_uring _ring{};
     std::shared_ptr< UblkDisk > _disk;
     std::vector< TagState > _tags;
+
+    // async_io pool — one per tag, mirrors what init_queue does via placement new
+    std::vector< async_io > _io_states;
 
     // Aligned I/O buffers — one per tag, DEF_BUF_SIZE bytes each
     std::vector< uint8_t > _io_buf_storage;

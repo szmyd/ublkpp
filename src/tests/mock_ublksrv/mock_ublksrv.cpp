@@ -17,7 +17,7 @@ static constexpr size_t k_max_io_size = DEF_BUF_SIZE;
 static constexpr size_t k_sector_align = 512;
 
 MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_queues) :
-        _q_depth(q_depth), _disk(std::move(disk)), _tags(q_depth), _queues(nr_queues) {
+        _q_depth(q_depth), _disk(std::move(disk)), _tags(q_depth), _queues(nr_queues), _io_states(q_depth) {
     // q_depth * 4 gives headroom for RAID1 write amplification (2x replicas +
     // 2x bitmap SQEs per user write) without false "ring full" auto-submits.
     if (io_uring_queue_init(q_depth * 4, &_ring, 0) < 0) throw std::runtime_error("io_uring_queue_init failed");
@@ -46,11 +46,11 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
         }
     }
 
-    // Wire up per-tag data.iod pointers
+    // Wire up per-tag data.iod pointers and async_io backing storage
     for (int tag = 0; tag < q_depth; ++tag) {
         _tags[tag].data.tag = tag;
         _tags[tag].data.iod = &_tags[tag].iod;
-        _tags[tag].data.private_data = nullptr;
+        _tags[tag].data.private_data = &_io_states[tag];
     }
 
     // Allocate sector-aligned I/O buffers (one per tag)
@@ -79,6 +79,11 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     ts.iod.addr = reinterpret_cast< uint64_t >(buf);
     ts.sub_cmds_remaining = 0;
     ts.result = 0;
+
+    // Reset async_io state between IOs on the same tag slot
+    _io_states[tag].pool.clear();
+    _io_states[tag].completions.clear();
+    _io_states[tag].waiter = {};
 
     auto res = _disk->queue_tgt_io(&_queues[0], &ts.data, 0);
     if (!res) return res;
