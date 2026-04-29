@@ -40,6 +40,12 @@ pipeline {
             }
         }
 
+        stage('Prepare') {
+            steps {
+                sh "bash prepare_v2.sh"
+            }
+        }
+
         stage('Build') {
             failFast true
             matrix {
