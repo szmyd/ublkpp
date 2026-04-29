@@ -28,7 +28,9 @@ namespace {
 
 TEST(BlockHasUnmap, NonExistentDevice) {
     // Test with a device that doesn't exist
+    // clang-format off
     struct stat fake_stat{};
+    // clang-format on
     bool result = ublkpp::block_has_unmap(fake_stat);
 
     // Should return false for non-existent devices
