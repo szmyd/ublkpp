@@ -75,6 +75,12 @@ public:
     uint8_t route_size() const noexcept override { return 0; }
 };
 
+class AsyncTestDisk : public TestDisk {
+public:
+    explicit AsyncTestDisk(TestParams const& p) : TestDisk(p) {}
+    bool uses_async_api() const noexcept override { return true; }
+};
+
 }; // namespace ublkpp
 
 inline ublk_io_data make_io_data(uint32_t op_flags, uint32_t len = 0, uint64_t start = 0) {

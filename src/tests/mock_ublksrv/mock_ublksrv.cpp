@@ -17,7 +17,12 @@ static constexpr size_t k_max_io_size = DEF_BUF_SIZE;
 static constexpr size_t k_sector_align = 512;
 
 MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_queues) :
-        _q_depth(q_depth), _disk(std::move(disk)), _tags(q_depth), _queues(nr_queues), _io_states(q_depth) {
+        _q_depth(q_depth),
+        _disk(std::move(disk)),
+        _tags(q_depth),
+        _queues(nr_queues),
+        _io_states(q_depth),
+        _async_tasks(q_depth) {
     // q_depth * 4 gives headroom for RAID1 write amplification (2x replicas +
     // 2x bitmap SQEs per user write) without false "ring full" auto-submits.
     if (io_uring_queue_init(q_depth * 4, &_ring, 0) < 0) throw std::runtime_error("io_uring_queue_init failed");
@@ -85,6 +90,15 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     _io_states[tag].pool.clear();
     _io_states[tag].completions.clear();
     _io_states[tag].waiter = {};
+    _async_tasks[tag].reset();
+
+    if (_disk->uses_async_api()) {
+        auto task = _disk->handle_io_async(&_queues[0], &ts.data, sub_cmd_t{0});
+        task._coro.resume(); // start lazy coroutine; runs until first co_await CqeAwaitable
+        _async_tasks[tag].emplace(std::move(task));
+        // Pool size == number of CqeStates registered (one per pending stripe SQE)
+        return io_result{_io_states[tag].pool.size()};
+    }
 
     auto res = _disk->queue_tgt_io(&_queues[0], &ts.data, 0);
     if (!res) return res;
@@ -99,13 +113,25 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
 void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out) {
     auto* state = reinterpret_cast< CqeState* >(cqe->user_data & ~(1ULL << 63));
     int const tag = state->owner->tag;
-    auto const sub_cmd = state->sub_cmd;
     int const res = cqe->res;
 
     // Consume the CQE immediately so peek sees the next one
     io_uring_cqe_seen(&_ring, cqe);
 
+    state->result = res;
+    state->result_ready = true;
+
+    if (auto h = std::exchange(state->waiter, {})) {
+        // New async path: resume the suspended disk_task directly
+        h.resume();
+        auto& opt = _async_tasks[tag];
+        if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
+        return;
+    }
+
+    // Old path: on_io_complete, accumulate result, check for completion
     auto& ts = _tags[tag];
+    auto const sub_cmd = state->sub_cmd;
     _disk->on_io_complete(&ts.data, sub_cmd, res);
 
     if (is_internal(sub_cmd)) {
@@ -122,6 +148,30 @@ void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out)
     }
 
     if (ts.sub_cmds_remaining == 0) { out.push_back({tag, ts.result}); }
+}
+
+std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int result) {
+    std::vector< Completion > out;
+    // Find the CqeState currently suspended in the disk_task (waiter is set)
+    CqeState* target = nullptr;
+    for (auto& s : _io_states[tag].pool) {
+        if (s.waiter) {
+            target = &s;
+            break;
+        }
+    }
+    auto& opt = _async_tasks[tag];
+    if (!target) {
+        // No suspended state — task may have completed synchronously (e.g. flush).
+        // result is ignored; return the task's value if it finished.
+        if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
+        return out;
+    }
+    target->result = result;
+    target->result_ready = true;
+    if (auto h = std::exchange(target->waiter, {})) h.resume();
+    if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
+    return out;
 }
 
 std::vector< MockUblksrv::Completion > MockUblksrv::poll(int min_completions, std::chrono::milliseconds timeout) {
