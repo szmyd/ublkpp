@@ -12,16 +12,6 @@
 
 namespace ublkpp {
 
-// Encodes tag, op, and sub_cmd into the io_uring SQE user_data for target I/O.
-// The high bit marks the entry as a target SQE so libublksrv routes the CQE to tgt_io_done.
-inline uint64_t build_tgt_sqe_data(uint64_t tag, uint64_t op, uint64_t sub_cmd) {
-    DEBUG_ASSERT_LE(tag, UINT16_MAX, "Tag too big: [{:#0x}]", tag)
-    DEBUG_ASSERT_LE(op, UINT8_MAX, "Op too big: [{:#0x}]", op)
-    DEBUG_ASSERT_LE(sub_cmd, UINT16_MAX, "SubCmd too big: [{:#0x}]", sub_cmd)
-    return tag | (op << sqe_tag_width) | (sub_cmd << (sqe_tag_width + sqe_op_width)) |
-        (static_cast< uint64_t >(0b1) << (sqe_tag_width + sqe_op_width + sqe_tgt_data_width + sqe_reserved_width));
-}
-
 struct CqeState;
 
 // Per-IO state tracking one inflight request, owned by the ublksrv-allocated io_data slot.
@@ -31,7 +21,7 @@ struct CqeState;
 //
 // Dispatch protocol:
 //   1. queue_tgt_io calls build_cqe_state_data → ensure(sub_cmd) per SQE; pool grows.
-//   2. tgt_io_done / handle_event: ensure(sub_cmd) finds the state, sets result, push_completion.
+//   2. run_queue_loop: CqeState* is decoded from user_data and push_completion is called.
 //   3. push_completion resumes the CqeAwaiter-suspended coroutine if one is waiting.
 //   4. CqeAwaiter::await_resume pops one entry from completions and returns it.
 //   5. process_result inspects the state and may add to pending (retry / internal).
@@ -41,6 +31,7 @@ struct async_io {
     std::deque< CqeState* > completions{}; // ordered queue of states ready for process_result
     uint32_t pending{0};
     int ret_val{0};
+    int tag{-1}; // set in __handle_io_async; read by run_queue_loop and mock on error
 
     // Returns the CqeState for sub_cmd, creating it on first call. O(N) scan; N is small in practice.
     CqeState* ensure(sub_cmd_t sub_cmd);
@@ -68,18 +59,13 @@ inline CqeState* async_io::ensure(sub_cmd_t sub_cmd) {
     return &pool.back();
 }
 
-// Drop-in replacement for build_tgt_sqe_data for disk drivers that submit SQEs through the target.
-//
-// Before encoding user_data for an SQE, this function pre-registers the sub_cmd in the per-IO
-// CqeState pool (async_io::ensure). When the CQE arrives, tgt_io_done looks up the state by
-// sub_cmd — avoiding a shared side-channel — sets the result, and resumes the coroutine via
-// push_completion.
-//
-// The encoded bits returned are identical to build_tgt_sqe_data(tag, op, sub_cmd), so libublksrv
-// routing (tag extraction, is_target_io check) is completely unchanged.
-inline uint64_t build_cqe_state_data(ublk_io_data const* data, uint64_t tag, uint64_t op, uint64_t sub_cmd) {
-    reinterpret_cast< async_io* >(data->private_data)->ensure(static_cast< sub_cmd_t >(sub_cmd));
-    return build_tgt_sqe_data(tag, op, sub_cmd);
+// Stores the CqeState* directly in the SQE user_data, OR'd with bit 63 to mark it as a target SQE.
+// On ARM64/x86_64 canonical userspace addresses use ≤48 bits, so bit 63 is always zero in any
+// valid pointer — the OR is safe and reversible with & ~(1ULL << 63).
+inline uint64_t build_cqe_state_data(ublk_io_data const* data, uint64_t sub_cmd) {
+    auto* io = reinterpret_cast< async_io* >(data->private_data);
+    auto* state = io->ensure(static_cast< sub_cmd_t >(sub_cmd));
+    return reinterpret_cast< uint64_t >(state) | (1ULL << 63);
 }
 
 } // namespace ublkpp

@@ -51,6 +51,7 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
         _tags[tag].data.tag = tag;
         _tags[tag].data.iod = &_tags[tag].iod;
         _tags[tag].data.private_data = &_io_states[tag];
+        _io_states[tag].tag = tag;
     }
 
     // Allocate sector-aligned I/O buffers (one per tag)
@@ -96,8 +97,9 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
 }
 
 void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out) {
-    int const tag = static_cast< int >(user_data_to_tag(cqe->user_data));
-    auto const sub_cmd = static_cast< sub_cmd_t >(user_data_to_tgt_data(cqe->user_data));
+    auto* state = reinterpret_cast< CqeState* >(cqe->user_data & ~(1ULL << 63));
+    int const tag = state->owner->tag;
+    auto const sub_cmd = state->sub_cmd;
     int const res = cqe->res;
 
     // Consume the CQE immediately so peek sees the next one

@@ -84,8 +84,8 @@ static constexpr uint64_t k_eventfd_bit = 1ULL << 62;
 static constexpr int k_io_idle_secs = 20;
 
 // Our own CQE processing loop, replacing ublksrv_process_io.
-// Target CQEs are dispatched inline; ublk command CQEs delegate to ublksrv.
-// sub_cmd encoding in user_data is preserved (Phase 2 — no pointer encoding yet).
+// Target CQEs carry a raw CqeState* in bits 62:0 with bit 63 set; decoded via pointer cast.
+// Eventfd CQEs use bit 62; ublk command CQEs delegate to ublksrv.
 static void run_queue_loop(ublksrv_queue const* q) {
     auto* ring = q->ring_ptr;
     struct __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
@@ -116,20 +116,14 @@ static void run_queue_loop(ublksrv_queue const* q) {
                         }
                     }
                 } else {
-                    // target io_uring CQE — route by sub_cmd to CqeState
-                    auto* data =
-                        reinterpret_cast< ublk_io_data* >(ublksrv_io_private_data(q, user_data_to_tag(cqe->user_data)));
-                    RELEASE_ASSERT_EQ(data->tag, static_cast< int32_t >(user_data_to_tag(cqe->user_data)),
-                                      "Tag mismatch!")
-                    auto* io = reinterpret_cast< async_io* >(data->private_data);
-                    auto cmd = static_cast< sub_cmd_t >(user_data_to_tgt_data(cqe->user_data));
-                    auto* state = io->ensure(cmd);
+                    // target io_uring CQE — user_data is a raw CqeState* | k_target_bit
+                    auto* state = reinterpret_cast< CqeState* >(cqe->user_data & ~k_target_bit);
                     state->result = cqe->res;
                     try {
-                        io->push_completion(state);
+                        state->owner->push_completion(state);
                     } catch (std::exception const& e) {
                         TLOGE("I/O threw exception: [{}]", e.what())
-                        ublksrv_complete_io(q, data->tag, -EIO);
+                        ublksrv_complete_io(q, state->owner->tag, -EIO);
                     }
                 }
             } else {
@@ -366,6 +360,7 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
     io->waiter = {};
     io->ret_val = -EIO;
     io->pending = 0;
+    io->tag = data->tag;
 
     auto const op = ublksrv_get_op(data->iod);
 

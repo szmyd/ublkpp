@@ -163,7 +163,7 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
         auto sqe = next_sqe(q);
         io_uring_prep_fallocate(sqe, _fd, discard_to_fallocate(data->iod), addr, len);
 
-        sqe->user_data = build_cqe_state_data(data, data->tag, ublksrv_get_op(data->iod), sub_cmd);
+        sqe->user_data = build_cqe_state_data(data, sub_cmd);
         return 1;
     }
 
@@ -210,7 +210,7 @@ io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, su
     // Set ForceUnitAccess bit to bypass caches
     if (UBLK_IO_OP_READ != op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
 
-    sqe->user_data = build_cqe_state_data(data, data->tag, op, sub_cmd);
+    sqe->user_data = build_cqe_state_data(data, sub_cmd);
 
     // Record I/O start for individual disk metrics
     // This tracks I/O latency for this specific FSDisk instance (identified by path in metrics labels)
