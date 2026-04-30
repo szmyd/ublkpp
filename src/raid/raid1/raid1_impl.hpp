@@ -138,8 +138,6 @@ public:
     disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                       iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
 
-    void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
-
     io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
                               uint32_t nr_vecs, uint64_t addr, int res) override;
     void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;

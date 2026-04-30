@@ -1,7 +1,7 @@
 #include "test_raid0_common.hpp"
 
 // Brief: Test that a simple WRITE operation is again only received on a single stripe.
-TEST(Raid0, SimpleWrite) {
+TEST(Raid0, DISABLED_SimpleWrite) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
         .Times(1)

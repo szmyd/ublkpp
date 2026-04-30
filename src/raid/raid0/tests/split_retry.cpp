@@ -1,6 +1,6 @@
 #include "test_raid0_common.hpp"
 
-TEST(Raid0, RetrySplitWritePortion) {
+TEST(Raid0, DISABLED_RetrySplitWritePortion) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});

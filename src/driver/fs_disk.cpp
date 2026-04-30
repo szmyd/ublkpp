@@ -195,7 +195,9 @@ disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data c
     if (res.value() == 0) co_return 0;
 
     io_uring_submit(q->ring_ptr);
-    co_return co_await CqeAwaitable{io->ensure(sub_cmd)};
+    auto const cqe_result = co_await CqeAwaitable{io->ensure(sub_cmd)};
+    if (_metrics) { _metrics->record_io_complete(data, sub_cmd); }
+    co_return cqe_result;
 }
 
 io_result FSDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd) {
@@ -261,12 +263,6 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return res;
-}
-
-void FSDisk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int) {
-    DLOGT("FSDisk::on_io_complete {} : [tag:{:0x}] [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
-    // Record I/O completion for this individual disk
-    if (_metrics) { _metrics->record_io_complete(data, sub_cmd); }
 }
 
 } // namespace ublkpp

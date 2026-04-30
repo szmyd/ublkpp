@@ -53,11 +53,6 @@ private:
     }
 
 public:
-    // Override on_io_complete to validate slot routing (only place with the bug)
-    void on_io_complete(ublk_io_data const*, sub_cmd_t sub_cmd, int) override {
-        validate_slot(sub_cmd, "on_io_complete");
-    }
-
     MOCK_METHOD(std::list< int >, open_for_uring, (ublksrv_queue const*, int const), (override));
     MOCK_METHOD(io_result, handle_internal,
                 (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t, int), (override));

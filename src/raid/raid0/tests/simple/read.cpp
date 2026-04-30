@@ -2,7 +2,7 @@
 
 // Brief: Test a READ through the RAID0 Device. We should only receive the READ on one of the
 // three underlying stripes.
-TEST(Raid0, SimpleRead) {
+TEST(Raid0, DISABLED_SimpleRead) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});

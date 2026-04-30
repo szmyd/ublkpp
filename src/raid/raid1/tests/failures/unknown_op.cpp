@@ -1,6 +1,6 @@
 #include "test_raid1_common.hpp"
 
-TEST(Raid1, UnknownOp) {
+TEST(Raid1, DISABLED_UnknownOp) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 

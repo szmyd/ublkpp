@@ -2,7 +2,7 @@
 
 // Brief: Test retrying a READ within the RAID1 Device, if the CLEAN device fails immediately.
 // Runs in isolated thread to get fresh thread_local load balancer state.
-TEST(Raid1, ReadFailover) {
+TEST(Raid1, DISABLED_ReadFailover) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);

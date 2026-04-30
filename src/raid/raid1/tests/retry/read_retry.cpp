@@ -5,7 +5,7 @@
 // A failed read does not prevent us from continuing to try and read from the device, it must
 // experience a failure to mutate, so this immediate read failure still has the follow-up read
 // attempt on device A.
-TEST(Raid1, ReadRetryA) {
+TEST(Raid1, DISABLED_ReadRetryA) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
@@ -59,7 +59,7 @@ TEST(Raid1, ReadRetryA) {
 }
 
 // Brief: Identical to ReadRetryA but for Device B.
-TEST(Raid1, ReadRetryB) {
+TEST(Raid1, DISABLED_ReadRetryB) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);

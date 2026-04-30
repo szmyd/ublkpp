@@ -3,7 +3,6 @@
 #include <optional>
 #include <set>
 
-#include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
@@ -719,7 +718,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         second_write = false;
     }
 
-    // Sync IOVs have to track this differently as the do not receive on_io_complete
+    // Sync IOVs enqueue/dequeue writes directly since they do not go through handle_iov_async
     if (async_data) _resync_task->enqueue_write();
 
     // Determine where we're going
@@ -728,7 +727,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
 
     // Queue the I/O on the active device
     auto active_res = func(*cur_disk, cur_subcmd);
-    // Inline completion (sync fallback returns 0): on_io_complete won't fire, balance the enqueue now.
+    // Inline completion (sync path returns 0 immediately): balance the enqueue now.
     if (async_data && active_res.has_value() && active_res.value() == 0) _resync_task->dequeue_write();
 
     // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
@@ -753,7 +752,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
             if (async_data) _resync_task->dequeue_write();
             return active_res;
         }
-        // Inline completion on backup write: on_io_complete won't fire, balance the enqueue.
+        // Inline completion on backup write (sync path): balance the enqueue.
         if (async_data && active_res.value() == 0) _resync_task->dequeue_write();
         return active_res.value() + backup_res.value();
     }
@@ -937,7 +936,6 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
         primary_dev->disk->handle_iov_async(q, data, primary_sub, iovecs, nr_vecs, addr + reserved_size);
     primary_task._coro.resume();
     auto const r = co_await primary_task.started();
-    primary_dev->disk->on_io_complete(data, primary_sub, r);
 
     if (r >= 0) {
         primary_dev->unavail.clear(std::memory_order_release);
@@ -954,7 +952,6 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
         failover_dev->disk->handle_iov_async(q, data, failover_sub, iovecs, nr_vecs, addr + reserved_size);
     failover_task._coro.resume();
     auto const r2 = co_await failover_task.started();
-    failover_dev->disk->on_io_complete(data, failover_sub, r2);
 
     co_return r2 >= 0 ? r2 : -EIO;
 }
@@ -1013,7 +1010,6 @@ disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io
     }
 
     auto const active_res = co_await active_task.started();
-    state.active_dev->disk->on_io_complete(data, state.active_subcmd, active_res);
     _resync_task->dequeue_write();
 
     if (active_res < 0) {
@@ -1021,7 +1017,6 @@ disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io
         __become_degraded(state.active_subcmd, &state);
         if (backup_task) {
             auto const backup_res = co_await backup_task->started();
-            state.backup_dev->disk->on_io_complete(data, state.backup_subcmd, backup_res);
             _resync_task->dequeue_write();
             co_return backup_res >= 0 ? backup_res : -EIO;
         }
@@ -1034,7 +1029,6 @@ disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io
     }
 
     auto const backup_res = co_await backup_task->started();
-    state.backup_dev->disk->on_io_complete(data, state.backup_subcmd, backup_res);
     _resync_task->dequeue_write();
 
     if (backup_res < 0) {
@@ -1080,39 +1074,6 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
 
     if (!io_res) return io_res;
     return res;
-}
-
-void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
-    auto const state = __capture_route_state();
-    // Determine which device handled this I/O based on the lowest bit of sub_cmd
-    // 0 = device A, 1 = device B
-    auto const orig_route =
-        (0b1 & ((sub_cmd) >> state.backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
-    DLOGT("Raid1DiskImpl::on_io_complete [tag:{:0x}] [sub_cmd:{}] orig_route:{}", data->tag, ublkpp::to_string(sub_cmd),
-          orig_route)
-
-    // Pass completion notification to the underlying device for its metrics
-    // Map orig_route to physical device accounting for potential swap
-    __route_to_device(state, orig_route).device->disk->on_io_complete(data, sub_cmd, res);
-
-    // Auto-recovery: Clear unavail flag on successful READ completions (user I/O only, not internal/resync)
-    if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod) && res >= 0 && !is_internal(sub_cmd)) {
-        auto const& device = __route_to_device(state, orig_route).device;
-
-        if (device->unavail.test(std::memory_order_acquire)) {
-            device->unavail.clear(std::memory_order_release);
-            RLOGD("Device auto-recovered from read failure: {}", *device->disk)
-        }
-    }
-
-    // Decrement outstanding write counter for writes (not reads), but only if it was a
-    // success.
-    // Error cases will be handled by __handle_async_retry
-    // as they need to dirty the BITMAP prior to unblocking the resync task.
-    if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) {
-        DEBUG_ASSERT(!is_retry(sub_cmd), "Retried a WRITE command?!");
-        if (0 <= res && !is_internal(sub_cmd)) _resync_task->dequeue_write();
-    }
 }
 
 void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {

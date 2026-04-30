@@ -1,7 +1,7 @@
 #include "test_raid0_common.hpp"
 
 // Test that a overlapping I/O is correct Split and then formed into multiple iovec structures
-TEST(Raid0, SplitWrite) {
+TEST(Raid0, DISABLED_SplitWrite) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});

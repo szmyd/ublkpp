@@ -44,10 +44,6 @@ disk_task< int > Raid1Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_dat
                                              iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
     return _impl->handle_iov_async(q, data, sub_cmd, iovecs, nr_vecs, addr);
 }
-void Raid1Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
-    return _impl->on_io_complete(data, sub_cmd, res);
-}
-
 io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
                                      uint32_t nr_vecs, uint64_t addr, int res) {
     return _impl->handle_internal(q, data, sub_cmd, iovec, nr_vecs, addr, res);

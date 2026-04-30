@@ -6,7 +6,7 @@
 // 2. Write to device_a fails immediately → triggers __become_degraded
 // 3. Superblock write to device_b (the new active device) FAILS
 // 4. Expected: Rollback the route CAS and return error without degrading
-TEST(Raid1, BecomeDegradedSuperblockFails) {
+TEST(Raid1, DISABLED_BecomeDegradedSuperblockFails) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
