@@ -63,6 +63,14 @@ public:
     // Implementations submit all SQEs upfront then co_await CqeAwaitable for each result.
     virtual disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
 
+    // Async I/O with explicit scatter-gather list and address. Called when the operation targets
+    // a sub-range or offset that differs from what ublk_io_data describes - the caller owns the
+    // buffer layout and address computation. Composite disks override to apply their own
+    // coordination before delegating to children. Default: async_iov/handle_discard +
+    // io_uring_submit + co_await CqeAwaitable. For DISCARD, iovecs[0].iov_len is the length.
+    virtual disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                              iovec* iovecs, uint32_t nr_vecs, uint64_t addr);
+
     virtual std::string id() const noexcept = 0;
 
     /// Device Specific I/O Handlers

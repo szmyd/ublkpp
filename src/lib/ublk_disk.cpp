@@ -4,6 +4,7 @@
 #include <ublk_cmd.h>
 
 #include "logging.hpp"
+#include "ublkpp/lib/cqe_state.hpp"
 
 namespace ublkpp {
 
@@ -53,6 +54,28 @@ disk_task< int > UblkDisk::handle_io_async(ublksrv_queue const*, ublk_io_data co
     // Unreachable: __handle_io_async only calls this when uses_async_api() returns true.
     RELEASE_ASSERT(false, "handle_io_async called on disk without uses_async_api() override")
     co_return -EIO; // LCOV_EXCL_LINE
+}
+
+// Default: call async_iov or handle_discard (both are pure virtual, so any concrete leaf disk
+// gets this behaviour automatically), then submit and await the CQE.
+disk_task< int > UblkDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                            iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
+    auto* io = reinterpret_cast< async_io* >(data->private_data);
+    auto const op = ublksrv_get_op(data->iod);
+
+    io_result res;
+    if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
+        uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
+        res = handle_discard(q, data, sub_cmd, len, addr);
+    } else {
+        res = async_iov(q, data, sub_cmd, iovecs, nr_vecs, addr);
+    }
+
+    if (!res) co_return -static_cast< int >(res.error().value());
+    if (res.value() == 0) co_return 0;
+
+    io_uring_submit(q->ring_ptr);
+    co_return co_await CqeAwaitable{io->ensure(sub_cmd)};
 }
 
 io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,

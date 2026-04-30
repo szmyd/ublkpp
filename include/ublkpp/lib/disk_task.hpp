@@ -5,6 +5,9 @@
 
 namespace ublkpp {
 
+template < typename T >
+struct StartedTaskAwaitable;
+
 // Lightweight lazy coroutine task for per-disk async I/O. Composable via symmetric transfer:
 // co_await disk_task<T> in a co_io_job or another disk_task<U> suspends the caller and
 // immediately resumes the callee without going through any scheduler.
@@ -49,12 +52,30 @@ struct disk_task {
     }
 
     // Awaitable interface: allows co_await disk_task<T> from co_io_job or disk_task<U>.
+    // Uses symmetric transfer to start the callee without returning to the scheduler.
     bool await_ready() const noexcept { return false; }
     std::coroutine_handle<> await_suspend(std::coroutine_handle<> cont) noexcept {
         _coro.promise()._continuation = cont;
         return _coro; // symmetric transfer: start callee immediately
     }
     T await_resume() noexcept { return _coro.promise()._value; }
+
+    // Returns an awaitable for a task already started via _coro.resume().
+    // await_ready() fast-paths synchronous completions.
+    StartedTaskAwaitable< T > started() noexcept { return {*this}; }
+};
+
+// Awaitable for a disk_task<T> that was already started via _coro.resume(). Used when the caller
+// eagerly starts all child tasks (to submit SQEs in parallel) before suspending on results.
+// await_ready() fast-paths tasks that completed synchronously before the co_await.
+// Thread-safe: queue thread is single-threaded so no CQE can arrive between await_ready and
+// await_suspend - the child cannot complete between the two calls.
+template < typename T >
+struct StartedTaskAwaitable {
+    disk_task< T >& task;
+    bool await_ready() const noexcept { return task._coro.done(); }
+    void await_suspend(std::coroutine_handle<> cont) noexcept { task._coro.promise()._continuation = cont; }
+    T await_resume() const noexcept { return task._coro.promise()._value; }
 };
 
 } // namespace ublkpp

@@ -1,5 +1,6 @@
 #include "ublkpp/raid/raid1.hpp"
 
+#include <optional>
 #include <set>
 
 #include <boost/uuid/random_generator.hpp>
@@ -119,7 +120,7 @@ void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std:
     // Now find the what size we should actually set based on the smallest provided device
     for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
         if (!device->direct_io) {
-            RLOGW("Device {} does not support O_DIRECT — RAID-1 will use buffered I/O (backend caching not bypassed!)",
+            RLOGW("Device {} does not support O_DIRECT - RAID-1 will use buffered I/O (backend caching not bypassed!)",
                   device)
             direct_io = false; // LCOV_EXCL_LINE
         }
@@ -199,7 +200,7 @@ void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
         bool const a_is_defunct = DEFUNCT_DEVICE(_device_a->disk);
         // Route reads to whichever physical slot is live
         _read_route_cache.store(a_is_defunct ? read_route::DEVB : read_route::DEVA, std::memory_order_release);
-        // Load bitmap from the live slot; don't bump age — we may get the original disk back via swap
+        // Load bitmap from the live slot; don't bump age - we may get the original disk back via swap
         _dirty_bitmap->load_from(*(a_is_defunct ? _device_b : _device_a)->disk);
     } else if (_device_a->new_device xor _device_b->new_device) {
         // Bump the bitmap age
@@ -278,7 +279,7 @@ Raid1DiskImpl::~Raid1DiskImpl() {
 
 std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
-    // Always collect FDs from child disks — each queue thread may need its own set.
+    // Always collect FDs from child disks - each queue thread may need its own set.
     auto fds = _device_a->disk->open_for_uring(q, iouring_device_start);
     fds.splice(fds.end(), _device_b->disk->open_for_uring(q, iouring_device_start + fds.size()));
 
@@ -302,7 +303,7 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
 //   • __swap_device    CAS: EITHER → DEVA/DEVB  (replacing a device with a healthy one)
 //   • __become_degraded CAS: EITHER → DEVA/DEVB  (marking a failed device as unavailable)
 //
-// If both race, the loser sees the CAS fail and returns early — no further state is mutated.
+// If both race, the loser sees the CAS fail and returns early - no further state is mutated.
 // No additional lock is needed between them; the CAS IS the synchronization gate.
 //
 // __swap_device also holds _ctrl_lock so that two concurrent swap_device() callers don't race
@@ -459,7 +460,7 @@ static inline RouteSelection __route_to_device(RouteState const& state, raid1::r
 std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoing_device_id,
                                                        std::shared_ptr< UblkDisk > incoming_device) {
     if (!incoming_device->direct_io) {
-        RLOGW("Replacement device {} does not support O_DIRECT — RAID-1 will use buffered I/O (backend caching not "
+        RLOGW("Replacement device {} does not support O_DIRECT - RAID-1 will use buffered I/O (backend caching not "
               "bypassed!)",
               incoming_device)
     }
@@ -523,7 +524,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     // Atomically swap the device or fail; fail if swapping sole active device
     if (__swap_device(outgoing_device_id, incoming_mirror, state.route)) {
         if (_raid_metrics) _raid_metrics->record_device_swap();
-        // Stop stale probes — they hold a shared_ptr to the outgoing MirrorDevice.
+        // Stop stale probes - they hold a shared_ptr to the outgoing MirrorDevice.
         // _idle_probe_lock guards _probe members against concurrent launch() in idle_transition.
         auto lk = std::unique_lock{_idle_probe_lock};
         _idle_probe_a.stop();
@@ -811,14 +812,14 @@ io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_
     }
 
     // In degraded mode, if the load-balancer picked the backup (dirty) device, verify the region is
-    // clean before using it — otherwise fall back to the active route
+    // clean before using it - otherwise fall back to the active route
     if (state->is_degraded && route != state->route && _dirty_bitmap->is_dirty(addr, len)) route = state->route;
 
     // We've already attempted this device...we don't want to re-attempt
     if (retry && (last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
 
     // Route away from unavail devices; recovery is handled by the idle probe.
-    // In degraded mode unavail is set on the backup device as part of degradation — routing is
+    // In degraded mode unavail is set on the backup device as part of degradation - routing is
     // already handled by the is_degraded block above, so skip this check there.
     if (!state->is_degraded && __route_to_device(*state, route).device->unavail.test(std::memory_order_acquire)) {
         route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
@@ -876,7 +877,7 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data cons
 
 void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
     auto const state = __capture_route_state();
-    // _pending_results[q] holds synthetic completions injected by __handle_async_retry — not backend CQEs.
+    // _pending_results[q] holds synthetic completions injected by __handle_async_retry - not backend CQEs.
     // Each entry represents a degraded write where the PRIMARY leg failed but the write succeeded on the
     // surviving leg. The `result` field carries the byte count that must be accumulated into ret_val via
     // the normal process_result path. See the comment in __handle_async_retry for why this indirection is
@@ -931,6 +932,149 @@ io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* d
             return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
         },
         addr, len, q, data);
+}
+
+disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data,
+                                                      sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs, uint64_t addr,
+                                                      uint32_t len) {
+    thread_local raid1::read_route last_read = raid1::read_route::DEVB;
+    auto const state = __capture_route_state(sub_cmd);
+
+    // Pick device (load balancer)
+    auto route = read_route::DEVA;
+    if (state.is_degraded && state.backup_dev->unavail.test(std::memory_order_acquire)) {
+        route = state.route;
+    } else {
+        route = (last_read == read_route::DEVB) ? read_route::DEVA : read_route::DEVB;
+    }
+
+    // In degraded mode, avoid reading backup if the region is dirty
+    if (state.is_degraded && route != state.route && _dirty_bitmap->is_dirty(addr, len)) route = state.route;
+
+    // In healthy mode, avoid unavail devices
+    if (!state.is_degraded && __route_to_device(state, route).device->unavail.test(std::memory_order_acquire)) {
+        route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
+        RLOGD("Skipping unavail device, routing to alternate")
+    }
+
+    last_read = route;
+    auto const [primary_dev, primary_sub] = __route_to_device(state, route);
+
+    auto primary_task =
+        primary_dev->disk->handle_iov_async(q, data, primary_sub, iovecs, nr_vecs, addr + reserved_size);
+    primary_task._coro.resume();
+    auto const r = co_await primary_task.started();
+    primary_dev->disk->on_io_complete(data, primary_sub, r);
+
+    if (r >= 0) {
+        primary_dev->unavail.clear(std::memory_order_release);
+        co_return r;
+    }
+    if (!primary_dev->unavail.test_and_set(std::memory_order_acquire))
+        RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
+
+    // Failover to the other device
+    auto const other_route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
+    auto const [failover_dev, failover_sub] = __route_to_device(state, other_route);
+
+    auto failover_task =
+        failover_dev->disk->handle_iov_async(q, data, failover_sub, iovecs, nr_vecs, addr + reserved_size);
+    failover_task._coro.resume();
+    auto const r2 = co_await failover_task.started();
+    failover_dev->disk->on_io_complete(data, failover_sub, r2);
+
+    co_return r2 >= 0 ? r2 : -EIO;
+}
+
+disk_task< int > Raid1DiskImpl::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    iovec iov{reinterpret_cast< void* >(data->iod->addr), static_cast< size_t >(data->iod->nr_sectors) << SECTOR_SHIFT};
+    co_return co_await handle_iov_async(q, data, sub_cmd, &iov, 1,
+                                        static_cast< uint64_t >(data->iod->start_sector) << SECTOR_SHIFT);
+}
+
+disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                                 iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
+    auto const op = ublksrv_get_op(data->iod);
+    auto const len = static_cast< uint32_t >(__iovec_len(iovecs, iovecs + nr_vecs));
+
+    if (op == UBLK_IO_OP_FLUSH) co_return handle_flush(q, data, sub_cmd).value_or(-EIO);
+
+    RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}] [uuid:{}]",
+          op == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> params()->basic.logical_bs_shift, len,
+          ublkpp::to_string(sub_cmd), _str_uuid)
+
+    sub_cmd = shift_route(sub_cmd, route_size());
+
+    if (op == UBLK_IO_OP_READ) co_return co_await __failover_read_async(q, data, sub_cmd, iovecs, nr_vecs, addr, len);
+
+    // Write / Discard / WriteZeroes: replicate to both devices
+    auto const state = __capture_route_state(sub_cmd);
+    auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
+    auto const backup_unavail = state.backup_dev->unavail.test(std::memory_order_acquire);
+    auto const is_dirty_region = _dirty_bitmap->is_dirty(addr, len);
+    auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
+    auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
+
+    enum class BackupMode { SKIP, REPLICATE, OPTIMISTIC };
+    auto const bm = [&]() -> BackupMode {
+        if (!state.is_degraded) return BackupMode::REPLICATE;
+        if (backup_unavail) return BackupMode::SKIP;
+        if (is_dirty_region) {
+            if (!totally_aligned || is_discard) return BackupMode::SKIP;
+            return BackupMode::OPTIMISTIC;
+        }
+        return BackupMode::REPLICATE;
+    }();
+
+    _resync_task->enqueue_write();
+    auto active_task =
+        state.active_dev->disk->handle_iov_async(q, data, state.active_subcmd, iovecs, nr_vecs, addr + reserved_size);
+    active_task._coro.resume();
+
+    std::optional< disk_task< int > > backup_task;
+    if (bm != BackupMode::SKIP) {
+        _resync_task->enqueue_write();
+        backup_task.emplace(state.backup_dev->disk->handle_iov_async(q, data, state.backup_subcmd, iovecs, nr_vecs,
+                                                                     addr + reserved_size));
+        backup_task->_coro.resume();
+    }
+
+    auto const active_res = co_await active_task.started();
+    state.active_dev->disk->on_io_complete(data, state.active_subcmd, active_res);
+    _resync_task->dequeue_write();
+
+    if (active_res < 0) {
+        _dirty_bitmap->dirty_region(addr, len);
+        __become_degraded(state.active_subcmd, &state);
+        if (backup_task) {
+            auto const backup_res = co_await backup_task->started();
+            state.backup_dev->disk->on_io_complete(data, state.backup_subcmd, backup_res);
+            _resync_task->dequeue_write();
+            co_return backup_res >= 0 ? backup_res : -EIO;
+        }
+        co_return -EIO;
+    }
+
+    if (bm == BackupMode::SKIP) {
+        _dirty_bitmap->dirty_region(addr, len);
+        co_return active_res;
+    }
+
+    auto const backup_res = co_await backup_task->started();
+    state.backup_dev->disk->on_io_complete(data, state.backup_subcmd, backup_res);
+    _resync_task->dequeue_write();
+
+    if (backup_res < 0) {
+        _dirty_bitmap->dirty_region(addr, len);
+        if (!state.is_degraded) {
+            if (auto d = __become_degraded(state.backup_subcmd, &state); !d) co_return -EIO;
+        }
+    } else if (bm == BackupMode::OPTIMISTIC) {
+        state.backup_dev->unavail.clear(std::memory_order_release);
+        _resync_task->clean_region(addr, len, *state.active_dev);
+    }
+
+    co_return active_res;
 }
 
 io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
@@ -1001,7 +1145,7 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
 void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     if (!enter) {
         DEBUG_ASSERT(_idle_queue_count.load(std::memory_order_relaxed) > 0,                      // LCOV_EXCL_LINE
-                     "idle_transition exit without matching enter — ublksrv contract violated"); // LCOV_EXCL_LINE
+                     "idle_transition exit without matching enter - ublksrv contract violated"); // LCOV_EXCL_LINE
         _idle_queue_count.fetch_sub(1, std::memory_order_acq_rel);
         auto lk = std::unique_lock{_idle_probe_lock};
         _idle_probe_a.stop();
@@ -1011,7 +1155,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
 
     // Start probes only when all queue threads are idle.
     // When _nr_hw_queues == 0 (no open_for_uring call yet), prev+1 < 0 is always false for
-    // uint16_t, so the probe fires unconditionally — preserving compat with zero-queue callers
+    // uint16_t, so the probe fires unconditionally - preserving compat with zero-queue callers
     // that skip open_for_uring (e.g. tests that call idle_transition directly).
     auto const prev = _idle_queue_count.fetch_add(1, std::memory_order_acq_rel);
     if (prev + 1 < _nr_hw_queues.load(std::memory_order_acquire)) return;

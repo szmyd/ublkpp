@@ -36,6 +36,14 @@ std::list< int > Raid1Disk::open_for_uring(ublksrv_queue const* q, int const iou
 }
 uint8_t Raid1Disk::route_size() const noexcept { return _impl->route_size(); }
 void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
+bool Raid1Disk::uses_async_api() const noexcept { return _impl->uses_async_api(); }
+disk_task< int > Raid1Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    return _impl->handle_io_async(q, data, sub_cmd);
+}
+disk_task< int > Raid1Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                             iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
+    return _impl->handle_iov_async(q, data, sub_cmd, iovecs, nr_vecs, addr);
+}
 void Raid1Disk::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
     return _impl->on_io_complete(data, sub_cmd, res);
 }

@@ -7,7 +7,6 @@
 
 #include "raid0_impl.hpp"
 #include "lib/logging.hpp"
-#include <ublkpp/lib/cqe_state.hpp>
 
 namespace ublkpp {
 
@@ -176,25 +175,29 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 
 /// This is the primary I/O handler call for RAID0
 //
-//  RAID0 is primary responsible for splitting an I/O request across several stripes. These operations can cross
+//  RAID0 is primarily responsible for splitting an I/O request across several stripes. These operations can cross
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd) const {
+    // We gather all the pieces of each I/O intended to dispatch using this structure
     struct StripeAccum {
-        uint64_t io_addr{0};
-        uint32_t alive_cmds{0};
-        std::array< iovec, 16 > io_array{};
+        uint64_t io_addr{0};                // Starting address
+        uint32_t nr_vecs{0};                // How many iovecs are valid
+        std::array< iovec, 16 > io_array{}; // The scatter-list
     };
-    // Reset only touched stripes on exit; a failed call leaves non-zero alive_cmds that would corrupt the next I/O.
     static_assert(_max_stripe_cnt == 64, "dirty_mask must be exactly uint64_t");
+
+    // Then when allocated (once) an array of accumulators for the thread (1-thread per i/o queue)
     thread_local auto sub_cmds = std::array< StripeAccum, _max_stripe_cnt >();
+
+    // Reset only touched stripes on exit; a failed call leaves non-zero nr_vecs that would corrupt the next I/O.
     uint64_t dirty_mask{0};
     struct DirtyGuard {
         decltype(sub_cmds)& cmds;
         uint64_t& mask;
         ~DirtyGuard() noexcept {
             while (mask) {
-                cmds[std::countr_zero(mask)].alive_cmds = 0;
+                cmds[std::countr_zero(mask)].nr_vecs = 0;
                 mask &= mask - 1; // clear lowest set bit
             }
         }
@@ -219,14 +222,14 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
 
         dirty_mask |= 1ULL << stripe_off;
         auto& acc = sub_cmds[stripe_off];
-        if (!acc.alive_cmds) acc.io_addr = logical_off;
-        acc.io_array[acc.alive_cmds++] = {buf_cursor, sz};
+        if (!acc.nr_vecs) acc.io_addr = logical_off;
+        acc.io_array[acc.nr_vecs++] = {buf_cursor, sz};
 
         // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
         // guaranteeing this stripe cannot accumulate more iovecs in the same call.
         if ((_stride_width - _stripe_size) >= (len - off)) {
             sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
-            auto res = func(stripe_off, new_sub_cmd, acc.io_array.data(), acc.alive_cmds, acc.io_addr);
+            auto res = func(stripe_off, new_sub_cmd, acc.io_array.data(), acc.nr_vecs, acc.io_addr);
             if (!res) return res;
             cnt += res.value();
         }
@@ -281,27 +284,25 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 }
 
 bool Raid0Disk::uses_async_api() const noexcept {
-    // Only use the new async path when all children are leaves (currently FSDisk).
-    // If any child is composite (e.g. RAID1 with primary+mirror SQEs per async_iov call),
-    // RAID0's handle_io_async only tracks the outer sub_cmd and would miss the child's internal
-    // sub_cmds. The old queue_tgt_io + CqeAwaiter path handles that correctly via process_result.
-    // When RAID1 is migrated to the async API (future phase), this interaction will need
-    // redesigning so RAID0 calls handle_io_async on children rather than async_iov.
+    // Use the new async path when all children implement uses_async_api().
+    // handle_io_async delegates per-stripe I/O to handle_iov_async on each child,
+    // which owns its full lifecycle (SQE submission + CQE awaiting) as a disk_task<int>.
     return std::all_of(_stripe_array.begin(), _stripe_array.end(),
                        [](auto const& s) { return s->disk->uses_async_api(); });
 }
 
 disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
     auto const op = ublksrv_get_op(data->iod);
-    auto* io = reinterpret_cast< async_io* >(data->private_data);
 
     if (op == UBLK_IO_OP_FLUSH) co_return handle_flush(q, data, sub_cmd).value_or(-EIO);
 
     bool const retry{is_retry(sub_cmd)};
     if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
 
-    // Collect sub_cmds for which async_iov queued SQEs so we can await their CQEs below.
-    std::vector< sub_cmd_t > dispatched;
+    // Eagerly start each child task so all SQEs are in-flight before the first co_await,
+    // preserving kernel parallelism. All tasks must be drained even on error to avoid
+    // dangling waiter handles in CqeState.
+    std::vector< disk_task< int > > stripe_tasks;
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         auto const route_mask = _max_stripe_cnt - 1;
@@ -314,9 +315,13 @@ disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data
             if (retry && (stripe_off != ((sub_cmd >> device->route_size()) & route_mask))) [[unlikely]]
                 continue;
             sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
-            auto res = device->handle_discard(q, data, new_sub_cmd, logical_len, logical_off);
-            if (!res) co_return -EIO;
-            if (res.value() > 0) dispatched.push_back(new_sub_cmd);
+            // stripe_iov is a loop-local variable; _coro.resume() runs handle_discard
+            // synchronously (reading iov_len) before the task suspends, so the stack variable
+            // is safe to pass by pointer.
+            auto stripe_iov = iovec{.iov_base = nullptr, .iov_len = logical_len};
+            auto task = device->handle_iov_async(q, data, new_sub_cmd, &stripe_iov, 1, logical_off);
+            task._coro.resume();
+            stripe_tasks.push_back(std::move(task));
         }
     } else {
         // READ / WRITE: fan out across stripes via __distribute.
@@ -326,26 +331,23 @@ disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data
 
         auto res = __distribute(
             &iov, addr,
-            [q, data, &dispatched, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
-                                         uint64_t logical_off) {
-                auto r = _stripe_array[stripe_off]->disk->async_iov(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
-                if (r && r.value() > 0) dispatched.push_back(new_sub_cmd);
-                return r;
+            [q, data, &stripe_tasks, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
+                                           uint64_t logical_off) -> io_result {
+                auto task =
+                    _stripe_array[stripe_off]->disk->handle_iov_async(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
+                task._coro.resume();
+                stripe_tasks.push_back(std::move(task));
+                return 1;
             },
             retry, sub_cmd);
 
         if (!res) co_return -EIO;
     }
 
-    // Batch-submit all SQEs queued above. All SQEs enter the ring before the first co_await so
-    // the kernel executes them in parallel while we poll sequentially below.
-    io_uring_submit(q->ring_ptr);
-
-    // Await each stripe's CQE. CqeAwaitable::await_ready() fast-paths stripes whose CQE
-    // arrived before we reach co_await, avoiding unnecessary suspension.
+    // Await each stripe task. started() fast-paths tasks that completed synchronously.
     int total = 0;
-    for (auto sc : dispatched) {
-        auto r = co_await CqeAwaitable{io->ensure(sc)};
+    for (auto& t : stripe_tasks) {
+        auto r = co_await t.started();
         if (r < 0) co_return r;
         total += r;
     }

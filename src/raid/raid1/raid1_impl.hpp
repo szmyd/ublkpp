@@ -52,8 +52,8 @@ class Raid1DiskImpl : public UblkDisk {
     std::atomic< bool > _resync_enabled{true};
     std::shared_ptr< Raid1ResyncTask > _resync_task;
 
-    // Guards: (1) swap_device() — serializes concurrent callers on _device_a/_device_b mutations.
-    //         (2) _pending_results — serializes open_for_uring() insertions across queue threads.
+    // Guards: (1) swap_device() - serializes concurrent callers on _device_a/_device_b mutations.
+    //         (2) _pending_results - serializes open_for_uring() insertions across queue threads.
     std::mutex _ctrl_lock;
 
     // Multi-queue idle tracking: probe starts when all queues are idle, stops on any active transition
@@ -74,6 +74,8 @@ class Raid1DiskImpl : public UblkDisk {
                                    ublk_io_data const* async_data);
     io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
                           ublk_io_data const* async_data = nullptr, RouteState* state = nullptr);
+    disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                           iovec* iovecs, uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
                        raid1::read_route const& cur_route);
 
@@ -130,6 +132,11 @@ public:
     void idle_transition(ublksrv_queue const* q, bool enter) noexcept override;
 
     uint8_t route_size() const noexcept override { return 1; }
+
+    bool uses_async_api() const noexcept override { return true; }
+    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
 
     void on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, int res) override;
 
