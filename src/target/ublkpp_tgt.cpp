@@ -88,7 +88,9 @@ static constexpr int k_io_idle_secs = 20;
 // sub_cmd encoding in user_data is preserved (Phase 2 — no pointer encoding yet).
 static void run_queue_loop(ublksrv_queue const* q) {
     auto* ring = q->ring_ptr;
+    // clang-format off
     struct __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
+    // clang-format on
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
 
     while (!ublksrv_queue_is_done(q)) {
