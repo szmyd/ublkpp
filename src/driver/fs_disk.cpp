@@ -145,6 +145,30 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     return sqe;
 }
 
+disk_task< int > FSDisk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    auto* io = reinterpret_cast< async_io* >(data->private_data);
+    ublksrv_io_desc const* iod = data->iod;
+    auto const op = ublksrv_get_op(iod);
+
+    if (op == UBLK_IO_OP_FLUSH) { co_return handle_flush(q, data, sub_cmd).value_or(-EIO); }
+
+    io_result res;
+    if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
+        res = handle_discard(q, data, sub_cmd, iod->nr_sectors << SECTOR_SHIFT, iod->start_sector << SECTOR_SHIFT);
+    } else {
+        thread_local auto iov = iovec{};
+        iov.iov_base = reinterpret_cast< void* >(iod->addr);
+        iov.iov_len = iod->nr_sectors << SECTOR_SHIFT;
+        res = async_iov(q, data, sub_cmd, &iov, 1, iod->start_sector << SECTOR_SHIFT);
+    }
+
+    if (!res) co_return -static_cast< int >(res.error().value());
+    if (res.value() == 0) co_return 0; // inline completion (sync fallback on kernel <= 5.4)
+
+    io_uring_submit(q->ring_ptr);
+    co_return co_await CqeAwaitable{io->ensure(sub_cmd)};
+}
+
 io_result FSDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd) {
 
     DLOGT("Flush {} : [tag:{:#0x}] ublk io [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))

@@ -26,6 +26,7 @@ list(APPEND LIBRARY_OBJECTS
 list(APPEND LIBRARY_LINKS
     isa-l::isa-l
     ublksrv::ublksrv
+    STDEXEC::stdexec
   )
 
 if(${homeblocks_FOUND})

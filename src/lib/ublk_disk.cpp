@@ -49,6 +49,12 @@ io_result UblkDisk::handle_internal(ublksrv_queue const*, ublk_io_data const*, s
     return 0;
 }
 
+disk_task< int > UblkDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
+    // Unreachable: __handle_io_async only calls this when uses_async_api() returns true.
+    RELEASE_ASSERT(false, "handle_io_async called on disk without uses_async_api() override")
+    co_return -EIO; // LCOV_EXCL_LINE
+}
+
 io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
                               uint32_t const len, uint64_t const addr) {
     DLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")

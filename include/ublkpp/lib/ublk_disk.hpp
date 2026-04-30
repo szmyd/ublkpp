@@ -6,6 +6,7 @@
 #include <string>
 
 #include "common.hpp"
+#include "disk_task.hpp"
 #include "sub_cmd.hpp"
 
 struct iovec;
@@ -52,6 +53,15 @@ public:
 
     // Internal result response
     io_result queue_internal_resp(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, int res);
+
+    // Returns true when this disk implements handle_io_async (new coroutine API).
+    // Disks whose children are all new-API return true; any legacy child forces false,
+    // ensuring process_result handles multi-SQE completions (e.g. RAID1 replicas).
+    virtual bool uses_async_api() const noexcept { return false; }
+
+    // Async entry-point: called by __handle_io_async when uses_async_api() is true.
+    // Implementations submit all SQEs upfront then co_await CqeAwaitable for each result.
+    virtual disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
 
     virtual std::string id() const noexcept = 0;
 

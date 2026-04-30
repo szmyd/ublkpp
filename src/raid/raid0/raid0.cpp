@@ -7,6 +7,7 @@
 
 #include "raid0_impl.hpp"
 #include "lib/logging.hpp"
+#include <ublkpp/lib/cqe_state.hpp>
 
 namespace ublkpp {
 
@@ -277,6 +278,78 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                                   __iovec_len(iov, iov + nr_iovs))
                             return _stripe_array[stripe_off]->disk->sync_iov(op, iov, nr_iovs, logical_off);
                         });
+}
+
+bool Raid0Disk::uses_async_api() const noexcept {
+    // Only use the new async path when all children are leaves (currently FSDisk).
+    // If any child is composite (e.g. RAID1 with primary+mirror SQEs per async_iov call),
+    // RAID0's handle_io_async only tracks the outer sub_cmd and would miss the child's internal
+    // sub_cmds. The old queue_tgt_io + CqeAwaiter path handles that correctly via process_result.
+    // When RAID1 is migrated to the async API (future phase), this interaction will need
+    // redesigning so RAID0 calls handle_io_async on children rather than async_iov.
+    return std::all_of(_stripe_array.begin(), _stripe_array.end(),
+                       [](auto const& s) { return s->disk->uses_async_api(); });
+}
+
+disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    auto const op = ublksrv_get_op(data->iod);
+    auto* io = reinterpret_cast< async_io* >(data->private_data);
+
+    if (op == UBLK_IO_OP_FLUSH) co_return handle_flush(q, data, sub_cmd).value_or(-EIO);
+
+    bool const retry{is_retry(sub_cmd)};
+    if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
+
+    // Collect sub_cmds for which async_iov queued SQEs so we can await their CQEs below.
+    std::vector< sub_cmd_t > dispatched;
+
+    if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
+        auto const route_mask = _max_stripe_cnt - 1;
+        uint32_t const len = data->iod->nr_sectors << SECTOR_SHIFT;
+        uint64_t const addr = (data->iod->start_sector << SECTOR_SHIFT) + _stride_width;
+
+        for (auto const& [stripe_off, region] : raid0::merged_subcmds(_stride_width, _stripe_size, addr, len)) {
+            auto const& [logical_off, logical_len] = region;
+            auto const& device = _stripe_array[stripe_off]->disk;
+            if (retry && (stripe_off != ((sub_cmd >> device->route_size()) & route_mask))) [[unlikely]]
+                continue;
+            sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
+            auto res = device->handle_discard(q, data, new_sub_cmd, logical_len, logical_off);
+            if (!res) co_return -EIO;
+            if (res.value() > 0) dispatched.push_back(new_sub_cmd);
+        }
+    } else {
+        // READ / WRITE: fan out across stripes via __distribute.
+        auto iov = iovec{.iov_base = reinterpret_cast< void* >(data->iod->addr),
+                         .iov_len = static_cast< size_t >(data->iod->nr_sectors) << SECTOR_SHIFT};
+        uint64_t const addr = (data->iod->start_sector << SECTOR_SHIFT) + _stride_width;
+
+        auto res = __distribute(
+            &iov, addr,
+            [q, data, &dispatched, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
+                                         uint64_t logical_off) {
+                auto r = _stripe_array[stripe_off]->disk->async_iov(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
+                if (r && r.value() > 0) dispatched.push_back(new_sub_cmd);
+                return r;
+            },
+            retry, sub_cmd);
+
+        if (!res) co_return -EIO;
+    }
+
+    // Batch-submit all SQEs queued above. All SQEs enter the ring before the first co_await so
+    // the kernel executes them in parallel while we poll sequentially below.
+    io_uring_submit(q->ring_ptr);
+
+    // Await each stripe's CQE. CqeAwaitable::await_ready() fast-paths stripes whose CQE
+    // arrived before we reach co_await, avoiding unnecessary suspension.
+    int total = 0;
+    for (auto sc : dispatched) {
+        auto r = co_await CqeAwaitable{io->ensure(sc)};
+        if (r < 0) co_return r;
+        total += r;
+    }
+    co_return total;
 }
 
 static const uint8_t magic_bytes[16] = {0127, 0345, 072,  0211, 0254, 033,  070,  0146,

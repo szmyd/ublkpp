@@ -119,8 +119,12 @@ static void run_queue_loop(ublksrv_queue const* q) {
                     // target io_uring CQE — user_data is a raw CqeState* | k_target_bit
                     auto* state = reinterpret_cast< CqeState* >(cqe->user_data & ~k_target_bit);
                     state->result = cqe->res;
+                    state->result_ready = true;
                     try {
-                        state->owner->push_completion(state);
+                        if (auto h = std::exchange(state->waiter, {}))
+                            h.resume(); // new API: direct per-state resume (disk_task path)
+                        else
+                            state->owner->push_completion(state); // old API: CqeAwaiter loop
                     } catch (std::exception const& e) {
                         TLOGE("I/O threw exception: [{}]", e.what())
                         ublksrv_complete_io(q, state->owner->tag, -EIO);
@@ -364,43 +368,44 @@ static co_io_job __handle_io_async(ublksrv_queue const* q, ublk_io_data const* d
 
     auto const op = ublksrv_get_op(data->iod);
 
-    // Record queue depth increment
     auto tgt = static_cast< ublkpp_tgt_impl* >(q->private_data);
     tgt->metrics.record_queue_depth_change(q, op, true);
 
-    // First we submit the IO to the UblkDisk device. It in turn will return the number
-    // of sub_cmds it enqueued to the io_uring queue to satisfy the request. RAID levels will
-    // cause this amplification of operations. Each sub_cmd registers a CqeState via
-    // build_cqe_state_data so tgt_io_done can route completions by sub_cmd.
-    auto io_res = device->queue_tgt_io(q, data, 0);
+    int result = -EIO;
+    if (device->uses_async_api()) {
+        // New path: disk owns the full IO lifecycle as a disk_task<int> coroutine.
+        // CQEs resume the disk_task directly via CqeState::waiter; no pending counter needed.
+        result = co_await device->handle_io_async(q, data, sub_cmd_t{0});
+    } else {
+        // Old path: preserved for RAID1, RAID10, and other legacy disks.
+        // queue_tgt_io submits SQEs; CQEs enqueue via push_completion; process_result handles
+        // replica/internal/retry sub_cmds that the disk creates internally.
+        auto io_res = device->queue_tgt_io(q, data, 0);
+        io_uring_submit(q->ring_ptr);
 
-    // Submit to io_uring before yielding to make iovecs that are thread_local stable
-    io_uring_submit(q->ring_ptr);
+        if (io_res) {
+            io->ret_val = 0;
+            io->pending = io_res.value();
+            TLOGT("I/O [tag:{:#0x}] [sub_ios:{}]", data->tag, io->pending)
+        } else
+            TLOGD("IO Failed Immediately to queue io [tag:{:#0x}], err: [{}]", data->tag, io_res.error().message())
 
-    if (io_res) {
-        io->ret_val = 0;
-        io->pending = io_res.value();
-        TLOGT("I/O [tag:{:#0x}] [sub_ios:{}]", data->tag, io->pending)
-    } else
-        TLOGD("IO Failed Immediately to queue io [tag:{:#0x}], err: [{}]", data->tag, io_res.error().message())
-
-    // For each pending sub_cmd, suspend until tgt_io_done (or handle_event) delivers a CqeState.
-    while (0 < io->pending) {
-        auto* done = co_await CqeAwaiter{io};
-        --io->pending;
-        process_result(q, data, done);
+        while (0 < io->pending) {
+            auto* done = co_await CqeAwaiter{io};
+            --io->pending;
+            process_result(q, data, done);
+        }
+        result = io->ret_val;
     }
 
-    // Record queue depth decrement
     tgt->metrics.record_queue_depth_change(q, op, false);
 
-    // Operation is complete, result is in io->ret_val
-    if (0 > io->ret_val) [[unlikely]] {
-        TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, io->ret_val)
+    if (0 > result) [[unlikely]] {
+        TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)
     } else {
-        TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, io->ret_val)
+        TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, result)
     }
-    ublksrv_complete_io(q, data->tag, io->ret_val);
+    ublksrv_complete_io(q, data->tag, result);
 }
 
 // I/O Handler, first entry-point to us for all I/O

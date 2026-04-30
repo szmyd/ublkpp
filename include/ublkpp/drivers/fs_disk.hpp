@@ -13,7 +13,7 @@ class FSDisk : public UblkDisk {
     std::filesystem::path _path;
     int _fd{-1};
     bool _block_device{false};
-    std::unique_ptr<UblkFSDiskMetrics> _metrics;
+    std::unique_ptr< UblkFSDiskMetrics > _metrics;
 
 public:
     // Constructor: creates metrics internally using parent_id
@@ -21,6 +21,9 @@ public:
     ~FSDisk() override;
 
     std::string id() const noexcept override { return _path.native(); }
+
+    bool uses_async_api() const noexcept override { return true; }
+    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
 
     io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,

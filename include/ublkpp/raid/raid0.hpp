@@ -33,6 +33,9 @@ public:
     std::string id() const noexcept override { return "RAID0"; }
     std::list< int > open_for_uring(ublksrv_queue const*, int const iouring_device) override;
 
+    bool uses_async_api() const noexcept override;
+    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+
     uint8_t route_size() const noexcept override { return ilog2(_max_stripe_cnt); }
     void idle_transition(ublksrv_queue const*, bool) override;
 

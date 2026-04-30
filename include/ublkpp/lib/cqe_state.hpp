@@ -19,10 +19,18 @@ struct CqeState;
 // Lifetime: placement-new'd in init_queue for each tag slot; explicitly ~async_io() in deinit_queue.
 // pool and completions are cleared at the start of each new I/O in __handle_io_async.
 //
-// Dispatch protocol:
+// Dispatch protocol — two paths depending on which API the disk uses:
+//
+// New API (FSDisk, RAID0 with FSDisk children — uses_async_api() == true):
+//   1. handle_io_async calls build_cqe_state_data → ensure(sub_cmd) per SQE; pool grows.
+//   2. Coroutine suspends on co_await CqeAwaitable{state}; state->waiter is installed.
+//   3. run_queue_loop decodes CqeState*, sets result + result_ready, resumes state->waiter.
+//   4. CqeAwaitable::await_resume returns state->result directly.
+//
+// Old API (RAID1, RAID10, legacy — uses_async_api() == false):
 //   1. queue_tgt_io calls build_cqe_state_data → ensure(sub_cmd) per SQE; pool grows.
-//   2. run_queue_loop: CqeState* is decoded from user_data and push_completion is called.
-//   3. push_completion resumes the CqeAwaiter-suspended coroutine if one is waiting.
+//   2. run_queue_loop decodes CqeState*, sets result + result_ready, calls push_completion.
+//   3. push_completion enqueues state and resumes the CqeAwaiter-suspended coroutine.
 //   4. CqeAwaiter::await_resume pops one entry from completions and returns it.
 //   5. process_result inspects the state and may add to pending (retry / internal).
 struct async_io {
@@ -44,18 +52,29 @@ struct async_io {
 };
 
 // Tracks a single inflight sub_cmd registered by build_cqe_state_data. Stored in async_io::pool
-// (std::deque, so push_back is pointer-stable). result is written by tgt_io_done / handle_event
-// before the state is enqueued in async_io::completions and the coroutine is resumed.
+// (std::deque, so push_back is pointer-stable). result and result_ready are written by
+// run_queue_loop before resuming waiter (new API) or calling push_completion (old API).
 struct CqeState {
     async_io* owner;
     int result{0};
+    bool result_ready{false};         // set before resuming waiter or calling push_completion
+    std::coroutine_handle<> waiter{}; // per-state direct resume (new API path only)
     sub_cmd_t sub_cmd{0};
+};
+
+// Awaitable for a specific CqeState (new API path). await_ready returns true when the CQE
+// already arrived before co_await — avoids suspension and resume overhead on fast completions.
+struct CqeAwaitable {
+    CqeState* state;
+    bool await_ready() const noexcept { return state->result_ready; }
+    void await_suspend(std::coroutine_handle<> h) noexcept { state->waiter = h; }
+    int await_resume() const noexcept { return state->result; }
 };
 
 inline CqeState* async_io::ensure(sub_cmd_t sub_cmd) {
     for (auto& s : pool)
         if (s.sub_cmd == sub_cmd) return &s;
-    pool.push_back(CqeState{this, 0, sub_cmd});
+    pool.push_back(CqeState{.owner = this, .sub_cmd = sub_cmd});
     return &pool.back();
 }
 
