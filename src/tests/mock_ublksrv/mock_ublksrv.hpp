@@ -18,12 +18,9 @@ namespace ublkpp {
 // Drives UblkDisk I/O directly with a real io_uring, bypassing ublkpp_tgt coroutines
 // and the ublk kernel module. Suitable for CI where the ublk module is unavailable.
 //
-// Supports two dispatch paths:
-//   Old path (uses_async_api() == false): calls queue_tgt_io, submits SQEs, polls CQEs.
-//   New path (uses_async_api() == true):  starts handle_io_async disk_task, uses inject_cqe
-//     to deliver synthetic results without requiring real io_uring round-trips.
-//
-// RAID1 INTERNAL sub_cmds (bitmap page writes) are handled automatically in poll().
+// submit_io starts a handle_io_async disk_task and returns the number of registered CqeStates.
+// inject_cqe delivers synthetic results for each suspended CqeAwaitable without io_uring round-trips.
+// poll() drains real io_uring CQEs for disks that submit actual SQEs (e.g. FSDisk).
 class MockUblksrv {
 public:
     struct Completion {
@@ -40,11 +37,11 @@ public:
     MockUblksrv(MockUblksrv const&) = delete;
     MockUblksrv& operator=(MockUblksrv const&) = delete;
 
-    // Old path: populate iod fields, call disk->queue_tgt_io(), then io_uring_submit.
-    // New path: start handle_io_async disk_task; task runs until first co_await CqeAwaitable.
+    // Start handle_io_async disk_task; runs until first co_await CqeAwaitable.
     // tag: slot index [0, q_depth), op: UBLK_IO_OP_READ / _WRITE / _FLUSH / _DISCARD
     // start_sector: byte offset >> SECTOR_SHIFT, nr_sectors: byte length >> SECTOR_SHIFT
     // buf: sector-aligned buffer (caller owns lifetime)
+    // Returns the number of CqeStates registered (one per pending SQE).
     io_result submit_io(int tag, uint8_t op, uint64_t start_sector, uint32_t nr_sectors, void* buf);
 
     // Drain io_uring CQEs until at least min_completions are collected or timeout expires.
@@ -68,8 +65,6 @@ private:
     struct TagState {
         ublksrv_io_desc iod{};
         ublk_io_data data{};
-        int sub_cmds_remaining{0};
-        int result{0};
     };
 
     void process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out);

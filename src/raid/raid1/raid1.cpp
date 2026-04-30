@@ -907,33 +907,6 @@ io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data con
         addr, len, q, data);
 }
 
-io_result Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                                   uint32_t nr_vecs, uint64_t addr) {
-    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}] [uuid:{}]",
-          ublksrv_get_op(data->iod) == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag,
-          addr >> params()->basic.logical_bs_shift, len, ublkpp::to_string(sub_cmd), _str_uuid)
-
-    // READs are a special sub_cmd that just go to one side we'll do explicitly
-    if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod))
-        return __failover_read(
-            sub_cmd,
-            [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
-                return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
-            },
-            addr, len);
-
-    if (is_retry(sub_cmd)) [[unlikely]]
-        return __handle_async_retry(sub_cmd, addr, len, q, data);
-
-    return __replicate(
-        sub_cmd,
-        [q, data, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) {
-            return d.async_iov(q, data, scmd, iovecs, nr_vecs, a);
-        },
-        addr, len, q, data);
-}
-
 disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data,
                                                       sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs, uint64_t addr,
                                                       uint32_t len) {

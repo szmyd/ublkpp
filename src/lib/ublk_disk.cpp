@@ -56,8 +56,14 @@ disk_task< int > UblkDisk::handle_io_async(ublksrv_queue const*, ublk_io_data co
     co_return -EIO; // LCOV_EXCL_LINE
 }
 
-// Default: call async_iov or handle_discard (both are pure virtual, so any concrete leaf disk
-// gets this behaviour automatically), then submit and await the CQE.
+io_result UblkDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t) {
+    RELEASE_ASSERT(false, "async_iov called on disk that does not override it")
+    return std::unexpected(std::make_error_condition(std::errc::function_not_supported)); // LCOV_EXCL_LINE
+}
+
+// Default: call async_iov or handle_discard, then submit and await the CQE.
+// async_iov is non-pure-virtual so that test mocks (MockTestDisk) can still override it
+// and exercise the default handle_iov_async path via RAID0/1 child dispatch.
 disk_task< int > UblkDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                             iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
     auto* io = reinterpret_cast< async_io* >(data->private_data);
@@ -150,10 +156,16 @@ io_result DefunctDisk::handle_discard(ublksrv_queue const*, ublk_io_data const*,
     return std::unexpected(std::make_error_condition(std::errc::io_error));
 }
 
-io_result DefunctDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t) {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
 // LCOV_EXCL_STOP
+
+disk_task< int > DefunctDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
+    co_return -EIO; // LCOV_EXCL_LINE
+}
+
+disk_task< int > DefunctDisk::handle_iov_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t,
+                                               uint64_t) {
+    co_return -EIO; // LCOV_EXCL_LINE
+}
 
 io_result DefunctDisk::sync_iov(uint8_t, iovec*, uint32_t, off_t) noexcept {
     return std::unexpected(std::make_error_condition(std::errc::io_error));

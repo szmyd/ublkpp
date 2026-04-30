@@ -15,10 +15,6 @@ SISL_OPTIONS_ENABLE(logging)
 
 namespace {
 
-// ============================================================================
-// Coroutine helpers for testing push_completion with a live waiter
-// ============================================================================
-
 struct FireAndForget {
     struct promise_type {
         FireAndForget get_return_object() { return {}; }
@@ -28,16 +24,6 @@ struct FireAndForget {
         void unhandled_exception() {}
     };
 };
-
-// Suspends the coroutine and installs its handle as io->waiter.
-struct InstallWaiter {
-    ublkpp::async_io* io;
-    bool await_ready() noexcept { return false; }
-    void await_suspend(std::coroutine_handle<> h) noexcept { io->waiter = h; }
-    void await_resume() noexcept {}
-};
-
-static FireAndForget suspend_into_io(ublkpp::async_io* io) { co_await InstallWaiter{io}; }
 
 // ============================================================================
 // async_io::ensure
@@ -78,43 +64,6 @@ TEST(AsyncIo, EnsurePoolAddressStability) {
     for (int i = 1; i < 64; ++i)
         io.ensure(ublkpp::sub_cmd_t(i));
     EXPECT_EQ(first, io.ensure(ublkpp::sub_cmd_t{0}));
-}
-
-// ============================================================================
-// async_io::push_completion
-// ============================================================================
-
-TEST(AsyncIo, PushCompletionNoWaiter) {
-    ublkpp::async_io io{};
-    ublkpp::CqeState s{.owner = &io, .result = 42, .sub_cmd = ublkpp::sub_cmd_t{7}};
-    io.push_completion(&s);
-    ASSERT_EQ(io.completions.size(), 1u);
-    EXPECT_EQ(io.completions.front(), &s);
-    EXPECT_FALSE(io.waiter);
-}
-
-TEST(AsyncIo, PushCompletionMaintainsFIFO) {
-    ublkpp::async_io io{};
-    ublkpp::CqeState s1{.owner = &io, .result = 1, .sub_cmd = ublkpp::sub_cmd_t{1}};
-    ublkpp::CqeState s2{.owner = &io, .result = 2, .sub_cmd = ublkpp::sub_cmd_t{2}};
-    ublkpp::CqeState s3{.owner = &io, .result = 3, .sub_cmd = ublkpp::sub_cmd_t{3}};
-    io.push_completion(&s1);
-    io.push_completion(&s2);
-    io.push_completion(&s3);
-    EXPECT_EQ(io.completions[0], &s1);
-    EXPECT_EQ(io.completions[1], &s2);
-    EXPECT_EQ(io.completions[2], &s3);
-}
-
-TEST(AsyncIo, PushCompletionResumesAndClearsWaiter) {
-    ublkpp::async_io io{};
-    ublkpp::CqeState state{.owner = &io, .result = 99, .sub_cmd = ublkpp::sub_cmd_t{3}};
-    suspend_into_io(&io); // starts, suspends, installs io.waiter
-    ASSERT_TRUE(io.waiter);
-    io.push_completion(&state); // clears waiter, pushes state, resumes coroutine
-    EXPECT_FALSE(io.waiter);
-    EXPECT_EQ(io.completions.size(), 1u);
-    EXPECT_EQ(io.completions.front(), &state);
 }
 
 // ============================================================================
@@ -193,7 +142,7 @@ TEST(CqeAwaitable, AwaitSuspendInstallsWaiterInState) {
 
     state.result = 7;
     state.result_ready = true;
-    state.waiter.resume(); // triggers await_resume() → captured = 7
+    state.waiter.resume(); // triggers await_resume() -> captured = 7
     EXPECT_EQ(captured, 7);
 }
 
@@ -201,7 +150,7 @@ TEST(CqeAwaitable, FastPathSkipsSuspendWhenAlreadyReady) {
     ublkpp::async_io io{};
     ublkpp::CqeState state{.owner = &io, .result = 55, .result_ready = true};
     int captured = -1;
-    await_cqe_and_capture(&state, &captured); // await_ready=true → no suspension
+    await_cqe_and_capture(&state, &captured); // await_ready=true -> no suspension
     EXPECT_FALSE(state.waiter);
     EXPECT_EQ(captured, 55);
 }

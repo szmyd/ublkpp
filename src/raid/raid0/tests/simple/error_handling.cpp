@@ -67,87 +67,6 @@ TEST(Raid0, FailedMultiStrideIoDoesNotLeaveStaleAliveCount) {
     EXPECT_TRUE(raid.sync_iov(UBLK_IO_OP_WRITE, &iov2, 1, 0));
 }
 
-// Same scenario as above but exercised through async_iov — the primary production I/O path.
-TEST(Raid0, FailedMultiStrideIoDoesNotLeaveStaleAliveCount_Async) {
-    constexpr uint32_t stripe_sz = 4 * Ki;
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
-    // Must use test_uuid: CREATE_DISK's superblock expectations encode this UUID in normal_superblock.
-    auto raid = ublkpp::Raid0Disk(boost::uuids::string_generator()(test_uuid), stripe_sz,
-                                  std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});
-
-    constexpr uint32_t io1_sz = 2 * 3 * stripe_sz; // 24KiB
-    auto buf1 = std::unique_ptr< void, decltype(&free) >(nullptr, free);
-    {
-        void* p{};
-        ASSERT_EQ(0, posix_memalign(&p, device_a->block_size(), io1_sz));
-        buf1.reset(p);
-    }
-    auto iov1 = iovec{.iov_base = buf1.get(), .iov_len = io1_sz};
-    auto data1 = make_io_data(UBLK_IO_OP_WRITE, io1_sz);
-
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
-        .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t nr_vecs,
-                     uint64_t) -> io_result {
-            EXPECT_EQ(2U, nr_vecs);
-            return std::unexpected(std::make_error_condition(std::errc::io_error));
-        });
-    ASSERT_FALSE(raid.async_iov(nullptr, &data1, 0, &iov1, 1, 0));
-
-    constexpr uint32_t io2_sz = 2 * stripe_sz; // 8KiB
-    auto buf2 = std::unique_ptr< void, decltype(&free) >(nullptr, free);
-    {
-        void* p{};
-        ASSERT_EQ(0, posix_memalign(&p, device_b->block_size(), io2_sz));
-        buf2.reset(p);
-    }
-    auto* buf2_raw = static_cast< uint8_t* >(buf2.get());
-    auto iov2 = iovec{.iov_base = buf2.get(), .iov_len = io2_sz};
-    auto data2 = make_io_data(UBLK_IO_OP_WRITE, io2_sz);
-
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
-        .Times(1)
-        .WillOnce([stripe_sz](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t nr_vecs,
-                              uint64_t) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            return stripe_sz;
-        });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
-        .Times(1)
-        .WillOnce([buf2_raw, stripe_sz](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec* iovecs,
-                                        uint32_t nr_vecs, uint64_t) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(static_cast< uint8_t* >(iovecs[0].iov_base), buf2_raw + stripe_sz);
-            return stripe_sz;
-        });
-
-    EXPECT_TRUE(raid.async_iov(nullptr, &data2, 0, &iov2, 1, 0));
-
-    remove_io_data(data1);
-    remove_io_data(data2);
-}
-
-// Test: async_iov with invalid nr_vecs (0)
-TEST(Raid0, AsyncIovInvalidNrVecs) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
-
-    auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
-
-    auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-
-    // Pass 0 for nr_vecs - should return error
-    auto res = raid_device.async_iov(nullptr, &ublk_data, 0, nullptr, 0, 0);
-
-    ASSERT_FALSE(res.has_value());
-    EXPECT_EQ(res.error(), std::make_error_condition(std::errc::invalid_argument));
-
-    remove_io_data(ublk_data);
-}
-
 // Test: handle_internal with invalid nr_vecs (0)
 TEST(Raid0, HandleInternalInvalidNrVecs) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
@@ -163,33 +82,6 @@ TEST(Raid0, HandleInternalInvalidNrVecs) {
 
     ASSERT_FALSE(res.has_value());
     EXPECT_EQ(res.error(), std::make_error_condition(std::errc::invalid_argument));
-
-    remove_io_data(ublk_data);
-}
-
-// Test: async_iov error propagation from device
-TEST(Raid0, AsyncIovErrorPropagation) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
-
-    // Device A will return an error
-    EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
-        .Times(1)
-        .WillOnce(
-            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) -> io_result {
-                return std::unexpected(std::make_error_condition(std::errc::io_error));
-            });
-
-    auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
-
-    auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-
-    // Access first device - should propagate error
-    auto res = raid_device.handle_rw(nullptr, &ublk_data, 0, nullptr, 4 * Ki, 0);
-
-    ASSERT_FALSE(res.has_value());
-    EXPECT_EQ(res.error(), std::make_error_condition(std::errc::io_error));
 
     remove_io_data(ublk_data);
 }

@@ -9,8 +9,8 @@ template < typename T >
 struct StartedTaskAwaitable;
 
 // Lightweight lazy coroutine task for per-disk async I/O. Composable via symmetric transfer:
-// co_await disk_task<T> in a co_io_job or another disk_task<U> suspends the caller and
-// immediately resumes the callee without going through any scheduler.
+// co_await disk_task<T> inside an exec::task<void> or another disk_task<U> suspends the caller
+// and immediately resumes the callee without going through any scheduler.
 //
 // run_queue_loop drives all resumption: CQEs install a handle in CqeState::waiter and call
 // h.resume(), which propagates back to the caller via final_suspend symmetric transfer.
@@ -51,7 +51,7 @@ struct disk_task {
         if (_coro) _coro.destroy();
     }
 
-    // Awaitable interface: allows co_await disk_task<T> from co_io_job or disk_task<U>.
+    // Awaitable interface: allows co_await disk_task<T> from exec::task<void> or disk_task<U>.
     // Uses symmetric transfer to start the callee without returning to the scheduler.
     bool await_ready() const noexcept { return false; }
     std::coroutine_handle<> await_suspend(std::coroutine_handle<> cont) noexcept {

@@ -33,7 +33,7 @@ namespace ublkpp {
 // environments (MockUblksrv) may run on older kernels.  Fall back to synchronous preadv2/pwritev2
 // on affected kernels so CQE delivery implies the data is already visible to page-cache readers.
 // When the minimum supported test kernel is raised above 5.4, this guard and the sync_iov
-// fallback in async_iov can be removed.
+// fallback in handle_iov_async can be removed.
 static bool buffered_uring_broken() {
     // clang-format off
     struct utsname uts{};
@@ -146,24 +146,53 @@ static inline auto next_sqe(ublksrv_queue const* q) {
 }
 
 disk_task< int > FSDisk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    auto* io = reinterpret_cast< async_io* >(data->private_data);
     ublksrv_io_desc const* iod = data->iod;
-    auto const op = ublksrv_get_op(iod);
+    if (ublksrv_get_op(iod) == UBLK_IO_OP_FLUSH) { co_return handle_flush(q, data, sub_cmd).value_or(-EIO); }
 
-    if (op == UBLK_IO_OP_FLUSH) { co_return handle_flush(q, data, sub_cmd).value_or(-EIO); }
+    thread_local auto iov = iovec{};
+    iov.iov_base = reinterpret_cast< void* >(iod->addr);
+    iov.iov_len = iod->nr_sectors << SECTOR_SHIFT;
+    co_return co_await handle_iov_async(q, data, sub_cmd, &iov, 1, iod->start_sector << SECTOR_SHIFT);
+}
+
+disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                          iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
+    auto* io = reinterpret_cast< async_io* >(data->private_data);
+    auto const op = ublksrv_get_op(data->iod);
 
     io_result res;
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
-        res = handle_discard(q, data, sub_cmd, iod->nr_sectors << SECTOR_SHIFT, iod->start_sector << SECTOR_SHIFT);
+        uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
+        res = handle_discard(q, data, sub_cmd, len, addr);
     } else {
-        thread_local auto iov = iovec{};
-        iov.iov_base = reinterpret_cast< void* >(iod->addr);
-        iov.iov_len = iod->nr_sectors << SECTOR_SHIFT;
-        res = async_iov(q, data, sub_cmd, &iov, 1, iod->start_sector << SECTOR_SHIFT);
+        DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]",
+              op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(), data->tag, addr,
+              __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
+        // LCOV_EXCL_START — kernel <= 5.4 sync fallback, not exercised in production
+        if (!direct_io && k_buffered_uring_broken) {
+            auto r = sync_iov(op, iovecs, nr_vecs, static_cast< off_t >(addr));
+            if (!r) co_return -static_cast< int >(r.error().value());
+            co_return 0; // inline completion
+        }
+        // LCOV_EXCL_STOP
+
+        auto sqe = next_sqe(q);
+        DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!");
+
+        if (UBLK_IO_OP_READ == op) {
+            io_uring_prep_readv(sqe, _fd, iovecs, nr_vecs, addr);
+        } else {
+            io_uring_prep_writev(sqe, _fd, iovecs, nr_vecs, addr);
+        }
+
+        if (UBLK_IO_OP_READ != op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
+        sqe->user_data = build_cqe_state_data(data, sub_cmd);
+        if (_metrics) { _metrics->record_io_start(data, sub_cmd); }
+        res = 1;
     }
 
     if (!res) co_return -static_cast< int >(res.error().value());
-    if (res.value() == 0) co_return 0; // inline completion (sync fallback on kernel <= 5.4)
+    if (res.value() == 0) co_return 0;
 
     io_uring_submit(q->ring_ptr);
     co_return co_await CqeAwaitable{io->ensure(sub_cmd)};
@@ -205,42 +234,6 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
     }
     DLOGE("ioctl BLKDISCARD on {} returned error: {}", _path.native(), strerror(errno))
     return std::unexpected(std::make_error_condition(static_cast< std::errc >(errno)));
-}
-
-io_result FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                            uint32_t nr_vecs, uint64_t addr) {
-    auto const op = ublksrv_get_op(data->iod);
-    DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
-          _path.native(), data->tag, addr, __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
-    // LCOV_EXCL_START — kernel ≤ 5.4 sync fallback, not exercised in production
-    if (!direct_io && k_buffered_uring_broken) {
-        auto res = sync_iov(op, iovecs, nr_vecs, static_cast< off_t >(addr));
-        if (!res) return res;
-        return 0; // inline completion — no CQE pending
-    }
-    // LCOV_EXCL_STOP
-
-    auto sqe = next_sqe(q);
-
-    DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!");
-
-    if (UBLK_IO_OP_READ == op) {
-        // IORING_OP_READ/WRITE require kernel >= 5.6; use readv/writev for compatibility.
-        io_uring_prep_readv(sqe, _fd, iovecs, nr_vecs, addr);
-    } else {
-        io_uring_prep_writev(sqe, _fd, iovecs, nr_vecs, addr);
-    }
-
-    // Set ForceUnitAccess bit to bypass caches
-    if (UBLK_IO_OP_READ != op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
-
-    sqe->user_data = build_cqe_state_data(data, sub_cmd);
-
-    // Record I/O start for individual disk metrics
-    // This tracks I/O latency for this specific FSDisk instance (identified by path in metrics labels)
-    if (_metrics) { _metrics->record_io_start(data, sub_cmd); }
-
-    return 1;
 }
 
 io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
