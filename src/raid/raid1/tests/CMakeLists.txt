@@ -9,6 +9,7 @@ list(APPEND RAID1_TEST_SRCS
   raid1_test.cpp
 )
 
+add_subdirectory (async)
 add_subdirectory (bitmap)
 add_subdirectory (concurrency)
 add_subdirectory (failures)
@@ -17,6 +18,28 @@ add_subdirectory (retry)
 add_subdirectory (simple)
 add_subdirectory (superblock)
 add_subdirectory (syncio)
+
+add_executable(test_raid1_async)
+target_sources(test_raid1_async PRIVATE
+    async/raid1_async_test.cpp
+    ${RAID1_ASYNC_TEST_SRCS}
+    $<TARGET_OBJECTS:logging>
+    $<TARGET_OBJECTS:raid1>
+    $<TARGET_OBJECTS:ublk_disk>
+    $<TARGET_OBJECTS:ublk_metrics>
+)
+target_include_directories(test_raid1_async PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(test_raid1_async
+    GTest::gmock
+    mock_ublksrv
+    isa-l::isa-l
+    sisl::cache
+    ublksrv::ublksrv
+    $<$<PLATFORM_ID:Linux>:atomic>
+)
+add_test(NAME Raid1AsyncTest COMMAND test_raid1_async -cv warning)
 
 add_executable(test_raid1)
 target_sources(test_raid1 PRIVATE
