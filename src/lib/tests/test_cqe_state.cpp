@@ -123,26 +123,23 @@ TEST(BuildCqeStateData, RegistersStateInPool) {
     ublkpp::async_io io{};
     ublk_io_data fake{};
     fake.private_data = &io;
-    ublkpp::build_cqe_state_data(&fake, 1, 2, 3);
+    auto const result = ublkpp::build_cqe_state_data(&fake, 3);
+    // bit 63 marks it as a target SQE
+    EXPECT_NE(result & (1ULL << 63), 0ULL);
+    // lower bits decode to the registered CqeState
+    auto* state = reinterpret_cast< ublkpp::CqeState* >(result & ~(1ULL << 63));
     ASSERT_EQ(io.pool.size(), 1u);
-    EXPECT_EQ(io.pool.front().sub_cmd, ublkpp::sub_cmd_t{3});
-    EXPECT_EQ(io.pool.front().owner, &io);
-}
-
-TEST(BuildCqeStateData, ReturnsSameBitsAsBuildTgtSqeData) {
-    ublkpp::async_io io{};
-    ublk_io_data fake{};
-    fake.private_data = &io;
-    uint64_t tag = 42, op = 3, sub_cmd = 7;
-    EXPECT_EQ(ublkpp::build_cqe_state_data(&fake, tag, op, sub_cmd), ublkpp::build_tgt_sqe_data(tag, op, sub_cmd));
+    EXPECT_EQ(state, &io.pool.front());
+    EXPECT_EQ(state->sub_cmd, ublkpp::sub_cmd_t{3});
+    EXPECT_EQ(state->owner, &io);
 }
 
 TEST(BuildCqeStateData, IsIdempotentForSameSubCmd) {
     ublkpp::async_io io{};
     ublk_io_data fake{};
     fake.private_data = &io;
-    ublkpp::build_cqe_state_data(&fake, 1, 2, 5);
-    ublkpp::build_cqe_state_data(&fake, 1, 2, 5);
+    ublkpp::build_cqe_state_data(&fake, 5);
+    ublkpp::build_cqe_state_data(&fake, 5);
     EXPECT_EQ(io.pool.size(), 1u);
 }
 
@@ -150,9 +147,9 @@ TEST(BuildCqeStateData, DifferentSubCmdsGrowPool) {
     ublkpp::async_io io{};
     ublk_io_data fake{};
     fake.private_data = &io;
-    ublkpp::build_cqe_state_data(&fake, 1, 2, 1);
-    ublkpp::build_cqe_state_data(&fake, 1, 2, 2);
-    ublkpp::build_cqe_state_data(&fake, 1, 2, 3);
+    ublkpp::build_cqe_state_data(&fake, 1);
+    ublkpp::build_cqe_state_data(&fake, 2);
+    ublkpp::build_cqe_state_data(&fake, 3);
     EXPECT_EQ(io.pool.size(), 3u);
 }
 
