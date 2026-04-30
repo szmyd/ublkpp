@@ -8,6 +8,12 @@ struct iscsi_context;
 
 namespace ublkpp {
 
+struct async_result {
+    ublk_io_data const* io;
+    sub_cmd_t sub_cmd;
+    int result;
+};
+
 struct iscsi_session;
 class iSCSIDisk : public UblkDisk {
     std::unique_ptr< iscsi_session > _session;
@@ -24,10 +30,10 @@ public:
     std::string id() const noexcept override;
     std::list< int > open_for_uring(ublksrv_queue const*, int const) override;
 
-    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
-    io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list);
+    io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr) override;
+                             uint64_t addr);
 
     io_result async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                         uint32_t nr_vecs, uint64_t addr) override;

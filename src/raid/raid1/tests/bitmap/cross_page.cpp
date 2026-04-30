@@ -27,7 +27,8 @@ TEST(Raid1, WriteFailAcrossPages) {
                 return iov->iov_len;
             });
 
-        auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
+        auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+        auto res = raid_device.sync_iov(test_op, &iov, 1, test_off);
         ASSERT_TRUE(res);
         // No need to re-write on A side
         EXPECT_EQ(test_sz, res.value());

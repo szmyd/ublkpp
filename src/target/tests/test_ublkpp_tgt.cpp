@@ -10,33 +10,18 @@ SISL_LOGGING_INIT(ublk_tgt)
 
 SISL_OPTIONS_ENABLE(logging)
 
-using ublkpp::sub_cmd_flags;
 using ublkpp::sub_cmd_t;
 
-TEST(SubCmd, FlagSetting) {
-    auto repl_set = ublkpp::set_flags(0, sub_cmd_flags::REPLICATE);
-    EXPECT_TRUE(ublkpp::is_replicate(repl_set));
-    EXPECT_FALSE(ublkpp::is_retry(repl_set));
+TEST(SubCmd, ShiftRoute) {
+    // shift_route takes the low bits of sub_cmd and shifts them left by route_size,
+    // embedding child routing into the caller's routing word.
+    auto const routed = ublkpp::shift_route(sub_cmd_t{0b11}, 2);
+    EXPECT_EQ(routed, sub_cmd_t{0b1100});
 
-    auto both_set = ublkpp::set_flags(repl_set, sub_cmd_flags::RETRIED);
-    EXPECT_TRUE(ublkpp::is_replicate(both_set));
-    EXPECT_TRUE(ublkpp::is_retry(both_set));
-
-    auto retry_set = ublkpp::unset_flags(both_set, sub_cmd_flags::REPLICATE);
-    EXPECT_FALSE(ublkpp::is_replicate(retry_set));
-    EXPECT_TRUE(ublkpp::is_retry(retry_set));
-
-    auto neither_set = ublkpp::unset_flags(retry_set, sub_cmd_flags::RETRIED);
-    EXPECT_FALSE(ublkpp::is_replicate(neither_set));
-    EXPECT_FALSE(ublkpp::is_retry(neither_set));
-
-    auto multi_set = ublkpp::set_flags(0, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATE);
-    EXPECT_TRUE(ublkpp::is_replicate(multi_set));
-    EXPECT_TRUE(ublkpp::is_retry(multi_set));
-
-    auto multi_unset = ublkpp::unset_flags(multi_set, sub_cmd_flags::RETRIED | sub_cmd_flags::REPLICATE);
-    EXPECT_FALSE(ublkpp::is_replicate(multi_unset));
-    EXPECT_FALSE(ublkpp::is_retry(multi_unset));
+    // Chained shift: simulate RAID10 (RAID0 over RAID1)
+    auto const raid1_bits = ublkpp::shift_route(sub_cmd_t{0b1}, 1); // RAID1: 1 bit
+    auto const raid0_bits = ublkpp::shift_route(raid1_bits, 6);     // RAID0: 6 bits
+    EXPECT_EQ(raid0_bits & ublkpp::_route_mask, sub_cmd_t{0b10000000});
 }
 
 int main(int argc, char* argv[]) {

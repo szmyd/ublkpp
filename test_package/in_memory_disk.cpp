@@ -15,18 +15,11 @@ public:
 
     std::string id() const noexcept override { return "InMemoryDisk"; }
 
-    io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override { return 0; }
-    io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr) {
-        LOGINFO("received DISCARD: [addr:{}|len:{}]", addr, len);
-        return 0;
-    }
-
-    io_result async_iov(ublksrv_queue const* q, ublk_io_data const*, sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs,
-                        uint64_t addr) override {
+    disk_task< int > handle_iov_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t sub_cmd, iovec* iovecs,
+                                      uint32_t nr_vecs, uint64_t addr) override {
         LOGINFO("Received [addr:{}|len:{}] [sub_cmd:{}]", addr, __iovec_len(iovecs, iovecs + nr_vecs),
                 ublkpp::to_string(sub_cmd));
-        return 0;
+        co_return 0;
     }
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept override {

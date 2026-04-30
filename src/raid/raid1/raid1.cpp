@@ -282,13 +282,6 @@ std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const
     auto fds = _device_a->disk->open_for_uring(q, iouring_device_start);
     fds.splice(fds.end(), _device_b->disk->open_for_uring(q, iouring_device_start + fds.size()));
 
-    // Pre-populate _pending_results so runtime access never inserts (map insertion is not thread-safe).
-    // _ctrl_lock serializes concurrent open_for_uring calls from different queue threads.
-    if (q) {
-        auto lk = std::unique_lock{_ctrl_lock};
-        _pending_results.emplace(q, std::list< async_result >{});
-    }
-
     // Enable resync only on the first call (first queue thread).
     if (_nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
 
@@ -658,254 +651,6 @@ io_result Raid1DiskImpl::__become_degraded(sub_cmd_t failed_path, RouteState con
     return 0;
 }
 
-// Failed Async WRITEs all end up here and have the side-effect of dirtying the BITMAP
-// on the working device. This blocks the final result going back from the original operation
-// as we chain additional sub_cmds by returning a value > 0 including a new "result" for the
-// original sub_cmd
-io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                              ublk_io_data const* async_data) {
-    // No Synchronous operations retry
-    DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
-
-    // Record this degraded operation in the bitmap, then unblock _resync_task (if exists)
-    _dirty_bitmap->dirty_region(addr, len);
-    _resync_task->dequeue_write();
-
-    // Check if this sub_cmd went to what we currently consider Clean, if we're also dirty this is a fatal error
-    auto const state = __capture_route_state();
-    if (state.is_degraded && state.active_subcmd == (sub_cmd & _route_mask)) {
-        return std::unexpected(std::make_error_condition(std::errc::io_error));
-    }
-
-    io_result dirty_res;
-    if (dirty_res = __become_degraded(sub_cmd, &state); !dirty_res) return dirty_res;
-
-    if (is_replicate(sub_cmd)) return dirty_res;
-
-    // We cannot return `len` directly: the target interprets positive return values as sub_cmd counts
-    // (not byte counts), and returning 0 would silently drop the byte count. The REPLICATE result is
-    // always zeroed by the target, so the byte count must come from the PRIMARY completion path.
-    // Instead, inject a synthetic async_result carrying `len` into _pending_results so it is accumulated
-    // into ret_val via the normal process_result path on the next collect_async cycle. Return +1 to
-    // signal exactly one more sub_cmd pending.
-    auto it = _pending_results.find(q);
-    DEBUG_ASSERT(it != _pending_results.end(), "queue not registered in _pending_results") // LCOV_EXCL_LINE
-    it->second.emplace_back(async_result{async_data, sub_cmd, static_cast< int >(len)});
-    if (q) {
-        if (0 != ublksrv_queue_send_event(q)) { // LCOV_EXCL_START
-            RLOGE("Failed to send event!");
-            return std::unexpected(std::make_error_condition(std::errc::io_error));
-        } // LCOV_EXCL_STOP
-    }
-    return dirty_res.value() + 1;
-}
-
-/// This is the primary I/O handler call for RAID1
-//
-//  RAID1 is primary responsible for replicating mutations (e.g. Writes/Discards) to a pair of compatible devices.
-//  READ operations need only go to one side. So they are handled separately.
-io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
-                                     ublksrv_queue const* q, ublk_io_data const* async_data,
-                                     RouteState* captured_state) {
-    // Capture routing state atomically at function entry (if not provided by recursive call)
-    RouteState local_state;
-    auto second_write = true;
-    if (!captured_state) {
-        sub_cmd = shift_route(sub_cmd, route_size());
-        // sub_cmd should not be used for the remainder of this execution, use the captured versions
-        local_state = __capture_route_state(sub_cmd);
-        captured_state = &local_state;
-        second_write = false;
-    }
-
-    // Sync IOVs enqueue/dequeue writes directly since they do not go through handle_iov_async
-    if (async_data) _resync_task->enqueue_write();
-
-    // Determine where we're going
-    auto cur_subcmd = second_write ? captured_state->backup_subcmd : captured_state->active_subcmd;
-    auto cur_disk = second_write ? captured_state->backup_dev->disk : captured_state->active_dev->disk;
-
-    // Queue the I/O on the active device
-    auto active_res = func(*cur_disk, cur_subcmd);
-    // Inline completion (sync path returns 0 immediately): balance the enqueue now.
-    if (async_data && active_res.has_value() && active_res.value() == 0) _resync_task->dequeue_write();
-
-    // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
-    // This condition always returns before the nested call!
-    if (!active_res) {
-        if (async_data) _resync_task->dequeue_write();
-        if (captured_state->is_degraded && !second_write) {
-            RLOGE("Double failure! [tag:{:#0x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
-            return active_res;
-        }
-        // We only dirty if we can become degraded here, because unlike in the handle_async_retry
-        // case, the I/O has not potentially landed on the replicant disk yet; saving us the effort
-        // of clearing it later.
-        io_result backup_res;
-        if (backup_res = __become_degraded(cur_subcmd, captured_state); !backup_res) return backup_res;
-        _dirty_bitmap->dirty_region(addr, len);
-        if (second_write) return backup_res;
-
-        // Queue the I/O on the backup device after active failed
-        if (async_data) _resync_task->enqueue_write();
-        if (active_res = func(*captured_state->backup_dev->disk, captured_state->backup_subcmd); !active_res) {
-            if (async_data) _resync_task->dequeue_write();
-            return active_res;
-        }
-        // Inline completion on backup write (sync path): balance the enqueue.
-        if (async_data && active_res.value() == 0) _resync_task->dequeue_write();
-        return active_res.value() + backup_res.value();
-    }
-    if (second_write) return active_res;
-
-    // If the address or length are not entirely aligned by the chunk size and there are dirty bits, then try
-    // and dirty more pages, the recovery strategy will need to correct this later
-    if (captured_state->is_degraded) {
-        if (auto dirty_unavail = captured_state->backup_dev->unavail.test(std::memory_order_acquire);
-            dirty_unavail || _dirty_bitmap->is_dirty(addr, len)) {
-            auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
-            auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
-            if (dirty_unavail || !totally_aligned) {
-                _dirty_bitmap->dirty_region(addr, len);
-                return active_res.value();
-            }
-            // We will go ahead and attempt this WRITE on a known degraded device,
-            // set this flag so we can clear any bits in the bitmap should is succeed
-            captured_state->backup_subcmd = set_flags(captured_state->backup_subcmd, sub_cmd_flags::INTERNAL);
-        }
-    }
-
-    // Otherwise tag the replica sub_cmd so we don't include its value in the target result
-    captured_state->backup_subcmd = set_flags(captured_state->backup_subcmd, sub_cmd_flags::REPLICATE);
-    auto replica_res = __replicate(sub_cmd, std::move(func), addr, len, q, async_data, captured_state);
-    return replica_res ? active_res.value() += replica_res.value() : replica_res;
-}
-
-io_result Raid1DiskImpl::__failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
-                                         RouteState const* state) {
-    // Per-thread read load balancer state (each queue runs on dedicated thread)
-    thread_local raid1::read_route last_read = raid1::read_route::DEVB;
-
-    auto const retry = is_retry(sub_cmd);
-    if (!state && !retry) {
-        // Shift route before capturing state for first attempt
-        sub_cmd = shift_route(sub_cmd, route_size());
-    }
-
-    // Capture routing state atomically at function entry, or reuse passed state
-    RouteState const local_state = state ? RouteState{} : __capture_route_state(sub_cmd);
-    auto nested_retry = !!state;
-    if (!state) state = &local_state;
-
-    // Decode last_read from existing route bits, if nested call last_route is already set correctly.
-    if (retry && !nested_retry) {
-        last_read = (0b1 & ((sub_cmd) >> state->backup_dev->disk->route_size())) ? read_route::DEVB : read_route::DEVA;
-    }
-
-    // Pick a device to read from (load-balancer)
-    auto route = read_route::DEVA;
-    if (state->is_degraded && !retry && state->backup_dev->unavail.test(std::memory_order_acquire)) {
-        route = state->route;
-    } else {
-        route = (read_route::DEVB == last_read) ? read_route::DEVA : read_route::DEVB;
-    }
-
-    // In degraded mode, if the load-balancer picked the backup (dirty) device, verify the region is
-    // clean before using it - otherwise fall back to the active route
-    if (state->is_degraded && route != state->route && _dirty_bitmap->is_dirty(addr, len)) route = state->route;
-
-    // We've already attempted this device...we don't want to re-attempt
-    if (retry && (last_read == route)) return std::unexpected(std::make_error_condition(std::errc::io_error));
-
-    // Route away from unavail devices; recovery is handled by the idle probe.
-    // In degraded mode unavail is set on the backup device as part of degradation - routing is
-    // already handled by the is_degraded block above, so skip this check there.
-    if (!state->is_degraded && __route_to_device(*state, route).device->unavail.test(std::memory_order_acquire)) {
-        route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
-        RLOGD("Skipping unavail device, routing to alternate")
-    }
-
-    // Move load-balancer forward, this is optimistic, doesn't need to be atomic
-    last_read = route;
-
-    // Attempt read on device using captured state shared_ptrs to avoid races with swap_device
-    // Map logical route (DEVA/DEVB) to physical device and subcmd from captured state
-    auto const [chosen_dev, chosen_sub_base] = __route_to_device(*state, route);
-    // Add RETRIED flag if this is a retry attempt
-    auto const chosen_sub = retry ? set_flags(chosen_sub_base, sub_cmd_flags::RETRIED) : chosen_sub_base;
-
-    if (auto res = func(*chosen_dev->disk, chosen_sub); res || retry) {
-        return res;
-    } else {
-        // On read failure mark device as unavailable before retrying the other side
-        if (!chosen_dev->unavail.test_and_set(std::memory_order_acquire)) {
-            RLOGW("Device marked unavailable due to read failure: {}", *chosen_dev->disk)
-        }
-    }
-
-    // Otherwise fail over the device and attempt the READ again marking this a retry
-    sub_cmd = set_flags(sub_cmd, sub_cmd_flags::RETRIED);
-    return __failover_read(sub_cmd, std::move(func), addr, len, state);
-}
-
-io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data const* data,
-                                         [[maybe_unused]] sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs,
-                                         uint64_t addr, int res) {
-    DEBUG_ASSERT(is_internal(sub_cmd), "handle_internal on: {}", ublkpp::to_string(sub_cmd));
-    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-
-    // Capture routing state atomically at function entry
-    auto const state = __capture_route_state();
-
-    if (UBLK_IO_OP_READ == ublksrv_get_op(data->iod)) {
-        state.backup_dev->unavail.clear(std::memory_order_release);
-        return io_result(0);
-    }
-    if (0 == res) {
-        RLOGI("Cleared {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
-        state.backup_dev->unavail.clear(std::memory_order_release);
-        _resync_task->clean_region(addr, len, *state.active_dev); // We helped!
-    } else {
-        RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
-        _dirty_bitmap->dirty_region(addr, len);
-    }
-    _resync_task->dequeue_write();
-    return io_result(0);
-}
-
-void Raid1DiskImpl::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
-    auto const state = __capture_route_state();
-    // _pending_results[q] holds synthetic completions injected by __handle_async_retry - not backend CQEs.
-    // Each entry represents a degraded write where the PRIMARY leg failed but the write succeeded on the
-    // surviving leg. The `result` field carries the byte count that must be accumulated into ret_val via
-    // the normal process_result path. See the comment in __handle_async_retry for why this indirection is
-    // necessary (short version: positive tgt return values are sub_cmd counts, not byte counts, so the byte
-    // count cannot be delivered any other way).
-    if (auto it = _pending_results.find(q); it != _pending_results.end())
-        results.splice(results.end(), std::move(it->second));
-    if (!state.active_dev->disk->uses_ublk_iouring) state.active_dev->disk->collect_async(q, results);
-    if (!state.backup_dev->disk->uses_ublk_iouring) state.backup_dev->disk->collect_async(q, results);
-}
-
-io_result Raid1DiskImpl::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                        uint32_t len, uint64_t addr) {
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    RLOGT("received DISCARD: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", data->tag, lba, len, _str_uuid)
-
-    if (is_retry(sub_cmd)) [[unlikely]]
-        return __handle_async_retry(sub_cmd, addr, len, q, data);
-
-    return __replicate(
-        sub_cmd,
-        [q, data, len, a = addr + reserved_size](UblkDisk& d, sub_cmd_t scmd) -> io_result {
-            // Discard does not support internal commands, we can safely ignore these optimistic operations
-            if (is_internal(scmd)) return 0;
-            return d.handle_discard(q, data, scmd, len, a);
-        },
-        addr, len, q, data);
-}
-
 disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data,
                                                       sub_cmd_t sub_cmd, iovec* iovecs, uint32_t nr_vecs, uint64_t addr,
                                                       uint32_t len) {
@@ -967,7 +712,7 @@ disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io
     auto const op = ublksrv_get_op(data->iod);
     auto const len = static_cast< uint32_t >(__iovec_len(iovecs, iovecs + nr_vecs));
 
-    if (op == UBLK_IO_OP_FLUSH) co_return handle_flush(q, data, sub_cmd).value_or(-EIO);
+    if (op == UBLK_IO_OP_FLUSH) co_return 0;
 
     RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [sub_cmd:{}] [uuid:{}]",
           op == UBLK_IO_OP_READ ? "READ" : "WRITE", data->tag, addr >> params()->basic.logical_bs_shift, len,
@@ -996,16 +741,17 @@ disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io
         return BackupMode::REPLICATE;
     }();
 
+    auto const adj_addr = addr + reserved_size;
     _resync_task->enqueue_write();
     auto active_task =
-        state.active_dev->disk->handle_iov_async(q, data, state.active_subcmd, iovecs, nr_vecs, addr + reserved_size);
+        state.active_dev->disk->handle_iov_async(q, data, state.active_subcmd, iovecs, nr_vecs, adj_addr);
     active_task._coro.resume();
 
     std::optional< disk_task< int > > backup_task;
     if (bm != BackupMode::SKIP) {
         _resync_task->enqueue_write();
-        backup_task.emplace(state.backup_dev->disk->handle_iov_async(q, data, state.backup_subcmd, iovecs, nr_vecs,
-                                                                     addr + reserved_size));
+        backup_task.emplace(
+            state.backup_dev->disk->handle_iov_async(q, data, state.backup_subcmd, iovecs, nr_vecs, adj_addr));
         backup_task->_coro.resume();
     }
 
@@ -1045,35 +791,103 @@ disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io
 }
 
 io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
-    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
+    auto const len = static_cast< uint32_t >(__iovec_len(iovecs, iovecs + nr_vecs));
     auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
           _str_uuid)
 
-    // READs are a special sub_cmd that just go to one side we'll do explicitly
-    if (UBLK_IO_OP_READ == op)
-        return __failover_read(
-            0U,
-            [iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t) {
-                return d.sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, a);
-            },
-            addr, len);
+    auto const sub_cmd = shift_route(0U, route_size());
+    auto const state = __capture_route_state(sub_cmd);
+    auto const adj_addr = addr + static_cast< off_t >(reserved_size);
+
+    if (UBLK_IO_OP_READ == op) {
+        // Flat read with inline failover -- mirrors __failover_read_async without coroutines or flags.
+        thread_local raid1::read_route last_read = raid1::read_route::DEVB;
+
+        auto route = read_route::DEVA;
+        if (state.is_degraded && state.backup_dev->unavail.test(std::memory_order_acquire)) {
+            route = state.route;
+        } else {
+            route = (last_read == read_route::DEVB) ? read_route::DEVA : read_route::DEVB;
+        }
+        if (state.is_degraded && route != state.route && _dirty_bitmap->is_dirty(addr, len)) route = state.route;
+        if (!state.is_degraded && __route_to_device(state, route).device->unavail.test(std::memory_order_acquire)) {
+            route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
+            RLOGD("Skipping unavail device, routing to alternate")
+        }
+        last_read = route;
+
+        auto const [primary_dev, primary_sub] = __route_to_device(state, route);
+        auto const primary_res = primary_dev->disk->sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, adj_addr);
+        if (primary_res) {
+            primary_dev->unavail.clear(std::memory_order_release);
+            return primary_res;
+        }
+        if (!primary_dev->unavail.test_and_set(std::memory_order_acquire))
+            RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
+
+        auto const other_route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
+        auto const [failover_dev, failover_sub] = __route_to_device(state, other_route);
+        auto const failover_res = failover_dev->disk->sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, adj_addr);
+        return failover_res ? failover_res : std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
+
+    // WRITE / DISCARD / WRITE_ZEROES: flat replication -- mirrors handle_iov_async write path.
+    auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
+    auto const backup_unavail = state.backup_dev->unavail.test(std::memory_order_acquire);
+    auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
+    auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
+
+    enum class BackupMode { SKIP, WRITE, OPTIMISTIC };
+    auto const bm = [&]() -> BackupMode {
+        if (!state.is_degraded) return BackupMode::WRITE;
+        if (backup_unavail) return BackupMode::SKIP;
+        if (_dirty_bitmap->is_dirty(addr, len)) {
+            if (!totally_aligned || is_discard) return BackupMode::SKIP;
+            return BackupMode::OPTIMISTIC;
+        }
+        return BackupMode::WRITE;
+    }();
 
     _resync_task->enqueue_write();
-    size_t res{0};
-    auto io_res = __replicate(
-        0U,
-        [&res, op, iovecs, nr_vecs, a = addr + reserved_size](UblkDisk& d, sub_cmd_t s) {
-            auto p_res = d.sync_iov(op, iovecs, nr_vecs, a);
-            // Noramlly the target handles the result being duplicated for WRITEs, we handle it for sync_io here
-            if (p_res && !is_replicate(s)) res += p_res.value();
-            return p_res;
-        },
-        addr, len);
+    auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
+
+    if (!active_res) {
+        _dirty_bitmap->dirty_region(addr, len);
+        if (auto d = __become_degraded(state.active_subcmd, &state); !d) {
+            _resync_task->dequeue_write();
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        }
+        if (bm != BackupMode::SKIP) {
+            auto const backup_res = state.backup_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
+            _resync_task->dequeue_write();
+            return backup_res ? backup_res : std::unexpected(std::make_error_condition(std::errc::io_error));
+        }
+        _resync_task->dequeue_write();
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
+
+    if (bm == BackupMode::SKIP) {
+        _dirty_bitmap->dirty_region(addr, len);
+        _resync_task->dequeue_write();
+        return active_res;
+    }
+
+    auto const backup_res = state.backup_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
     _resync_task->dequeue_write();
 
-    if (!io_res) return io_res;
-    return res;
+    if (!backup_res) {
+        _dirty_bitmap->dirty_region(addr, len);
+        if (!state.is_degraded) {
+            if (auto d = __become_degraded(state.backup_subcmd, &state); !d)
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+        }
+    } else if (bm == BackupMode::OPTIMISTIC) {
+        state.backup_dev->unavail.clear(std::memory_order_release);
+        _resync_task->clean_region(addr, len, *state.active_dev);
+    }
+
+    return active_res;
 }
 
 void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {

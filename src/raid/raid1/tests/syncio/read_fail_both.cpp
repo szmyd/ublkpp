@@ -14,7 +14,10 @@ TEST(Raid1, SyncIoReadFailBoth) {
     EXPECT_SYNC_OP(test_op, device_a, false, true, test_sz, test_off + raid_device.reserved_size());
     EXPECT_SYNC_OP(test_op, device_b, true, true, test_sz, test_off + raid_device.reserved_size());
 
-    RUN_IN_THREAD({ EXPECT_FALSE(raid_device.sync_io(test_op, nullptr, test_sz, test_off)); });
+    RUN_IN_THREAD({
+        auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+        EXPECT_FALSE(raid_device.sync_iov(test_op, &iov, 1, test_off));
+    });
 
     // expect attempt to sync both SBs
     EXPECT_TO_WRITE_SB_F(device_a, true);

@@ -36,31 +36,12 @@ std::list< int > Raid1Disk::open_for_uring(ublksrv_queue const* q, int const iou
 }
 uint8_t Raid1Disk::route_size() const noexcept { return _impl->route_size(); }
 void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
-bool Raid1Disk::uses_async_api() const noexcept { return _impl->uses_async_api(); }
 disk_task< int > Raid1Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
     return _impl->handle_io_async(q, data, sub_cmd);
 }
 disk_task< int > Raid1Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                              iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
     return _impl->handle_iov_async(q, data, sub_cmd, iovecs, nr_vecs, addr);
-}
-io_result Raid1Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
-                                     uint32_t nr_vecs, uint64_t addr, int res) {
-    return _impl->handle_internal(q, data, sub_cmd, iovec, nr_vecs, addr, res);
-}
-void Raid1Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& compl_list) {
-    return _impl->collect_async(q, compl_list);
-}
-io_result Raid1Disk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    return _impl->handle_flush(q, data, sub_cmd);
-}
-io_result Raid1Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                                    uint64_t addr) {
-    return _impl->handle_discard(q, data, sub_cmd, len, addr);
-}
-io_result Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                               uint32_t nr_vecs, uint64_t addr) {
-    return _impl->async_iov(q, data, sub_cmd, iovecs, nr_vecs, addr);
 }
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept {
     return _impl->sync_iov(op, iovecs, nr_vecs, offset);

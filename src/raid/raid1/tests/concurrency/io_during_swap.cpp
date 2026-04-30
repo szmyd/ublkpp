@@ -36,8 +36,9 @@ TEST(Raid1Concurrency, WriteDuringSwap) {
     std::atomic< int > write_count{0};
     auto writer = std::thread([&] {
         while (!stop.load(std::memory_order_relaxed)) {
-            // Issue write via sync_io (triggers __replicate with RouteState capture)
-            auto res = raid_device.sync_io(UBLK_IO_OP_WRITE, nullptr, 4 * Ki, 64 * Ki);
+            // Issue write via sync_iov (triggers __replicate with RouteState capture)
+            auto iov = iovec{.iov_base = nullptr, .iov_len = 4 * Ki};
+            auto res = raid_device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 64 * Ki);
             if (res) { write_count.fetch_add(1, std::memory_order_relaxed); }
 
             // Small delay to widen the race window
@@ -110,8 +111,9 @@ TEST(Raid1Concurrency, ReadDuringSwap) {
     std::atomic< int > read_count{0};
     auto reader = std::thread([&] {
         while (!stop.load(std::memory_order_relaxed)) {
-            // Issue read via sync_io
-            auto res = raid_device.sync_io(UBLK_IO_OP_READ, nullptr, 4 * Ki, 64 * Ki);
+            // Issue read via sync_iov
+            auto iov = iovec{.iov_base = nullptr, .iov_len = 4 * Ki};
+            auto res = raid_device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 64 * Ki);
             if (res) { read_count.fetch_add(1, std::memory_order_relaxed); }
 
             // Small delay to widen race window

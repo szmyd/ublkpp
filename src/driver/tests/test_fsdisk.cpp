@@ -538,15 +538,6 @@ TEST(FSDiskConstructor, LargeFile) {
     std::filesystem::remove(test_path);
 }
 
-// Test: handle_flush is always a no-op (returns 0) regardless of direct_io mode.
-// For direct I/O there is nothing to flush; for buffered I/O the page cache is
-// coherent and durability is handled by fdatasync() in ~FSDisk().
-TEST_F(FSDiskTest, HandleFlushIsNoOp) {
-    auto disk = std::make_unique< ublkpp::FSDisk >(test_file_path);
-    auto result = disk->handle_flush(nullptr, nullptr, 0);
-    ASSERT_TRUE(result.has_value());
-    EXPECT_EQ(result.value(), 0);
-}
 } // anonymous namespace
 
 int main(int argc, char* argv[]) {

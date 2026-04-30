@@ -45,9 +45,6 @@ class Raid1DiskImpl : public UblkDisk {
 
     // Metrics
     std::shared_ptr< ublkpp::UblkRaidMetrics > _raid_metrics;
-    // Asynchronous replies that did not go through io_uring
-    std::map< ublksrv_queue const*, std::list< async_result > > _pending_results;
-
     // Active Re-Sync Task
     std::atomic< bool > _resync_enabled{true};
     std::shared_ptr< Raid1ResyncTask > _resync_task;
@@ -68,12 +65,6 @@ class Raid1DiskImpl : public UblkDisk {
     // Internal routines
     io_result __become_clean();
     io_result __become_degraded(sub_cmd_t failed_path, RouteState const* state, bool spawn_resync = true);
-    io_result __failover_read(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len,
-                              RouteState const* state = nullptr);
-    io_result __handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, uint32_t len, ublksrv_queue const* q,
-                                   ublk_io_data const* async_data);
-    io_result __replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t addr, uint32_t len, ublksrv_queue const* q = nullptr,
-                          ublk_io_data const* async_data = nullptr, RouteState* state = nullptr);
     disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                            iovec* iovecs, uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
@@ -133,18 +124,9 @@ public:
 
     uint8_t route_size() const noexcept override { return 1; }
 
-    bool uses_async_api() const noexcept override { return true; }
     disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                       iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
-
-    io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
-                              uint32_t nr_vecs, uint64_t addr, int res) override;
-    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
-    // RAID-1 Devices can not sit on-top of non-O_DIRECT devices, so there's nothing to flush
-    io_result handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) override { return 0; }
-    io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr) override;
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
     /// ============================

@@ -147,7 +147,7 @@ static inline auto next_sqe(ublksrv_queue const* q) {
 
 disk_task< int > FSDisk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
     ublksrv_io_desc const* iod = data->iod;
-    if (ublksrv_get_op(iod) == UBLK_IO_OP_FLUSH) { co_return handle_flush(q, data, sub_cmd).value_or(-EIO); }
+    if (ublksrv_get_op(iod) == UBLK_IO_OP_FLUSH) { co_return 0; }
 
     thread_local auto iov = iovec{};
     iov.iov_base = reinterpret_cast< void* >(iod->addr);
@@ -198,16 +198,6 @@ disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data c
     auto const cqe_result = co_await CqeAwaitable{io->ensure(sub_cmd)};
     if (_metrics) { _metrics->record_io_complete(data, sub_cmd); }
     co_return cqe_result;
-}
-
-io_result FSDisk::handle_flush(ublksrv_queue const*, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-
-    DLOGT("Flush {} : [tag:{:#0x}] ublk io [sub_cmd:{}]", _path.native(), data->tag, ublkpp::to_string(sub_cmd))
-    // Page cache is coherent for buffered I/O; reads see writes immediately.
-    // io_uring IORING_OP_FSYNC is unreliable on overlayfs (kernel 5.4); durability is
-    // ensured by the synchronous fdatasync() in ~FSDisk().
-    // For direct I/O there is nothing to flush — bypass caches entirely.
-    return 0;
 }
 
 io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,

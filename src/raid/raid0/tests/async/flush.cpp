@@ -1,11 +1,7 @@
 #include "async_raid0_common.hpp"
 
-TEST_F(AsyncRaid0Fixture, FlushDelegatesAndCompletesSynchronously) {
-    // Raid0Disk::handle_flush fans out to all children; each child returns 0.
-    // handle_io_async co_returns synchronously — no SQEs, no inject_cqe needed.
-    EXPECT_CALL(*disk_a, handle_flush(_, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, handle_flush(_, _, _)).Times(1);
-    EXPECT_CALL(*disk_c, handle_flush(_, _, _)).Times(1);
+TEST_F(AsyncRaid0Fixture, FlushCompletesSynchronouslyWithoutDelegating) {
+    // Raid0Disk::handle_io_async returns 0 immediately for FLUSH — no children dispatched.
     EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(0);
     EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(0);
     EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _, _)).Times(0);

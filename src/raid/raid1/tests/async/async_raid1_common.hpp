@@ -80,12 +80,6 @@ struct AsyncRaid1Fixture : public ::testing::Test {
         ON_CALL(*disk_a, async_iov(_, _, _, _, _, _)).WillByDefault(make_async_iov_action());
         ON_CALL(*disk_b, async_iov(_, _, _, _, _, _)).WillByDefault(make_async_iov_action());
 
-        ON_CALL(*disk_a, handle_flush(_, _, _)).WillByDefault(Return(io_result{0}));
-        ON_CALL(*disk_b, handle_flush(_, _, _)).WillByDefault(Return(io_result{0}));
-
-        ON_CALL(*disk_a, handle_discard(_, _, _, _, _)).WillByDefault(Return(io_result{1}));
-        ON_CALL(*disk_b, handle_discard(_, _, _, _, _)).WillByDefault(Return(io_result{1}));
-
         raid = std::make_shared< ublkpp::Raid1Disk >(boost::uuids::string_generator()(std::string(k_uuid)), disk_a,
                                                      disk_b);
         // Disable background resync to keep tests deterministic.

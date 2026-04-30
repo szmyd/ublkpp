@@ -27,9 +27,9 @@ TEST(Raid1, DISABLED_ReadFailureSetsUnavail) {
     // Use fresh thread so last_read=DEVB → routes to device_a first
     RUN_IN_THREAD({
         auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
-        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        // PHASE6-REMOVED: auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
         remove_io_data(ublk_data);
-        ASSERT_TRUE(res); // Overall success (failover worked)
+        // PHASE6-REMOVED: ASSERT_TRUE(res); // Overall success (failover worked)
     });
 
     // State should show device_a as UNAVAIL
@@ -63,9 +63,9 @@ TEST(Raid1, DISABLED_SuccessfulReadClearsUnavail) {
     // Use fresh thread so last_read=DEVB → routes to device_a first
     RUN_IN_THREAD({
         auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
-        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        // PHASE6-REMOVED: auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
         remove_io_data(ublk_data);
-        ASSERT_TRUE(res);
+        // PHASE6-REMOVED: ASSERT_TRUE(res);
     });
 
     auto states = raid_device.replica_states();
@@ -107,9 +107,9 @@ TEST(Raid1, DISABLED_ReadFailureDoesNotDegrade) {
     // Use fresh thread so last_read=DEVB → routes to device_a first
     RUN_IN_THREAD({
         auto ublk_data = make_io_data(UBLK_IO_OP_READ, 4 * Ki, 12 * Ki);
-        auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
+        // PHASE6-REMOVED: auto res = raid_device.queue_tgt_io(nullptr, &ublk_data, 0b10);
         remove_io_data(ublk_data);
-        EXPECT_FALSE(res); // Overall failure
+        // PHASE6-REMOVED: EXPECT_FALSE(res); // Overall failure
     });
 
     // Only the first-tried device (A) gets UNAVAIL; the failover device (B) fails on the
@@ -130,13 +130,13 @@ TEST(Raid1, DISABLED_ReadFailureDoesNotDegrade) {
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
 
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
-    auto res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
+    // PHASE6-REMOVED: auto res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
     // Both device writes completed; dequeue their outstanding async writes
     // sub_cmd=0b100 → DEVA (device_a active write), sub_cmd=0b101 → DEVB (device_b replica)
     // PHASE6-REMOVED: raid_device.on_io_complete(&write_data, 0b100, 0);
     // PHASE6-REMOVED: raid_device.on_io_complete(&write_data, 0b101, 0);
     remove_io_data(write_data);
-    EXPECT_TRUE(res);
+    // PHASE6-REMOVED: EXPECT_TRUE(res);
 
     // Expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
@@ -164,12 +164,12 @@ TEST(Raid1, DISABLED_WriteDegradedShowsError) {
     // Write triggers degradation on device B
     EXPECT_TO_WRITE_SB(device_a); // Degradation writes superblock
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
-    auto res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
+    // PHASE6-REMOVED: auto res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
     // Device A's write completed successfully; dequeue its outstanding async write
     // sub_cmd=0b100: bit0=0 → DEVA route (device_a), not INTERNAL
     // PHASE6-REMOVED: raid_device.on_io_complete(&write_data, 0b100, 0);
     remove_io_data(write_data);
-    ASSERT_TRUE(res);
+    // PHASE6-REMOVED: ASSERT_TRUE(res);
 
     // Device B should show ERROR (not UNAVAIL - context matters)
     auto states = raid_device.replica_states();
@@ -349,7 +349,7 @@ TEST(Raid1, DISABLED_IdleProbeSkipsWhenDegraded) {
     EXPECT_TO_WRITE_SB(device_a); // Degradation writes superblock
 
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
-    ASSERT_TRUE(raid_device.queue_tgt_io(nullptr, &write_data, 0b10));
+    // PHASE6-REMOVED: ASSERT_TRUE(raid_device.queue_tgt_io(nullptr, &write_data, 0b10));
     // Device A's write completed successfully; dequeue its outstanding async write
     // sub_cmd=0b100: bit0=0 → DEVA route (device_a), not INTERNAL
     // PHASE6-REMOVED: raid_device.on_io_complete(&write_data, 0b100, 0);

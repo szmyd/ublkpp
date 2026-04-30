@@ -102,75 +102,10 @@ std::list< int > Raid0Disk::open_for_uring(ublksrv_queue const* q, int const iou
     return fds;
 }
 
-io_result Raid0Disk::handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                                     uint32_t nr_vecs, uint64_t addr, int res) {
-    if (1 > nr_vecs) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
-    addr += _stride_width;
-    return __distribute(
-        iovecs, addr,
-        [q, data, res, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
-                             uint32_t logical_off) {
-            return _stripe_array[stripe_off]->disk->handle_internal(q, data, new_sub_cmd, iov, nr_iovs, logical_off,
-                                                                    res);
-        },
-        true, sub_cmd);
-}
-
 void Raid0Disk::idle_transition(ublksrv_queue const* q, bool enter) {
     for (auto const& stripe : _stripe_array) {
         stripe->disk->idle_transition(q, enter);
     }
-}
-
-void Raid0Disk::collect_async(ublksrv_queue const* q, std::list< async_result >& results) {
-    for (auto const& stripe : _stripe_array) {
-        if (!stripe->disk->uses_ublk_iouring) stripe->disk->collect_async(q, results);
-    }
-}
-
-io_result Raid0Disk::handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    bool const retry{is_retry(sub_cmd)};
-    if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-    auto cnt{0UL};
-    auto stripe_off{0U};
-    for (auto const& stripe : _stripe_array) {
-        auto const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0U);
-        auto res = stripe->disk->handle_flush(q, data, new_sub_cmd);
-        if (!res) return res;
-        cnt += res.value();
-        ++stripe_off;
-    }
-    return cnt;
-}
-
-io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                                    uint64_t addr) {
-    bool const retry{is_retry(sub_cmd)};
-    if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
-
-    auto const route_mask = _max_stripe_cnt - 1;
-
-    // Adjust the address for our superblock area, do not use _addr_ beyond this.
-    auto const lba = addr >> params()->basic.logical_bs_shift;
-    addr += _stride_width;
-
-    auto cnt{0U};
-    for (auto const& [stripe_off, region] : raid0::merged_subcmds(_stride_width, _stripe_size, addr, len)) {
-        auto const& [logical_off, logical_len] = region;
-        auto const& device = _stripe_array[stripe_off]->disk;
-        if (retry && (stripe_off != ((sub_cmd >> device->route_size()) & route_mask))) [[unlikely]]
-            continue;
-        sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
-        auto const logical_lba = logical_off >> params()->basic.logical_bs_shift;
-
-        RLOGD("Received DISCARD: [tag:{:#0x}] ublk io [lba:{:#0x}|len:{:#0x}] -> "
-              "[stripe_off:{}|logical_lba:{:#0x}|logical_len:{:#0x}|sub_cmd:{}]",
-              data->tag, lba, len, stripe_off, logical_lba, logical_len, ublkpp::to_string(new_sub_cmd))
-        auto res = device->handle_discard(q, data, new_sub_cmd, logical_len, logical_off);
-        if (!res) return res;
-        cnt += res.value();
-    }
-    return cnt;
 }
 
 /// This is the primary I/O handler call for RAID0
@@ -178,7 +113,7 @@ io_result Raid0Disk::handle_discard(ublksrv_queue const* q, ublk_io_data const* 
 //  RAID0 is primarily responsible for splitting an I/O request across several stripes. These operations can cross
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
-io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, bool retry, sub_cmd_t sub_cmd) const {
+io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, sub_cmd_t sub_cmd) const {
     // We gather all the pieces of each I/O intended to dispatch using this structure
     struct StripeAccum {
         uint64_t io_addr{0};                // Starting address
@@ -205,7 +140,6 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
 
     if (1 == _stripe_array.size()) return func(0, sub_cmd, iovecs, 1, addr);
 
-    auto const route_mask = _max_stripe_cnt - 1;
     DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
     auto const len = static_cast< uint32_t >(iovecs->iov_len);
     uint32_t cnt{0};
@@ -215,11 +149,6 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
         auto buf_cursor = static_cast< uint8_t* >(iovecs->iov_base) + off;
         off += sz;
 
-        auto const& device = _stripe_array[stripe_off]->disk;
-        // On retry, re-issue only the stripe whose route bits match the original sub_cmd.
-        if (retry && stripe_off != ((sub_cmd >> device->route_size()) & route_mask)) [[unlikely]]
-            continue;
-
         dirty_mask |= 1ULL << stripe_off;
         auto& acc = sub_cmds[stripe_off];
         if (!acc.nr_vecs) acc.io_addr = logical_off;
@@ -228,7 +157,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, boo
         // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
         // guaranteeing this stripe cannot accumulate more iovecs in the same call.
         if ((_stride_width - _stripe_size) >= (len - off)) {
-            sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? (uint16_t)stripe_off : 0);
+            sub_cmd_t const new_sub_cmd = sub_cmd + stripe_off;
             auto res = func(stripe_off, new_sub_cmd, acc.io_array.data(), acc.nr_vecs, acc.io_addr);
             if (!res) return res;
             cnt += res.value();
@@ -254,21 +183,22 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                         });
 }
 
-bool Raid0Disk::uses_async_api() const noexcept {
-    // Use the new async path when all children implement uses_async_api().
-    // handle_io_async delegates per-stripe I/O to handle_iov_async on each child,
-    // which owns its full lifecycle (SQE submission + CQE awaiting) as a disk_task<int>.
-    return std::all_of(_stripe_array.begin(), _stripe_array.end(),
-                       [](auto const& s) { return s->disk->uses_async_api(); });
+disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+    auto iov = iovec{.iov_base = reinterpret_cast< void* >(data->iod->addr),
+                     .iov_len = static_cast< size_t >(data->iod->nr_sectors) << SECTOR_SHIFT};
+    co_return co_await handle_iov_async(q, data, sub_cmd, &iov, 1,
+                                        static_cast< uint64_t >(data->iod->start_sector) << SECTOR_SHIFT);
 }
 
-disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                             iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
 
-    if (op == UBLK_IO_OP_FLUSH) co_return handle_flush(q, data, sub_cmd).value_or(-EIO);
+    if (op == UBLK_IO_OP_FLUSH) co_return 0;
 
-    bool const retry{is_retry(sub_cmd)};
-    if (!retry) sub_cmd = shift_route(sub_cmd, route_size());
+    sub_cmd = shift_route(sub_cmd, route_size());
+
+    addr += _stride_width;
 
     // Eagerly start each child task so all SQEs are in-flight before the first co_await,
     // preserving kernel parallelism. All tasks must be drained even on error to avoid
@@ -276,32 +206,23 @@ disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data
     std::vector< disk_task< int > > stripe_tasks;
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
-        auto const route_mask = _max_stripe_cnt - 1;
-        uint32_t const len = data->iod->nr_sectors << SECTOR_SHIFT;
-        uint64_t const addr = (data->iod->start_sector << SECTOR_SHIFT) + _stride_width;
+        uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
 
         for (auto const& [stripe_off, region] : raid0::merged_subcmds(_stride_width, _stripe_size, addr, len)) {
             auto const& [logical_off, logical_len] = region;
-            auto const& device = _stripe_array[stripe_off]->disk;
-            if (retry && (stripe_off != ((sub_cmd >> device->route_size()) & route_mask))) [[unlikely]]
-                continue;
-            sub_cmd_t const new_sub_cmd = sub_cmd + (!retry ? stripe_off : 0);
-            // stripe_iov is a loop-local variable; _coro.resume() runs handle_discard
-            // synchronously (reading iov_len) before the task suspends, so the stack variable
-            // is safe to pass by pointer.
+            sub_cmd_t const new_sub_cmd = sub_cmd + stripe_off;
+            // stripe_iov is a loop-local variable; _coro.resume() runs async_iov synchronously
+            // (reading iov_len) before the task suspends, so the stack variable is safe.
             auto stripe_iov = iovec{.iov_base = nullptr, .iov_len = logical_len};
-            auto task = device->handle_iov_async(q, data, new_sub_cmd, &stripe_iov, 1, logical_off);
+            auto task =
+                _stripe_array[stripe_off]->disk->handle_iov_async(q, data, new_sub_cmd, &stripe_iov, 1, logical_off);
             task._coro.resume();
             stripe_tasks.push_back(std::move(task));
         }
     } else {
         // READ / WRITE: fan out across stripes via __distribute.
-        auto iov = iovec{.iov_base = reinterpret_cast< void* >(data->iod->addr),
-                         .iov_len = static_cast< size_t >(data->iod->nr_sectors) << SECTOR_SHIFT};
-        uint64_t const addr = (data->iod->start_sector << SECTOR_SHIFT) + _stride_width;
-
         auto res = __distribute(
-            &iov, addr,
+            iovecs, addr,
             [q, data, &stripe_tasks, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
                                            uint64_t logical_off) -> io_result {
                 auto task =
@@ -310,7 +231,7 @@ disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data
                 stripe_tasks.push_back(std::move(task));
                 return 1;
             },
-            retry, sub_cmd);
+            sub_cmd);
 
         if (!res) co_return -EIO;
     }

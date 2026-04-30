@@ -89,28 +89,6 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
 #define EXPECT_TO_WRITE_SB_F(device, fail) EXPECT_SB_OP(UBLK_IO_OP_WRITE, device, false, fail)
 #define EXPECT_TO_WRITE_SB(device) EXPECT_TO_WRITE_SB_F(device, false)
 
-#define EXPECT_ASYNC_OP(OP, device, fail, sz)                                                                          \
-    EXPECT_CALL(*(device), async_iov(_, _, _, _, _, _))                                                                \
-        .Times(1)                                                                                                      \
-        .WillOnce([op = (OP), f = (fail), s = (sz), &raid_device](ublksrv_queue const*, ublk_io_data const* data,      \
-                                                                  ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,            \
-                                                                  uint32_t nr_vecs, uint64_t addr) -> io_result {      \
-            EXPECT_TRUE(ublkpp::is_retry(sub_cmd));                                                                    \
-            EXPECT_TRUE(ublkpp::is_dependent(sub_cmd));                                                                \
-            EXPECT_EQ(1U, nr_vecs);                                                                                    \
-            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);  /* Expect write to bitmap!*/                                 \
-            EXPECT_LT(addr, raid_device.reserved_size()); /* Expect write to bitmap!*/                                 \
-            if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
-            auto const op = ublksrv_get_op(data->iod);                                                                 \
-            if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) memset(iovecs->iov_base, 000, iovecs->iov_len);  \
-            return 1;                                                                                                  \
-        });
-
-#define EXPECT_SB_ASYNC_OP(OP, device, fail) EXPECT_ASYNC_OP(OP, device, fail, ublkpp::raid1::k_page_size);
-#define EXPECT_TO_WRITE_SB_ASYNC_F(device, fail) EXPECT_SB_ASYNC_OP(UBLK_IO_OP_WRITE, device, fail)
-#define EXPECT_TO_WRITE_SB_ASYNC(device) EXPECT_TO_WRITE_SB_ASYNC_F(device, false)
-
 #define EXPECT_TO_READ_SB_F(device, dev_b, fail) EXPECT_SB_OP(UBLK_IO_OP_READ, device, dev_b, fail)
 
 #define CREATE_DISK_F(params, dev_b, no_read, fail_read, no_write, fail_write)                                         \
@@ -129,9 +107,9 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
 #define CREATE_DISK_B(params) CREATE_DISK((params), true)
 
 // Wrap test body in thread to get fresh thread_local state (for RAID1 load balancer isolation)
-#define RUN_IN_THREAD(body)                                                                                            \
+#define RUN_IN_THREAD(...)                                                                                             \
     do {                                                                                                               \
-        std::thread([&]() { body }).join();                                                                            \
+        std::thread([&]() { __VA_ARGS__ }).join();                                                                     \
     } while (0)
 
 // Helper function to wait for both devices to become clean

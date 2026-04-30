@@ -14,7 +14,8 @@ TEST(Raid1, SyncIoReadDevAFail) {
     EXPECT_SYNC_OP(test_op, device_b, true, false, test_sz, test_off + raid_device.reserved_size());
 
     RUN_IN_THREAD({
-        auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
+        auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+        auto res = raid_device.sync_iov(test_op, &iov, 1, test_off);
         ASSERT_TRUE(res);
         EXPECT_EQ(test_sz, res.value());
     });

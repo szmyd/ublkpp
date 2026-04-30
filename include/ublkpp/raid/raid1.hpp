@@ -3,6 +3,7 @@
 #include <memory>
 
 #include <boost/uuid/uuid.hpp>
+#include <sisl/utility/enum.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
 namespace ublkpp {
@@ -45,7 +46,6 @@ public:
     std::string id() const noexcept override;
     std::list< int > open_for_uring(ublksrv_queue const*, int const iouring_device) override;
 
-    bool uses_async_api() const noexcept override;
     disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                       iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
@@ -54,16 +54,6 @@ public:
 
     void idle_transition(ublksrv_queue const*, bool) override;
 
-    io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovec,
-                              uint32_t nr_vecs, uint64_t addr, int res) override;
-    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
-    // RAID-1 Devices can not sit on-top of non-O_DIRECT devices, so there's nothing to flush
-    io_result handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) override;
-    io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr) override;
-
-    io_result async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                        uint32_t nr_vecs, uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
     /// ============================
 

@@ -25,16 +25,12 @@ class UBlkPPConan(ConanFile):
                 "fPIC": ['True', 'False'],
                 "coverage": ['True', 'False'],
                 "sanitize": ['address', 'thread', 'False'],
-                "homeblocks": ['True', 'False'],
-                "iscsi": ['True', 'False'],
                 }
     default_options = {
                 'shared': False,
                 'fPIC': True,
                 'coverage': False,
                 'sanitize': False,
-                'homeblocks': False,
-                'iscsi': False,
             }
 
     exports_sources = (
@@ -76,11 +72,7 @@ class UBlkPPConan(ConanFile):
         self.requires("sisl/[^13.2]", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
-        if (self.options.get_safe("homeblocks")):
-            self.requires("homeblocks/[^5.0]")
         self.requires("ublksrv/nbi.1.5.0.1")
-        if (self.options.get_safe("iscsi")):
-            self.requires("libiscsi/[^1.20]")
 
     def layout(self):
         self.folders.source = "."
@@ -148,10 +140,6 @@ class UBlkPPConan(ConanFile):
         self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
         if self.settings.os == "Linux":
             self.cpp_info.system_libs = ["atomic"]
-        if (self.options.get_safe("iscsi")):
-            self.cpp_info.requires.extend(["libiscsi::libiscsi"])
-        if (self.options.get_safe("homeblocks")):
-            self.cpp_info.requires.extend(["homeblocks::homeblocks"])
         if self.options.get_safe("sanitize") and self.options.sanitize != "False":
             if self.options.sanitize == "thread":
                 self.cpp_info.sharedlinkflags.append("-fsanitize=thread")

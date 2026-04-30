@@ -12,6 +12,12 @@ class VolumeManager;
 
 namespace ublkpp {
 
+struct async_result {
+    ublk_io_data const* io;
+    sub_cmd_t sub_cmd;
+    int result;
+};
+
 class HomeBlkDisk : public UblkDisk {
     boost::uuids::uuid const _vol_id;
     std::shared_ptr< homeblocks::VolumeManager > const _hb_vol_if;
@@ -27,11 +33,11 @@ public:
 
     std::string id() const noexcept override { return "HomeBlkDisk"; }
 
-    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list) override;
+    void collect_async(ublksrv_queue const*, std::list< async_result >& compl_list);
 
-    io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
+    io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
     io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr) override;
+                             uint64_t addr);
 
     io_result async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
                         uint32_t nr_vecs, uint64_t addr) override;

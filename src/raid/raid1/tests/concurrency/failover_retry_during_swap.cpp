@@ -61,7 +61,8 @@ TEST(Raid1Concurrency, FailoverRetryDuringSwap) {
 
     // Thread 1: Issue a read that will trigger failover
     auto reader = std::thread([&] {
-        auto res = raid_device.sync_io(UBLK_IO_OP_READ, nullptr, 4 * Ki, 64 * Ki);
+        auto iov = iovec{.iov_base = nullptr, .iov_len = 4 * Ki};
+        auto res = raid_device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 64 * Ki);
         EXPECT_TRUE(res); // Failover should succeed despite device_a failure
     });
 

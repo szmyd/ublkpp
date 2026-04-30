@@ -50,8 +50,6 @@ struct AsyncRaid0Fixture : public ::testing::Test {
                     return sizeof(ublkpp::raid0::SuperBlock);
                 });
             ON_CALL(*d, async_iov(_, _, _, _, _, _)).WillByDefault(make_async_iov_action());
-            ON_CALL(*d, handle_flush(_, _, _)).WillByDefault(Return(0));
-            ON_CALL(*d, handle_discard(_, _, _, _, _)).WillByDefault(Return(1));
         }
         raid =
             std::make_shared< ublkpp::Raid0Disk >(boost::uuids::random_generator()(), k_stripe_size,

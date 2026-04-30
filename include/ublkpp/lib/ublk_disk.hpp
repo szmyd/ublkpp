@@ -16,12 +16,6 @@ struct ublk_params;
 
 namespace ublkpp {
 
-struct async_result {
-    ublk_io_data const* io;
-    sub_cmd_t sub_cmd;
-    int result;
-};
-
 using io_result = std::expected< size_t, std::error_condition >;
 class UblkDisk : public std::enable_shared_from_this< UblkDisk > {
     std::unique_ptr< ublk_params > _params;
@@ -48,26 +42,14 @@ public:
 
     std::string to_string() const;
 
-    // Target entry-point for I/O
-    io_result queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
-
-    // Internal result response
-    io_result queue_internal_resp(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, int res);
-
-    // Returns true when this disk implements handle_io_async (new coroutine API).
-    // Disks whose children are all new-API return true; any legacy child forces false,
-    // ensuring process_result handles multi-SQE completions (e.g. RAID1 replicas).
-    virtual bool uses_async_api() const noexcept { return false; }
-
-    // Async entry-point: called by __handle_io_async when uses_async_api() is true.
+    // Async entry-point: called by __handle_io_async.
     // Implementations submit all SQEs upfront then co_await CqeAwaitable for each result.
     virtual disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
 
     // Async I/O with explicit scatter-gather list and address. Called when the operation targets
     // a sub-range or offset that differs from what ublk_io_data describes - the caller owns the
-    // buffer layout and address computation. Composite disks override to apply their own
-    // coordination before delegating to children. Default: async_iov/handle_discard +
-    // io_uring_submit + co_await CqeAwaitable. For DISCARD, iovecs[0].iov_len is the length.
+    // buffer layout and address computation. Every concrete disk type overrides this directly.
+    // For DISCARD, iovecs[0].iov_len is the length.
     virtual disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                               iovec* iovecs, uint32_t nr_vecs, uint64_t addr);
 
@@ -79,29 +61,9 @@ public:
     // Number of bits for sub_cmd routing in the sqe user_data
     virtual uint8_t route_size() const noexcept { return 0; }
 
-    // Async replies collected here
-    virtual void collect_async(ublksrv_queue const*, std::list< async_result >&) {} // LCOV_EXCL_LINE
-
     virtual void idle_transition(ublksrv_queue const*, bool) {};
 
-    virtual io_result handle_internal(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr, int res);
-
-    virtual io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) = 0;
-
-    virtual io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                                     uint64_t addr) = 0;
-
-    virtual io_result async_iov(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, iovec* iovecs,
-                                uint32_t nr_vecs, uint64_t addr);
-
     virtual io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept = 0;
-
-    /// Deprecated Sync I/O calls
-    io_result handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
-                        uint32_t const len, uint64_t const addr);
-    io_result sync_io(uint8_t op, void* buf, size_t len, off_t addr) noexcept;
-    ///
 };
 
 inline auto format_as(UblkDisk const& device) { return fmt::format("{}", device.to_string()); }
@@ -113,14 +75,9 @@ public:
 
     std::string id() const noexcept override;
 
-    bool uses_async_api() const noexcept override { return true; }
     disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
     disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
                                       iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
-
-    io_result handle_flush(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
-    io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr) override;
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 };

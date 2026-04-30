@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
 
 #include <sisl/logging/logging.h>
@@ -54,18 +55,22 @@ private:
 
 public:
     MOCK_METHOD(std::list< int >, open_for_uring, (ublksrv_queue const*, int const), (override));
-    MOCK_METHOD(io_result, handle_internal,
-                (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t, int), (override));
-    MOCK_METHOD(void, collect_async, (ublksrv_queue const*, std::list< async_result >&), (override));
     MOCK_METHOD(void, idle_transition, (ublksrv_queue const*, bool), (override));
-    MOCK_METHOD(io_result, handle_flush, (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t), (override));
-    MOCK_METHOD(io_result, handle_discard, (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, uint32_t, uint64_t),
-                (override));
 
     MOCK_METHOD(io_result, async_iov,
-                (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t), (override));
+                (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t));
 
     MOCK_METHOD(io_result, sync_iov, (uint8_t, iovec*, uint32_t, off_t offset), (override, noexcept));
+
+    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
+                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override {
+        auto* io = reinterpret_cast< async_io* >(data->private_data);
+        auto res = async_iov(q, data, sub_cmd, iovecs, nr_vecs, addr);
+        if (!res) co_return -static_cast< int >(res.error().value());
+        if (res.value() == 0) co_return 0;
+        io_uring_submit(q->ring_ptr);
+        co_return co_await CqeAwaitable{io->ensure(sub_cmd)};
+    }
 
     uint8_t route_size() const noexcept override { return 0; }
 };
@@ -73,7 +78,6 @@ public:
 class AsyncTestDisk : public TestDisk {
 public:
     explicit AsyncTestDisk(TestParams const& p) : TestDisk(p) {}
-    bool uses_async_api() const noexcept override { return true; }
 };
 
 }; // namespace ublkpp

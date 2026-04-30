@@ -45,86 +45,15 @@ UblkDisk::UblkDisk() :
 
 UblkDisk::~UblkDisk() = default;
 
-io_result UblkDisk::handle_internal(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t,
-                                    int) {
-    return 0;
-}
-
 disk_task< int > UblkDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
-    // Unreachable: __handle_io_async only calls this when uses_async_api() returns true.
-    RELEASE_ASSERT(false, "handle_io_async called on disk without uses_async_api() override")
+    RELEASE_ASSERT(false, "handle_io_async called on base UblkDisk — override required")
     co_return -EIO; // LCOV_EXCL_LINE
 }
 
-io_result UblkDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t) {
-    RELEASE_ASSERT(false, "async_iov called on disk that does not override it")
-    return std::unexpected(std::make_error_condition(std::errc::function_not_supported)); // LCOV_EXCL_LINE
-}
-
-// Default: call async_iov or handle_discard, then submit and await the CQE.
-// async_iov is non-pure-virtual so that test mocks (MockTestDisk) can still override it
-// and exercise the default handle_iov_async path via RAID0/1 child dispatch.
-disk_task< int > UblkDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                            iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
-    auto* io = reinterpret_cast< async_io* >(data->private_data);
-    auto const op = ublksrv_get_op(data->iod);
-
-    io_result res;
-    if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
-        uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
-        res = handle_discard(q, data, sub_cmd, len, addr);
-    } else {
-        res = async_iov(q, data, sub_cmd, iovecs, nr_vecs, addr);
-    }
-
-    if (!res) co_return -static_cast< int >(res.error().value());
-    if (res.value() == 0) co_return 0;
-
-    io_uring_submit(q->ring_ptr);
-    co_return co_await CqeAwaitable{io->ensure(sub_cmd)};
-}
-
-io_result UblkDisk::handle_rw(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, void* buf,
-                              uint32_t const len, uint64_t const addr) {
-    DLOGW("Use of deprecated ::handle_rw(...)! Please convert to using ::async_iov(...)")
-    auto iov = iovec{.iov_base = buf, .iov_len = len};
-    return async_iov(q, data, sub_cmd, &iov, 1, addr);
-}
-
-io_result UblkDisk::sync_io(uint8_t op, void* buf, size_t len, off_t addr) noexcept {
-    DLOGW("Use of deprecated ::sync_io(...)! Please convert to using ::sync_iov(...)")
-    auto iov = iovec{.iov_base = buf, .iov_len = len};
-    return sync_iov(op, &iov, 1, addr);
-}
-
-io_result UblkDisk::queue_tgt_io(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    thread_local auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
-
-    DLOGT("Queue I/O [tag:{:#0x}] [sub_cmd:{}]", data->tag, ublkpp::to_string(sub_cmd))
-    ublksrv_io_desc const* iod = data->iod;
-    switch (ublksrv_get_op(iod)) {
-    case UBLK_IO_OP_FLUSH:
-        return handle_flush(q, data, sub_cmd);
-    case UBLK_IO_OP_WRITE_ZEROES:
-    case UBLK_IO_OP_DISCARD:
-        return handle_discard(q, data, sub_cmd, iod->nr_sectors << SECTOR_SHIFT, iod->start_sector << SECTOR_SHIFT);
-    case UBLK_IO_OP_READ:
-    case UBLK_IO_OP_WRITE: {
-        iov.iov_base = (void*)iod->addr;
-        iov.iov_len = (iod->nr_sectors << SECTOR_SHIFT);
-        return async_iov(q, data, sub_cmd, &iov, 1, (iod->start_sector << SECTOR_SHIFT));
-    }
-    default:
-        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
-    }
-}
-
-io_result UblkDisk::queue_internal_resp(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, int res) {
-    thread_local auto iov = iovec{.iov_base = nullptr, .iov_len = 0};
-    ublksrv_io_desc const* iod = data->iod;
-    iov.iov_base = (void*)iod->addr;
-    iov.iov_len = (iod->nr_sectors << SECTOR_SHIFT);
-    return handle_internal(q, data, sub_cmd, &iov, 1, iod->start_sector << SECTOR_SHIFT, res);
+disk_task< int > UblkDisk::handle_iov_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t,
+                                            uint64_t) {
+    RELEASE_ASSERT(false, "handle_iov_async called on base UblkDisk — override required")
+    co_return -EIO; // LCOV_EXCL_LINE
 }
 
 std::string UblkDisk::to_string() const {
@@ -146,17 +75,6 @@ DefunctDisk::DefunctDisk() : UblkDisk() {
 }
 
 std::string DefunctDisk::id() const noexcept { return "~DEFUNCT~"; }
-
-// LCOV_EXCL_START
-io_result DefunctDisk::handle_flush(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
-
-io_result DefunctDisk::handle_discard(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, uint32_t, uint64_t) {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
-
-// LCOV_EXCL_STOP
 
 disk_task< int > DefunctDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
     co_return -EIO; // LCOV_EXCL_LINE

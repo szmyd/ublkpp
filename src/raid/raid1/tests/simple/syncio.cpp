@@ -13,9 +13,12 @@ TEST(Raid1, SimpleSyncIo) {
     // Reads will only go to device_a at start
     EXPECT_SYNC_OP(test_op, device_a, false, false, test_sz, test_off + raid_device.reserved_size());
 
-    auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
-    ASSERT_TRUE(res);
-    EXPECT_EQ(test_sz, res.value());
+    {
+        auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+        auto res = raid_device.sync_iov(test_op, &iov, 1, test_off);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(test_sz, res.value());
+    }
 
     test_op = UBLK_IO_OP_WRITE;
     test_off = 1024 * Ki;
@@ -24,9 +27,12 @@ TEST(Raid1, SimpleSyncIo) {
     EXPECT_SYNC_OP(test_op, device_a, false, false, test_sz, test_off + raid_device.reserved_size());
     EXPECT_SYNC_OP(test_op, device_b, true, false, test_sz, test_off + raid_device.reserved_size());
 
-    res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
-    ASSERT_TRUE(res);
-    EXPECT_EQ(test_sz, res.value());
+    {
+        auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+        auto res2 = raid_device.sync_iov(test_op, &iov, 1, test_off);
+        ASSERT_TRUE(res2);
+        EXPECT_EQ(test_sz, res2.value());
+    }
 
     // expect unmount_clean on devices
     EXPECT_TO_WRITE_SB(device_a);

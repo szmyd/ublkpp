@@ -49,7 +49,8 @@ TEST(Raid1Concurrency, MultipleReadersDuringSwap) {
             sync_point.arrive_and_wait();
 
             while (!stop.load(std::memory_order_relaxed)) {
-                auto res = raid_device.sync_io(UBLK_IO_OP_READ, nullptr, 4 * Ki, 64 * Ki);
+                auto iov = iovec{.iov_base = nullptr, .iov_len = 4 * Ki};
+                auto res = raid_device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 64 * Ki);
                 if (res) { read_counts[reader_id].fetch_add(1, std::memory_order_relaxed); }
 
                 // Small delay to allow swap to happen mid-operation

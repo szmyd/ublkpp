@@ -15,7 +15,8 @@ TEST(Raid0, SyncIoSuccess) {
     EXPECT_SYNC_OP(test_op, device_b, false, 32 * Ki, raid_device.stripe_size());
     EXPECT_SYNC_OP(test_op, device_c, false, 8 * Ki, raid_device.stripe_size());
 
-    auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
+    auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+    auto res = raid_device.sync_iov(test_op, &iov, 1, test_off);
     ASSERT_TRUE(res);
     EXPECT_EQ(test_sz, res.value());
 }
