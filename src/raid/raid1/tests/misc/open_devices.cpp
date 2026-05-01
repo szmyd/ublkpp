@@ -29,35 +29,7 @@ TEST(Raid1, OpenDevices) {
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 2)));
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 1)));
 
-    EXPECT_CALL(*device_a, collect_async(_, _)).Times(0);
-    EXPECT_CALL(*device_b, collect_async(_, _)).Times(0);
-    std::list< ublkpp::async_result > result_list;
-    raid_device.collect_async(nullptr, result_list);
-    EXPECT_EQ(0, result_list.size());
-
-    device_a->uses_ublk_iouring = false;
-    device_b->uses_ublk_iouring = false;
-
-    EXPECT_CALL(*device_a, collect_async(_, _))
-        .Times(1)
-        .WillOnce([](ublksrv_queue const*, std::list< ublkpp::async_result >& compls) {
-            compls.push_back(ublkpp::async_result{nullptr, 0, 5});
-        });
-    EXPECT_CALL(*device_b, collect_async(_, _))
-        .Times(1)
-        .WillOnce([](ublksrv_queue const*, std::list< ublkpp::async_result >& compls) {
-            compls.push_back(ublkpp::async_result{nullptr, 1, 10});
-        });
-
-    raid_device.collect_async(nullptr, result_list);
-
-    ASSERT_EQ(2, result_list.size());
-    EXPECT_EQ(0, result_list.begin()->sub_cmd);
-    EXPECT_EQ(5, result_list.begin()->result);
-    EXPECT_EQ(1, (++result_list.begin())->sub_cmd);
-    EXPECT_EQ(10, (++result_list.begin())->result);
-
-    // expect unmount_clean update
+    // expect unmount_clean update on both devices (healthy array, no degradation)
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 }

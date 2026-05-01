@@ -810,7 +810,6 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     _resync_task->enqueue_write();
     auto const bm = __compute_backup_mode(state, static_cast< uint64_t >(addr), len, is_discard);
 
-
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
     if (!active_res) {
