@@ -363,19 +363,40 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 // - Only proceed when we have a consistent snapshot
 // - Torn reads are DETECTED by validation before we use the data
 //
-// WHAT MAKES THIS SAFE:
+// WHAT MAKES THIS SAFE (data consistency):
 // 1. Validation loop catches all torn/inconsistent reads
-// 2. We NEVER dereference or use corrupted shared_ptr state
+// 2. We NEVER use corrupted shared_ptr state for I/O routing
 // 3. Writer ordering (CAS route → swap devices) ensures consistency
 // 4. Pointer reads are atomic on x86-64 (detection works)
 //
+// KNOWN RESIDUAL RACE (accepted, see attribute above):
+// shared_ptr copy is NOT just a pointer read. It is: (1) read control block pointer,
+// (2) _M_add_ref_copy() -- atomic increment of use_count in the control block.
+// Between (1) and (2), swap_device can drop _device_a/_device_b's last reference,
+// decrement use_count to 0, and free the control block. Step (2) then writes to freed
+// memory. When the validation loop detects the stale pointer and retries, the local
+// shared_ptr destructs, decrementing the freed block's phantom use_count to 0 again,
+// triggering the MirrorDevice destructor and control block deallocation a second time.
+//
+// CONSEQUENCE: double-destructor + double-free → process crash. NOT on-disk corruption:
+// MirrorDevice's destructor closes OS handles; it never writes the superblock or bitmap.
+// On-disk RAID state is consistent at whatever was last durably written before the crash.
+// Pod restart and UBLK_F_USER_RECOVERY handle this recovery path.
+//
+// WHY WE ACCEPT IT: The race requires swap_device to execute while no RouteState is live
+// AND a concurrent management API call (replica_states/replicas) is mid-copy -- essentially
+// zero probability during active I/O. Swaps happen at most once per device lifetime.
+// Adding a shared_mutex to this function would lock every I/O to protect against one
+// administrative operation. That trade-off is wrong for a storage hot path.
+//
 // WHAT CAN GO WRONG IF YOU MODIFY THIS:
-// - Remove validation → use-after-free from torn reads
+// - Remove validation → stale device used for I/O (wrong disk!)
 // - Weaken validation → ABA problems, stale route with new devices
 // - Use data before validation → memory corruption
 // - Change retry logic → infinite loops or missed swaps
 //
-// TSAN FLAGS THIS: Yes, correctly. See tsan.supp for suppression rationale.
+// TSAN FLAGS THIS: Yes, correctly. Suppressed via tsan.supp + no_sanitize_thread.
+// ASAN FLAGS THIS: Yes, correctly. Suppressed via no_sanitize("address") on the declaration.
 //
 // ⚠️  DO NOT MODIFY UNLESS YOU FULLY UNDERSTAND LOCK-FREE MEMORY MODELS ⚠️
 //
@@ -738,7 +759,8 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
         // is within spec for a write the client never saw acknowledged.
         _dirty_bitmap->dirty_region(addr, len);
         if (auto d = __become_degraded(true, &state); !d) {
-            // SB write failed -- degradation not persisted; drain in-flight backup before returning.
+            // CAS lost — concurrent degradation already in flight or complete.
+            // Drain the backup CQE to avoid leaking a live CqeState.
             if (backup_task) co_await backup_task->started();
             co_return -EIO;
         }

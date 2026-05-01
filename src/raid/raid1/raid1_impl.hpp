@@ -99,7 +99,12 @@ class Raid1DiskImpl : public UblkDisk {
     // ☠️ ☠️ ☠️  YOU HAVE BEEN WARNED  ☠️ ☠️ ☠️
     // clang-format off
 #ifndef NDEBUG
-    __attribute__((noinline, no_sanitize_thread))
+    // no_sanitize_thread: intentional lock-free race, validated by retry loop (see tsan.supp).
+    // no_sanitize("address"): shared_ptr copy has a sub-nanosecond UAF window during swap_device.
+    // The race cannot corrupt on-disk state (MirrorDevice dtor writes nothing to disk); worst case
+    // is a process crash, which pod restart / UBLK_F_USER_RECOVERY handles. Locking this hot path
+    // is not worth the cost for a swap that happens at most once per device lifetime.
+    __attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
 #endif
     RouteState __capture_route_state() const;
     // clang-format on

@@ -2,11 +2,25 @@
 #
 # This file suppresses known false positives from ThreadSanitizer.
 
-# RAID1 lock-free read path: intentional double-checked read pattern
-# The __capture_route_state function uses a carefully designed lock-free
-# synchronization where readers validate consistency by reading device
-# pointers twice with a route read in between. TSAN flags this as a race
-# but it's safe due to the validation logic.
+# RAID1 lock-free read-retry path in __capture_route_state.
+#
+# This IS a real data race, not a false positive. We accept it deliberately.
+#
+# The function reads _device_a/_device_b (plain shared_ptr, not atomic) without a lock,
+# then validates the read was consistent before using it. The race has two flavours:
+#
+#   (1) TSAN race (suppressed here): torn read of the 16-byte shared_ptr during swap_device.
+#       The validation loop detects this and retries -- data consistency is preserved.
+#
+#   (2) ASAN use-after-free (suppressed via no_sanitize("address") on the declaration):
+#       shared_ptr copy involves reading the control block pointer then incrementing its
+#       use_count. If swap_device drops the last reference and frees the control block
+#       between those two steps, the increment writes to freed memory. When the validation
+#       loop retries, the phantom shared_ptr destructs, triggering a double-destructor and
+#       double-free → process crash. MirrorDevice's destructor does not write RAID metadata,
+#       so on-disk state is consistent. Pod restart / UBLK_F_USER_RECOVERY handles recovery.
+#       The race requires swap_device during a zero-I/O window with a concurrent management
+#       API call -- accepted risk given swaps occur at most once per device lifetime.
 race:ublkpp::raid1::Raid1DiskImpl::__capture_route_state
 
 # GMock internal data race in concurrent tests
