@@ -97,9 +97,14 @@ class Raid1ResyncTask {
 
     resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept;
 
-    // Generic state transition helper - reduces duplication across launch/stop/pause
+    // Generic state transition helper - reduces duplication across launch/stop/pause.
+    // noinline: gcov attributes inlined template instructions to the call-site line numbers
+    // rather than to the template body, making the entire retry loop appear uncovered.
+    // Unlike __capture_route_state (which reads non-atomic shared_ptrs and must prevent the
+    // compiler from caching them across loop iterations), all state here is accessed through
+    // atomics — so noinline is a coverage tool, not a correctness requirement.
     template < typename StateHandler >
-    bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
+    [[gnu::noinline]] bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
 
     // This most happen, so we wait till the resync job becomes sleeping, then move it quickly to
     // PAUSE to prevent any resync opeartions from continuing to run (will block in __yield)

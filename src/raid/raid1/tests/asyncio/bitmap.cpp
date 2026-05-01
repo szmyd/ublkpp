@@ -236,6 +236,85 @@ TEST_F(AsyncRaid1Fixture, ResyncUnblocksAfterProbe) {
     EXPECT_EQ(states.bytes_to_sync, 0u);
 }
 
+// Calling toggle_resync(true) while a resync is already running is a no-op; the second launch()
+// hits the EARLY_EXIT arm inside __transition_to and returns immediately.
+// Exercises __transition_to handler lines (ACTIVE/SLEEPING/PAUSE → EARLY_EXIT) and the
+// early-return log+return in launch().
+TEST_F(AsyncRaid1Fixture, ResyncLaunchWhileRunningIsNoop) {
+    degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
+    ASSERT_GT(raid->replica_states().bytes_to_sync, 0u);
+
+    std::atomic_bool resync_started{false};
+    ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .WillByDefault([&resync_started](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+            resync_started.store(true);
+            std::this_thread::sleep_for(50ms); // hold ACTIVE long enough for extra calls
+            return static_cast< int >(iov->iov_len);
+        });
+
+    raid->toggle_resync(true); // launches resync: IDLE → ACTIVE
+
+    // Wait until the resync task is definitely in ACTIVE state (reading disk_a).
+    // Without this wait, extra toggle_resync(true) calls may see state=IDLE and join+relaunch
+    // instead of hitting the EARLY_EXIT arm.
+    auto const dl = std::chrono::steady_clock::now() + 5s;
+    while (!resync_started.load() && std::chrono::steady_clock::now() < dl)
+        std::this_thread::sleep_for(1ms);
+    ASSERT_TRUE(resync_started.load());
+
+    // Each call hits the ACTIVE → EARLY_EXIT arm inside __transition_to.
+    for (int i = 0; i < 5; ++i)
+        raid->toggle_resync(true);
+
+    wait_for_resync(raid.get());
+    EXPECT_EQ(raid->replica_states().bytes_to_sync, 0u);
+    EXPECT_EQ(raid->replica_states().device_b, ublkpp::raid1::replica_state::CLEAN);
+}
+
+// Calling toggle_resync(false) while a resync is mid-I/O must terminate without deadlock.
+// stop() sees state=ACTIVE and returns RETRY_WITH_SLEEP; once I/O finishes and resync
+// completes naturally, stop() detects IDLE (not joinable) and returns.
+// The SLEEPING→RETRY arm in stop() requires resync_delay > 0 to be reachable; see LCOV_EXCL_LINE
+// annotation in raid1_resync_task.cpp.
+TEST_F(AsyncRaid1Fixture, ResyncStopTerminatesWithoutDeadlock) {
+    degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
+    for (int tag = 1; tag <= 2; ++tag) {
+        auto res = mock->submit_io(tag, UBLK_IO_OP_WRITE, tag * 64 * Ki / 512, 32 * Ki / 512, nullptr);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res.value(), 1u);
+        auto comp = mock->inject_cqe(tag, 32 * Ki);
+        ASSERT_EQ(comp.size(), 1u);
+    }
+    ASSERT_EQ(raid->replica_states().bytes_to_sync, 3 * 32 * Ki);
+
+    std::atomic_bool resync_started{false};
+    std::atomic_bool unblock_reads{false};
+    ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .WillByDefault([&](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+            resync_started.store(true);
+            while (!unblock_reads.load(std::memory_order_acquire))
+                std::this_thread::sleep_for(1ms);
+            return static_cast< int >(iov->iov_len);
+        });
+
+    raid->toggle_resync(true);
+
+    auto const dl = std::chrono::steady_clock::now() + 5s;
+    while (!resync_started.load() && std::chrono::steady_clock::now() < dl)
+        std::this_thread::sleep_for(1ms);
+    ASSERT_TRUE(resync_started.load());
+
+    // stop() calls join() which blocks until the resync thread exits; run it on a background
+    // thread and unblock reads from here to avoid deadlock.
+    std::thread stopper([this]() { raid->toggle_resync(false); });
+
+    // Give stop() time to enter its ACTIVE→RETRY_WITH_SLEEP spin, then release reads.
+    std::this_thread::sleep_for(5ms);
+    unblock_reads.store(true, std::memory_order_release);
+
+    stopper.join(); // stop() must return; if it deadlocks the test hangs and fails
+}
+
 // An async write submitted while resync is running causes resync to pause (via enqueue_write /
 // __pause) until the write completes (dequeue_write). After the write CQE arrives, resync
 // resumes and clears all remaining dirty regions.
