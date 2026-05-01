@@ -227,15 +227,14 @@ void Raid1DiskImpl::__become_active() {
     if (!write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route)) {
         // If already degraded this is Fatal
         if (state.is_degraded) { throw std::runtime_error(fmt::format("Could not initialize superblocks!")); }
-        // Disk A failed to write superblock, trigger a degradation on it by mocking a fake sub_cmd for it
-        if (!__become_degraded(0b0, &state, false)) {
+        if (!__become_degraded(true, &state, false)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
         return;
     }
     if (DEFUNCT_DEVICE(state.backup_dev->disk)) return;
     if (!write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
-        if (!__become_degraded(0b1, &state, false)) {
+        if (!__become_degraded(false, &state, false)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
         }
     }
@@ -628,7 +627,8 @@ io_result Raid1DiskImpl::__become_degraded(bool failed_is_active, RouteState con
     if (auto sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route); !sync_res) {
         // Rollback the failure to update the header
         _sb->fields.bitmap.age = old_age;
-        _read_route_cache.compare_exchange_strong(new_route, old_route);
+        auto expected_route = new_route;
+        _read_route_cache.compare_exchange_strong(expected_route, old_route);
         RLOGE("Could not become degraded [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }

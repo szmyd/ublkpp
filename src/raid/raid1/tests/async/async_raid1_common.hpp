@@ -33,12 +33,9 @@ static const ublkpp::raid1::SuperBlock async_raid1_superblock = {
                .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = 0}},
     .superbitmap_reserved = {0x00}};
 
-// Default async_iov action: state is already allocated by handle_iov_async before calling async_iov.
-// Tests call inject_cqe() to deliver synthetic results.
+// Default async_iov action: return 1 to signal "submitted"; inject_cqe() delivers the result.
 inline auto make_async_iov_action() {
-    return [](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) -> io_result {
-        return 1;
-    };
+    return [](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) -> io_result { return 1; };
 }
 
 struct AsyncRaid1Fixture : public ::testing::Test {
@@ -75,8 +72,8 @@ struct AsyncRaid1Fixture : public ::testing::Test {
                 return static_cast< int >(iovecs->iov_len);
             });
 
-        ON_CALL(*disk_a, async_iov(_, _, _, _, _, _)).WillByDefault(make_async_iov_action());
-        ON_CALL(*disk_b, async_iov(_, _, _, _, _, _)).WillByDefault(make_async_iov_action());
+        ON_CALL(*disk_a, async_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
+        ON_CALL(*disk_b, async_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
 
         raid = std::make_shared< ublkpp::Raid1Disk >(boost::uuids::string_generator()(std::string(k_uuid)), disk_a,
                                                      disk_b);

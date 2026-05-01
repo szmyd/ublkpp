@@ -18,8 +18,8 @@ TEST_F(AsyncRaid1Fixture, ReadSingleDevice) {
 // Healthy write: replicates to both devices.
 // inject active CQE first (task suspends on backup), then inject backup CQE (task done).
 TEST_F(AsyncRaid1Fixture, WriteBothDevices) {
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _)).Times(1);
 
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);

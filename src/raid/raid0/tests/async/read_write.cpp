@@ -9,9 +9,9 @@
 
 TEST_F(AsyncRaid0Fixture, ReadSingleStripe) {
     // 4KB at sector 0 stays within stripe 0 (disk_a) only.
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(0);
-    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _)).Times(0);
 
     auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
@@ -25,9 +25,9 @@ TEST_F(AsyncRaid0Fixture, ReadSingleStripe) {
 
 TEST_F(AsyncRaid0Fixture, ReadCrossStripe) {
     // 64KB at sector 0 spans stripe 0 (32KB) and stripe 1 (32KB).
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _)).Times(0);
 
     auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 64 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
@@ -43,9 +43,9 @@ TEST_F(AsyncRaid0Fixture, ReadCrossStripe) {
 
 TEST_F(AsyncRaid0Fixture, ReadAllStripes) {
     // 96KB spans all three stripes (32KB each).
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _)).Times(1);
 
     auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 96 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
@@ -59,9 +59,9 @@ TEST_F(AsyncRaid0Fixture, ReadAllStripes) {
 }
 
 TEST_F(AsyncRaid0Fixture, WriteSingleStripe) {
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(0);
-    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _)).Times(0);
 
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
@@ -73,9 +73,9 @@ TEST_F(AsyncRaid0Fixture, WriteSingleStripe) {
 
 TEST_F(AsyncRaid0Fixture, WriteSecondStripe) {
     // 4KB at sector 64 (=32KB offset) routes to stripe 1 (disk_b).
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(0);
-    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _)).Times(0);
 
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 64, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);

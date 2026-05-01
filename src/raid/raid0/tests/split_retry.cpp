@@ -4,8 +4,8 @@ TEST(Raid0, DISABLED_RetrySplitWritePortion) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                      uint32_t nr_vecs, uint64_t addr) -> io_result {
@@ -17,7 +17,7 @@ TEST(Raid0, DISABLED_RetrySplitWritePortion) {
             EXPECT_EQ(addr - (32 * Ki), (36 * Ki) - (32 * Ki));
             return 1;
         });
-    EXPECT_CALL(*device_c, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_c, async_iov(_, _, _, _, _)).Times(0);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});

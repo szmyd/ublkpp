@@ -5,6 +5,8 @@
 #include <memory>
 #include <string>
 
+#include <fmt/format.h>
+
 #include "common.hpp"
 #include "disk_task.hpp"
 

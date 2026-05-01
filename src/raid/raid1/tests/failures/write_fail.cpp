@@ -9,11 +9,11 @@ TEST(Raid1, DISABLED_WriteFailImmediateDevA) {
 
     {
         EXPECT_TO_WRITE_SB(device_b);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                          uint64_t const) { return std::unexpected(std::make_error_condition(std::errc::io_error)); });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -34,8 +34,8 @@ TEST(Raid1, DISABLED_WriteFailImmediateDevA) {
     {
         // Subsequent writes should not attempt to go to device A while it's unavail
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -64,7 +64,7 @@ TEST(Raid1, DISABLED_WriteFailImmediateDevA) {
     {
         // Subsequent writes should attempt to go to device A while it's avail
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {
@@ -74,7 +74,7 @@ TEST(Raid1, DISABLED_WriteFailImmediateDevA) {
                 EXPECT_EQ(addr, (380 * Ki) + raid_device.reserved_size());
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {
@@ -113,7 +113,7 @@ TEST(Raid1, DISABLED_WriteFailImmediateDevB) {
 
     {
         EXPECT_TO_WRITE_SB_F(device_a, true);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {
@@ -123,7 +123,7 @@ TEST(Raid1, DISABLED_WriteFailImmediateDevB) {
                 EXPECT_EQ(addr, (8 * Ki) + raid_device.reserved_size());
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                          uint64_t const) { return std::unexpected(std::make_error_condition(std::errc::io_error)); });
@@ -138,7 +138,7 @@ TEST(Raid1, DISABLED_WriteFailImmediateDevB) {
     // Subsequent writes should go to both devices
     auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
     EXPECT_TO_WRITE_SB_F(device_b, true);
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -160,11 +160,11 @@ TEST(Raid1, DISABLED_WriteFailImmediateBoth) {
     raid_device.toggle_resync(false);
 
     {
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                          uint64_t const) { return std::unexpected(std::make_error_condition(std::errc::io_error)); });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                          uint64_t const) { return std::unexpected(std::make_error_condition(std::errc::io_error)); });

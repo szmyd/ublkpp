@@ -44,7 +44,6 @@ public:
     io_result submit_io(int tag, uint8_t op, uint64_t start_sector, uint32_t nr_sectors, void* buf);
 
     // Drain io_uring CQEs until at least min_completions are collected or timeout expires.
-    // INTERNAL sub_cmds are handled transparently (old path only).
     std::vector< Completion > poll(int min_completions, std::chrono::milliseconds timeout);
 
     // New async path only. Deliver a synthetic result to the CqeState currently suspended

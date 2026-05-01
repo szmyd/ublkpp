@@ -14,14 +14,14 @@ TEST(Raid1, DISABLED_WriteDoubleFailure) {
     {
         ublkpp::sub_cmd_t working_sub;
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
                 working_sub = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -37,7 +37,7 @@ TEST(Raid1, DISABLED_WriteDoubleFailure) {
 
     // Follow up on device A fails without operations on B
     {
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return 1;
@@ -58,8 +58,8 @@ TEST(Raid1, DISABLED_WriteDoubleFailure) {
 
     // Follow up on device A fails without operations on B
     {
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -100,14 +100,14 @@ TEST(Raid1, DISABLED_WriteDoubleFailureHealthy) {
         EXPECT_TO_WRITE_SB(device_b);
 
         // First attempt: write to device_a fails immediately
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
             });
 
         // Second attempt: write to device_b (after degrading) also fails immediately
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -146,14 +146,14 @@ TEST(Raid1, DISABLED_WriteDoubleFailureImmediate) {
     {
         ublkpp::sub_cmd_t working_sub;
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
                 working_sub = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -170,8 +170,8 @@ TEST(Raid1, DISABLED_WriteDoubleFailureImmediate) {
     // Now array is degraded (route=DEVA, device_b unavailable)
     // Subsequent write to device_a fails immediately → double failure
     {
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0); // Should not attempt device_b
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0); // Should not attempt device_b
+        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 // Immediate failure (not async)

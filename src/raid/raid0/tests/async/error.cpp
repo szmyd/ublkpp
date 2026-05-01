@@ -2,7 +2,7 @@
 
 TEST_F(AsyncRaid0Fixture, PreSqeErrorPropagatesEio) {
     // async_iov fails before any SQE is submitted → __distribute returns error → task co_returns -EIO.
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _))
         .WillOnce(Return(std::unexpected(std::make_error_condition(std::errc::io_error))));
 
     auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
@@ -16,9 +16,9 @@ TEST_F(AsyncRaid0Fixture, PreSqeErrorPropagatesEio) {
 
 TEST_F(AsyncRaid0Fixture, PostCqeNegativeResultPropagatesAndSkipsRemaining) {
     // First stripe returns -EIO; task exits immediately without awaiting second stripe.
-    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*disk_a, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_b, async_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_c, async_iov(_, _, _, _, _)).Times(0);
 
     auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 64 * Ki / 512, nullptr);
     ASSERT_TRUE(res);

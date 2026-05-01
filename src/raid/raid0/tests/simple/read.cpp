@@ -18,8 +18,8 @@ TEST(Raid0, DISABLED_SimpleRead) {
             EXPECT_EQ(addr - (32 * Ki), 8 * Ki);
             return 1;
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
-    EXPECT_CALL(*device_c, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_c, async_iov(_, _, _, _, _)).Times(0);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});

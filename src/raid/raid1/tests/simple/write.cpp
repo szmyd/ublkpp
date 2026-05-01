@@ -6,7 +6,7 @@ TEST(Raid1, DISABLED_SimpleWrite) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                  uint32_t, uint64_t addr) {
@@ -17,7 +17,7 @@ TEST(Raid1, DISABLED_SimpleWrite) {
             EXPECT_EQ(addr, (12 * Ki) + raid_device.reserved_size());
             return 1;
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                  uint32_t, uint64_t addr) {

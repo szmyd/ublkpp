@@ -47,7 +47,7 @@ TEST(Raid1, DISABLED_DiscardRetry) {
             EXPECT_EQ(addr, (8 * Ki) + raid_device.reserved_size());
             return 1;
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
     auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
     remove_io_data(ublk_data);
     ASSERT_TRUE(res);

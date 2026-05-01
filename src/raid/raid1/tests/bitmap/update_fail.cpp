@@ -32,7 +32,7 @@ TEST(Raid1, DISABLED_BITMAPUpdateFail) {
 
     // Subsequent reads should not go to device A
     auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
     EXPECT_CALL(*device_b, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,

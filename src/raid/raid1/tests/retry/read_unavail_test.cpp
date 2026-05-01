@@ -13,14 +13,14 @@ TEST(Raid1, DISABLED_ReadFailureSetsUnavail) {
     EXPECT_EQ(states.bytes_to_sync, 0);
 
     // Device A fails read, device B succeeds on retry
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
             return 1; // Success
         });
 
@@ -50,15 +50,14 @@ TEST(Raid1, DISABLED_SuccessfulReadClearsUnavail) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Device A fails read, B succeeds on failover — sets UNAVAIL on A
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce(
-            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) { return 1; });
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) { return 1; });
 
     // Use fresh thread so last_read=DEVB → routes to device_a first
     RUN_IN_THREAD({
@@ -93,14 +92,14 @@ TEST(Raid1, DISABLED_ReadFailureDoesNotDegrade) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Both devices fail reads
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
@@ -120,14 +119,12 @@ TEST(Raid1, DISABLED_ReadFailureDoesNotDegrade) {
     EXPECT_EQ(states.bytes_to_sync, 0); // Route still EITHER
 
     // Next write should work on both devices (not degraded)
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce(
-            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) { return 1; });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) { return 1; });
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce(
-            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) { return 1; });
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) { return 1; });
 
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
     // PHASE6-REMOVED: auto res = raid_device.queue_tgt_io(nullptr, &write_data, 0b10);
@@ -151,15 +148,14 @@ TEST(Raid1, DISABLED_WriteDegradedShowsError) {
     raid_device.toggle_resync(false);
 
     // Degrade device B (write failure)
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce(
-            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) { return 1; });
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) { return 1; });
 
     // Write triggers degradation on device B
     EXPECT_TO_WRITE_SB(device_a); // Degradation writes superblock
@@ -337,15 +333,14 @@ TEST(Raid1, DISABLED_IdleProbeSkipsWhenDegraded) {
     raid_device.toggle_resync(false);
 
     // Degrade device_b via write failure
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) {
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _, _))
+    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
         .Times(1)
-        .WillOnce(
-            [](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) { return 1; });
+        .WillOnce([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) { return 1; });
     EXPECT_TO_WRITE_SB(device_a); // Degradation writes superblock
 
     auto write_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 12 * Ki);
