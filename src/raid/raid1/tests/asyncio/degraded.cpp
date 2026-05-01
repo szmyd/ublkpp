@@ -1,12 +1,19 @@
 #include "async_raid1_common.hpp"
 
 // When active (disk_a) fails and __become_degraded cannot write the superblock to the surviving
-// device (disk_b), the degradation is rolled back: route stays EITHER. The write is uncommitted
-// by POSIX semantics so -EIO is returned to the caller regardless of what disk_b holds. The
-// backup CQE is still drained before returning to avoid leaking a live CqeState.
+// device (disk_b), the degradation is NOT rolled back. Rolling back to EITHER would allow
+// round-robin reads to disk_a (which missed the write), serving inconsistent data. Instead,
+// disk_a is marked ERROR in-memory and the backup result is returned to the caller. The dirty
+// bitmap covers the region; shutdown or full recovery will reconcile.
 TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
+    // Catch-all for bitmap-page writes (addr > 0) that occur during shutdown; registered first so
+    // the addr=0 EXPECT_CALL (registered second) takes LIFO priority for superblock writes.
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
     // Intercept the superblock WRITE at addr=0 that __become_degraded issues to disk_b.
-    // Second WillOnce covers the destructor's clean-shutdown SB write.
+    // Second WillOnce covers the clean-shutdown SB write after the test.
     EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
         .Times(2)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
@@ -18,19 +25,18 @@ TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
     ASSERT_TRUE(res);
     EXPECT_EQ(res.value(), 2u);
 
-    // Active (disk_a) fails → __become_degraded fires, SB write to disk_b fails → rollback.
+    // Active (disk_a) fails → __become_degraded fires, SB write to disk_b fails.
     EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
-    // Backup (disk_b) CQE is drained but discarded; -EIO returned to caller.
+    // Backup (disk_b) succeeded; its result is returned to the caller.
     auto completions = mock->inject_cqe(0, 4 * Ki);
     ASSERT_EQ(completions.size(), 1u);
-    EXPECT_EQ(completions[0].result, -EIO);
+    EXPECT_EQ(completions[0].result, 4 * Ki);
 
-    // Route rolled back to EITHER; both devices CLEAN (dirty bit is set but invisible in EITHER
-    // mode -- correct, since the write was never acknowledged).
+    // disk_a is ERROR in-memory; disk_b is the sole active device.
     auto const states = raid->replica_states();
-    EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);
+    EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::ERROR);
     EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::CLEAN);
-    EXPECT_EQ(states.bytes_to_sync, 0u);
+    EXPECT_GT(states.bytes_to_sync, 0u);
 }
 
 // An I/O request with an unrecognised opcode must be rejected immediately without touching either
@@ -48,12 +54,11 @@ TEST_F(AsyncRaid1Fixture, UnknownOpcodeIsRejected) {
     EXPECT_LT(completions[0].result, 0);
 }
 
-// Phase 1: active (disk_a) fails AND the superblock write to the surviving device (disk_b) also
-// fails — degradation is rolled back; both devices stay CLEAN. -EIO is returned to the caller.
-// Phase 2: same active failure, but this time the SB write succeeds — disk_a is now marked ERROR
-// and disk_b (the backup write already in flight) delivers the completion.
-// Together these verify that a failed degradation attempt leaves the array in a healthy state that
-// can successfully degrade on the next failure.
+// Phase 1: active (disk_a) fails AND the superblock write to disk_b fails. disk_a is marked ERROR
+// in-memory (no rollback); the backup result is returned to the caller.
+// Phase 2: array is now degraded; a subsequent write routes to disk_b only (1 CqeState).
+// Together these verify that a failed SB write still produces correct in-memory degradation and
+// that writes in the resulting degraded state behave correctly.
 TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
     // Catch-all for bitmap-page writes (addr > 0) that occur during shutdown; registered first so
     // the addr=0 EXPECT_CALL (registered second) takes LIFO priority for superblock writes.
@@ -61,45 +66,43 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
         .Times(AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
-    // SB writes to disk_b at addr=0: Phase-1 fails, Phase-2 degrade succeeds, shutdown succeeds.
+    // SB writes to disk_b at addr=0: Phase-1 fails, shutdown succeeds.
     EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
-        .Times(3)
+        .Times(2)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
-    // Phase 1: active -EIO → SB write to disk_b fails → rollback; backup result returned.
+    // Phase 1: active -EIO → SB write fails → disk_a ERROR in-memory; backup result returned.
     {
         auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
         ASSERT_TRUE(res);
         EXPECT_EQ(res.value(), 2u);
 
-        EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty()); // active fails → SB fails → rollback
-        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup drained but discarded → -EIO
+        EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty()); // active fails → SB fails → disk_a ERROR
+        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup succeeded → returned to caller
         ASSERT_EQ(comp.size(), 1u);
-        EXPECT_EQ(comp[0].result, -EIO);
+        EXPECT_EQ(comp[0].result, 4 * Ki);
 
         auto const states = raid->replica_states();
-        EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);
+        EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::ERROR);
         EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::CLEAN);
+        EXPECT_GT(states.bytes_to_sync, 0u);
     }
 
-    // Phase 2: active -EIO → SB write succeeds → degraded; backup write (already in flight) returns.
+    // Phase 2: array is degraded; write routes to disk_b only.
     {
         auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 8 * Ki / 512, 4 * Ki / 512, nullptr);
         ASSERT_TRUE(res);
-        EXPECT_EQ(res.value(), 2u);
+        EXPECT_EQ(res.value(), 1u); // degraded → single CqeState
 
-        EXPECT_TRUE(mock->inject_cqe(1, -EIO).empty()); // active fails → SB succeeds → disk_a ERROR
-        auto comp = mock->inject_cqe(1, 4 * Ki);        // backup (now sole active) completes
+        auto comp = mock->inject_cqe(1, 4 * Ki);
         ASSERT_EQ(comp.size(), 1u);
         EXPECT_GT(comp[0].result, 0);
 
         EXPECT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::ERROR);
         EXPECT_EQ(raid->replica_states().device_b, ublkpp::raid1::replica_state::CLEAN);
-        // dirty region from Phase 1's failed write must still be tracked
-        EXPECT_GT(raid->replica_states().bytes_to_sync, 0u);
     }
 }
 

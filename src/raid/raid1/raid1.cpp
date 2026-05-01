@@ -645,11 +645,14 @@ io_result Raid1DiskImpl::__become_degraded(bool failed_is_active, RouteState con
 
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route); !sync_res) {
-        // Rollback the failure to update the header
-        _sb->fields.bitmap.age = old_age;
-        auto expected_route = new_route;
-        _read_route_cache.compare_exchange_strong(expected_route, old_route);
-        RLOGE("Could not become degraded [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        // SB write failed -- we cannot persist the degradation, but rolling back to EITHER would
+        // allow round-robin reads to the failed device, serving inconsistent data (the backup may
+        // have already received the write). Keep the in-memory degraded route and mark the failed
+        // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
+        // full recovery on next start will reconcile any inconsistency.
+        _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
+        failed_device->unavail.test_and_set(std::memory_order_acquire);
+        RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
     failed_device->unavail.test_and_set(std::memory_order_acquire);
@@ -753,15 +756,16 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     auto const active_res = co_await active_task.started();
 
     if (active_res < 0) {
-        // dirty_region stays set even if we return -EIO: the write is uncommitted by POSIX
-        // semantics, so the region content is undefined. If the array later degrades with the
-        // backup as the sole active device, resync will copy whatever the backup holds -- which
-        // is within spec for a write the client never saw acknowledged.
         _dirty_bitmap->dirty_region(addr, len);
         if (auto d = __become_degraded(true, &state); !d) {
-            // CAS lost — concurrent degradation already in flight or complete.
-            // Drain the backup CQE to avoid leaking a live CqeState.
-            if (backup_task) co_await backup_task->started();
+            // SB write failed or CAS lost. Either way the array is degraded in-memory; disk_b
+            // received the write. Drain the backup and return its result -- returning -EIO here
+            // would be wrong when disk_b succeeded (backup holds valid data, and EITHER-mode reads
+            // could otherwise route to the failed disk_a and serve stale data).
+            if (backup_task) {
+                auto const backup_res = co_await backup_task->started();
+                co_return backup_res >= 0 ? backup_res : -EIO;
+            }
             co_return -EIO;
         }
         if (backup_task) {

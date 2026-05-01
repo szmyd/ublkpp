@@ -17,8 +17,11 @@ TEST(Raid1, SyncIoWriteFailDirty) {
     auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
     ASSERT_FALSE(raid_device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, test_off));
 
-    // Even though I/O failed, the status is still OK since devices are in same state pre-I/O
-    // expect attempt to sync on last working disk
-    EXPECT_TO_WRITE_SB_F(device_a, true);
-    EXPECT_TO_WRITE_SB_F(device_b, true);
+    // device_a is ERROR; device_b is the sole surviving device.
+    // Shutdown issues bitmap-page write(s) + SB write to device_b only -- all fail.
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        });
 }
