@@ -703,6 +703,9 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
 
     if (op == UBLK_IO_OP_FLUSH) co_return 0;
 
+    if (op != UBLK_IO_OP_READ && op != UBLK_IO_OP_WRITE && op != UBLK_IO_OP_DISCARD && op != UBLK_IO_OP_WRITE_ZEROES)
+        co_return -EINVAL;
+
     RLOGT("Received {}: [tag:{:#0x}] [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           data->tag, addr >> params()->basic.logical_bs_shift, len, _str_uuid)
 
@@ -712,8 +715,8 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     auto const state = __capture_route_state();
     auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
 
-    // Halt the Resync Task before checking bitmap
-    auto outer_guard = raid1::ResyncWriteGuard{*_resync_task};
+    // Halt the Resync Task for the duration of this write (both active and backup legs).
+    auto const _guard = raid1::ResyncWriteGuard{*_resync_task};
     auto const bm = __compute_backup_mode(state, addr, len, is_discard);
 
     auto const adj_addr = addr + reserved_size;
@@ -721,22 +724,18 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     active_task._coro.resume();
 
     std::optional< disk_task< int > > backup_task;
-    std::optional< raid1::ResyncWriteGuard > backup_guard;
     if (bm != WriteBackupMode::SKIP) {
-        backup_guard.emplace(*_resync_task);
         backup_task.emplace(state.backup_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr));
         backup_task->_coro.resume();
     }
 
     auto const active_res = co_await active_task.started();
-    outer_guard.release();
 
     if (active_res < 0) {
         _dirty_bitmap->dirty_region(addr, len);
         __become_degraded(true, &state);
         if (backup_task) {
             auto const backup_res = co_await backup_task->started();
-            backup_guard->release();
             co_return backup_res >= 0 ? backup_res : -EIO;
         }
         co_return -EIO;
@@ -748,7 +747,6 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     }
 
     auto const backup_res = co_await backup_task->started();
-    backup_guard->release();
 
     if (backup_res < 0) {
         _dirty_bitmap->dirty_region(addr, len);

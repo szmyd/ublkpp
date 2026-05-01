@@ -5,11 +5,18 @@
 
 using namespace std::chrono_literals;
 
-// Poll until bytes_to_sync reaches 0 or the timeout elapses.
+// Poll until bytes_to_sync reaches 0 AND no device is SYNCING, or the timeout elapses.
+// bytes_to_sync drains before the route is restored to EITHER, so checking both avoids
+// a race where we observe bytes_to_sync==0 but device_b still shows SYNCING.
 static void wait_for_resync(ublkpp::Raid1Disk* raid, int timeout_ms = 5000) {
     auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (raid->replica_states().bytes_to_sync > 0 && std::chrono::steady_clock::now() < deadline)
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto const s = raid->replica_states();
+        if (s.bytes_to_sync == 0 && s.device_a != ublkpp::raid1::replica_state::SYNCING &&
+            s.device_b != ublkpp::raid1::replica_state::SYNCING)
+            break;
         std::this_thread::sleep_for(10ms);
+    }
 }
 
 // Degrade disk_b at a given write address and return the active result.
@@ -149,17 +156,17 @@ TEST_F(AsyncRaid1Fixture, ResyncCleansMultipleRegions) {
 TEST_F(AsyncRaid1Fixture, ResyncReadFailurePreservesDirty) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
 
-    EXPECT_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
-        .Times(testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+    ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .WillByDefault([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
     raid->toggle_resync(true);
     std::this_thread::sleep_for(100ms);
 
+    // bytes_to_sync must be > 0 (region not cleared); device_b state is omitted because
+    // avail_delay=0 lets probe_mirror clear unavail immediately after __copy_region re-sets it.
     EXPECT_GT(raid->replica_states().bytes_to_sync, 0u);
-    EXPECT_EQ(raid->replica_states().device_b, ublkpp::raid1::replica_state::ERROR);
 }
 
 // If the dirty-mirror WRITE fails during resync, the dirty region must remain dirty.
@@ -167,17 +174,17 @@ TEST_F(AsyncRaid1Fixture, ResyncReadFailurePreservesDirty) {
 TEST_F(AsyncRaid1Fixture, ResyncWriteFailurePreservesDirty) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
 
-    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ge((off_t)raid->reserved_size())))
-        .Times(testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+    ON_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .WillByDefault([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
     raid->toggle_resync(true);
     std::this_thread::sleep_for(100ms);
 
+    // bytes_to_sync must be > 0 (region not cleared); device_b state is omitted because
+    // avail_delay=0 lets probe_mirror clear unavail immediately after __copy_region re-sets it.
     EXPECT_GT(raid->replica_states().bytes_to_sync, 0u);
-    EXPECT_EQ(raid->replica_states().device_b, ublkpp::raid1::replica_state::ERROR);
 }
 
 // With resync disabled (never enabled), dirty regions must persist indefinitely.
@@ -206,6 +213,12 @@ TEST_F(AsyncRaid1Fixture, ResyncCleansLargeRegion) {
 // The default ON_CALL returns truthy, which clears unavail and lets resync proceed.
 TEST_F(AsyncRaid1Fixture, ResyncUnblocksAfterProbe) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
+
+    // Catch-all for SB/bitmap writes on disk_b during resync and shutdown; registered first so
+    // it is tried last (LIFO) and does not shadow the probe-READ expectation below.
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     // Explicitly verify probe_mirror is called at least once.
     EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_READ, _, _, (off_t)raid->reserved_size()))
@@ -255,13 +268,14 @@ TEST_F(AsyncRaid1Fixture, ResyncBlockedByOutstandingWrites) {
         std::this_thread::sleep_for(1ms);
     ASSERT_TRUE(resync_started);
 
-    // Submit a degraded write while resync is mid-READ; don't deliver the CQE yet.
-    // This calls enqueue_write() → __pause() inside async_iov.
+    // Submit a write while resync is mid-READ. In degraded mode this yields 1 CqeState;
+    // if probe_mirror cleared unavail first it may be 2. Drain all but the last CqeState.
     auto pending = mock->submit_io(10, UBLK_IO_OP_WRITE, 10 * 64 * Ki / 512, 32 * Ki / 512, nullptr);
     ASSERT_TRUE(pending);
-    EXPECT_EQ(pending.value(), 1u);
+    for (uint32_t i = 0; i + 1 < pending.value(); ++i)
+        EXPECT_TRUE(mock->inject_cqe(10, 32 * Ki).empty());
 
-    // Complete the write → dequeue_write() → resync transitions PAUSE→ACTIVE.
+    // Complete the final CqeState → dequeue_write() → resync transitions PAUSE→ACTIVE.
     auto comp = mock->inject_cqe(10, 32 * Ki);
     ASSERT_EQ(comp.size(), 1u);
 

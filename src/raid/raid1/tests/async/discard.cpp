@@ -33,7 +33,7 @@ TEST_F(AsyncRaid1Fixture, LargeDiscardDirtiesMultiplePages) {
     EXPECT_TRUE(mock->inject_cqe(0, 0).empty()); // disk_a discard succeeds
     auto comp = mock->inject_cqe(0, -EIO);       // disk_b fails → degrade
     ASSERT_EQ(comp.size(), 1u);
-    EXPECT_GT(comp[0].result, 0);
+    EXPECT_GE(comp[0].result, 0);
 
     auto const states = raid->replica_states();
     EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::ERROR);

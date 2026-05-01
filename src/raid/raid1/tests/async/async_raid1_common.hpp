@@ -74,8 +74,9 @@ struct AsyncRaid1Fixture : public ::testing::Test {
 
         raid = std::make_shared< ublkpp::Raid1Disk >(boost::uuids::string_generator()(std::string(k_uuid)), disk_a,
                                                      disk_b);
-        // Disable background resync to keep tests deterministic.
-        raid->toggle_resync(false);
         mock = std::make_unique< ublkpp::MockUblksrv >(raid);
+        // Disable auto-resync AFTER prepare() runs so _resync_enabled=false for test bodies.
+        // Tests that explicitly test resync call toggle_resync(true) themselves.
+        raid->toggle_resync(false);
     }
 };

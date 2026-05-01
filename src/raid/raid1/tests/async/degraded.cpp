@@ -54,6 +54,12 @@ TEST_F(AsyncRaid1Fixture, UnknownOpcodeIsRejected) {
 // Together these verify that a failed degradation attempt leaves the array in a healthy state that
 // can successfully degrade on the next failure.
 TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
+    // Catch-all for bitmap-page writes (addr > 0) that occur during shutdown; registered first so
+    // the addr=0 EXPECT_CALL (registered second) takes LIFO priority for superblock writes.
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
     // SB writes to disk_b at addr=0: Phase-1 fails, Phase-2 degrade succeeds, shutdown succeeds.
     EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
         .Times(3)
