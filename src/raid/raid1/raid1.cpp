@@ -404,6 +404,8 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 // clang-format off
 #ifndef NDEBUG
 __attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
+#else
+__attribute__((noinline))
 #endif
 RouteState Raid1DiskImpl::__capture_route_state() const {
     while (true) {

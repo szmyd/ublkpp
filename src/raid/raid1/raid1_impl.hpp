@@ -98,6 +98,8 @@ class Raid1DiskImpl : public UblkDisk {
     //
     // ☠️ ☠️ ☠️  YOU HAVE BEEN WARNED  ☠️ ☠️ ☠️
     // clang-format off
+    // noinline: required in all builds so the compiler cannot cache _device_a/_device_b across
+    // the retry loop's consistency check (plain shared_ptrs, not atomic).
 #ifndef NDEBUG
     // no_sanitize_thread: intentional lock-free race, validated by retry loop (see tsan.supp).
     // no_sanitize("address"): shared_ptr copy has a sub-nanosecond UAF window during swap_device.
@@ -107,6 +109,8 @@ class Raid1DiskImpl : public UblkDisk {
     // NOTE: attribute must appear on both declaration and definition for GCC to suppress
     // instrumentation of the function body.
     __attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
+#else
+    __attribute__((noinline))
 #endif
     RouteState __capture_route_state() const;
     // clang-format on
