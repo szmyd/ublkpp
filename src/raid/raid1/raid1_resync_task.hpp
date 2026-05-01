@@ -148,4 +148,28 @@ public:
         _state_and_writes.dec_xchng_status_ifz(resync_state::PAUSE, resync_state::ACTIVE);
     }
 };
+
+// RAII guard that calls enqueue_write() on construction and dequeue_write() on destruction.
+// Call release() to dequeue early (e.g. at a specific co_await point in a coroutine).
+class ResyncWriteGuard {
+public:
+    explicit ResyncWriteGuard(Raid1ResyncTask& task) noexcept : _task(&task) { _task->enqueue_write(); }
+    ~ResyncWriteGuard() noexcept {
+        if (_task) _task->dequeue_write();
+    }
+    void release() noexcept {
+        if (_task) {
+            _task->dequeue_write();
+            _task = nullptr;
+        }
+    }
+    ResyncWriteGuard(ResyncWriteGuard&&) = delete;
+    ResyncWriteGuard(ResyncWriteGuard const&) = delete;
+    ResyncWriteGuard& operator=(ResyncWriteGuard&&) = delete;
+    ResyncWriteGuard& operator=(ResyncWriteGuard const&) = delete;
+
+private:
+    Raid1ResyncTask* _task;
+};
+
 } // namespace ublkpp::raid1
