@@ -684,12 +684,6 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
     co_return r2 >= 0 ? r2 : -EIO;
 }
 
-disk_task< int > Raid1DiskImpl::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
-    iovec iov{reinterpret_cast< void* >(data->iod->addr), static_cast< size_t >(data->iod->nr_sectors) << SECTOR_SHIFT};
-    co_return co_await handle_iov_async(q, data, &iov, 1,
-                                        static_cast< uint64_t >(data->iod->start_sector) << SECTOR_SHIFT);
-}
-
 disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                                  uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);

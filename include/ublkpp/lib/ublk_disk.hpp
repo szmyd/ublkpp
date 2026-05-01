@@ -43,9 +43,9 @@ public:
 
     std::string to_string() const;
 
-    // Async entry-point: called by __handle_io_async.
-    // Implementations submit all SQEs upfront then co_await *state for each result.
-    virtual disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data);
+    // Async entry-point: called by __handle_io_async. Handles FLUSH inline; all other ops
+    // build a single iov from ublk_io_data and delegate to the virtual handle_iov_async.
+    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data);
 
     // Async I/O with explicit scatter-gather list and address. Called when the operation targets
     // a sub-range or offset that differs from what ublk_io_data describes — the caller owns the

@@ -182,13 +182,6 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                         });
 }
 
-disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
-    auto iov = iovec{.iov_base = reinterpret_cast< void* >(data->iod->addr),
-                     .iov_len = static_cast< size_t >(data->iod->nr_sectors) << SECTOR_SHIFT};
-    co_return co_await handle_iov_async(q, data, &iov, 1,
-                                        static_cast< uint64_t >(data->iod->start_sector) << SECTOR_SHIFT);
-}
-
 disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                              uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
