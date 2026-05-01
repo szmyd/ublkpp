@@ -703,6 +703,7 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
     auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
 
+    _resync_task->enqueue_write();
     enum class BackupMode { SKIP, REPLICATE, OPTIMISTIC };
     auto const bm = [&]() -> BackupMode {
         if (!state.is_degraded) return BackupMode::REPLICATE;
@@ -715,7 +716,6 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     }();
 
     auto const adj_addr = addr + reserved_size;
-    _resync_task->enqueue_write();
     auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr);
     active_task._coro.resume();
 
@@ -808,6 +808,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
     auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
 
+    _resync_task->enqueue_write();
     enum class BackupMode { SKIP, WRITE, OPTIMISTIC };
     auto const bm = [&]() -> BackupMode {
         if (!state.is_degraded) return BackupMode::WRITE;
@@ -819,7 +820,6 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
         return BackupMode::WRITE;
     }();
 
-    _resync_task->enqueue_write();
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
     if (!active_res) {
