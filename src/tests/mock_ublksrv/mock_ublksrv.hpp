@@ -29,7 +29,7 @@ public:
 
     // disk: disk to drive (FSDisk, Raid0Disk, Raid1Disk, ...)
     // q_depth: number of concurrent I/O slots (must be >= fio iodepth)
-    // nr_queues: number of simulated queue threads (calls open_for_uring once per queue)
+    // nr_queues: number of simulated queue threads (calls prepare once per queue)
     explicit MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth = 128, int nr_queues = 1);
     ~MockUblksrv();
 

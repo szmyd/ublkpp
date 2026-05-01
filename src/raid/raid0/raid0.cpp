@@ -94,10 +94,10 @@ std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const 
     return _stripe_array[stripe_offset]->disk;
 }
 
-std::list< int > Raid0Disk::open_for_uring(ublksrv_queue const* q, int const iouring_device_start) {
+std::list< int > Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     auto fds = std::list< int >();
     for (auto& stripe : _stripe_array) {
-        fds.splice(fds.end(), stripe->disk->open_for_uring(q, iouring_device_start + fds.size()));
+        fds.splice(fds.end(), stripe->disk->prepare(q, iouring_device_start + fds.size()));
     }
     return fds;
 }
@@ -182,8 +182,8 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                         });
 }
 
-disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
-                                             uint32_t nr_vecs, uint64_t addr) {
+disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                      uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
 
     if (op == UBLK_IO_OP_FLUSH) co_return 0;
@@ -212,8 +212,8 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         auto res = __distribute(iovecs, addr,
                                 [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
                                                                uint64_t logical_off) -> io_result {
-                                    auto task = _stripe_array[stripe_off]->disk->async_iov(q, data, iov, nr_iovs,
-                                                                                                  logical_off);
+                                    auto task =
+                                        _stripe_array[stripe_off]->disk->async_iov(q, data, iov, nr_iovs, logical_off);
                                     task._coro.resume();
                                     stripe_tasks.push_back(std::move(task));
                                     return 1;

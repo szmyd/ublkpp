@@ -54,8 +54,8 @@ struct AsyncRaid1Fixture : public ::testing::Test {
         disk_a = std::make_shared< NiceMock< ublkpp::AsyncTestDisk > >(pa);
         disk_b = std::make_shared< NiceMock< ublkpp::AsyncTestDisk > >(pb);
 
-        ON_CALL(*disk_a, open_for_uring(_, _)).WillByDefault(Return(std::list< int >{}));
-        ON_CALL(*disk_b, open_for_uring(_, _)).WillByDefault(Return(std::list< int >{}));
+        ON_CALL(*disk_a, prepare(_, _)).WillByDefault(Return(std::list< int >{}));
+        ON_CALL(*disk_b, prepare(_, _)).WillByDefault(Return(std::list< int >{}));
 
         ON_CALL(*disk_a, sync_iov(_, _, _, _))
             .WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {

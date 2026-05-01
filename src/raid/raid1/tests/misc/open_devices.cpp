@@ -2,7 +2,7 @@
 
 // Brief: Test that we open the underlying devices correctly, and return them to our upper layer.
 //
-// When a UblkDisk receives a call to `open_for_uring`, it's expected to return a std::set of all
+// When a UblkDisk receives a call to `prepare`, it's expected to return a std::set of all
 // fds that were opened by the underlying Devices in order to register them with io_uring. Test
 // that RAID1 is collecting these FDs and passing the io_uring offset to the lower layers.
 TEST(Raid1, OpenDevices) {
@@ -11,19 +11,19 @@ TEST(Raid1, OpenDevices) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
     // Each device should be subsequently opened and return a set with their sole FD.
-    EXPECT_CALL(*device_a, open_for_uring(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
+    EXPECT_CALL(*device_a, prepare(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
         EXPECT_EQ(start_idx, fd_off);
         // Return 2 FDs here, maybe it's another RAID1 device?
         return std::list< int >{INT_MAX - 2, INT_MAX - 3};
     });
-    EXPECT_CALL(*device_b, open_for_uring(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
+    EXPECT_CALL(*device_b, prepare(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
         // Device A took 2 uring offsets
         EXPECT_EQ(start_idx + 2, fd_off);
         return std::list< int >{INT_MAX - 1};
     });
 
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-    auto fd_list = raid_device.open_for_uring(nullptr, 2);
+    auto fd_list = raid_device.prepare(nullptr, 2);
     EXPECT_EQ(3, fd_list.size());
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 3)));
     EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 2)));

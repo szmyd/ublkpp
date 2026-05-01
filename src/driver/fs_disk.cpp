@@ -128,7 +128,7 @@ FSDisk::~FSDisk() {
 // This is an optimization to register the Linux FDs in the kernel, currently it is disabled
 // as we don't support unregistering an FD during RAID1::swap_devcice, re-enable if this is fixed. and
 // enable IOSQE_FIXED_FILE below.
-// std::list< int > FSDisk::open_for_uring(int const) {
+// std::list< int > FSDisk::prepare(int const) {
 //    RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
 //    _uring_device = iouring_device_start;
 //    // We duplicate the FD here so ublksrv doesn't close it before we're ready

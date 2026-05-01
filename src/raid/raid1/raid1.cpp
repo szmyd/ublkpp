@@ -269,11 +269,11 @@ Raid1DiskImpl::~Raid1DiskImpl() {
         write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
-std::list< int > Raid1DiskImpl::open_for_uring(ublksrv_queue const* q, int const iouring_device_start) {
+std::list< int > Raid1DiskImpl::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
     // Always collect FDs from child disks - each queue thread may need its own set.
-    auto fds = _device_a->disk->open_for_uring(q, iouring_device_start);
-    fds.splice(fds.end(), _device_b->disk->open_for_uring(q, iouring_device_start + fds.size()));
+    auto fds = _device_a->disk->prepare(q, iouring_device_start);
+    fds.splice(fds.end(), _device_b->disk->prepare(q, iouring_device_start + fds.size()));
 
     // Enable resync only on the first call (first queue thread).
     if (_nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
@@ -685,7 +685,7 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
 }
 
 disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
-                                                 uint32_t nr_vecs, uint64_t addr) {
+                                          uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
     auto const len = static_cast< uint32_t >(__iovec_len(iovecs, iovecs + nr_vecs));
 
@@ -873,9 +873,9 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     }
 
     // Start probes only when all queue threads are idle.
-    // When _nr_hw_queues == 0 (no open_for_uring call yet), prev+1 < 0 is always false for
+    // When _nr_hw_queues == 0 (no prepare call yet), prev+1 < 0 is always false for
     // uint16_t, so the probe fires unconditionally - preserving compat with zero-queue callers
-    // that skip open_for_uring (e.g. tests that call idle_transition directly).
+    // that skip prepare (e.g. tests that call idle_transition directly).
     auto const prev = _idle_queue_count.fetch_add(1, std::memory_order_acq_rel);
     if (prev + 1 < _nr_hw_queues.load(std::memory_order_acquire)) return;
 

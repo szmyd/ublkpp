@@ -54,7 +54,7 @@ public:
     virtual io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept = 0;
 
     // Initialize Device for io_uring
-    virtual std::list< int > open_for_uring(ublksrv_queue const*, int const) { return {}; }
+    virtual std::list< int > prepare(ublksrv_queue const*, int const) { return {}; }
 
     // I/O has become idle event
     virtual void idle_transition(ublksrv_queue const*, bool) {};

@@ -33,8 +33,8 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
     _dev.tgt.tgt_ring_depth = static_cast< unsigned >(q_depth);
     _dev.tgt.nr_fds = 1; // slot 0 reserved (mirrors ublkpp_tgt convention)
 
-    // Populate ublksrv_queue structs before calling open_for_uring so that any implementation
-    // which reads ring_ptr or dev inside open_for_uring sees valid values.
+    // Populate ublksrv_queue structs before calling prepare so that any implementation
+    // which reads ring_ptr or dev inside prepare sees valid values.
     for (int qi = 0; qi < nr_queues; ++qi) {
         _queues[qi].q_id = qi;
         _queues[qi].q_depth = q_depth;
@@ -43,10 +43,10 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
         _queues[qi].private_data = nullptr;
     }
 
-    // Simulate init_queue: call open_for_uring once per queue thread so the disk can count queues
+    // Simulate init_queue: call prepare once per queue thread so the disk can count queues
     // and perform per-queue initialization (e.g. Raid1DiskImpl sets _nr_hw_queues and enables resync).
     for (int qi = 0; qi < nr_queues; ++qi) {
-        for (auto const fd : _disk->open_for_uring(&_queues[qi], _dev.tgt.nr_fds)) {
+        for (auto const fd : _disk->prepare(&_queues[qi], _dev.tgt.nr_fds)) {
             if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;
         }
     }
