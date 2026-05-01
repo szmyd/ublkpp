@@ -25,7 +25,7 @@ public:
     std::string id() const noexcept override { return "HomeBlkDisk"; }
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
-                                      uint64_t addr) override;
+                               uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 };
 } // namespace ublkpp
