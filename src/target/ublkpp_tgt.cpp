@@ -1,6 +1,5 @@
 #include "ublkpp/ublkpp.hpp"
 
-#include <cstring>
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
 #include <exec/task.hpp>
@@ -54,29 +53,6 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
         wait += 100ms;
     }
     return false;
-}
-
-static std::atomic< int > g_next_cpu{0};
-
-static void set_queue_thread_affinity() {
-    cpu_set_t set;
-
-    CPU_ZERO(&set);
-    if (sched_getaffinity(0, sizeof(set), &set) == -1) {
-        TLOGE("sched_getaffinity, {}", strerror(errno))
-        return;
-    }
-
-    auto const target = g_next_cpu.fetch_add(1, std::memory_order_relaxed) % CPU_COUNT(&set);
-    int32_t j = 0;
-    for (auto i = 0; i < CPU_SETSIZE; ++i) {
-        if (CPU_ISSET(i, &set)) {
-            if (j++ == target) continue;
-            CPU_CLR(i, &set);
-        }
-    }
-
-    sched_setaffinity(0, sizeof(set), &set);
 }
 
 // bit 63 = is_target_io (matches ublksrv_priv.h encoding)
@@ -139,9 +115,6 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 }
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
-    // Prevent rescheduling this thread to another CPU
-    set_queue_thread_affinity();
-
     auto qs = std::make_unique< ublkpp_queue_state >(target.get());
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
@@ -301,10 +274,6 @@ static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     return 0;
 }
 
-static void handle_io_background(const struct ublksrv_queue*, int nr_queued_io) {
-    TLOGT("HandleIOBackground: {}", nr_queued_io)
-}
-
 // Called in the context of start by ublksrv_dev_init()
 static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     // Find the registered disk in the disk map and set the tgt_data
@@ -379,7 +348,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .handle_io_async = handle_io_async,
         .tgt_io_done = nullptr,  // handled inline in run_queue_loop
         .handle_event = nullptr, // handled inline in run_queue_loop
-        .handle_io_background = handle_io_background,
+        .handle_io_background = nullptr,
         .usage_for_add = nullptr, // Not Implemented
         .init_tgt = init_tgt,
         .deinit_tgt = deinit_tgt,
