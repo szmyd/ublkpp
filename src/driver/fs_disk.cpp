@@ -33,7 +33,7 @@ namespace ublkpp {
 // environments (MockUblksrv) may run on older kernels.  Fall back to synchronous preadv2/pwritev2
 // on affected kernels so CQE delivery implies the data is already visible to page-cache readers.
 // When the minimum supported test kernel is raised above 5.4, this guard and the sync_iov
-// fallback in handle_iov_async can be removed.
+// fallback in async_iov can be removed.
 static bool buffered_uring_broken() {
     // clang-format off
     struct utsname uts{};
@@ -145,9 +145,11 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     return sqe;
 }
 
-disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
-                                          uint32_t nr_vecs, uint64_t addr) {
+disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                   uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
+
+    if (op == UBLK_IO_OP_FLUSH) co_return 0;
 
     io_result res;
     CqeState* state{nullptr};

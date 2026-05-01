@@ -15,10 +15,9 @@ public:
 
     std::string id() const noexcept override { return "InMemoryDisk"; }
 
-    disk_task< int > handle_iov_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t sub_cmd, iovec* iovecs,
-                                      uint32_t nr_vecs, uint64_t addr) override {
-        LOGINFO("Received [addr:{}|len:{}] [sub_cmd:{}]", addr, __iovec_len(iovecs, iovecs + nr_vecs),
-                ublkpp::to_string(sub_cmd));
+    disk_task< int > async_iov(ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t nr_vecs,
+                               uint64_t addr) override {
+        LOGINFO("Received [addr:{}|len:{}]", addr, __iovec_len(iovecs, iovecs + nr_vecs));
         co_return 0;
     }
 

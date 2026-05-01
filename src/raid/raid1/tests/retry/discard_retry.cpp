@@ -37,7 +37,7 @@ TEST(Raid1, DISABLED_DiscardRetry) {
 
     // Subsequent reads should not go to device B
     auto ublk_data = make_io_data(UBLK_IO_OP_READ);
-    EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(UBLK_IO_OP_READ, _, _, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                  uint32_t, uint64_t addr) {
@@ -47,7 +47,7 @@ TEST(Raid1, DISABLED_DiscardRetry) {
             EXPECT_EQ(addr, (8 * Ki) + raid_device.reserved_size());
             return 1;
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(0);
     auto res = raid_device.handle_rw(nullptr, &ublk_data, 0b10, nullptr, 4 * Ki, 8 * Ki);
     remove_io_data(ublk_data);
     ASSERT_TRUE(res);

@@ -182,7 +182,7 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                         });
 }
 
-disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                              uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
 
@@ -203,7 +203,7 @@ disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_dat
             // stripe_iov is a loop-local variable; _coro.resume() runs async_iov synchronously
             // (reading iov_len) before the task suspends, so the stack variable is safe.
             auto stripe_iov = iovec{.iov_base = nullptr, .iov_len = logical_len};
-            auto task = _stripe_array[stripe_off]->disk->handle_iov_async(q, data, &stripe_iov, 1, logical_off);
+            auto task = _stripe_array[stripe_off]->disk->async_iov(q, data, &stripe_iov, 1, logical_off);
             task._coro.resume();
             stripe_tasks.push_back(std::move(task));
         }
@@ -212,7 +212,7 @@ disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_dat
         auto res = __distribute(iovecs, addr,
                                 [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
                                                                uint64_t logical_off) -> io_result {
-                                    auto task = _stripe_array[stripe_off]->disk->handle_iov_async(q, data, iov, nr_iovs,
+                                    auto task = _stripe_array[stripe_off]->disk->async_iov(q, data, iov, nr_iovs,
                                                                                                   logical_off);
                                     task._coro.resume();
                                     stripe_tasks.push_back(std::move(task));

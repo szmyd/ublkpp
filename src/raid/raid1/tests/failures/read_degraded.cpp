@@ -9,13 +9,13 @@ TEST(Raid1, DISABLED_ReadOnDegraded) {
 
     // First send a retry write to degrade the array on side A
     {
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
             });
         ublkpp::sub_cmd_t working_sub;
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
@@ -43,7 +43,7 @@ TEST(Raid1, DISABLED_ReadOnDegraded) {
     }
     // Retries from non-dirty chunks go through
     {
-        EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(UBLK_IO_OP_READ, _, _, _, _, _))
             .Times(1)
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {
@@ -62,7 +62,7 @@ TEST(Raid1, DISABLED_ReadOnDegraded) {
     }
     // Retries from the degraded device are fine
     {
-        EXPECT_CALL(*device_b, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(UBLK_IO_OP_READ, _, _, _, _, _))
             .Times(1)
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {

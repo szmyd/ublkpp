@@ -277,7 +277,16 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     auto const op = ublksrv_get_op(data->iod);
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
-    auto const result = co_await device->handle_io_async(q, data);
+    int result;
+    if (op == UBLK_IO_OP_FLUSH) {
+        result = 0;
+    } else {
+        auto const* iod = data->iod;
+        thread_local iovec iov{};
+        iov.iov_base = reinterpret_cast< void* >(iod->addr);
+        iov.iov_len = iod->nr_sectors << SECTOR_SHIFT;
+        result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
+    }
 
     qs->tgt->metrics.record_queue_depth_change(q, op, false);
 

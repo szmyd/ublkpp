@@ -7,7 +7,7 @@ TEST(Raid1, DISABLED_WriteFailImmediateFailFailSBUpdate) {
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     {
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                          uint64_t const) { return std::unexpected(std::make_error_condition(std::errc::io_error)); });
@@ -22,11 +22,11 @@ TEST(Raid1, DISABLED_WriteFailImmediateFailFailSBUpdate) {
     // Subsequent writes should continue to try device A this time succeeding dirty of header and bitmap update
     auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
     EXPECT_TO_WRITE_SB(device_b);
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t const) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(2)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                      uint64_t addr) {

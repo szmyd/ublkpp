@@ -13,7 +13,7 @@ TEST(Raid1, DISABLED_WriteRetryA) {
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, cur_replica_start.second);
 
     {
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _)).Times(0);
         EXPECT_TO_WRITE_SB(device_b);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
@@ -36,8 +36,8 @@ TEST(Raid1, DISABLED_WriteRetryA) {
 
     // Queued Retries should not Fail Immediately, and not dirty header or pages
     {
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b100}, ublkpp::sub_cmd_flags::RETRIED);
@@ -53,8 +53,8 @@ TEST(Raid1, DISABLED_WriteRetryA) {
     {
         // Subsequent writes to dirty regions should not go to the degraded device or dirty already dirty pages
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
@@ -73,8 +73,8 @@ TEST(Raid1, DISABLED_WriteRetryA) {
     {
         // Subsequent unaligned writes to clean regions should not go to the degraded device and dirty new pages
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -101,7 +101,7 @@ TEST(Raid1, DISABLED_WriteRetryA) {
         // Same with non-immediate failures
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE, 4 * Ki, 220 * Ki);
         ublkpp::sub_cmd_t internal_sub_cmd;
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&internal_sub_cmd](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                           uint32_t, uint64_t) {
@@ -109,7 +109,7 @@ TEST(Raid1, DISABLED_WriteRetryA) {
                 internal_sub_cmd = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
@@ -133,12 +133,12 @@ TEST(Raid1, DISABLED_WriteRetryA) {
         // Subsequent writes that encompass clean regions should go to the degraded device and dirty new pages if it
         // fails
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b101);
@@ -161,7 +161,7 @@ TEST(Raid1, DISABLED_WriteRetryA) {
         // if it works
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE, 320 * Ki, 0UL);
         ublkpp::sub_cmd_t internal_sub_cmd;
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&internal_sub_cmd](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                           iovec* iovecs, uint32_t, uint64_t addr) {
@@ -174,7 +174,7 @@ TEST(Raid1, DISABLED_WriteRetryA) {
                 EXPECT_EQ(addr, raid_device.reserved_size());
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
@@ -214,7 +214,7 @@ TEST(Raid1, DISABLED_WriteRetryB) {
 
     {
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
@@ -231,8 +231,8 @@ TEST(Raid1, DISABLED_WriteRetryB) {
 
     // Queued Retries should not Fail Immediately, and not dirty of bitmap
     {
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(0);
 
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
         auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101},
@@ -251,8 +251,8 @@ TEST(Raid1, DISABLED_WriteRetryB) {
     {
         // Subsequent unaligned writes to clean regions should not go to the degraded device and dirty new pages
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE);
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(0);
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
                 EXPECT_EQ(sub_cmd & ublkpp::_route_mask, 0b100);
@@ -279,7 +279,7 @@ TEST(Raid1, DISABLED_WriteRetryB) {
         // Subsequent writes that encompass dirty regions should go to the degraded device and clean dirty pages if it
         // works
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE, 320 * Ki, Gi - (64 * Ki));
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,
                          uint64_t addr) {
@@ -290,7 +290,7 @@ TEST(Raid1, DISABLED_WriteRetryB) {
                 return 1;
             });
         ublkpp::sub_cmd_t internal_sub_cmd;
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&internal_sub_cmd](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                           iovec* iovecs, uint32_t, uint64_t addr) {

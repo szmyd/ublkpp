@@ -34,14 +34,14 @@ TEST(Raid1, DISABLED_CleanBitmapSingleRegion) {
     {
         // Cause a write failure to dirty the bitmap
         ublkpp::sub_cmd_t working_sub;
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
                 working_sub = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -92,7 +92,7 @@ TEST(Raid1, DISABLED_CleanBitmapSingleRegion) {
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });
@@ -138,22 +138,22 @@ TEST(Raid1, DISABLED_CleanBitmapMultipleRegions) {
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });
 
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });
 
     // Create multiple dirty regions at different offsets
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(3)
         .WillRepeatedly(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -201,14 +201,14 @@ TEST(Raid1, DISABLED_CleanBitmapReadFailure) {
     {
         // Create a dirty region
         ublkpp::sub_cmd_t working_sub;
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
                 working_sub = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -257,7 +257,7 @@ TEST(Raid1, DISABLED_CleanBitmapReadFailure) {
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });
@@ -282,14 +282,14 @@ TEST(Raid1, DISABLED_CleanBitmapWriteFailure) {
     {
         // Create a dirty region
         ublkpp::sub_cmd_t working_sub;
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
                 working_sub = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -341,7 +341,7 @@ TEST(Raid1, DISABLED_CleanBitmapWriteFailure) {
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });
@@ -385,22 +385,22 @@ TEST(Raid1, DISABLED_CleanBitmapStoppedState) {
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });
 
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });
 
     // Create multiple dirty regions
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(5)
         .WillRepeatedly(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -454,14 +454,14 @@ TEST(Raid1, DISABLED_CleanBitmapLargeRegion) {
     {
         // Cause a write failure to dirty the bitmap
         ublkpp::sub_cmd_t working_sub;
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
                 working_sub = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -513,7 +513,7 @@ TEST(Raid1, DISABLED_CleanBitmapLargeRegion) {
             return ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
         });
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AtLeast(0))
         .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t,
                            uint64_t) -> io_result { return 1; });

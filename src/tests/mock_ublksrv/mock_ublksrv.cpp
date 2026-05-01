@@ -88,7 +88,16 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     _io_states[tag].pool.clear();
     _async_tasks[tag].reset();
 
-    auto task = _disk->handle_io_async(&_queues[0], &ts.data);
+    if (op == UBLK_IO_OP_FLUSH) {
+        auto flush_task = []() -> disk_task< int > { co_return 0; }();
+        flush_task._coro.resume();
+        _async_tasks[tag].emplace(std::move(flush_task));
+        return io_result{0};
+    }
+    thread_local iovec iov{};
+    iov.iov_base = reinterpret_cast< void* >(ts.iod.addr);
+    iov.iov_len = ts.iod.nr_sectors << SECTOR_SHIFT;
+    auto task = _disk->async_iov(&_queues[0], &ts.data, &iov, 1, ts.iod.start_sector << SECTOR_SHIFT);
     task._coro.resume(); // start lazy coroutine; runs until first co_await *state
     _async_tasks[tag].emplace(std::move(task));
     // Pool size == number of CqeStates registered (one per pending stripe SQE)

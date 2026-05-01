@@ -21,12 +21,12 @@ TEST(Raid1, DISABLED_ResyncUnblocksViaProbeMirror) {
 
     // Step 1: Degrade device_b via write failure.
     // __become_degraded sets unavail on B and transitions route to DEVA.
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce(
             [](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) { return 1; });

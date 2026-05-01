@@ -7,7 +7,7 @@ TEST(Raid0, DISABLED_SplitWrite) {
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
     void* fake_buffer;
     ASSERT_EQ(0, posix_memalign(&fake_buffer, device_a->block_size(), 96 * Ki));
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                 uint32_t nr_vecs, uint64_t addr) -> io_result {
@@ -19,7 +19,7 @@ TEST(Raid0, DISABLED_SplitWrite) {
             EXPECT_EQ(addr, (32 * Ki) * 2);
             return 1;
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                 uint32_t nr_vecs, uint64_t addr) -> io_result {
@@ -33,7 +33,7 @@ TEST(Raid0, DISABLED_SplitWrite) {
             EXPECT_EQ(addr - (32 * Ki), (36 * Ki) - (32 * Ki));
             return 1;
         });
-    EXPECT_CALL(*device_c, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_c, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([fake_buffer](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                 uint32_t nr_vecs, uint64_t addr) -> io_result {

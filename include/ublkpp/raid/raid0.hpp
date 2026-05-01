@@ -35,7 +35,7 @@ public:
     std::string id() const noexcept override { return "RAID0"; }
     std::list< int > open_for_uring(ublksrv_queue const*, int const iouring_device) override;
 
-    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+    disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                       uint64_t addr) override;
 
     void idle_transition(ublksrv_queue const*, bool) override;

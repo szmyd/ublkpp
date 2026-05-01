@@ -35,9 +35,9 @@ std::list< int > Raid1Disk::open_for_uring(ublksrv_queue const* q, int const iou
     return _impl->open_for_uring(q, iouring_device);
 }
 void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
-disk_task< int > Raid1Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                              uint32_t nr_vecs, uint64_t addr) {
-    return _impl->handle_iov_async(q, data, iovecs, nr_vecs, addr);
+    return _impl->async_iov(q, data, iovecs, nr_vecs, addr);
 }
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept {
     return _impl->sync_iov(op, iovecs, nr_vecs, offset);

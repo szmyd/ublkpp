@@ -10,8 +10,8 @@ TEST(Raid1, DISABLED_ReadRetryA) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _)).Times(0);
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                  uint32_t, uint64_t addr) {
@@ -32,7 +32,7 @@ TEST(Raid1, DISABLED_ReadRetryA) {
     EXPECT_EQ(1, res.value());
 
     // Now test the normal path
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                  uint32_t, uint64_t addr) {
@@ -64,7 +64,7 @@ TEST(Raid1, DISABLED_ReadRetryB) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
     auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
-    EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(1)
         .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                                  uint32_t, uint64_t addr) {
@@ -75,7 +75,7 @@ TEST(Raid1, DISABLED_ReadRetryB) {
             EXPECT_EQ(addr, (32 * Ki) + raid_device.reserved_size());
             return 1;
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(0);
 
     auto ublk_data = make_io_data(UBLK_IO_OP_READ);
     auto sub_cmd = ublkpp::set_flags(ublkpp::sub_cmd_t{0b101}, ublkpp::sub_cmd_flags::RETRIED);

@@ -662,7 +662,7 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
     last_read = route;
     auto const& primary_dev = __route_to_device(state, route);
 
-    auto primary_task = primary_dev->disk->handle_iov_async(q, data, iovecs, nr_vecs, addr + reserved_size);
+    auto primary_task = primary_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + reserved_size);
     primary_task._coro.resume();
     auto const r = co_await primary_task.started();
 
@@ -677,14 +677,14 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
     auto const other_route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
     auto const& failover_dev = __route_to_device(state, other_route);
 
-    auto failover_task = failover_dev->disk->handle_iov_async(q, data, iovecs, nr_vecs, addr + reserved_size);
+    auto failover_task = failover_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + reserved_size);
     failover_task._coro.resume();
     auto const r2 = co_await failover_task.started();
 
     co_return r2 >= 0 ? r2 : -EIO;
 }
 
-disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                                  uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
     auto const len = static_cast< uint32_t >(__iovec_len(iovecs, iovecs + nr_vecs));
@@ -717,13 +717,13 @@ disk_task< int > Raid1DiskImpl::handle_iov_async(ublksrv_queue const* q, ublk_io
 
     auto const adj_addr = addr + reserved_size;
     _resync_task->enqueue_write();
-    auto active_task = state.active_dev->disk->handle_iov_async(q, data, iovecs, nr_vecs, adj_addr);
+    auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr);
     active_task._coro.resume();
 
     std::optional< disk_task< int > > backup_task;
     if (bm != BackupMode::SKIP) {
         _resync_task->enqueue_write();
-        backup_task.emplace(state.backup_dev->disk->handle_iov_async(q, data, iovecs, nr_vecs, adj_addr));
+        backup_task.emplace(state.backup_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr));
         backup_task->_coro.resume();
     }
 
@@ -803,7 +803,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
         return failover_res ? failover_res : std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    // WRITE / DISCARD / WRITE_ZEROES: flat replication -- mirrors handle_iov_async write path.
+    // WRITE / DISCARD / WRITE_ZEROES: flat replication -- mirrors async_iov write path.
     auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
     auto const backup_unavail = state.backup_dev->unavail.test(std::memory_order_acquire);
     auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);

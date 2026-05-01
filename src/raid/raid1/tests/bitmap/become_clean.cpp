@@ -19,14 +19,14 @@ TEST(Raid1, DISABLED_CleanBitmap) {
     {
         ublkpp::sub_cmd_t working_sub;
         EXPECT_TO_WRITE_SB(device_a);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&working_sub](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec*,
                                      uint32_t, uint64_t) {
                 working_sub = sub_cmd;
                 return 1;
             });
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -59,7 +59,7 @@ TEST(Raid1, DISABLED_CleanBitmap) {
         // Subsequent writes that encompass dirty regions should go to the degraded device and clean dirty new pages
         // if it works
         auto ublk_data = make_io_data(UBLK_IO_OP_WRITE, 32 * Ki, 0UL);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&raid_device](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd,
                                      iovec* iovecs, uint32_t, uint64_t addr) {
@@ -71,7 +71,7 @@ TEST(Raid1, DISABLED_CleanBitmap) {
                 return 1;
             });
         ublkpp::sub_cmd_t internal_sub_cmd;
-        EXPECT_CALL(*device_b, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([&internal_sub_cmd, &raid_device](ublksrv_queue const*, ublk_io_data const*,
                                                         ublkpp::sub_cmd_t sub_cmd, iovec* iovecs, uint32_t,

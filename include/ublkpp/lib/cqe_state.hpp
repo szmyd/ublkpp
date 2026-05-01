@@ -15,16 +15,16 @@ struct CqeState;
 // Per-IO state tracking one inflight request, owned by the ublksrv-allocated io_data slot.
 //
 // Lifetime: placement-new'd in init_queue for each tag slot; explicitly ~async_io() in deinit_queue.
-// pool is cleared at the start of each new I/O in __handle_io_async.
+// pool is cleared at the start of each new I/O in __handle_io_async (the tgt C callback).
 //
 // Dispatch protocol:
-//   1. handle_iov_async calls build_cqe_state_data() -> next_state() per SQE; pool grows.
+//   1. async_iov calls build_cqe_state_data() -> next_state() per SQE; pool grows.
 //   2. Coroutine suspends on co_await *state; state->waiter is installed.
 //   3. run_queue_loop decodes CqeState*, sets result + result_ready, resumes state->waiter.
 //   4. CqeState::await_resume returns state->result directly.
 struct async_io {
     std::deque< CqeState > pool{}; // stable addresses: push_back never invalidates pointers
-    int tag{-1};                   // set in __handle_io_async; read by run_queue_loop on error
+    int tag{-1};                   // set in tgt __handle_io_async; read by run_queue_loop on error
 
     // Allocates a fresh CqeState in the pool and returns a stable pointer to it.
     CqeState* next_state();

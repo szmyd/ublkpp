@@ -6,7 +6,7 @@ TEST(Raid0, DISABLED_SimpleRead) {
     auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
     auto device_c = CREATE_DISK(TestParams{.capacity = Gi});
-    EXPECT_CALL(*device_a, async_iov(UBLK_IO_OP_READ, _, _, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(UBLK_IO_OP_READ, _, _, _, _, _))
         .Times(1)
         .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t sub_cmd, iovec* iovecs,
                      uint32_t nr_vecs, uint64_t addr) -> io_result {
@@ -18,8 +18,8 @@ TEST(Raid0, DISABLED_SimpleRead) {
             EXPECT_EQ(addr - (32 * Ki), 8 * Ki);
             return 1;
         });
-    EXPECT_CALL(*device_b, async_iov(_, _, _, _, _)).Times(0);
-    EXPECT_CALL(*device_c, async_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(0);
+    EXPECT_CALL(*device_c, submit_iov(_, _, _, _, _)).Times(0);
 
     auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b, device_c});

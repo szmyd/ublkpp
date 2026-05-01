@@ -19,7 +19,7 @@ using ::ublkpp::io_result;
 using ::ublkpp::Ki;
 using ::ublkpp::UblkDisk;
 
-// Default async_iov action: return 1 to signal "submitted"; inject_cqe() delivers the result.
+// Default submit_iov action: return 1 to signal "submitted"; inject_cqe() delivers the result.
 inline auto make_async_iov_action() {
     return [](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) -> io_result { return 1; };
 }
@@ -44,7 +44,7 @@ struct AsyncRaid0Fixture : public ::testing::Test {
                         memset(iovecs->iov_base, 0, iovecs->iov_len);
                     return sizeof(ublkpp::raid0::SuperBlock);
                 });
-            ON_CALL(*d, async_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
+            ON_CALL(*d, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
         }
         raid =
             std::make_shared< ublkpp::Raid0Disk >(boost::uuids::random_generator()(), k_stripe_size,

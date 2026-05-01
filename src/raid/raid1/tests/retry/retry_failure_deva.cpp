@@ -8,7 +8,7 @@ TEST(Raid1, DISABLED_WriteRetryAFailure) {
 
     {
         EXPECT_TO_WRITE_SB_F(device_b, true);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -23,7 +23,7 @@ TEST(Raid1, DISABLED_WriteRetryAFailure) {
     // Queued Retries should attempt to update the SB as well
     {
         EXPECT_TO_WRITE_SB_F(device_b, true);
-        EXPECT_CALL(*device_a, async_iov(_, _, _, _, _))
+        EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
             .Times(1)
             .WillOnce([](ublksrv_queue const*, ublk_io_data const*, ublkpp::sub_cmd_t, iovec*, uint32_t, uint64_t) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
