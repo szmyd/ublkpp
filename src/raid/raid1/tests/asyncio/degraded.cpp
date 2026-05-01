@@ -56,7 +56,7 @@ TEST_F(AsyncRaid1Fixture, UnknownOpcodeIsRejected) {
 
 // Phase 1: active (disk_a) fails AND the superblock write to disk_b fails. disk_a is marked ERROR
 // in-memory (no rollback); the backup result is returned to the caller.
-// Phase 2: array is now degraded; a subsequent write routes to disk_b only (1 CqeState).
+// Phase 2: array is now degraded; a subsequent write routes to disk_b only (1 cqe_state).
 // Together these verify that a failed SB write still produces correct in-memory degradation and
 // that writes in the resulting degraded state behave correctly.
 TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
@@ -95,7 +95,7 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
     {
         auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 8 * Ki / 512, 4 * Ki / 512, nullptr);
         ASSERT_TRUE(res);
-        EXPECT_EQ(res.value(), 1u); // degraded → single CqeState
+        EXPECT_EQ(res.value(), 1u); // degraded → single cqe_state
 
         auto comp = mock->inject_cqe(1, 4 * Ki);
         ASSERT_EQ(comp.size(), 1u);

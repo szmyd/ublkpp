@@ -1,8 +1,8 @@
 #include "async_raid1_common.hpp"
 
 // Read failover: primary device fails → failover to backup.
-// Initial submit registers 1 CqeState (primary only). After injecting -EIO,
-// RAID1 starts the failover task (registers a second CqeState) and suspends.
+// Initial submit registers 1 cqe_state (primary only). After injecting -EIO,
+// RAID1 starts the failover task (registers a second cqe_state) and suspends.
 // Second inject delivers success to backup → completion returned.
 TEST_F(AsyncRaid1Fixture, ReadFailoverToBackup) {
     std::thread([this] {

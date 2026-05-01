@@ -15,7 +15,7 @@ TEST_F(AsyncRaid0Fixture, ReadSingleStripe) {
 
     auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
-    EXPECT_EQ(res.value(), 1u); // 1 CqeState registered
+    EXPECT_EQ(res.value(), 1u); // 1 cqe_state registered
 
     auto completions = mock->inject_cqe(0, 4 * Ki);
     ASSERT_EQ(completions.size(), 1u);

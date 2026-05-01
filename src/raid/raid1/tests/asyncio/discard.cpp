@@ -51,7 +51,7 @@ TEST_F(AsyncRaid1Fixture, DiscardSyncCompletion) {
     // Both tasks complete synchronously; no CqeStates registered
     EXPECT_EQ(res.value(), 0u);
 
-    // No waiter — task already done; inject_cqe returns stored result immediately
+    // No _waiter — task already done; inject_cqe returns stored result immediately
     auto completions = mock->inject_cqe(0, 0);
     ASSERT_EQ(completions.size(), 1u);
     EXPECT_EQ(completions[0].result, 0);

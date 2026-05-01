@@ -152,7 +152,7 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     if (op == UBLK_IO_OP_FLUSH) co_return 0;
 
     io_result res;
-    CqeState* state{nullptr};
+    cqe_state* state{nullptr};
     bool track_metrics{false};
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
@@ -198,8 +198,8 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     co_return cqe_result;
 }
 
-std::pair< io_result, CqeState* > FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, uint32_t len,
-                                                         uint64_t addr) {
+std::pair< io_result, cqe_state* > FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data,
+                                                          uint32_t len, uint64_t addr) {
     DLOGD("DISCARD {}: [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}]", _path.native(), data->tag, addr, len)
     if (!_block_device) {
         auto sqe = next_sqe(q);

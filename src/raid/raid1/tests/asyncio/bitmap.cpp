@@ -83,7 +83,7 @@ TEST_F(AsyncRaid1Fixture, BitmapDirtyOnDegradedWrite) {
     // The SKIP path also calls dirty_region → bytes_to_sync increases.
     auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 32 * Ki / 512, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
-    EXPECT_EQ(res.value(), 1u); // only one CqeState (no backup)
+    EXPECT_EQ(res.value(), 1u); // only one cqe_state (no backup)
 
     auto comp = mock->inject_cqe(1, 4 * Ki);
     ASSERT_EQ(comp.size(), 1u);
@@ -268,14 +268,14 @@ TEST_F(AsyncRaid1Fixture, ResyncBlockedByOutstandingWrites) {
         std::this_thread::sleep_for(1ms);
     ASSERT_TRUE(resync_started);
 
-    // Submit a write while resync is mid-READ. In degraded mode this yields 1 CqeState;
-    // if probe_mirror cleared unavail first it may be 2. Drain all but the last CqeState.
+    // Submit a write while resync is mid-READ. In degraded mode this yields 1 cqe_state;
+    // if probe_mirror cleared unavail first it may be 2. Drain all but the last cqe_state.
     auto pending = mock->submit_io(10, UBLK_IO_OP_WRITE, 10 * 64 * Ki / 512, 32 * Ki / 512, nullptr);
     ASSERT_TRUE(pending);
     for (uint32_t i = 0; i + 1 < pending.value(); ++i)
         EXPECT_TRUE(mock->inject_cqe(10, 32 * Ki).empty());
 
-    // Complete the final CqeState → dequeue_write() → resync transitions PAUSE→ACTIVE.
+    // Complete the final cqe_state → dequeue_write() → resync transitions PAUSE→ACTIVE.
     auto comp = mock->inject_cqe(10, 32 * Ki);
     ASSERT_EQ(comp.size(), 1u);
 

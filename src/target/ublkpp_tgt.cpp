@@ -68,7 +68,7 @@ struct ublkpp_queue_state {
 };
 
 // Our own CQE processing loop, replacing ublksrv_process_io.
-// Target CQEs carry a raw CqeState* in bits 62:0 with bit 63 set; decoded via pointer cast.
+// Target CQEs carry a raw cqe_state* in bits 62:0 with bit 63 set; decoded via pointer cast.
 // Ublk command CQEs delegate to ublksrv.
 //
 // Drain correctness: ublksrv_queue_is_done returns true only when ublksrv has no pending I/O
@@ -90,15 +90,15 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
         int count{0};
         io_uring_for_each_cqe(ring, head, cqe) {
             if (cqe->user_data & k_target_bit) {
-                // target io_uring CQE -- user_data is a raw CqeState* | k_target_bit
-                auto* state = reinterpret_cast< CqeState* >(cqe->user_data & ~k_target_bit);
-                state->result = cqe->res;
-                state->result_ready = true;
+                // target io_uring CQE -- user_data is a raw cqe_state* | k_target_bit
+                auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
+                state->_result = cqe->res;
+                state->_result_ready = true;
                 try {
-                    if (auto h = std::exchange(state->waiter, {})) h.resume(); // per-state resume (disk_task path)
+                    if (auto h = std::exchange(state->_waiter, {})) h.resume(); // per-state resume (disk_task path)
                 } catch (std::exception const& e) {
                     TLOGE("I/O threw exception: [{}]", e.what())
-                    ublksrv_complete_io(q, state->owner->tag, -EIO);
+                    ublksrv_complete_io(q, state->_owner->_tag, -EIO);
                 }
             } else {
                 // ublk command CQE (FETCH/COMMIT) -- delegate to libublksrv
@@ -240,8 +240,8 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
 
     auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
     auto io = reinterpret_cast< async_io* >(data->private_data);
-    io->pool.clear();
-    io->tag = data->tag;
+    io->_pool.clear();
+    io->_tag = data->tag;
 
     auto const op = ublksrv_get_op(data->iod);
     qs->tgt->metrics.record_queue_depth_change(q, op, true);

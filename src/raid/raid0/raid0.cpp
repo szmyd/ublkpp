@@ -192,7 +192,7 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     // Eagerly start each child task so all SQEs are in-flight before the first co_await,
     // preserving kernel parallelism. All tasks must be drained even on error to avoid
-    // dangling waiter handles in CqeState.
+    // dangling _waiter handles in cqe_state.
     std::vector< disk_task< int > > stripe_tasks;
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {

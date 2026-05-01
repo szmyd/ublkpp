@@ -12,7 +12,7 @@ struct StartedTaskAwaitable;
 // co_await disk_task<T> inside an exec::task<void> or another disk_task<U> suspends the caller
 // and immediately resumes the callee without going through any scheduler.
 //
-// run_queue_loop drives all resumption: CQEs install a handle in CqeState::waiter and call
+// run_queue_loop drives all resumption: CQEs install a handle in cqe_state::_waiter and call
 // h.resume(), which propagates back to the caller via final_suspend symmetric transfer.
 //
 // Lifetime: the coroutine frame is owned by the disk_task object. Move-only; the caller

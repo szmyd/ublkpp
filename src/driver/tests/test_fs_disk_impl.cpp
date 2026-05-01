@@ -128,7 +128,7 @@ TEST(FsDiskImpl, CqeStateTargetBitEncoding) {
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
     EXPECT_NE(user_data & (1ULL << 63), 0ULL);
-    auto* decoded = reinterpret_cast< ublkpp::CqeState* >(user_data & ~(1ULL << 63));
+    auto* decoded = reinterpret_cast< ublkpp::cqe_state* >(user_data & ~(1ULL << 63));
     EXPECT_EQ(state, decoded);
 }
 

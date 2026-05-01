@@ -1,6 +1,6 @@
 #include "async_raid1_common.hpp"
 
-// Healthy read: routes to one device, 1 CqeState registered.
+// Healthy read: routes to one device, 1 cqe_state registered.
 // thread_local last_read starts at DEVB on a fresh thread, so first read → DEVA (disk_a).
 TEST_F(AsyncRaid1Fixture, ReadSingleDevice) {
     std::thread([this] {
@@ -81,7 +81,7 @@ TEST_F(AsyncRaid1Fixture, WriteDegradedSkipsReplica) {
 
     auto res2 = mock->submit_io(1, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res2);
-    EXPECT_EQ(res2.value(), 1u); // single CqeState — no backup
+    EXPECT_EQ(res2.value(), 1u); // single cqe_state — no backup
 
     auto comp2 = mock->inject_cqe(1, 4 * Ki);
     ASSERT_EQ(comp2.size(), 1u);

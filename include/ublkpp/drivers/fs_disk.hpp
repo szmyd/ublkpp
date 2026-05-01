@@ -7,7 +7,7 @@
 
 namespace ublkpp {
 
-struct CqeState;
+struct cqe_state;
 class UblkFSDiskMetrics;
 
 class FSDisk : public UblkDisk {
@@ -28,7 +28,7 @@ public:
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 
 private:
-    std::pair< io_result, CqeState* > handle_discard(ublksrv_queue const* q, ublk_io_data const* data, uint32_t len,
-                                                     uint64_t addr);
+    std::pair< io_result, cqe_state* > handle_discard(ublksrv_queue const* q, ublk_io_data const* data, uint32_t len,
+                                                      uint64_t addr);
 };
 } // namespace ublkpp

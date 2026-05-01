@@ -56,7 +56,7 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
         _tags[tag].data.tag = tag;
         _tags[tag].data.iod = &_tags[tag].iod;
         _tags[tag].data.private_data = &_io_states[tag];
-        _io_states[tag].tag = tag;
+        _io_states[tag]._tag = tag;
     }
 
     // Allocate sector-aligned I/O buffers (one per tag)
@@ -85,7 +85,7 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     ts.iod.addr = reinterpret_cast< uint64_t >(buf);
 
     // Reset async_io state between IOs on the same tag slot
-    _io_states[tag].pool.clear();
+    _io_states[tag]._pool.clear();
     _async_tasks[tag].reset();
 
     if (op == UBLK_IO_OP_FLUSH) {
@@ -101,31 +101,31 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     task._coro.resume(); // start lazy coroutine; runs until first co_await *state
     _async_tasks[tag].emplace(std::move(task));
     // Pool size == number of CqeStates registered (one per pending stripe SQE)
-    return io_result{_io_states[tag].pool.size()};
+    return io_result{_io_states[tag]._pool.size()};
 }
 
 void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out) {
-    auto* state = reinterpret_cast< CqeState* >(cqe->user_data & ~(1ULL << 63));
-    int const tag = state->owner->tag;
+    auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~(1ULL << 63));
+    int const tag = state->_owner->_tag;
     int const res = cqe->res;
 
     // Consume the CQE immediately so peek sees the next one
     io_uring_cqe_seen(&_ring, cqe);
 
-    state->result = res;
-    state->result_ready = true;
+    state->_result = res;
+    state->_result_ready = true;
 
-    if (auto h = std::exchange(state->waiter, {})) h.resume();
+    if (auto h = std::exchange(state->_waiter, {})) h.resume();
     auto& opt = _async_tasks[tag];
     if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
 }
 
 std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int result) {
     std::vector< Completion > out;
-    // Find the CqeState currently suspended in the disk_task (waiter is set)
-    CqeState* target = nullptr;
-    for (auto& s : _io_states[tag].pool) {
-        if (s.waiter) {
+    // Find the cqe_state currently suspended in the disk_task (_waiter is set)
+    cqe_state* target = nullptr;
+    for (auto& s : _io_states[tag]._pool) {
+        if (s._waiter) {
             target = &s;
             break;
         }
@@ -137,9 +137,9 @@ std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int resu
         if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
         return out;
     }
-    target->result = result;
-    target->result_ready = true;
-    if (auto h = std::exchange(target->waiter, {})) h.resume();
+    target->_result = result;
+    target->_result_ready = true;
+    if (auto h = std::exchange(target->_waiter, {})) h.resume();
     if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
     return out;
 }

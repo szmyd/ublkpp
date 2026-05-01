@@ -46,7 +46,7 @@ public:
     // Drain io_uring CQEs until at least min_completions are collected or timeout expires.
     std::vector< Completion > poll(int min_completions, std::chrono::milliseconds timeout);
 
-    // New async path only. Deliver a synthetic result to the CqeState currently suspended
+    // New async path only. Deliver a synthetic result to the cqe_state currently suspended
     // in the disk_task for the given tag. Resumes the task; returns a completion when the
     // task runs to completion. Call once per awaited stripe for multi-stripe IOs.
     std::vector< Completion > inject_cqe(int tag, int result);
@@ -74,7 +74,7 @@ private:
     std::shared_ptr< UblkDisk > _disk;
     std::vector< TagState > _tags;
 
-    // async_io pool — one per tag, mirrors what init_queue does via placement new
+    // async_io _pool — one per tag, mirrors what init_queue does via placement new
     std::vector< async_io > _io_states;
 
     // disk_task handles for the async API path — one optional slot per tag
