@@ -396,11 +396,14 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 // - Change retry logic → infinite loops or missed swaps
 //
 // TSAN FLAGS THIS: Yes, correctly. Suppressed via tsan.supp + no_sanitize_thread.
-// ASAN FLAGS THIS: Yes, correctly. Suppressed via no_sanitize("address") on the declaration.
+// ASAN FLAGS THIS: Yes, correctly. Suppressed via no_sanitize("address") on the definition.
 //
 // ⚠️  DO NOT MODIFY UNLESS YOU FULLY UNDERSTAND LOCK-FREE MEMORY MODELS ⚠️
 //
 // ═══════════════════════════════════════════════════════════════════════════════
+#ifndef NDEBUG
+__attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
+#endif
 RouteState Raid1DiskImpl::__capture_route_state() const {
     while (true) {
         auto a = _device_a;

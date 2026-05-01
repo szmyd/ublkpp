@@ -104,6 +104,8 @@ class Raid1DiskImpl : public UblkDisk {
     // The race cannot corrupt on-disk state (MirrorDevice dtor writes nothing to disk); worst case
     // is a process crash, which pod restart / UBLK_F_USER_RECOVERY handles. Locking this hot path
     // is not worth the cost for a swap that happens at most once per device lifetime.
+    // NOTE: attribute must appear on both declaration and definition for GCC to suppress
+    // instrumentation of the function body.
     __attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
 #endif
     RouteState __capture_route_state() const;
