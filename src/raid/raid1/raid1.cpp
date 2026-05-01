@@ -401,6 +401,7 @@ bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
 // ⚠️  DO NOT MODIFY UNLESS YOU FULLY UNDERSTAND LOCK-FREE MEMORY MODELS ⚠️
 //
 // ═══════════════════════════════════════════════════════════════════════════════
+// clang-format off
 #ifndef NDEBUG
 __attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
 #endif
@@ -417,6 +418,7 @@ RouteState Raid1DiskImpl::__capture_route_state() const {
                           .is_degraded = (read_route::EITHER != route)};
     }
 }
+// clang-format on
 
 // Helper: Decode logical route to physical device from captured state.
 // Maps DEVA/DEVB to the actual device currently in that physical slot,
