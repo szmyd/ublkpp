@@ -49,7 +49,7 @@ TEST_F(AsyncRaid1Fixture, UnknownOpcodeIsRejected) {
 }
 
 // Phase 1: active (disk_a) fails AND the superblock write to the surviving device (disk_b) also
-// fails — degradation is rolled back; both devices stay CLEAN.  The backup result is still returned.
+// fails — degradation is rolled back; both devices stay CLEAN. -EIO is returned to the caller.
 // Phase 2: same active failure, but this time the SB write succeeds — disk_a is now marked ERROR
 // and disk_b (the backup write already in flight) delivers the completion.
 // Together these verify that a failed degradation attempt leaves the array in a healthy state that
