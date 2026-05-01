@@ -10,6 +10,7 @@
 #include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/raid/raid1.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
+#include "raid/tests/raid_test_common.hpp"
 #include "tests/mock_ublksrv/mock_ublksrv.hpp"
 #include "tests/test_disk.hpp"
 
@@ -20,6 +21,7 @@ using ::ublkpp::Gi;
 using ::ublkpp::io_result;
 using ::ublkpp::Ki;
 using ::ublkpp::UblkDisk;
+using ::ublkpp::test::make_async_iov_action;
 
 static const ublkpp::raid1::SuperBlock async_raid1_superblock = {
     .header = {.magic = {0x53, 0x25, 0xff, 0x0a, 0x34, 0x99, 0x3e, 0xc5, 0x67, 0x3a, 0xc8, 0x17, 0x49, 0xae, 0x1b,
@@ -32,11 +34,6 @@ static const ublkpp::raid1::SuperBlock async_raid1_superblock = {
                .device_b = 0,
                .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = 0}},
     .superbitmap_reserved = {0x00}};
-
-// Default submit_iov action: return 1 to signal "submitted"; inject_cqe() delivers the result.
-inline auto make_async_iov_action() {
-    return [](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) -> io_result { return 1; };
-}
 
 struct AsyncRaid1Fixture : public ::testing::Test {
     static constexpr uint64_t k_disk_cap = 1 * Gi;

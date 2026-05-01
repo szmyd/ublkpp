@@ -1,5 +1,4 @@
 #include "raid1_impl.hpp"
-#include "metrics/ublk_raid_metrics.hpp"
 
 namespace ublkpp {
 
@@ -34,7 +33,9 @@ std::string Raid1Disk::id() const noexcept { return _impl->id(); }
 std::list< int > Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device) {
     return _impl->prepare(q, iouring_device);
 }
-void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
+void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) noexcept {
+    return _impl->idle_transition(q, enter);
+}
 disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                       uint64_t addr) {
     return _impl->async_iov(q, data, iovecs, nr_vecs, addr);

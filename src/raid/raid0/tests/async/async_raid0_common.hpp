@@ -9,6 +9,7 @@
 #include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/raid/raid0.hpp"
 #include "raid/raid0/raid0_impl.hpp"
+#include "raid/tests/raid_test_common.hpp"
 #include "tests/mock_ublksrv/mock_ublksrv.hpp"
 #include "tests/test_disk.hpp"
 
@@ -18,11 +19,7 @@ using ::ublkpp::Gi;
 using ::ublkpp::io_result;
 using ::ublkpp::Ki;
 using ::ublkpp::UblkDisk;
-
-// Default submit_iov action: return 1 to signal "submitted"; inject_cqe() delivers the result.
-inline auto make_async_iov_action() {
-    return [](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) -> io_result { return 1; };
-}
+using ::ublkpp::test::make_async_iov_action;
 
 struct AsyncRaid0Fixture : public ::testing::Test {
     static constexpr uint32_t k_stripe_size = 32 * Ki;

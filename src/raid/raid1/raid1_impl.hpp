@@ -1,6 +1,5 @@
 #pragma once
 
-#include <map>
 #include <memory>
 
 #include "ublkpp/raid/raid1.hpp"
@@ -9,8 +8,6 @@
 #include "raid1_superblock.hpp"
 
 namespace ublkpp {
-
-struct UblkSystemMetrics;
 
 namespace raid1 {
 

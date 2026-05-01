@@ -30,7 +30,7 @@ ENUM(read_route, uint8_t, EITHER = 0, DEVA = 1, DEVB = 2);
 #ifdef __LITTLE_ENDIAN
 struct __attribute__((__packed__)) SuperBlock {
     struct {
-        uint8_t magic[16]; // This is a static set of 128bits to confirm existing superblock
+        uint8_t magic[16]; // 128-bit magic to detect an initialized superblock
         uint16_t version;
         uint8_t uuid[16]; // This is a user UUID that is assigned when the array is created
     } header;             // 34 bytes

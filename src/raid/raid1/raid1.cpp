@@ -98,9 +98,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b) {
     RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
 
-    direct_io = true; // RAID-1 prefers DIO; downgraded below if any member doesn't support it
-    // We enqueue async responses for RAID1 retries even if our underlying devices use uring
-    uses_ublk_iouring = false;
+    direct_io = true;          // RAID-1 prefers DIO; downgraded below if any member doesn't support it
+    uses_ublk_iouring = false; // RAID1 drives its own retry/failover coroutines; tgt must not complete io directly
 
     // Discover overall Device parameters
     auto& our_params = *params();
