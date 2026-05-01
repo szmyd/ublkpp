@@ -44,15 +44,15 @@ public:
     std::string to_string() const;
 
     // Async entry-point: called by __handle_io_async.
-    // Implementations submit all SQEs upfront then co_await CqeAwaitable for each result.
+    // Implementations submit all SQEs upfront then co_await *state for each result.
     virtual disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data);
 
     // Async I/O with explicit scatter-gather list and address. Called when the operation targets
-    // a sub-range or offset that differs from what ublk_io_data describes - the caller owns the
-    // buffer layout and address computation. Every concrete disk type overrides this directly.
+    // a sub-range or offset that differs from what ublk_io_data describes — the caller owns the
+    // buffer layout and address computation. All concrete leaf disks must override this.
     // For DISCARD, iovecs[0].iov_len is the length.
     virtual disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
-                                              uint32_t nr_vecs, uint64_t addr);
+                                              uint32_t nr_vecs, uint64_t addr) = 0;
 
     virtual std::string id() const noexcept = 0;
 
@@ -73,7 +73,6 @@ public:
 
     std::string id() const noexcept override;
 
-    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) override;
     disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                       uint64_t addr) override;
 

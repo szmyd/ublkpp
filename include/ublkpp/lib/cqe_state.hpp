@@ -19,9 +19,9 @@ struct CqeState;
 //
 // Dispatch protocol:
 //   1. handle_iov_async calls build_cqe_state_data() -> next_state() per SQE; pool grows.
-//   2. Coroutine suspends on co_await CqeAwaitable{state}; state->waiter is installed.
+//   2. Coroutine suspends on co_await *state; state->waiter is installed.
 //   3. run_queue_loop decodes CqeState*, sets result + result_ready, resumes state->waiter.
-//   4. CqeAwaitable::await_resume returns state->result directly.
+//   4. CqeState::await_resume returns state->result directly.
 struct async_io {
     std::deque< CqeState > pool{}; // stable addresses: push_back never invalidates pointers
     int tag{-1};                   // set in __handle_io_async; read by run_queue_loop on error
@@ -32,20 +32,16 @@ struct async_io {
 
 // Tracks a single inflight sub-operation. Stored in async_io::pool (std::deque, so push_back
 // is pointer-stable). result and result_ready are written by run_queue_loop before resuming waiter.
+// Implements the awaitable protocol directly: co_await *state suspends until the CQE arrives.
 struct CqeState {
     async_io* owner;
     int result{0};
     bool result_ready{false};
     std::coroutine_handle<> waiter{};
-};
 
-// Awaitable for a specific CqeState. await_ready returns true when the CQE already arrived
-// before co_await — avoids suspension and resume overhead on fast completions.
-struct CqeAwaitable {
-    CqeState* state;
-    bool await_ready() const noexcept { return state->result_ready; }
-    void await_suspend(std::coroutine_handle<> h) noexcept { state->waiter = h; }
-    int await_resume() const noexcept { return state->result; }
+    bool await_ready() const noexcept { return result_ready; }
+    void await_suspend(std::coroutine_handle<> h) noexcept { waiter = h; }
+    int await_resume() const noexcept { return result; }
 };
 
 inline CqeState* async_io::next_state() {
@@ -54,7 +50,7 @@ inline CqeState* async_io::next_state() {
 }
 
 // Allocates a new CqeState for this I/O and encodes it for SQE user_data.
-// Returns {state*, encoded_user_data}. The caller co_awaits CqeAwaitable{state}.
+// Returns {state*, encoded_user_data}. The caller co_awaits *state.
 //
 // On ARM64/x86_64 canonical userspace addresses use <=48 bits, so bit 63 is always zero in any
 // valid pointer — the OR is safe and reversible with & ~(1ULL << 63).

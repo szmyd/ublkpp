@@ -21,7 +21,7 @@ TEST_F(AsyncRaid1Fixture, DiscardBothDevices) {
 }
 
 // Discard where async_iov returns 0 (synchronous inline completion) → task finishes
-// without suspending on CqeAwaitable. RAID1 still awaits both tasks.
+// without suspending on co_await *state. RAID1 still awaits both tasks.
 TEST_F(AsyncRaid1Fixture, DiscardSyncCompletion) {
     ON_CALL(*disk_a, async_iov(_, _, _, _, _)).WillByDefault(Return(io_result{0}));
     ON_CALL(*disk_b, async_iov(_, _, _, _, _)).WillByDefault(Return(io_result{0}));

@@ -97,33 +97,31 @@ TEST(BuildCqeStateData, ReturnedPointerMatchesDecodedUserData) {
 }
 
 // ============================================================================
-// CqeAwaitable
+// CqeState awaitable
 // ============================================================================
 
-// Coroutine that co_awaits a CqeAwaitable and writes the result to *out.
-static FireAndForget await_cqe_and_capture(ublkpp::CqeState* state, int* out) {
-    *out = co_await ublkpp::CqeAwaitable{state};
-}
+// Coroutine that co_awaits *state and writes the result to *out.
+static FireAndForget await_cqe_and_capture(ublkpp::CqeState* state, int* out) { *out = co_await *state; }
 
-TEST(CqeAwaitable, AwaitReadyFalseWhenNotReady) {
+TEST(CqeState, AwaitReadyFalseWhenNotReady) {
     ublkpp::async_io io{};
     ublkpp::CqeState state{.owner = &io, .result_ready = false};
-    EXPECT_FALSE(ublkpp::CqeAwaitable{&state}.await_ready());
+    EXPECT_FALSE(state.await_ready());
 }
 
-TEST(CqeAwaitable, AwaitReadyTrueWhenReady) {
+TEST(CqeState, AwaitReadyTrueWhenReady) {
     ublkpp::async_io io{};
     ublkpp::CqeState state{.owner = &io, .result_ready = true};
-    EXPECT_TRUE(ublkpp::CqeAwaitable{&state}.await_ready());
+    EXPECT_TRUE(state.await_ready());
 }
 
-TEST(CqeAwaitable, AwaitResumeReturnsResult) {
+TEST(CqeState, AwaitResumeReturnsResult) {
     ublkpp::async_io io{};
     ublkpp::CqeState state{.owner = &io, .result = 42, .result_ready = true};
-    EXPECT_EQ(ublkpp::CqeAwaitable{&state}.await_resume(), 42);
+    EXPECT_EQ(state.await_resume(), 42);
 }
 
-TEST(CqeAwaitable, AwaitSuspendInstallsWaiterInState) {
+TEST(CqeState, AwaitSuspendInstallsWaiterInState) {
     ublkpp::async_io io{};
     ublkpp::CqeState state{.owner = &io, .result_ready = false};
     EXPECT_FALSE(state.waiter);
@@ -138,7 +136,7 @@ TEST(CqeAwaitable, AwaitSuspendInstallsWaiterInState) {
     EXPECT_EQ(captured, 7);
 }
 
-TEST(CqeAwaitable, FastPathSkipsSuspendWhenAlreadyReady) {
+TEST(CqeState, FastPathSkipsSuspendWhenAlreadyReady) {
     ublkpp::async_io io{};
     ublkpp::CqeState state{.owner = &io, .result = 55, .result_ready = true};
     int captured = -1;

@@ -145,16 +145,6 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     return sqe;
 }
 
-disk_task< int > FSDisk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
-    ublksrv_io_desc const* iod = data->iod;
-    if (ublksrv_get_op(iod) == UBLK_IO_OP_FLUSH) { co_return 0; }
-
-    thread_local auto iov = iovec{};
-    iov.iov_base = reinterpret_cast< void* >(iod->addr);
-    iov.iov_len = iod->nr_sectors << SECTOR_SHIFT;
-    co_return co_await handle_iov_async(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
-}
-
 disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                           uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
@@ -202,7 +192,7 @@ disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data c
     if (res.value() == 0) co_return 0;
 
     io_uring_submit(q->ring_ptr);
-    auto const cqe_result = co_await CqeAwaitable{state};
+    auto const cqe_result = co_await *state;
     if (track_metrics) { _metrics->record_io_complete(data); }
     co_return cqe_result;
 }

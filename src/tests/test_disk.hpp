@@ -53,7 +53,7 @@ public:
         if (!res) co_return -static_cast< int >(res.error().value());
         if (res.value() == 0) co_return 0;
         io_uring_submit(q->ring_ptr);
-        co_return co_await CqeAwaitable{io->next_state()};
+        co_return co_await *io->next_state();
     }
 };
 

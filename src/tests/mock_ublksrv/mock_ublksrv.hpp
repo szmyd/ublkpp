@@ -18,7 +18,7 @@ namespace ublkpp {
 // and the ublk kernel module. Suitable for CI where the ublk module is unavailable.
 //
 // submit_io starts a handle_io_async disk_task and returns the number of registered CqeStates.
-// inject_cqe delivers synthetic results for each suspended CqeAwaitable without io_uring round-trips.
+// inject_cqe delivers synthetic results for each suspended co_await *state without io_uring round-trips.
 // poll() drains real io_uring CQEs for disks that submit actual SQEs (e.g. FSDisk).
 class MockUblksrv {
 public:
@@ -36,7 +36,7 @@ public:
     MockUblksrv(MockUblksrv const&) = delete;
     MockUblksrv& operator=(MockUblksrv const&) = delete;
 
-    // Start handle_io_async disk_task; runs until first co_await CqeAwaitable.
+    // Start handle_io_async disk_task; runs until first co_await *state.
     // tag: slot index [0, q_depth), op: UBLK_IO_OP_READ / _WRITE / _FLUSH / _DISCARD
     // start_sector: byte offset >> SECTOR_SHIFT, nr_sectors: byte length >> SECTOR_SHIFT
     // buf: sector-aligned buffer (caller owns lifetime)
