@@ -20,7 +20,11 @@ extern int ublksrv_queue_send_event(ublksrv_queue const*) {
 int main(int argc, char* argv[]) {
     int parsed_argc = argc;
     ::testing::InitGoogleTest(&parsed_argc, argv);
-    SISL_OPTIONS_LOAD(parsed_argc, argv, ENABLED_OPTIONS);
+    // avail_delay=0 so probe-wait loops in resync tests don't stall; still overridable from CLI.
+    std::vector< const char* > args(argv, argv + parsed_argc);
+    args.push_back("--avail_delay=0");
+    auto sisl_argc = static_cast< int >(args.size());
+    SISL_OPTIONS_LOAD(sisl_argc, args.data(), ENABLED_OPTIONS);
     sisl::logging::SetLogger(std::string(argv[0]));
     spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
     parsed_argc = 1;

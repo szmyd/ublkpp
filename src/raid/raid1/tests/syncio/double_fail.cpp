@@ -27,16 +27,18 @@ TEST(Raid1, SyncIoWriteFailBoth) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
-    iovec iov{nullptr, test_sz};
-    ASSERT_FALSE(raid_device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, test_off));
-
     // Keep device_a permanently unavailable so the resync task (which launched inside
-    // __become_degraded) cannot clear its unavail flag via probe_mirror and write extra bitmap pages
+    // __become_degraded) cannot clear its unavail flag via probe_mirror and write extra bitmap pages.
+    // Must be registered before sync_iov() fires __become_degraded, or the probe thread (under TSan
+    // overhead) saturates the Times(1) SB-read expectation set by CREATE_DISK_A.
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
+
+    iovec iov{nullptr, test_sz};
+    ASSERT_FALSE(raid_device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, test_off));
     // expect attempt to sync on last working disk
     EXPECT_TO_WRITE_SB_F(device_b, true);
     // Destructor sync_to() writes dirty bitmap pages to the active device (highest LIFO — handles addr>0)

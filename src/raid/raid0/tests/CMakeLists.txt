@@ -13,9 +13,9 @@ list(APPEND RAID0_TEST_SRCS
     tuple_tests.cpp
 )
 
+add_subdirectory (asyncio)
 add_subdirectory (simple)
 add_subdirectory (superblock)
-add_subdirectory (async)
 
 add_library(raid0_tests OBJECT)
 target_sources(raid0_tests PRIVATE
@@ -38,25 +38,7 @@ target_sources(test_raid0 PRIVATE
 )
 target_link_libraries (test_raid0
   GTest::gmock
+  mock_ublksrv
   sisl::cache
 )
 add_test(NAME Raid0Test COMMAND test_raid0 -cv warning)
-
-add_executable(test_raid0_async)
-target_sources(test_raid0_async PRIVATE
-    async/raid0_async_test.cpp
-    ${RAID0_ASYNC_TEST_SRCS}
-    $<TARGET_OBJECTS:logging>
-    $<TARGET_OBJECTS:raid0>
-    $<TARGET_OBJECTS:ublk_disk>
-    $<TARGET_OBJECTS:ublk_metrics>
-)
-target_include_directories(test_raid0_async PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-target_link_libraries(test_raid0_async
-    GTest::gmock
-    mock_ublksrv
-    sisl::cache
-)
-add_test(NAME Raid0AsyncTest COMMAND test_raid0_async -cv warning)

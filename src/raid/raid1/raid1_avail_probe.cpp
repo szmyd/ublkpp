@@ -27,7 +27,11 @@ bool probe_mirror(MirrorDevice& mirror, uint64_t reserved_size) noexcept {
 
 void Raid1AvailProbeTask::launch(std::shared_ptr< MirrorDevice > mirror, uint64_t rs) {
     _probe = std::jthread([mirror = std::move(mirror), rs](std::stop_token st) {
-        auto const delay = std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
+        // Background probe only recovers UNAVAIL devices; CLEAN devices are not probed here
+        // (the immediate_probe in idle_transition handles the synchronous entry-time check).
+        // Enforce a minimum 1s between background probes so avail_delay=0 doesn't spin.
+        auto const raw = SISL_OPTIONS["avail_delay"].as< uint32_t >();
+        auto const delay = std::chrono::seconds(std::max(raw, 1u));
         std::mutex m;
         std::condition_variable_any cv;
         while (!st.stop_requested()) {
@@ -36,10 +40,8 @@ void Raid1AvailProbeTask::launch(std::shared_ptr< MirrorDevice > mirror, uint64_
                 cv.wait_for(lk, st, delay, [] { return false; });
             }
             if (st.stop_requested()) break;
-            bool const was_unavail = mirror->unavail.test(std::memory_order_acquire);
-            if (!probe_mirror(*mirror, rs) && !was_unavail) {
-                RLOGW("Idle probe: device failed during idle: {}", *mirror->disk)
-            }
+            if (!mirror->unavail.test(std::memory_order_acquire)) continue;
+            if (!probe_mirror(*mirror, rs)) { RLOGW("Idle probe: device still unavailable: {}", *mirror->disk) }
         }
     });
 }
