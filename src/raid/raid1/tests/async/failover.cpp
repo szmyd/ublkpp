@@ -75,6 +75,34 @@ TEST_F(AsyncRaid1Fixture, WriteReplicaFailsBecomeDegraded) {
     EXPECT_EQ(completions[0].result, 4 * Ki);
 }
 
+// Write in degraded mode: sole surviving device also fails → -EIO (double failure).
+// Step 1: degrade the array by letting the backup (disk_b) write fail.
+// Step 2: second write goes only to disk_a (now sole active); disk_a also fails → -EIO.
+TEST_F(AsyncRaid1Fixture, WriteFailsInDegradedMode) {
+    // Step 1: degrade — backup fails, active result returned.
+    {
+        auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res.value(), 2u);
+
+        EXPECT_TRUE(mock->inject_cqe(0, 4 * Ki).empty()); // active succeeds
+        auto comp = mock->inject_cqe(0, -EIO);            // backup fails → degrade
+        ASSERT_EQ(comp.size(), 1u);
+        EXPECT_GT(comp[0].result, 0);
+    }
+    ASSERT_EQ(raid->replica_states().device_b, ublkpp::raid1::replica_state::ERROR);
+
+    // Step 2: write in degraded mode; sole active (disk_a) fails → -EIO.
+    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(0);
+    auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 8 * Ki / 512, 4 * Ki / 512, nullptr);
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res.value(), 1u); // degraded: only one device active
+
+    auto comp = mock->inject_cqe(1, -EIO);
+    ASSERT_EQ(comp.size(), 1u);
+    EXPECT_EQ(comp[0].result, -EIO);
+}
+
 // Write: both devices fail → -EIO.
 TEST_F(AsyncRaid1Fixture, WriteBothDevicesFail) {
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
