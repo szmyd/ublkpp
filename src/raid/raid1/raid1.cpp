@@ -526,7 +526,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 
     // Atomically swap the device or fail; fail if swapping sole active device
     if (__swap_device(outgoing_device_id, incoming_mirror, state.route)) {
-        if (_raid_metrics) _raid_metrics->record_device_swap();
+        if (_raid_metrics) _raid_metrics->record_device_swap(); // GCOVR_EXCL_BR_LINE
         // Stop stale probes - they hold a shared_ptr to the outgoing MirrorDevice.
         // _idle_probe_lock guards _probe members against concurrent launch() in idle_transition.
         auto lk = std::unique_lock{_idle_probe_lock};
@@ -645,10 +645,12 @@ io_result Raid1DiskImpl::__become_degraded(bool failed_is_active, RouteState con
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
 
     // Record degradation event in metrics with device name
-    if (_raid_metrics) {
+    if (_raid_metrics) { // GCOVR_EXCL_BR_LINE -- UblkRaidMetrics requires prometheus registry; not constructible in
+                         // unit tests
+        // LCOV_EXCL_START
         auto device_name = (new_route == read_route::DEVA) ? "device_b" : "device_a";
         _raid_metrics->record_device_degraded(device_name);
-    }
+    } // LCOV_EXCL_STOP
 
     // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route); !sync_res) {

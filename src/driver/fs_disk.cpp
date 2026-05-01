@@ -183,10 +183,12 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
         auto [s, sqe_data] = build_cqe_state_data(data);
         state = s;
         sqe->user_data = sqe_data;
-        if (_metrics) {
+        if (_metrics) { // GCOVR_EXCL_BR_LINE -- UblkFSDiskMetrics requires prometheus registry; not constructible in
+                        // unit tests
+            // LCOV_EXCL_START
             _metrics->record_io_start(data);
             track_metrics = true;
-        }
+        } // LCOV_EXCL_STOP
         res = 1;
     }
 
@@ -194,7 +196,7 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     if (res.value() == 0) co_return 0;
 
     auto const cqe_result = co_await *state;
-    if (track_metrics) { _metrics->record_io_complete(data); }
+    if (track_metrics) { _metrics->record_io_complete(data); } // GCOVR_EXCL_BR_LINE
     co_return cqe_result;
 }
 
