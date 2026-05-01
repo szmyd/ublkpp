@@ -683,6 +683,19 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
     co_return r2 >= 0 ? r2 : -EIO;
 }
 
+Raid1DiskImpl::WriteBackupMode Raid1DiskImpl::__compute_backup_mode(RouteState const& state, uint64_t addr,
+                                                                    uint32_t len, bool is_discard) const noexcept {
+    if (!state.is_degraded) return WriteBackupMode::WRITE;
+    if (state.backup_dev->unavail.test(std::memory_order_acquire)) return WriteBackupMode::SKIP;
+    if (_dirty_bitmap->is_dirty(addr, len)) {
+        auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
+        auto const totally_aligned = (chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size);
+        if (!totally_aligned || is_discard) return WriteBackupMode::SKIP;
+        return WriteBackupMode::OPTIMISTIC;
+    }
+    return WriteBackupMode::WRITE;
+}
+
 disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                           uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
@@ -698,29 +711,17 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     // Write / Discard / WriteZeroes: replicate to both devices
     auto const state = __capture_route_state();
     auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
-    auto const backup_unavail = state.backup_dev->unavail.test(std::memory_order_acquire);
-    auto const is_dirty_region = _dirty_bitmap->is_dirty(addr, len);
-    auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
-    auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
 
+    // Halt the Resync Task before checking bitmap
     _resync_task->enqueue_write();
-    enum class BackupMode { SKIP, REPLICATE, OPTIMISTIC };
-    auto const bm = [&]() -> BackupMode {
-        if (!state.is_degraded) return BackupMode::REPLICATE;
-        if (backup_unavail) return BackupMode::SKIP;
-        if (is_dirty_region) {
-            if (!totally_aligned || is_discard) return BackupMode::SKIP;
-            return BackupMode::OPTIMISTIC;
-        }
-        return BackupMode::REPLICATE;
-    }();
+    auto const bm = __compute_backup_mode(state, addr, len, is_discard);
 
     auto const adj_addr = addr + reserved_size;
     auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr);
     active_task._coro.resume();
 
     std::optional< disk_task< int > > backup_task;
-    if (bm != BackupMode::SKIP) {
+    if (bm != WriteBackupMode::SKIP) {
         _resync_task->enqueue_write();
         backup_task.emplace(state.backup_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr));
         backup_task->_coro.resume();
@@ -740,7 +741,7 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
         co_return -EIO;
     }
 
-    if (bm == BackupMode::SKIP) {
+    if (bm == WriteBackupMode::SKIP) {
         _dirty_bitmap->dirty_region(addr, len);
         co_return active_res;
     }
@@ -753,7 +754,7 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
         if (!state.is_degraded) {
             if (auto d = __become_degraded(false, &state); !d) co_return -EIO;
         }
-    } else if (bm == BackupMode::OPTIMISTIC) {
+    } else if (bm == WriteBackupMode::OPTIMISTIC) {
         state.backup_dev->unavail.clear(std::memory_order_release);
         _resync_task->clean_region(addr, len, *state.active_dev);
     }
@@ -804,31 +805,21 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
 
     // WRITE / DISCARD / WRITE_ZEROES: flat replication -- mirrors async_iov write path.
     auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
-    auto const backup_unavail = state.backup_dev->unavail.test(std::memory_order_acquire);
-    auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
-    auto const totally_aligned = ((chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size));
 
+    // Halt the Resync Task before checking bitmap
     _resync_task->enqueue_write();
-    enum class BackupMode { SKIP, WRITE, OPTIMISTIC };
-    auto const bm = [&]() -> BackupMode {
-        if (!state.is_degraded) return BackupMode::WRITE;
-        if (backup_unavail) return BackupMode::SKIP;
-        if (_dirty_bitmap->is_dirty(addr, len)) {
-            if (!totally_aligned || is_discard) return BackupMode::SKIP;
-            return BackupMode::OPTIMISTIC;
-        }
-        return BackupMode::WRITE;
-    }();
+    auto const bm = __compute_backup_mode(state, static_cast< uint64_t >(addr), len, is_discard);
+
 
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
     if (!active_res) {
-        _dirty_bitmap->dirty_region(addr, len);
+        _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         if (auto d = __become_degraded(true, &state); !d) {
             _resync_task->dequeue_write();
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         }
-        if (bm != BackupMode::SKIP) {
+        if (bm != WriteBackupMode::SKIP) {
             auto const backup_res = state.backup_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
             _resync_task->dequeue_write();
             return backup_res ? backup_res : std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -837,8 +828,8 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    if (bm == BackupMode::SKIP) {
-        _dirty_bitmap->dirty_region(addr, len);
+    if (bm == WriteBackupMode::SKIP) {
+        _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         _resync_task->dequeue_write();
         return active_res;
     }
@@ -847,12 +838,12 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     _resync_task->dequeue_write();
 
     if (!backup_res) {
-        _dirty_bitmap->dirty_region(addr, len);
+        _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         if (!state.is_degraded) {
             if (auto d = __become_degraded(false, &state); !d)
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
         }
-    } else if (bm == BackupMode::OPTIMISTIC) {
+    } else if (bm == WriteBackupMode::OPTIMISTIC) {
         state.backup_dev->unavail.clear(std::memory_order_release);
         _resync_task->clean_region(addr, len, *state.active_dev);
     }

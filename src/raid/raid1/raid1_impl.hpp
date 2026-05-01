@@ -59,6 +59,11 @@ class Raid1DiskImpl : public UblkDisk {
     Raid1AvailProbeTask _idle_probe_a;
     Raid1AvailProbeTask _idle_probe_b;
 
+    // Shared write routing helper: computes backup mode for both async_iov and sync_iov.
+    enum class WriteBackupMode { SKIP, WRITE, OPTIMISTIC };
+    WriteBackupMode __compute_backup_mode(RouteState const& state, uint64_t addr, uint32_t len,
+                                          bool is_discard) const noexcept;
+
     // Internal routines
     io_result __become_clean();
     io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);

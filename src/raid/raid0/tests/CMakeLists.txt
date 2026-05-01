@@ -9,12 +9,7 @@ include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 list(APPEND RAID0_TEST_SRCS
     device_probe.cpp
     device_probe_differ.cpp
-    #discard_merge.cpp
-    #discard_retry.cpp
-    #open_devices.cpp
     raid0_impl_tests.cpp
-    #split_retry.cpp
-    #split_write.cpp
     tuple_tests.cpp
 )
 
