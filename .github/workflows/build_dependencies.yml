@@ -84,7 +84,7 @@ jobs:
         echo "Comparing HEAD against origin/${{ github.base_ref }}"
 
         # Get C/C++ files changed in this PR
-        CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }} | grep -E '\.(c|cpp|cc|cxx|h|hpp|hxx|ipp)$' || true)
+        CHANGED_FILES=$(git diff --name-only --diff-filter=d origin/${{ github.base_ref }} | grep -E '\.(c|cpp|cc|cxx|h|hpp|hxx|ipp)$' || true)
 
         if [[ -z "$CHANGED_FILES" ]]; then
           echo "No C/C++ files modified in this PR"
