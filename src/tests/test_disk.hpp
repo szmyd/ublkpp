@@ -17,7 +17,7 @@ struct TestParams {
     uint32_t max_io{512 * Ki};
     bool can_discard{true};
     bool direct_io{true};
-    bool is_slot_b{false}; // True if device is in RAID1 slot B (expects sub_cmd bit=1)
+    bool is_slot_b{false};
 };
 
 namespace ublkpp {
@@ -25,9 +25,7 @@ namespace ublkpp {
 class TestDisk : public UblkDisk {
 public:
     std::string my_id;
-    bool expected_slot_b; // True if this device is in RAID1 slot B
-    explicit TestDisk(TestParams const& test_params) :
-            UblkDisk(), my_id(test_params.id), expected_slot_b(test_params.is_slot_b) {
+    explicit TestDisk(TestParams const& test_params) : UblkDisk(), my_id(test_params.id) {
         auto& our_params = *params();
         our_params.basic.dev_sectors = test_params.capacity >> SECTOR_SHIFT;
         our_params.basic.logical_bs_shift = ilog2(test_params.l_size);
@@ -41,38 +39,24 @@ public:
     }
     std::string id() const noexcept override { return my_id; }
 
-private:
-    // Validate that sub_cmd bit matches expected slot for RAID1 devices
-    // Slot A devices should ALWAYS see bit=0, slot B should ALWAYS see bit=1
-    void validate_slot(sub_cmd_t sub_cmd, const char* method) const {
-        if (route_size() == 0) return; // Not a RAID device, skip validation
-
-        bool const sub_cmd_is_slot_b = (sub_cmd & 0b1) != 0;
-        RELEASE_ASSERT_EQ(
-            expected_slot_b, sub_cmd_is_slot_b, "Device {} (slot {}) received {} with wrong sub_cmd bit={} (slot {})",
-            my_id, expected_slot_b ? "B" : "A", method, sub_cmd_is_slot_b ? "1" : "0", sub_cmd_is_slot_b ? "B" : "A");
-    }
-
-public:
     MOCK_METHOD(std::list< int >, open_for_uring, (ublksrv_queue const*, int const), (override));
     MOCK_METHOD(void, idle_transition, (ublksrv_queue const*, bool), (override));
 
     MOCK_METHOD(io_result, async_iov,
-                (ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t, uint64_t));
+                (ublksrv_queue const*, ublk_io_data const*, CqeState*, iovec*, uint32_t, uint64_t));
 
     MOCK_METHOD(io_result, sync_iov, (uint8_t, iovec*, uint32_t, off_t offset), (override, noexcept));
 
-    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override {
+    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                      uint64_t addr) override {
         auto* io = reinterpret_cast< async_io* >(data->private_data);
-        auto res = async_iov(q, data, sub_cmd, iovecs, nr_vecs, addr);
+        auto* state = io->next_state();
+        auto res = async_iov(q, data, state, iovecs, nr_vecs, addr);
         if (!res) co_return -static_cast< int >(res.error().value());
         if (res.value() == 0) co_return 0;
         io_uring_submit(q->ring_ptr);
-        co_return co_await CqeAwaitable{io->ensure(sub_cmd)};
+        co_return co_await CqeAwaitable{state};
     }
-
-    uint8_t route_size() const noexcept override { return 0; }
 };
 
 class AsyncTestDisk : public TestDisk {

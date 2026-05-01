@@ -277,7 +277,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     auto const op = ublksrv_get_op(data->iod);
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
-    auto const result = co_await device->handle_io_async(q, data, sub_cmd_t{0});
+    auto const result = co_await device->handle_io_async(q, data);
 
     qs->tgt->metrics.record_queue_depth_change(q, op, false);
 

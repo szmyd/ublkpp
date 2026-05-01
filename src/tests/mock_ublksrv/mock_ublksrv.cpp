@@ -88,7 +88,7 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     _io_states[tag].pool.clear();
     _async_tasks[tag].reset();
 
-    auto task = _disk->handle_io_async(&_queues[0], &ts.data, sub_cmd_t{0});
+    auto task = _disk->handle_io_async(&_queues[0], &ts.data);
     task._coro.resume(); // start lazy coroutine; runs until first co_await CqeAwaitable
     _async_tasks[tag].emplace(std::move(task));
     // Pool size == number of CqeStates registered (one per pending stripe SQE)

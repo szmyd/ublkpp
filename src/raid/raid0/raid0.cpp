@@ -113,7 +113,7 @@ void Raid0Disk::idle_transition(ublksrv_queue const* q, bool enter) {
 //  RAID0 is primarily responsible for splitting an I/O request across several stripes. These operations can cross
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
-io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, sub_cmd_t sub_cmd) const {
+io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) const {
     // We gather all the pieces of each I/O intended to dispatch using this structure
     struct StripeAccum {
         uint64_t io_addr{0};                // Starting address
@@ -138,7 +138,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, sub
         }
     } guard{sub_cmds, dirty_mask};
 
-    if (1 == _stripe_array.size()) return func(0, sub_cmd, iovecs, 1, addr);
+    if (1 == _stripe_array.size()) return func(0, iovecs, 1, addr);
 
     DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
     auto const len = static_cast< uint32_t >(iovecs->iov_len);
@@ -157,8 +157,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func, sub
         // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
         // guaranteeing this stripe cannot accumulate more iovecs in the same call.
         if ((_stride_width - _stripe_size) >= (len - off)) {
-            sub_cmd_t const new_sub_cmd = sub_cmd + stripe_off;
-            auto res = func(stripe_off, new_sub_cmd, acc.io_array.data(), acc.nr_vecs, acc.io_addr);
+            auto res = func(stripe_off, acc.io_array.data(), acc.nr_vecs, acc.io_addr);
             if (!res) return res;
             cnt += res.value();
         }
@@ -174,7 +173,7 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     addr += _stride_width;
 
     return __distribute(iovecs, addr,
-                        [op, this](uint32_t stripe_off, sub_cmd_t, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
+                        [op, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
                                   "[stripe_off:{}|logical_sector:{}|logical_len:{:#0x}]",
                                   op == UBLK_IO_OP_READ ? "READ" : "WRITE", stripe_off, logical_off >> SECTOR_SHIFT,
@@ -183,20 +182,18 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                         });
 }
 
-disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+disk_task< int > Raid0Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto iov = iovec{.iov_base = reinterpret_cast< void* >(data->iod->addr),
                      .iov_len = static_cast< size_t >(data->iod->nr_sectors) << SECTOR_SHIFT};
-    co_return co_await handle_iov_async(q, data, sub_cmd, &iov, 1,
+    co_return co_await handle_iov_async(q, data, &iov, 1,
                                         static_cast< uint64_t >(data->iod->start_sector) << SECTOR_SHIFT);
 }
 
-disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                             iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
+disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+                                             uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
 
     if (op == UBLK_IO_OP_FLUSH) co_return 0;
-
-    sub_cmd = shift_route(sub_cmd, route_size());
 
     addr += _stride_width;
 
@@ -210,28 +207,24 @@ disk_task< int > Raid0Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_dat
 
         for (auto const& [stripe_off, region] : raid0::merged_subcmds(_stride_width, _stripe_size, addr, len)) {
             auto const& [logical_off, logical_len] = region;
-            sub_cmd_t const new_sub_cmd = sub_cmd + stripe_off;
             // stripe_iov is a loop-local variable; _coro.resume() runs async_iov synchronously
             // (reading iov_len) before the task suspends, so the stack variable is safe.
             auto stripe_iov = iovec{.iov_base = nullptr, .iov_len = logical_len};
-            auto task =
-                _stripe_array[stripe_off]->disk->handle_iov_async(q, data, new_sub_cmd, &stripe_iov, 1, logical_off);
+            auto task = _stripe_array[stripe_off]->disk->handle_iov_async(q, data, &stripe_iov, 1, logical_off);
             task._coro.resume();
             stripe_tasks.push_back(std::move(task));
         }
     } else {
         // READ / WRITE: fan out across stripes via __distribute.
-        auto res = __distribute(
-            iovecs, addr,
-            [q, data, &stripe_tasks, this](uint32_t stripe_off, sub_cmd_t new_sub_cmd, iovec* iov, uint32_t nr_iovs,
-                                           uint64_t logical_off) -> io_result {
-                auto task =
-                    _stripe_array[stripe_off]->disk->handle_iov_async(q, data, new_sub_cmd, iov, nr_iovs, logical_off);
-                task._coro.resume();
-                stripe_tasks.push_back(std::move(task));
-                return 1;
-            },
-            sub_cmd);
+        auto res = __distribute(iovecs, addr,
+                                [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
+                                                               uint64_t logical_off) -> io_result {
+                                    auto task = _stripe_array[stripe_off]->disk->handle_iov_async(q, data, iov, nr_iovs,
+                                                                                                  logical_off);
+                                    task._coro.resume();
+                                    stripe_tasks.push_back(std::move(task));
+                                    return 1;
+                                });
 
         if (!res) co_return -EIO;
     }

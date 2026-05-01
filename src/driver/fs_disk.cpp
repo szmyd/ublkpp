@@ -145,29 +145,31 @@ static inline auto next_sqe(ublksrv_queue const* q) {
     return sqe;
 }
 
-disk_task< int > FSDisk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
+disk_task< int > FSDisk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     ublksrv_io_desc const* iod = data->iod;
     if (ublksrv_get_op(iod) == UBLK_IO_OP_FLUSH) { co_return 0; }
 
     thread_local auto iov = iovec{};
     iov.iov_base = reinterpret_cast< void* >(iod->addr);
     iov.iov_len = iod->nr_sectors << SECTOR_SHIFT;
-    co_return co_await handle_iov_async(q, data, sub_cmd, &iov, 1, iod->start_sector << SECTOR_SHIFT);
+    co_return co_await handle_iov_async(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
 }
 
-disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                          iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
-    auto* io = reinterpret_cast< async_io* >(data->private_data);
+disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+                                          uint32_t nr_vecs, uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
 
     io_result res;
+    CqeState* state{nullptr};
+    bool track_metrics{false};
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
-        res = handle_discard(q, data, sub_cmd, len, addr);
+        auto [discard_res, discard_state] = handle_discard(q, data, len, addr);
+        res = discard_res;
+        state = discard_state;
     } else {
-        DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]",
-              op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(), data->tag, addr,
-              __iovec_len(iovecs, iovecs + nr_vecs), ublkpp::to_string(sub_cmd))
+        DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+              _path.native(), data->tag, addr, __iovec_len(iovecs, iovecs + nr_vecs))
         // LCOV_EXCL_START — kernel <= 5.4 sync fallback, not exercised in production
         if (!direct_io && k_buffered_uring_broken) {
             auto r = sync_iov(op, iovecs, nr_vecs, static_cast< off_t >(addr));
@@ -186,8 +188,13 @@ disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data c
         }
 
         if (UBLK_IO_OP_READ != op && (data->iod->op_flags & UBLK_IO_F_FUA)) sqe->rw_flags |= RWF_DSYNC;
-        sqe->user_data = build_cqe_state_data(data, sub_cmd);
-        if (_metrics) { _metrics->record_io_start(data, sub_cmd); }
+        auto [s, sqe_data] = build_cqe_state_data(data);
+        state = s;
+        sqe->user_data = sqe_data;
+        if (_metrics) {
+            _metrics->record_io_start(data);
+            track_metrics = true;
+        }
         res = 1;
     }
 
@@ -195,21 +202,21 @@ disk_task< int > FSDisk::handle_iov_async(ublksrv_queue const* q, ublk_io_data c
     if (res.value() == 0) co_return 0;
 
     io_uring_submit(q->ring_ptr);
-    auto const cqe_result = co_await CqeAwaitable{io->ensure(sub_cmd)};
-    if (_metrics) { _metrics->record_io_complete(data, sub_cmd); }
+    auto const cqe_result = co_await CqeAwaitable{state};
+    if (track_metrics) { _metrics->record_io_complete(data); }
     co_return cqe_result;
 }
 
-io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                                 uint64_t addr) {
-    DLOGD("DISCARD {}: [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}|sub_cmd:{}]", _path.native(), data->tag, addr, len,
-          ublkpp::to_string(sub_cmd))
+std::pair< io_result, CqeState* > FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* data, uint32_t len,
+                                                         uint64_t addr) {
+    DLOGD("DISCARD {}: [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}]", _path.native(), data->tag, addr, len)
     if (!_block_device) {
         auto sqe = next_sqe(q);
         io_uring_prep_fallocate(sqe, _fd, discard_to_fallocate(data->iod), addr, len);
 
-        sqe->user_data = build_cqe_state_data(data, sub_cmd);
-        return 1;
+        auto [state, sqe_data] = build_cqe_state_data(data);
+        sqe->user_data = sqe_data;
+        return {1, state};
     }
 
     // Submit all queued I/O
@@ -218,14 +225,14 @@ io_result FSDisk::handle_discard(ublksrv_queue const* q, ublk_io_data const* dat
     uint64_t r[2]{addr, len};
     auto res = ioctl(_fd, BLKDISCARD, &r);
     if (0 == res) [[likely]]
-        return 0;
+        return {0, nullptr};
     DEBUG_ASSERT_LT(res, 0, "Positive ioctl")
     if (0 < res) {
         DLOGE("ioctl BLKDISCARD on {} returned postive result: {}", _path.native(), res)
-        return std::unexpected(std::make_error_condition(std::errc::io_error));
+        return {std::unexpected(std::make_error_condition(std::errc::io_error)), nullptr};
     }
     DLOGE("ioctl BLKDISCARD on {} returned error: {}", _path.native(), strerror(errno))
-    return std::unexpected(std::make_error_condition(static_cast< std::errc >(errno)));
+    return {std::unexpected(std::make_error_condition(static_cast< std::errc >(errno))), nullptr};
 }
 
 io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {

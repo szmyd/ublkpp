@@ -45,13 +45,12 @@ UblkDisk::UblkDisk() :
 
 UblkDisk::~UblkDisk() = default;
 
-disk_task< int > UblkDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
+disk_task< int > UblkDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*) {
     RELEASE_ASSERT(false, "handle_io_async called on base UblkDisk — override required")
     co_return -EIO; // LCOV_EXCL_LINE
 }
 
-disk_task< int > UblkDisk::handle_iov_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t,
-                                            uint64_t) {
+disk_task< int > UblkDisk::handle_iov_async(ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
     RELEASE_ASSERT(false, "handle_iov_async called on base UblkDisk — override required")
     co_return -EIO; // LCOV_EXCL_LINE
 }
@@ -76,12 +75,11 @@ DefunctDisk::DefunctDisk() : UblkDisk() {
 
 std::string DefunctDisk::id() const noexcept { return "~DEFUNCT~"; }
 
-disk_task< int > DefunctDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t) {
+disk_task< int > DefunctDisk::handle_io_async(ublksrv_queue const*, ublk_io_data const*) {
     co_return -EIO; // LCOV_EXCL_LINE
 }
 
-disk_task< int > DefunctDisk::handle_iov_async(ublksrv_queue const*, ublk_io_data const*, sub_cmd_t, iovec*, uint32_t,
-                                               uint64_t) {
+disk_task< int > DefunctDisk::handle_iov_async(ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
     co_return -EIO; // LCOV_EXCL_LINE
 }
 

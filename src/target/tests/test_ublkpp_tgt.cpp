@@ -4,24 +4,32 @@
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
 
-#include "ublkpp/lib/sub_cmd.hpp"
+#include "ublkpp/lib/cqe_state.hpp"
 
 SISL_LOGGING_INIT(ublk_tgt)
 
 SISL_OPTIONS_ENABLE(logging)
 
-using ublkpp::sub_cmd_t;
+TEST(CqeState, NextStateAllocatesDistinctStates) {
+    ublkpp::async_io io{};
+    auto* s1 = io.next_state();
+    auto* s2 = io.next_state();
+    EXPECT_NE(s1, s2);
+    EXPECT_EQ(s1->owner, &io);
+    EXPECT_EQ(s2->owner, &io);
+    EXPECT_EQ(io.pool.size(), 2u);
+}
 
-TEST(SubCmd, ShiftRoute) {
-    // shift_route takes the low bits of sub_cmd and shifts them left by route_size,
-    // embedding child routing into the caller's routing word.
-    auto const routed = ublkpp::shift_route(sub_cmd_t{0b11}, 2);
-    EXPECT_EQ(routed, sub_cmd_t{0b1100});
-
-    // Chained shift: simulate RAID10 (RAID0 over RAID1)
-    auto const raid1_bits = ublkpp::shift_route(sub_cmd_t{0b1}, 1); // RAID1: 1 bit
-    auto const raid0_bits = ublkpp::shift_route(raid1_bits, 6);     // RAID0: 6 bits
-    EXPECT_EQ(raid0_bits & ublkpp::_route_mask, sub_cmd_t{0b10000000});
+TEST(CqeState, BuildCqeStateDataEncodesTargetBit) {
+    ublkpp::async_io io{};
+    ublk_io_data fake{};
+    fake.private_data = &io;
+    auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
+    // bit 63 is the target-io marker checked by run_queue_loop
+    EXPECT_NE(user_data & (1ULL << 63), 0ULL);
+    auto* decoded = reinterpret_cast< ublkpp::CqeState* >(user_data & ~(1ULL << 63));
+    EXPECT_EQ(state, decoded);
+    EXPECT_EQ(state->owner, &io);
 }
 
 int main(int argc, char* argv[]) {

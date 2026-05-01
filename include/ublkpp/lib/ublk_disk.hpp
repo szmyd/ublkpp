@@ -7,7 +7,6 @@
 
 #include "common.hpp"
 #include "disk_task.hpp"
-#include "sub_cmd.hpp"
 
 struct iovec;
 struct ublk_io_data;
@@ -44,22 +43,19 @@ public:
 
     // Async entry-point: called by __handle_io_async.
     // Implementations submit all SQEs upfront then co_await CqeAwaitable for each result.
-    virtual disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd);
+    virtual disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data);
 
     // Async I/O with explicit scatter-gather list and address. Called when the operation targets
     // a sub-range or offset that differs from what ublk_io_data describes - the caller owns the
     // buffer layout and address computation. Every concrete disk type overrides this directly.
     // For DISCARD, iovecs[0].iov_len is the length.
-    virtual disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                              iovec* iovecs, uint32_t nr_vecs, uint64_t addr);
+    virtual disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+                                              uint32_t nr_vecs, uint64_t addr);
 
     virtual std::string id() const noexcept = 0;
 
     /// Device Specific I/O Handlers
     virtual std::list< int > open_for_uring(ublksrv_queue const*, int const) { return {}; }
-
-    // Number of bits for sub_cmd routing in the sqe user_data
-    virtual uint8_t route_size() const noexcept { return 0; }
 
     virtual void idle_transition(ublksrv_queue const*, bool) {};
 
@@ -75,9 +71,9 @@ public:
 
     std::string id() const noexcept override;
 
-    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
-    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
+    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) override;
+    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                      uint64_t addr) override;
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 };

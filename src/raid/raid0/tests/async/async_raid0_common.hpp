@@ -19,12 +19,10 @@ using ::ublkpp::io_result;
 using ::ublkpp::Ki;
 using ::ublkpp::UblkDisk;
 
-// Default async_iov action: registers the CqeState in the pool without submitting a real SQE.
+// Default async_iov action: state is already allocated by handle_iov_async before calling async_iov.
 // Tests call inject_cqe() to deliver synthetic results stripe-by-stripe.
 inline auto make_async_iov_action() {
-    return [](ublksrv_queue const*, ublk_io_data const* data, ublkpp::sub_cmd_t sub_cmd, iovec*, uint32_t,
-              uint64_t) -> io_result {
-        ublkpp::build_cqe_state_data(data, static_cast< uint64_t >(sub_cmd));
+    return [](ublksrv_queue const*, ublk_io_data const*, ublkpp::CqeState*, iovec*, uint32_t, uint64_t) -> io_result {
         return 1;
     };
 }

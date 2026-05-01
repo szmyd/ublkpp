@@ -18,19 +18,16 @@ UblkFSDiskMetrics::UblkFSDiskMetrics(std::string const& parent_id, std::string c
 
 UblkFSDiskMetrics::~UblkFSDiskMetrics() { deregister_me_from_farm(); }
 
-void UblkFSDiskMetrics::record_io_start(ublk_io_data const* data, sub_cmd_t sub_cmd) {
+void UblkFSDiskMetrics::record_io_start(ublk_io_data const* data) {
     if (!data) return;
 
-    auto key = std::make_pair(static_cast< uint16_t >(data->tag), static_cast< uint16_t >(sub_cmd));
-    t_disk_io_timings[key] = io_timing{std::chrono::steady_clock::now()};
+    t_disk_io_timings[static_cast< uint16_t >(data->tag)] = io_timing{std::chrono::steady_clock::now()};
 }
 
-void UblkFSDiskMetrics::record_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd) {
+void UblkFSDiskMetrics::record_io_complete(ublk_io_data const* data) {
     if (!data) return;
 
-    auto key = std::make_pair(static_cast< uint16_t >(data->tag), static_cast< uint16_t >(sub_cmd));
-
-    if (auto it = t_disk_io_timings.find(key); it != t_disk_io_timings.end()) {
+    if (auto it = t_disk_io_timings.find(static_cast< uint16_t >(data->tag)); it != t_disk_io_timings.end()) {
         auto const& timing = it->second;
         auto const end_time = std::chrono::steady_clock::now();
         auto const latency_us =

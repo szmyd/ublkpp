@@ -64,9 +64,9 @@ class Raid1DiskImpl : public UblkDisk {
 
     // Internal routines
     io_result __become_clean();
-    io_result __become_degraded(sub_cmd_t failed_path, RouteState const* state, bool spawn_resync = true);
-    disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                           iovec* iovecs, uint32_t nr_vecs, uint64_t addr, uint32_t len);
+    io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
+    disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+                                           uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
                        raid1::read_route const& cur_route);
 
@@ -99,7 +99,7 @@ class Raid1DiskImpl : public UblkDisk {
 #ifndef NDEBUG
     __attribute__((noinline, no_sanitize_thread))
 #endif
-    RouteState __capture_route_state(sub_cmd_t sub_cmd = 0) const;
+    RouteState __capture_route_state() const;
     // clang-format on
 
 public:
@@ -122,11 +122,9 @@ public:
     std::list< int > open_for_uring(ublksrv_queue const* q, int const iouring_device) override;
     void idle_transition(ublksrv_queue const* q, bool enter) noexcept override;
 
-    uint8_t route_size() const noexcept override { return 1; }
-
-    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
-    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
+    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) override;
+    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                      uint64_t addr) override;
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
     /// ============================

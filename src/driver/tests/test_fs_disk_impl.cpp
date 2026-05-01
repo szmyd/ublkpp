@@ -15,7 +15,6 @@
 #include <sisl/options/options.h>
 #include <ublksrv.h>
 
-#include "ublkpp/lib/sub_cmd.hpp"
 #include "../fs_disk_impl.hpp"
 #include <ublkpp/lib/cqe_state.hpp>
 #include "ublkpp/lib/common.hpp"
@@ -114,46 +113,23 @@ TEST(DiscardToFallocate, FlagValuesAreNonZero) {
 // Integration and edge case tests
 // ============================================================================
 
-TEST(FsDiskImpl, BitFieldConstants) {
-    // Verify the constants used in build_tgt_sqe_data are consistent
-    EXPECT_EQ(ublkpp::sqe_tag_width, 16U);
-    EXPECT_EQ(ublkpp::sqe_op_width, 8U);
-    EXPECT_EQ(ublkpp::sqe_tgt_data_width, sizeof(ublkpp::sub_cmd_t) * 8U);
-}
-
-TEST(FsDiskImpl, SubCmdTypeSize) {
-    // Verify sub_cmd_t is 16 bits as expected
-    EXPECT_EQ(sizeof(ublkpp::sub_cmd_t), 2);
-    EXPECT_EQ(ublkpp::sqe_tgt_data_width, 16U);
-}
-
-TEST(FsDiskImpl, ReservedWidthCalculation) {
-    // Verify reserved width calculation
-    unsigned expected_reserved =
-        64U - (ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width + 1); // 1 for is_tgt bit
-    EXPECT_EQ(ublkpp::sqe_reserved_width, expected_reserved);
-}
-
 TEST(FsDiskImpl, UblkOperationValues) {
-    // Document the expected UBLK operation values
-    // These are defined in ublksrv.h
-    // Note: UBLK_IO_OP_READ is typically 0, so we just verify they're distinct
     EXPECT_NE(UBLK_IO_OP_DISCARD, UBLK_IO_OP_WRITE_ZEROES);
     EXPECT_NE(UBLK_IO_OP_READ, UBLK_IO_OP_WRITE);
     EXPECT_NE(UBLK_IO_OP_FLUSH, UBLK_IO_OP_DISCARD);
-
-    // Verify operations that should be non-zero
     EXPECT_GT(UBLK_IO_OP_WRITE, 0);
     EXPECT_GT(UBLK_IO_OP_FLUSH, 0);
 }
 
-TEST(FsDiskImpl, HighBitPosition) {
-    // Verify the high bit is at the correct position
-    unsigned high_bit_pos =
-        ublkpp::sqe_tag_width + ublkpp::sqe_op_width + ublkpp::sqe_tgt_data_width + ublkpp::sqe_reserved_width;
-
-    EXPECT_LT(high_bit_pos, 64) << "High bit position exceeds 64 bits";
-    EXPECT_EQ(high_bit_pos, 63) << "High bit should be at position 63 (MSB of uint64_t)";
+TEST(FsDiskImpl, CqeStateTargetBitEncoding) {
+    // build_cqe_state_data must set bit 63; run_queue_loop checks this to identify target CQEs.
+    ublkpp::async_io io{};
+    ublk_io_data fake{};
+    fake.private_data = &io;
+    auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
+    EXPECT_NE(user_data & (1ULL << 63), 0ULL);
+    auto* decoded = reinterpret_cast< ublkpp::CqeState* >(user_data & ~(1ULL << 63));
+    EXPECT_EQ(state, decoded);
 }
 
 } // anonymous namespace

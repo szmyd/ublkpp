@@ -26,44 +26,36 @@ struct FireAndForget {
 };
 
 // ============================================================================
-// async_io::ensure
+// async_io::next_state
 // ============================================================================
 
-TEST(AsyncIo, EnsureCreatesNewState) {
+TEST(AsyncIo, NextStateCreatesNewState) {
     ublkpp::async_io io{};
-    auto* s = io.ensure(ublkpp::sub_cmd_t{1});
+    auto* s = io.next_state();
     ASSERT_NE(s, nullptr);
     EXPECT_EQ(s->owner, &io);
     EXPECT_EQ(s->result, 0);
     EXPECT_FALSE(s->result_ready);
     EXPECT_FALSE(s->waiter);
-    EXPECT_EQ(s->sub_cmd, ublkpp::sub_cmd_t{1});
 }
 
-TEST(AsyncIo, EnsureIsIdempotent) {
+TEST(AsyncIo, NextStateGrowsPool) {
     ublkpp::async_io io{};
-    auto* s1 = io.ensure(ublkpp::sub_cmd_t{5});
-    auto* s2 = io.ensure(ublkpp::sub_cmd_t{5});
-    EXPECT_EQ(s1, s2);
-    EXPECT_EQ(io.pool.size(), 1u);
-}
-
-TEST(AsyncIo, EnsureDistinctSubCmds) {
-    ublkpp::async_io io{};
-    auto* s1 = io.ensure(ublkpp::sub_cmd_t{1});
-    auto* s2 = io.ensure(ublkpp::sub_cmd_t{2});
-    auto* s3 = io.ensure(ublkpp::sub_cmd_t{3});
+    auto* s1 = io.next_state();
+    auto* s2 = io.next_state();
+    auto* s3 = io.next_state();
     EXPECT_NE(s1, s2);
     EXPECT_NE(s2, s3);
     EXPECT_EQ(io.pool.size(), 3u);
 }
 
-TEST(AsyncIo, EnsurePoolAddressStability) {
+TEST(AsyncIo, NextStateAddressStability) {
     ublkpp::async_io io{};
-    auto* first = io.ensure(ublkpp::sub_cmd_t{0});
+    auto* first = io.next_state();
     for (int i = 1; i < 64; ++i)
-        io.ensure(ublkpp::sub_cmd_t(i));
-    EXPECT_EQ(first, io.ensure(ublkpp::sub_cmd_t{0}));
+        io.next_state();
+    // std::deque guarantees push_back doesn't invalidate existing pointers
+    EXPECT_EQ(first, &io.pool.front());
 }
 
 // ============================================================================
@@ -74,34 +66,34 @@ TEST(BuildCqeStateData, RegistersStateInPool) {
     ublkpp::async_io io{};
     ublk_io_data fake{};
     fake.private_data = &io;
-    auto const result = ublkpp::build_cqe_state_data(&fake, 3);
+    auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
     // bit 63 marks it as a target SQE
-    EXPECT_NE(result & (1ULL << 63), 0ULL);
+    EXPECT_NE(user_data & (1ULL << 63), 0ULL);
     // lower bits decode to the registered CqeState
-    auto* state = reinterpret_cast< ublkpp::CqeState* >(result & ~(1ULL << 63));
+    auto* decoded = reinterpret_cast< ublkpp::CqeState* >(user_data & ~(1ULL << 63));
     ASSERT_EQ(io.pool.size(), 1u);
-    EXPECT_EQ(state, &io.pool.front());
-    EXPECT_EQ(state->sub_cmd, ublkpp::sub_cmd_t{3});
+    EXPECT_EQ(decoded, &io.pool.front());
+    EXPECT_EQ(state, decoded);
     EXPECT_EQ(state->owner, &io);
 }
 
-TEST(BuildCqeStateData, IsIdempotentForSameSubCmd) {
+TEST(BuildCqeStateData, EachCallGrowsPool) {
     ublkpp::async_io io{};
     ublk_io_data fake{};
     fake.private_data = &io;
-    ublkpp::build_cqe_state_data(&fake, 5);
-    ublkpp::build_cqe_state_data(&fake, 5);
-    EXPECT_EQ(io.pool.size(), 1u);
+    ublkpp::build_cqe_state_data(&fake);
+    ublkpp::build_cqe_state_data(&fake);
+    ublkpp::build_cqe_state_data(&fake);
+    EXPECT_EQ(io.pool.size(), 3u);
 }
 
-TEST(BuildCqeStateData, DifferentSubCmdsGrowPool) {
+TEST(BuildCqeStateData, ReturnedPointerMatchesDecodedUserData) {
     ublkpp::async_io io{};
     ublk_io_data fake{};
     fake.private_data = &io;
-    ublkpp::build_cqe_state_data(&fake, 1);
-    ublkpp::build_cqe_state_data(&fake, 2);
-    ublkpp::build_cqe_state_data(&fake, 3);
-    EXPECT_EQ(io.pool.size(), 3u);
+    auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
+    auto* decoded = reinterpret_cast< ublkpp::CqeState* >(user_data & ~(1ULL << 63));
+    EXPECT_EQ(state, decoded);
 }
 
 // ============================================================================

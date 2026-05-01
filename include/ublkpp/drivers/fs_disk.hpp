@@ -7,6 +7,7 @@
 
 namespace ublkpp {
 
+struct CqeState;
 class UblkFSDiskMetrics;
 
 class FSDisk : public UblkDisk {
@@ -22,13 +23,13 @@ public:
 
     std::string id() const noexcept override { return _path.native(); }
 
-    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) override;
-    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                      iovec* iovecs, uint32_t nr_vecs, uint64_t addr) override;
+    disk_task< int > handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) override;
+    disk_task< int > handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                      uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 
 private:
-    io_result handle_discard(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd, uint32_t len,
-                             uint64_t addr);
+    std::pair< io_result, CqeState* > handle_discard(ublksrv_queue const* q, ublk_io_data const* data, uint32_t len,
+                                                     uint64_t addr);
 };
 } // namespace ublkpp

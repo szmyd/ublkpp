@@ -34,14 +34,13 @@ std::string Raid1Disk::id() const noexcept { return _impl->id(); }
 std::list< int > Raid1Disk::open_for_uring(ublksrv_queue const* q, int const iouring_device) {
     return _impl->open_for_uring(q, iouring_device);
 }
-uint8_t Raid1Disk::route_size() const noexcept { return _impl->route_size(); }
 void Raid1Disk::idle_transition(ublksrv_queue const* q, bool enter) { return _impl->idle_transition(q, enter); }
-disk_task< int > Raid1Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd) {
-    return _impl->handle_io_async(q, data, sub_cmd);
+disk_task< int > Raid1Disk::handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
+    return _impl->handle_io_async(q, data);
 }
-disk_task< int > Raid1Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, sub_cmd_t sub_cmd,
-                                             iovec* iovecs, uint32_t nr_vecs, uint64_t addr) {
-    return _impl->handle_iov_async(q, data, sub_cmd, iovecs, nr_vecs, addr);
+disk_task< int > Raid1Disk::handle_iov_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+                                             uint32_t nr_vecs, uint64_t addr) {
+    return _impl->handle_iov_async(q, data, iovecs, nr_vecs, addr);
 }
 io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept {
     return _impl->sync_iov(op, iovecs, nr_vecs, offset);

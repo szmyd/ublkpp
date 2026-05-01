@@ -10,7 +10,6 @@
 
 #include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/lib/disk_task.hpp"
-#include "ublkpp/lib/sub_cmd.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
 
 namespace ublkpp {

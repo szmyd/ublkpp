@@ -7,8 +7,6 @@
 
 #include <sisl/metrics/metrics.hpp>
 
-#include "ublkpp/lib/sub_cmd.hpp"
-
 struct ublk_io_data;
 struct ublksrv_queue;
 
@@ -29,10 +27,10 @@ struct UblkFSDiskMetrics : public sisl::MetricsGroupWrapper {
     UblkFSDiskMetrics(std::string const& parent_id, std::string const& disk_path);
     ~UblkFSDiskMetrics();
 
-    static inline thread_local std::map< std::pair< uint16_t, uint16_t >, io_timing > t_disk_io_timings;
+    static inline thread_local std::map< uint16_t, io_timing > t_disk_io_timings;
 
-    void record_io_start(ublk_io_data const* data, sub_cmd_t sub_cmd);
-    void record_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd);
+    void record_io_start(ublk_io_data const* data);
+    void record_io_complete(ublk_io_data const* data);
 };
 
 } // namespace ublkpp

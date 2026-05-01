@@ -70,20 +70,6 @@ TEST(Raid1, IdMethod) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
-// Test: route_size returns 1
-TEST(Raid1, RouteSize) {
-    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-
-    EXPECT_EQ(raid_device.route_size(), 1);
-
-    // Expect unmount_clean update
-    EXPECT_TO_WRITE_SB(device_a);
-    EXPECT_TO_WRITE_SB(device_b);
-}
-
 // Helper: set up new_device mock expectations for a successful swap of device A.
 // After this swap: route=DEVB, new_device is in A slot (backup, unavail=false), device_b is active.
 // Caller must register the device_b staying-write and unmount expectations separately.
