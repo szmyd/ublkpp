@@ -1,11 +1,12 @@
 #include "async_raid1_common.hpp"
 
 // When active (disk_a) fails and __become_degraded cannot write the superblock to the surviving
-// device (disk_b), the degradation is rolled back: route stays EITHER, disk_a is not marked
-// unavail. The backup write that was already in flight succeeds and is returned to the caller.
+// device (disk_b), the degradation is rolled back: route stays EITHER. The write is uncommitted
+// by POSIX semantics so -EIO is returned to the caller regardless of what disk_b holds. The
+// backup CQE is still drained before returning to avoid leaking a live CqeState.
 TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
     // Intercept the superblock WRITE at addr=0 that __become_degraded issues to disk_b.
-    // RetiresOnSaturation so the destructor's clean-shutdown SB write falls through to ON_CALL.
+    // Second WillOnce covers the destructor's clean-shutdown SB write.
     EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
         .Times(2)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
@@ -19,13 +20,13 @@ TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
 
     // Active (disk_a) fails → __become_degraded fires, SB write to disk_b fails → rollback.
     EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
-    // Backup (disk_b) write succeeds → returned (backup_res) despite active failure.
+    // Backup (disk_b) CQE is drained but discarded; -EIO returned to caller.
     auto completions = mock->inject_cqe(0, 4 * Ki);
     ASSERT_EQ(completions.size(), 1u);
-    EXPECT_EQ(completions[0].result, 4 * Ki);
+    EXPECT_EQ(completions[0].result, -EIO);
 
-    // Route was rolled back to EITHER — replica_states() EITHER branch hard-codes sync_bytes=0
-    // and treats both devices as active, so both show CLEAN even though dirty_region was called.
+    // Route rolled back to EITHER; both devices CLEAN (dirty bit is set but invisible in EITHER
+    // mode -- correct, since the write was never acknowledged).
     auto const states = raid->replica_states();
     EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);
     EXPECT_EQ(states.device_b, ublkpp::raid1::replica_state::CLEAN);
@@ -75,9 +76,9 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
         EXPECT_EQ(res.value(), 2u);
 
         EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty()); // active fails → SB fails → rollback
-        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup succeeds → completion
+        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup drained but discarded → -EIO
         ASSERT_EQ(comp.size(), 1u);
-        EXPECT_EQ(comp[0].result, 4 * Ki);
+        EXPECT_EQ(comp[0].result, -EIO);
 
         auto const states = raid->replica_states();
         EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);

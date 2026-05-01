@@ -732,8 +732,16 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     auto const active_res = co_await active_task.started();
 
     if (active_res < 0) {
+        // dirty_region stays set even if we return -EIO: the write is uncommitted by POSIX
+        // semantics, so the region content is undefined. If the array later degrades with the
+        // backup as the sole active device, resync will copy whatever the backup holds -- which
+        // is within spec for a write the client never saw acknowledged.
         _dirty_bitmap->dirty_region(addr, len);
-        __become_degraded(true, &state);
+        if (auto d = __become_degraded(true, &state); !d) {
+            // SB write failed -- degradation not persisted; drain in-flight backup before returning.
+            if (backup_task) co_await backup_task->started();
+            co_return -EIO;
+        }
         if (backup_task) {
             auto const backup_res = co_await backup_task->started();
             co_return backup_res >= 0 ? backup_res : -EIO;
