@@ -56,7 +56,9 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
     return false;
 }
 
-static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
+static std::atomic< int > g_next_cpu{0};
+
+static void set_queue_thread_affinity() {
     cpu_set_t set;
 
     CPU_ZERO(&set);
@@ -65,13 +67,11 @@ static void set_queue_thread_affinity(ublksrv_ctrl_dev const*) {
         return;
     }
 
-    srand(ublksrv_gettid());
-    auto idx = rand() % CPU_COUNT(&set);
-
+    auto const target = g_next_cpu.fetch_add(1, std::memory_order_relaxed) % CPU_COUNT(&set);
     int32_t j = 0;
     for (auto i = 0; i < CPU_SETSIZE; ++i) {
         if (CPU_ISSET(i, &set)) {
-            if (j++ == idx) continue;
+            if (j++ == target) continue;
             CPU_CLR(i, &set);
         }
     }
@@ -139,11 +139,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 }
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
-    // Find our /dev/ublk-control file descriptor
-    auto cdev = ublksrv_get_ctrl_dev(target->ublk_dev);
-
     // Prevent rescheduling this thread to another CPU
-    set_queue_thread_affinity(cdev);
+    set_queue_thread_affinity();
 
     auto qs = std::make_unique< ublkpp_queue_state >(target.get());
 
