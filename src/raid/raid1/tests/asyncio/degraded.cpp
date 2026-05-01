@@ -98,6 +98,8 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
 
         EXPECT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::ERROR);
         EXPECT_EQ(raid->replica_states().device_b, ublkpp::raid1::replica_state::CLEAN);
+        // dirty region from Phase 1's failed write must still be tracked
+        EXPECT_GT(raid->replica_states().bytes_to_sync, 0u);
     }
 }
 
