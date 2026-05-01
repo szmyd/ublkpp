@@ -307,8 +307,7 @@ int main(int argc, char* argv[]) {
         } catch (std::runtime_error const& e) { LOGERROR("setup routes failed, {}", e.what()) }
 
         exit_future.wait();
-        k_target->destroy();
-        k_target.reset();
+        ublkpp::ublkpp_tgt::remove(std::move(k_target));
     } else
         s_stop_code.set_value(EIO);
 #ifdef HAVE_HOMEBLOCKS
