@@ -4,6 +4,7 @@
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
 #include <exec/task.hpp>
+#include <stdexec/execution.hpp>
 #include <thread>
 
 #include <boost/uuid/uuid_io.hpp>
@@ -86,27 +87,26 @@ static constexpr int k_io_idle_secs = 20;
 struct ublkpp_queue_state {
     ublkpp_tgt_impl* tgt;
     exec::async_scope scope;
-    std::atomic< uint32_t > in_flight{0};
 
     explicit ublkpp_queue_state(ublkpp_tgt_impl* t) : tgt(t) {}
 };
 
-struct InFlightGuard {
-    std::atomic< uint32_t >& counter;
-    ~InFlightGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
-};
-
 // Our own CQE processing loop, replacing ublksrv_process_io.
 // Target CQEs carry a raw CqeState* in bits 62:0 with bit 63 set; decoded via pointer cast.
-// Ublk command CQEs delegate to ublksrv. Drains in-flight coroutines after queue signals stop.
-static void run_queue_loop(ublksrv_queue const* q, ublkpp_queue_state* qs) {
+// Ublk command CQEs delegate to ublksrv.
+//
+// Drain correctness: ublksrv_queue_is_done returns true only when ublksrv has no pending I/O
+// commands. We call ublksrv_complete_io at the end of __handle_io_async, after co_await
+// device->async_iov returns, so the scope is already empty when the loop exits. on_empty()
+// completes synchronously via its fast path.
+static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_state* qs) {
     auto* ring = q->ring_ptr;
     // clang-format off
     struct __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
     // clang-format on
     bool queue_done = false;
 
-    while (!queue_done || qs->in_flight.load(std::memory_order_acquire) > 0) {
+    while (!queue_done) {
         io_uring_cqe* cqe{};
         auto const ret = io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
 
@@ -114,7 +114,7 @@ static void run_queue_loop(ublksrv_queue const* q, ublkpp_queue_state* qs) {
         int count{0};
         io_uring_for_each_cqe(ring, head, cqe) {
             if (cqe->user_data & k_target_bit) {
-                // target io_uring CQE — user_data is a raw CqeState* | k_target_bit
+                // target io_uring CQE -- user_data is a raw CqeState* | k_target_bit
                 auto* state = reinterpret_cast< CqeState* >(cqe->user_data & ~k_target_bit);
                 state->result = cqe->res;
                 state->result_ready = true;
@@ -125,17 +125,17 @@ static void run_queue_loop(ublksrv_queue const* q, ublkpp_queue_state* qs) {
                     ublksrv_complete_io(q, state->owner->tag, -EIO);
                 }
             } else {
-                // ublk command CQE (FETCH/COMMIT) — delegate to libublksrv
+                // ublk command CQE (FETCH/COMMIT) -- delegate to libublksrv
                 ublksrv_handle_cmd_cqe(q, cqe);
             }
             ++count;
         }
         io_uring_cq_advance(ring, count);
-        if (!queue_done) {
-            ublksrv_queue_update_idle(q, ret, count);
-            queue_done = ublksrv_queue_is_done(q);
-        }
+        ublksrv_queue_update_idle(q, ret, count);
+        queue_done = ublksrv_queue_is_done(q);
     }
+
+    co_await qs->scope.on_empty();
 }
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
@@ -164,7 +164,7 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     }
 
     TLOGD("tid {}: ublk dev queue {} started", ublksrv_gettid(), q->q_id)
-    run_queue_loop(q, qs.get());
+    stdexec::sync_wait(run_queue_loop(q, qs.get()));
     TLOGD("ublk dev queue {} exited", q->q_id)
     ublksrv_queue_deinit(q);
     return NULL;
@@ -267,7 +267,6 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 
 static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
-    InFlightGuard guard{qs->in_flight};
 
     auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
     auto io = reinterpret_cast< async_io* >(data->private_data);
@@ -301,7 +300,6 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
 // I/O Handler, first entry-point to us for all I/O
 static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
-    qs->in_flight.fetch_add(1, std::memory_order_relaxed);
     qs->scope.spawn(stdexec::on(exec::inline_scheduler{}, __handle_io_async(q, data)));
     return 0;
 }
