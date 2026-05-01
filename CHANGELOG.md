@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.30.0
+Coroutine I/O refactor (issue #210): replace the ublksrv process-io loop and legacy synchronous dispatch with a stdexec coroutine pipeline.
+- target: Own the CQE loop -- custom `io_uring_submit_and_wait_timeout` run loop replaces `ublksrv_process_io`; target CQEs carry a raw `CqeState*` in user_data, eliminating the packed tag/op/sub_cmd side-channel
+- target: I/O path is now a `exec::task<void>` coroutine (`async_iov`) spawned into an `exec::async_scope`; `run_queue_loop` drives the scope and drains via `co_await scope.on_empty()` after the CQE loop exits, removing the `in_flight` atomic counter
+- target: `ublkpp_tgt::destroy()` renamed to `static remove(unique_ptr<ublkpp_tgt>)`; destructor intentionally leaves the device live for pod-restart recovery via `UBLK_F_USER_RECOVERY`
+- **Breaking**: removed `handle_rw`, `queue_tgt_io`, `handle_discard`, `sub_cmd_t`, and the `open_for_uring`/`handle_io_async`/`handle_iov_async` virtual surface -- replaced by `prepare` and `async_iov`
+
 ## 0.22.2
 - raid1: Fix `stop()` IDLE→STOPPING race - when the resync thread finishes naturally and
   `stop()` is called before `join()`, the `IDLE+joinable` handler now returns `SUCCESS` instead
