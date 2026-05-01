@@ -24,7 +24,7 @@ SISL_OPTION_GROUP(ublkpp_tgt,
                   (nr_hw_queues, "", "nr_hw_queues", "Number of Hardware Queues (threads) per target",
                    cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
                   (qdepth, "", "qdepth", "I/O Queue Depth per target",
-                   cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"),
+                   cxxopts::value< std::uint16_t >()->default_value("32"), "<qd>"),
                   (feature_zero_copy, "", "feature_zero_copy", "Enable ZeroCopy Feature", cxxopts::value< bool >(), ""))
 
 using namespace std::chrono_literals;
@@ -335,7 +335,7 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     auto ublksrv_tgt = &dev->tgt;
     ublksrv_tgt->io_data_size = sizeof(struct async_io);
     ublksrv_tgt->dev_size = ublk_disk->params()->basic.dev_sectors << SECTOR_SHIFT;
-    ublksrv_tgt->tgt_ring_depth = ublksrv_ctrl_get_dev_info(ublksrv_get_ctrl_dev(dev))->queue_depth;
+    ublksrv_tgt->tgt_ring_depth = 256;
 
     // iouring FD 0 is reserved for the ublkc device; prepare is called per queue in init_queue.
     // NOTE: if future disks export non-empty FDs they must be registered here (before ublksrv_queue_init

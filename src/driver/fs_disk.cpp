@@ -193,7 +193,6 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
     if (!res) co_return -static_cast< int >(res.error().value());
     if (res.value() == 0) co_return 0;
 
-    io_uring_submit(q->ring_ptr);
     auto const cqe_result = co_await *state;
     if (track_metrics) { _metrics->record_io_complete(data); }
     co_return cqe_result;
@@ -210,9 +209,6 @@ std::pair< io_result, CqeState* > FSDisk::handle_discard(ublksrv_queue const* q,
         sqe->user_data = sqe_data;
         return {1, state};
     }
-
-    // Submit all queued I/O
-    io_uring_submit(q->ring_ptr);
 
     uint64_t r[2]{addr, len};
     auto res = ioctl(_fd, BLKDISCARD, &r);
