@@ -63,6 +63,10 @@ private:
     struct TagState {
         ublksrv_io_desc iod{};
         ublk_io_data data{};
+        // Per-tag storage — io_uring reads iovecs at submit time (which is deferred to
+        // poll()), so a single shared/thread_local iovec would be overwritten by later
+        // submit_io() calls before the kernel sees the earlier SQE.
+        iovec iov{};
     };
 
     void process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out);
