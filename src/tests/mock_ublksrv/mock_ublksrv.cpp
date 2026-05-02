@@ -94,10 +94,9 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
         _async_tasks[tag].emplace(std::move(flush_task));
         return io_result{0};
     }
-    thread_local iovec iov{};
-    iov.iov_base = reinterpret_cast< void* >(ts.iod.addr);
-    iov.iov_len = ts.iod.nr_sectors << SECTOR_SHIFT;
-    auto task = _disk->async_iov(&_queues[0], &ts.data, &iov, 1, ts.iod.start_sector << SECTOR_SHIFT);
+    ts.iov.iov_base = reinterpret_cast< void* >(ts.iod.addr);
+    ts.iov.iov_len = ts.iod.nr_sectors << SECTOR_SHIFT;
+    auto task = _disk->async_iov(&_queues[0], &ts.data, &ts.iov, 1, ts.iod.start_sector << SECTOR_SHIFT);
     task._coro.resume(); // start lazy coroutine; runs until first co_await *state
     _async_tasks[tag].emplace(std::move(task));
     // Pool size == number of CqeStates registered (one per pending stripe SQE)
@@ -156,8 +155,12 @@ std::vector< MockUblksrv::Completion > MockUblksrv::poll(int min_completions, st
         __kernel_timespec ts{.tv_sec = remaining_ms.count() / 1000,
                              .tv_nsec = (remaining_ms.count() % 1000) * 1'000'000LL};
 
+        // Match the production queue loop: submit pending SQEs and wait for at
+        // least one CQE in a single syscall. Callers of async_iov rely on the
+        // event loop to submit; using io_uring_wait_cqe_timeout here would leave
+        // queued SQEs in the SQ forever and hang.
         io_uring_cqe* cqe = nullptr;
-        int r = io_uring_wait_cqe_timeout(&_ring, &cqe, &ts);
+        int r = io_uring_submit_and_wait_timeout(&_ring, &cqe, 1, &ts, nullptr);
         if (r == -ETIME || r == -EINTR || r < 0 || cqe == nullptr) break;
 
         // Process this CQE then drain any additional ones that are ready

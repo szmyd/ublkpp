@@ -222,6 +222,13 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         if (!res) co_return -EIO;
     }
 
+    // Submit now so the kernel snapshots leaf-staged iovecs that point into thread_local sub_cmds
+    // (in __distribute) before this coroutine suspends. Without this submit, sibling Raid0 IOs on
+    // the same thread would overwrite sub_cmds before the queue loop's submit_and_wait_timeout
+    // hands the SQEs to the kernel, corrupting in-flight writev/readv. One extra syscall per
+    // multi-stripe RAID0 IO; FSDisk-only and single-stripe paths are unaffected.
+    if (q && q->ring_ptr) io_uring_submit(q->ring_ptr);
+
     // Await each stripe task. started() fast-paths tasks that completed synchronously.
     int total = 0;
     for (auto& t : stripe_tasks) {
