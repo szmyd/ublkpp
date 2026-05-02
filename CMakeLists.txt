@@ -46,6 +46,13 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(stdexec INTERFACE -Wno-empty-body)
 endif()
 
+# stdexec's <execution> include drags in libstdc++'s PSTL, which on gcc-15
+# defaults to the TBB backend and emits unresolved tbb::detail::r1::* symbols.
+# We never use std::execution::par, so force the serial backend on every
+# consumer to avoid the unwanted libtbb link dependency.
+target_compile_options(stdexec INTERFACE -U_PSTL_PAR_BACKEND_TBB)
+target_compile_definitions(stdexec INTERFACE _PSTL_PAR_BACKEND_SERIAL)
+
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 find_package(sisl REQUIRED)
