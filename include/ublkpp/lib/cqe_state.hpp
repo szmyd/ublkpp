@@ -33,8 +33,14 @@ struct async_io {
 // Tracks a single inflight sub-operation. Stored in async_io::_pool (std::deque, so push_back
 // is pointer-stable). _result and _result_ready are written by run_queue_loop before resuming _waiter.
 // Implements the awaitable protocol directly: co_await *state suspends until the CQE arrives.
+//
+// _owner is nullable: per-IO cqe_states allocated via build_cqe_state_data point at the slot's
+// async_io so an exception on resume can be reported with ublksrv_complete_io. Long-lived
+// stand-alone cqe_states (e.g. iSCSIDisk's POLL_ADD service loop) are coroutine-frame-local
+// with no IO slot, and set _owner = nullptr; callers awaiting these states must handle their
+// own errors.
 struct cqe_state {
-    async_io* _owner;
+    async_io* _owner{nullptr};
     int _result{0};
     bool _result_ready{false};
     std::coroutine_handle<> _waiter{};

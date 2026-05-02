@@ -98,7 +98,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     if (auto h = std::exchange(state->_waiter, {})) h.resume(); // per-state resume (disk_task path)
                 } catch (std::exception const& e) {
                     TLOGE("I/O threw exception: [{}]", e.what())
-                    ublksrv_complete_io(q, state->_owner->_tag, -EIO);
+                    // _owner is null for stand-alone service-loop states (e.g. iSCSIDisk POLL_ADD)
+                    if (state->_owner) ublksrv_complete_io(q, state->_owner->_tag, -EIO);
                 }
             } else {
                 // ublk command CQE (FETCH/COMMIT) -- delegate to libublksrv
