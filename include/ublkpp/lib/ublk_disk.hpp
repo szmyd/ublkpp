@@ -24,8 +24,19 @@ class UblkDisk : public std::enable_shared_from_this< UblkDisk > {
 public:
     bool direct_io{false};
 
-    // If this is `true` the tgt will expect the Device to call `ublksrv_complete_io`
-    bool uses_ublk_iouring{true};
+    // True if this disk's async_iov stages SQEs into the queue's io_uring (q->ring_ptr),
+    // so completion is driven by the queue thread's submit_and_wait_timeout loop. Set
+    // false by drivers that perform IO out-of-band (private threads, separate event
+    // loops, sync syscalls). Composite (non-leaf) disks aggregate this from their
+    // leaves with ANY semantics: true if at least one leaf stages SQEs into q->ring_ptr,
+    // since one io_uring leaf is enough to require a flush before reusing per-IO scratch.
+    //
+    // Caveat: this flag is computed at construction. Composite disks that swap leaves
+    // at runtime (Raid1Disk::swap_device, etc.) do not currently re-aggregate it. Safe
+    // today only because no live consumer branches on this per-IO; revive aggregate
+    // refresh through swap when introducing such a consumer (e.g. a Raid0 submit guard
+    // or a tgt-level autocomplete fast-path).
+    bool uses_queue_uring{true};
 
     UblkDisk();
     virtual ~UblkDisk();

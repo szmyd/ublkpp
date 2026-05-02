@@ -7,7 +7,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk >
                      std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) :
         _impl(std::make_unique< raid1::Raid1DiskImpl >(uuid, dev_a, dev_b, parent_id)) {
     direct_io = _impl->direct_io;
-    uses_ublk_iouring = _impl->uses_ublk_iouring;
+    uses_queue_uring = _impl->uses_queue_uring;
 }
 
 Raid1Disk::~Raid1Disk() = default;

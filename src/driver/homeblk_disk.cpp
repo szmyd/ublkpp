@@ -18,7 +18,7 @@ HomeBlkDisk::HomeBlkDisk(boost::uuids::uuid const& homeblk_vol_id, uint64_t capa
     if (!_hb_volume) throw std::runtime_error("Failed to lookup volume!");
 
     direct_io = true;
-    uses_ublk_iouring = false;
+    uses_queue_uring = false;
 
     // Setup parameters for ublk device
     auto& our_params = *params();

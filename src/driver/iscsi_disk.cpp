@@ -109,7 +109,7 @@ static std::pair< uint64_t, uint32_t > probe_topology(std::unique_ptr< iscsi_ses
 
 iSCSIDisk::iSCSIDisk(std::string const& url) {
     direct_io = true;
-    uses_ublk_iouring = false;
+    uses_queue_uring = false;
 
     // Establish iSCSI login
     if (_session = create_iscsi_session(url); !_session)

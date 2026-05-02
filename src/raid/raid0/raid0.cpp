@@ -45,6 +45,7 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     auto alt_stripe = false;
     our_params.basic.physical_bs_shift = ilog2(stripe_size_bytes);
     our_params.basic.io_opt_shift = ilog2(_stride_width);
+    uses_queue_uring = false; // any-aggregate below: true if any leaf stages SQEs in q->ring_ptr
     for (auto&& device : disks) {
         auto const& dev_params = *device->params();
         // We'll use dev_sectors to track the smallest array device we have
@@ -55,7 +56,7 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
                                                 static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
-        if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
+        uses_queue_uring = uses_queue_uring || device->uses_queue_uring;
 
         direct_io = direct_io ? device->direct_io : false;
 

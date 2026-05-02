@@ -98,8 +98,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b) {
     RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
 
-    direct_io = true;          // RAID-1 prefers DIO; downgraded below if any member doesn't support it
-    uses_ublk_iouring = false; // RAID1 drives its own retry/failover coroutines; tgt must not complete io directly
+    direct_io = true;         // RAID-1 prefers DIO; downgraded below if any member doesn't support it
+    uses_queue_uring = false; // any-aggregate below: true if any leaf stages SQEs in q->ring_ptr
 
     // Discover overall Device parameters
     auto& our_params = *params();
@@ -123,6 +123,7 @@ void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std:
             std::max(our_params.basic.physical_bs_shift, device->params()->basic.physical_bs_shift);
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
+        uses_queue_uring = uses_queue_uring || device->uses_queue_uring;
     }
 
     auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
