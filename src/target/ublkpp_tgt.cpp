@@ -251,9 +251,11 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         result = 0;
     } else {
         auto const* iod = data->iod;
-        thread_local iovec iov{};
-        iov.iov_base = reinterpret_cast< void* >(iod->addr);
-        iov.iov_len = iod->nr_sectors << SECTOR_SHIFT;
+        // Frame-local: io_uring reads iov contents at submit time (deferred to the queue loop's
+        // submit_and_wait_timeout). thread_local would be overwritten by sibling __handle_io_async
+        // coroutines spawned in the same CQE batch before the kernel sees the SQE. The coroutine
+        // frame is alive across co_await, so the iov is valid through the whole IO lifetime.
+        iovec iov{.iov_base = reinterpret_cast< void* >(iod->addr), .iov_len = iod->nr_sectors << SECTOR_SHIFT};
         result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
     }
 
