@@ -130,7 +130,7 @@ public:
     inline void enqueue_write() noexcept {
         // Increment first, then establish pause. Safe because the caller submits I/O only after
         // this function returns, so no disk I/O is in-flight during the increment→pause window.
-        _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
+        (void)_state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
             ++cnt;
             return true;
         });
@@ -150,7 +150,7 @@ public:
         // This single CAS closes the race where a concurrent enqueue could see old_val==0,
         // find state still PAUSE (from the prior write), and early-exit __pause() — only for
         // __resume() to then clear PAUSE before the new write's I/O is submitted.
-        _state_and_writes.dec_xchng_status_ifz(resync_state::PAUSE, resync_state::ACTIVE);
+        (void)_state_and_writes.dec_xchng_status_ifz(resync_state::PAUSE, resync_state::ACTIVE);
     }
 };
 
