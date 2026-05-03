@@ -13,7 +13,6 @@ Coroutine I/O refactor (issue #210): replace the ublksrv process-io loop and leg
 
 ## 0.23.0
 - **Breaking**: Migrate to sisl v14, requires C++23, drops folly dependency
-- **Breaking**: Remove homeblocks support pending its own sisl v14 migration
 - example: Replace iomgr http_server with `sisl::HttpServer`; drop iomgr dependency from example binary
 - ci: Update all sisl action refs to `dev/v14.x`, drop iomgr build step
 
@@ -104,7 +103,6 @@ Coroutine I/O refactor (issue #210): replace the ublksrv process-io loop and leg
 - raid1: Reservation size is now dynamically calculated during init, prevents resize
 
 ## 0.15.x
-- Fix homeblock_disk linkage
 - Enable C++23 extensions
 - Replace usage of folly::Expected with std::expected
 
@@ -134,7 +132,6 @@ Coroutine I/O refactor (issue #210): replace the ublksrv process-io loop and leg
 
 ## 0.11.x
 - raid1: Fix Bitmap bugs when representing > 4Gi
-- ublkpp_disk: Support for HomeBlkDisk type
 - raid1: Another resync_task termination fix
 - raid1: Fix resync_task termination
 - raid1: Resync task handles no-dirty pages
@@ -179,14 +176,12 @@ Coroutine I/O refactor (issue #210): replace the ublksrv process-io loop and leg
 ## 0.6.x
 - raid1: Do not re-write unchanged pages
 - raid1: Round-Robin reading
-- homeblk_disk: Disable by default
 - raid1: Calculate reserved area based on limits
 - ublkpp_tgt: Clear async_event before calling process_result
 - raid1: Bitmap words should be encoded as NETWORK byte order
 - raid1: Records dirty chunks to the BITMAP pages
 
 ## 0.5.x
-- homeblk_disk : introduced
 - raid1: more intelligent retry handling
 - ublkpp_tgt : fix narrowing conversion
 

@@ -29,11 +29,6 @@ list(APPEND LIBRARY_LINKS
     STDEXEC::stdexec
   )
 
-if(${homeblocks_FOUND})
-    list(APPEND LIBRARY_OBJECTS $<TARGET_OBJECTS:homeblk_disk>)
-    list(APPEND LIBRARY_LINKS homeblocks::homeblocks)
-endif()
-
 if(${libiscsi_FOUND})
     list(APPEND LIBRARY_OBJECTS $<TARGET_OBJECTS:iscsi_disk>)
     list(APPEND LIBRARY_LINKS libiscsi::libiscsi)
