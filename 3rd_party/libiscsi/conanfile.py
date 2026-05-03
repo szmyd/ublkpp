@@ -15,15 +15,20 @@ class LibIScsiConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     options = {
         "shared": ['True', 'False'],
-        "fPIC": ['True', 'False']
+        "fPIC": ['True', 'False'],
+        "md5_provider": ['False', 'libgcrypt', 'gnutls'],
     }
     default_options = {
-        "shared":False,
-        "fPIC":True,
+        "shared": False,
+        "fPIC": True,
+        "md5_provider": 'False',
     }
 
     def requirements(self):
-        self.requires("gnutls/3.8.7")
+        if self.options.md5_provider == 'gnutls':
+            self.requires("gnutls/3.8.7")
+        elif self.options.md5_provider == 'libgcrypt':
+            self.requires("libgcrypt/1.10.3")
 
     def configure(self):
         del self.settings.compiler.libcxx
@@ -38,8 +43,24 @@ class LibIScsiConan(ConanFile):
         tc = AutotoolsToolchain(self)
         e = tc.environment()
         e.append("CFLAGS", "-Wno-unused-but-set-variable")
-        e.append("LIBGNUTLS_LIBS", "-luring".format(self.dependencies['gnutls'].package_folder))
-        e.append("LIBGNUTlS_CFLAGS", "-I{}/include".format(self.dependencies['gnutls'].package_folder))
+
+        # iSER (iSCSI over RDMA) is auto-detected purely from header presence in libiscsi's
+        # configure.ac — the AC_CACHE_CHECK does not link-test, so when /usr/include/infiniband
+        # exists the iser.o is built but ibv_*/rdma_* symbols are unresolved at link time.
+        # Override the autoconf cache so the check returns "no" and iser.c stays out.
+        e.define("libiscsi_cv_HAVE_LINUX_ISER", "no")
+
+        # MD5 backend: libiscsi's --with-{gnutls,libgcrypt} flags select which library
+        # provides MD5 for CHAP login. False uses libiscsi's built-in (NEED_MD5=yes).
+        if self.options.md5_provider == 'False':
+            tc.configure_args.append("--without-gnutls")
+            tc.configure_args.append("--without-libgcrypt")
+        elif self.options.md5_provider == 'gnutls':
+            tc.configure_args.append("--with-gnutls")
+            tc.configure_args.append("--without-libgcrypt")
+        elif self.options.md5_provider == 'libgcrypt':
+            tc.configure_args.append("--without-gnutls")
+            tc.configure_args.append("--with-libgcrypt")
 
         if self.settings.build_type == "Debug":
             tc.configure_args.append("--enable-debug")

@@ -32,7 +32,7 @@ class UBlkPPConan(ConanFile):
                 'fPIC': True,
                 'coverage': False,
                 'sanitize': False,
-                'iscsi': False,
+                'iscsi': True,
             }
 
     exports_sources = (
@@ -74,6 +74,8 @@ class UBlkPPConan(ConanFile):
 
         self.requires("isa-l/2.30.0")
         self.requires("ublksrv/nbi.1.5.0.1")
+        if self.options.get_safe("iscsi"):
+            self.requires("libiscsi/1.20.3")
 
     def layout(self):
         self.folders.source = "."

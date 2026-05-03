@@ -5,8 +5,9 @@
 ///
 /// Usage (fio job file):
 ///   ioengine=external:${ENGINE_SO}
-///   disk_type=fsdisk          # or raid0 / raid1
-///   disk_files=/tmp/a.img     # colon-separated for RAID
+///   disk_type=fsdisk          # or raid0 / raid1 / raid10 / iscsi
+///   disk_files=/tmp/a.img     # colon-separated for RAID; ignored for iscsi
+///   disk_url=iscsi://...      # required for disk_type=iscsi
 ///   raid_chunk_size=32768     # optional, default 32 KiB
 
 #include <cassert>
@@ -34,6 +35,9 @@ extern "C" {
 #include "ublkpp/drivers/fs_disk.hpp"
 #include "ublkpp/raid/raid0.hpp"
 #include "ublkpp/raid/raid1.hpp"
+#ifdef HAVE_ISCSI
+#include "ublkpp/drivers/iscsi_disk.hpp"
+#endif
 
 #include "mock_ublksrv/mock_ublksrv.hpp"
 
@@ -90,8 +94,9 @@ static void ensure_sisl_init() {
 // ---------------------------------------------------------------------------
 struct ublkpp_options {
     void* pad;                    // required: first field must be void* (thread_data placeholder)
-    char* disk_type;              // "fsdisk" | "raid0" | "raid1"
+    char* disk_type;              // "fsdisk" | "raid0" | "raid1" | "raid10" | "iscsi"
     char* disk_files;             // colon-separated backing file paths
+    char* disk_url;               // iSCSI URL (used when disk_type=iscsi)
     unsigned int raid_chunk_size; // bytes, default 32 KiB
 };
 
@@ -111,6 +116,15 @@ static fio_option engine_options[] = {
         .type = FIO_OPT_STR_STORE,
         .off1 = offsetof(struct ublkpp_options, disk_files),
         .help = "Colon-separated backing file paths",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "disk_url",
+        .lname = "Disk URL",
+        .type = FIO_OPT_STR_STORE,
+        .off1 = offsetof(struct ublkpp_options, disk_url),
+        .help = "iSCSI URL (used when disk_type=iscsi)",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -233,30 +247,42 @@ static int ublkpp_init(struct thread_data* td) {
     auto* opts = reinterpret_cast< ublkpp_options* >(td->eo);
     char const* disk_type = (opts && opts->disk_type) ? opts->disk_type : "fsdisk";
     char const* disk_files = (opts && opts->disk_files) ? opts->disk_files : "";
+    char const* disk_url = (opts && opts->disk_url) ? opts->disk_url : "";
     uint32_t chunk_size = (opts && opts->raid_chunk_size) ? opts->raid_chunk_size : 32768u;
+    std::string const type(disk_type);
 
+    // iSCSI uses a URL and a pre-existing remote LUN; file-backed types need backing files
+    // sized to fit the workload + RAID metadata overhead.
     auto paths = split_colon(disk_files);
-    if (paths.empty()) {
-        log_err("ublkpp_fio: disk_files option is required\n");
-        return -1;
-    }
-
-    // Size: use td->o.size + td->o.start_offset, rounded to sector, plus
-    // 64 MiB overhead for RAID metadata / superblocks
-    uint64_t const disk_size = ((td->o.size + td->o.start_offset + 511ULL) & ~511ULL) + (64ULL << 20);
-
-    for (auto const& p : paths) {
-        if (!ensure_file_size(p, disk_size)) {
-            log_err("ublkpp_fio: cannot allocate backing file %s\n", p.c_str());
+    if (type != "iscsi") {
+        if (paths.empty()) {
+            log_err("ublkpp_fio: disk_files option is required\n");
             return -1;
+        }
+        uint64_t const disk_size = ((td->o.size + td->o.start_offset + 511ULL) & ~511ULL) + (64ULL << 20);
+        for (auto const& p : paths) {
+            if (!ensure_file_size(p, disk_size)) {
+                log_err("ublkpp_fio: cannot allocate backing file %s\n", p.c_str());
+                return -1;
+            }
         }
     }
 
     // Build the disk
     std::shared_ptr< ublkpp::UblkDisk > disk;
     try {
-        std::string const type(disk_type);
-        if (type == "fsdisk") {
+        if (type == "iscsi") {
+#ifdef HAVE_ISCSI
+            if (!disk_url || !*disk_url) {
+                log_err("ublkpp_fio: disk_type=iscsi requires disk_url\n");
+                return -1;
+            }
+            disk = std::make_shared< ublkpp::iSCSIDisk >(disk_url);
+#else
+            log_err("ublkpp_fio: iscsi disk_type requested but engine built without HAVE_ISCSI\n");
+            return -1;
+#endif
+        } else if (type == "fsdisk") {
             disk = std::make_shared< ublkpp::FSDisk >(paths[0]);
         } else if (type == "raid0") {
             if (paths.size() < 2) {
