@@ -7,7 +7,8 @@
 #include <ublksrv.h>
 
 #include "ublkpp/lib/cqe_state.hpp"
-#include "ublkpp/raid/raid0.hpp"
+#include "ublkpp/lib/ublk_disk.hpp"
+#include "ublkpp/raid.hpp"
 #include "raid/raid0/raid0_impl.hpp"
 #include "raid/tests/raid_test_common.hpp"
 #include "tests/mock_ublksrv/mock_ublksrv.hpp"
@@ -18,7 +19,7 @@ using ::testing::Return;
 using ::ublkpp::Gi;
 using ::ublkpp::io_result;
 using ::ublkpp::Ki;
-using ::ublkpp::UblkDisk;
+using ::ublkpp::ublk_disk;
 using ::ublkpp::test::make_async_iov_action;
 
 struct AsyncRaid0Fixture : public ::testing::Test {
@@ -26,7 +27,7 @@ struct AsyncRaid0Fixture : public ::testing::Test {
     static constexpr uint64_t k_disk_cap = 1 * Gi;
 
     std::shared_ptr< ublkpp::AsyncTestDisk > disk_a, disk_b, disk_c;
-    std::shared_ptr< ublkpp::Raid0Disk > raid;
+    std::shared_ptr< ublkpp::ublk_disk > raid;
     std::unique_ptr< ublkpp::MockUblksrv > mock;
 
     void SetUp() override {
@@ -43,9 +44,8 @@ struct AsyncRaid0Fixture : public ::testing::Test {
                 });
             ON_CALL(*d, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
         }
-        raid =
-            std::make_shared< ublkpp::Raid0Disk >(boost::uuids::random_generator()(), k_stripe_size,
-                                                  std::vector< std::shared_ptr< UblkDisk > >{disk_a, disk_b, disk_c});
+        raid = ublkpp::make_raid0_disk(boost::uuids::random_generator()(), k_stripe_size,
+                                       std::vector< std::shared_ptr< ublk_disk > >{disk_a, disk_b, disk_c});
         mock = std::make_unique< ublkpp::MockUblksrv >(raid);
     }
 };

@@ -12,7 +12,7 @@
 - **RAID1 Resilient Bitmap**: Memory-efficient dirty tracking (4 KiB page tracks 1 GiB data)
 - **Hot Device Replacement**: Swap devices in degraded RAID1 arrays without downtime
 - **Lock-Free I/O Path**: Read/write operations use lock-free algorithms (x86-64/ARM64)
-- **Multiple Backends**: File system, iSCSI, and HomeBlocks support
+- **Factory-Based API**: File-backed disks and RAID compositions through supported factory functions
 - **Comprehensive Testing**: High test coverage with unit and integration tests
 - **Modern C++**: Built with C++23, leveraging `std::expected` for error handling
 - **Production Ready**: Thread-safe, handles degraded modes, optimistic recovery
@@ -59,9 +59,6 @@ conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
 conan build -s:h build_type=Debug -o sanitize=address --build missing ublkpp
 conan build -s:h build_type=Debug -o sanitize=thread --build missing ublkpp
 
-# Optional backends
-conan build -o homeblocks=True --build missing ublkpp
-conan build -o iscsi=True --build missing ublkpp
 ```
 
 ## 🏗️ Architecture
@@ -71,11 +68,13 @@ conan build -o iscsi=True --build missing ublkpp
 ```
 ublkpp/
 ├── include/ublkpp/       # Public headers
-│   ├── raid/             # RAID0, RAID1 interfaces
-│   └── drivers/          # FSDisk, iSCSIDisk, HomeBlkDisk
+│   ├── drivers.hpp       # File-backed disk factory
+│   ├── raid.hpp          # RAID factories and helpers
+│   ├── target.hpp        # ublk target interface
+│   └── lib/              # Base disk subclassing API
 ├── src/
-│   ├── driver/           # Backend implementations
-│   ├── lib/              # Core UblkDisk base classes
+│   ├── driver/           # File-backed backend implementation
+│   ├── lib/              # Core ublk_disk base classes
 │   ├── metrics/          # I/O and RAID metrics
 │   ├── raid/             # RAID logic (bitmap, superblock)
 │   └── target/           # ublkpp_tgt
@@ -84,11 +83,12 @@ ublkpp/
 
 ### Core Abstractions
 
-- **`UblkDisk`**: Base class for all block devices
-- **`FSDisk`**: File-based block device implementation
-- **`Raid0Disk`**: Striping across multiple devices
-- **`Raid1Disk`**: Mirroring with bitmap-based resilience
-- **`UblkTarget`**: Exposes devices to kernel via ublk
+- **`ublk_disk`**: Base class for all block devices
+- **`disk_handle`**: Shared ownership handle for disks and RAID composites
+- **`make_fs_disk()`**: File/block-backed disk construction
+- **`make_raid0_disk()` / `make_raid1_disk()`**: RAID composition factories
+- **`raid0::*` / `raid1::*`**: Free-function helpers for topology and mirror management
+- **`ublkpp_tgt`**: Exposes devices to kernel via ublk
 
 ## 💾 RAID Features
 
@@ -193,7 +193,7 @@ $ sudo mount /dev/ublkb0 /mnt
 
 | Element | Convention | Example |
 |---------|------------|---------|
-| Classes | PascalCase | `Raid1Disk` |
+| Classes | PascalCase | `Raid1ResyncTask` |
 | Functions | snake_case | `async_iov()` |
 | Members | _snake_case | `_device` |
 | Constants | k_snake_case | `k_page_size` |
@@ -216,7 +216,7 @@ conan build -s:h build_type=Debug --build missing ublkpp
 Uses `std::expected<T, std::error_condition>` pattern:
 
 ```cpp
-using io_result = std::expected<int, std::error_condition>;
+using io_result = std::expected<size_t, std::error_condition>;
 
 io_result write_data(uint64_t addr, uint32_t len) {
     if (auto res = device->sync_iov(UBLK_IO_OP_WRITE, iov, 1, addr); !res) {
@@ -271,7 +271,7 @@ TEST(Raid1, YourTestName) {
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 
-    auto raid = ublkpp::Raid1Disk(uuid, device_a, device_b);
+    auto raid = ublkpp::make_raid1_disk(uuid, device_a, device_b);
 
     // Test logic...
     EXPECT_EQ(expected, actual);
@@ -290,8 +290,6 @@ TEST(Raid1, YourTestName) {
 ### Optional Dependencies
 
 - **[iomgr](https://github.com/eBay/IOManager)**: Async I/O (for testing)
-- **[homeblks](https://github.com/eBay/HomeBlocks)**: HomeBlocks backend
-- **libiscsi**: iSCSI backend support
 
 ### Build Tools
 

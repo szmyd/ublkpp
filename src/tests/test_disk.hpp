@@ -6,6 +6,8 @@
 #include <sisl/logging/logging.h>
 #include <ublksrv.h>
 
+#include "lib/internal/common.hpp"
+
 using ::ublkpp::ilog2;
 using ::ublkpp::Ki;
 
@@ -22,10 +24,10 @@ struct TestParams {
 
 namespace ublkpp {
 
-class TestDisk : public UblkDisk {
+class TestDisk : public ublk_disk {
 public:
     std::string my_id;
-    explicit TestDisk(TestParams const& test_params) : UblkDisk(), my_id(test_params.id) {
+    explicit TestDisk(TestParams const& test_params) : ublk_disk(), my_id(test_params.id) {
         auto& our_params = *params();
         our_params.basic.dev_sectors = test_params.capacity >> SECTOR_SHIFT;
         our_params.basic.logical_bs_shift = ilog2(test_params.l_size);
@@ -35,11 +37,11 @@ public:
             our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
         else
             our_params.types |= UBLK_PARAM_TYPE_DISCARD;
-        direct_io = test_params.direct_io;
+        _direct_io = test_params.direct_io;
     }
     std::string id() const noexcept override { return my_id; }
 
-    MOCK_METHOD(std::list< int >, prepare, (ublksrv_queue const*, int const), (override));
+    MOCK_METHOD(std::vector< int >, prepare, (ublksrv_queue const*, int const), (override));
     MOCK_METHOD(void, idle_transition, (ublksrv_queue const*, bool), (override));
 
     MOCK_METHOD(io_result, submit_iov, (ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t));

@@ -14,7 +14,7 @@
 
 namespace ublkpp {
 
-// Drives UblkDisk I/O directly with a real io_uring, bypassing ublkpp_tgt coroutines
+// Drives ublk_disk I/O directly with a real io_uring, bypassing ublkpp_tgt coroutines
 // and the ublk kernel module. Suitable for CI where the ublk module is unavailable.
 //
 // submit_io starts a disk async_iov task and returns the number of registered CqeStates.
@@ -30,7 +30,7 @@ public:
     // disk: disk to drive (FSDisk, Raid0Disk, Raid1Disk, ...)
     // q_depth: number of concurrent I/O slots (must be >= fio iodepth)
     // nr_queues: number of simulated queue threads (calls prepare once per queue)
-    explicit MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth = 128, int nr_queues = 1);
+    explicit MockUblksrv(std::shared_ptr< ublk_disk > disk, int q_depth = 128, int nr_queues = 1);
     ~MockUblksrv();
 
     MockUblksrv(MockUblksrv const&) = delete;
@@ -75,7 +75,7 @@ private:
     ublksrv_dev _dev{};
     std::vector< ublksrv_queue > _queues;
     io_uring _ring{};
-    std::shared_ptr< UblkDisk > _disk;
+    std::shared_ptr< ublk_disk > _disk;
     std::vector< TagState > _tags;
 
     // async_io _pool — one per tag, mirrors what init_queue does via placement new

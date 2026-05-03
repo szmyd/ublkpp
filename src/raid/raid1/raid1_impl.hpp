@@ -2,7 +2,7 @@
 
 #include <memory>
 
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/raid.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_avail_probe.hpp"
 #include "raid1_superblock.hpp"
@@ -17,18 +17,18 @@ class Raid1ResyncTask;
 struct RouteState;
 
 struct MirrorDevice {
-    MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device);
-    std::shared_ptr< UblkDisk > const disk;
+    MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > device);
+    std::shared_ptr< ublk_disk > const disk;
     std::shared_ptr< SuperBlock > sb; // Only used during load_superblock time
     std::atomic_flag unavail;
 
     bool new_device{true};
 };
 
-class Raid1DiskImpl : public UblkDisk {
+class Raid1Disk : public ublk_disk {
     boost::uuids::uuid const _uuid;
     std::string const _str_uuid;
-    uint64_t reserved_size{0UL};
+    uint64_t _reserved_size{0UL};
 
     std::shared_ptr< MirrorDevice > _device_a;
     std::shared_ptr< MirrorDevice > _device_b;
@@ -73,9 +73,9 @@ class Raid1DiskImpl : public UblkDisk {
                        raid1::read_route const& cur_route);
 
     // Constructor helpers
-    void __init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b);
-    void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                                      std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id);
+    void __init_params(std::shared_ptr< ublk_disk > const& dev_a, std::shared_ptr< ublk_disk > const& dev_b);
+    void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
+                                      std::shared_ptr< ublk_disk > dev_b, std::string const& parent_id);
     void __init_bitmap_and_degraded_route();
     void __become_active();
 
@@ -116,23 +116,23 @@ class Raid1DiskImpl : public UblkDisk {
     // clang-format on
 
 public:
-    Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a, std::shared_ptr< UblkDisk > dev_b,
-                  std::string const& parent_id = "");
-    ~Raid1DiskImpl() override;
+    Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a, std::shared_ptr< ublk_disk > dev_b,
+              std::string const& parent_id = "");
+    ~Raid1Disk() override;
 
     /// Raid1Disk API
     /// =============
-    std::shared_ptr< UblkDisk > swap_device(std::string const& old_device_id, std::shared_ptr< UblkDisk > new_device);
+    std::shared_ptr< ublk_disk > swap_device(std::string const& old_device_id, std::shared_ptr< ublk_disk > new_device);
     raid1::array_state replica_states() const noexcept;
-    uint64_t get_reserved_size() const noexcept { return reserved_size; }
+    uint64_t reserved_size() const noexcept { return _reserved_size; }
     void toggle_resync(bool t);
-    std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > replicas() const noexcept;
+    std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > replicas() const noexcept;
     /// =============
 
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
-    std::list< int > prepare(ublksrv_queue const* q, int const iouring_device) override;
+    std::vector< int > prepare(ublksrv_queue const* q, int const iouring_device) override;
     void idle_transition(ublksrv_queue const* q, bool enter) noexcept override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,

@@ -1,14 +1,18 @@
-#include "ublkpp/raid/raid0.hpp"
+#include "ublkpp/raid.hpp"
 
 #include <bit>
 #include <boost/uuid/uuid_io.hpp>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
 
+#include <ublkpp/lib/disk_task.hpp>
+#include <ublkpp/lib/ublk_disk.hpp>
+
 #include "raid0_impl.hpp"
 #include "lib/logging.hpp"
 
 namespace ublkpp {
+constexpr uint32_t _max_stripe_cnt{64};
 
 class StripeDevice {
     struct destroy_sb {
@@ -19,20 +23,50 @@ class StripeDevice {
     };
 
 public:
-    StripeDevice(std::shared_ptr< UblkDisk > device, raid0::SuperBlock* super) :
+    StripeDevice(std::shared_ptr< ublk_disk > device, raid0::SuperBlock* super) :
             disk(std::move(device)), _sb(super, destroy_sb()) {}
-    std::shared_ptr< UblkDisk > disk;
+    std::shared_ptr< ublk_disk > disk;
     std::unique_ptr< raid0::SuperBlock, destroy_sb > _sb;
 };
 
-static raid0::SuperBlock* read_superblock(UblkDisk& device);
-static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb);
+static raid0::SuperBlock* read_superblock(ublk_disk& device);
+static io_result write_superblock(ublk_disk& device, raid0::SuperBlock* sb);
 static std::expected< raid0::SuperBlock*, std::error_condition >
-load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off);
+load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off);
+
+// File-local concrete ublk_disk; constructed only via the make_raid0_disk factory below. The
+// public header exposes only the factory + raid0:: free functions; consumers operate against
+// the ublk_disk virtual interface.
+class Raid0Disk : public ublk_disk {
+    std::vector< std::unique_ptr< StripeDevice > > _stripe_array;
+
+    uint32_t _stripe_size{0};
+    uint32_t _stride_width{0};
+
+    io_result __distribute(iovec* iov, uint64_t addr, auto&& func) const;
+
+public:
+    Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
+              std::vector< std::shared_ptr< ublk_disk > >&& disks);
+    ~Raid0Disk() override;
+
+    std::shared_ptr< ublk_disk > get_device(uint32_t stripe_offset) const noexcept;
+    uint32_t stripe_size() const noexcept { return _stripe_size; }
+
+    std::string id() const noexcept override { return "RAID0"; }
+    std::vector< int > prepare(ublksrv_queue const*, int const iouring_device) override;
+
+    disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                               uint64_t addr) override;
+
+    void idle_transition(ublksrv_queue const*, bool) override;
+
+    io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
+};
 
 Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
-                     std::vector< std::shared_ptr< UblkDisk > >&& disks) :
-        UblkDisk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
+                     std::vector< std::shared_ptr< ublk_disk > >&& disks) :
+        ublk_disk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
     if (disks.size() > _max_stripe_cnt)
         throw std::invalid_argument(
             fmt::format("Raid0Disk: too many disks ({}), max is {}", disks.size(), _max_stripe_cnt));
@@ -40,24 +74,23 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     auto& our_params = *params();
     our_params.types |= UBLK_PARAM_TYPE_DISCARD;
     our_params.basic.dev_sectors = UINT64_MAX;
-    direct_io = true;
+    _direct_io = true;
 
     auto alt_stripe = false;
     our_params.basic.physical_bs_shift = ilog2(stripe_size_bytes);
     our_params.basic.io_opt_shift = ilog2(_stride_width);
     for (auto&& device : disks) {
-        auto const& dev_params = *device->params();
         // We'll use dev_sectors to track the smallest array device we have
-        our_params.basic.dev_sectors = std::min(our_params.basic.dev_sectors, dev_params.basic.dev_sectors);
+        our_params.basic.dev_sectors =
+            std::min< uint64_t >(our_params.basic.dev_sectors, device->capacity() >> SECTOR_SHIFT);
         our_params.basic.logical_bs_shift =
-            std::max(our_params.basic.logical_bs_shift, dev_params.basic.logical_bs_shift);
-        our_params.basic.max_sectors = std::min(our_params.basic.max_sectors,
-                                                static_cast< uint32_t >(dev_params.basic.max_sectors * disks.size()));
+            std::max(our_params.basic.logical_bs_shift, static_cast< uint8_t >(ilog2(device->block_size())));
+        our_params.basic.max_sectors = std::min(
+            our_params.basic.max_sectors, static_cast< uint32_t >((device->max_tx() >> SECTOR_SHIFT) * disks.size()));
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
-        if (!device->uses_ublk_iouring) uses_ublk_iouring = false;
 
-        direct_io = direct_io ? device->direct_io : false;
+        _direct_io = _direct_io ? device->direct_io() : false;
 
         auto this_alt_stripe = _stripe_size;
         auto sb = load_superblock(*device, uuid, this_alt_stripe, _stripe_array.size());
@@ -86,7 +119,7 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
 
 Raid0Disk::~Raid0Disk() = default;
 
-std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const noexcept {
+std::shared_ptr< ublk_disk > Raid0Disk::get_device(uint32_t stripe_offset) const noexcept {
     if (auto const width = _stripe_array.size(); width <= stripe_offset) {
         RLOGW("Stripe offset [{}] larger than array width [{}]", stripe_offset, width)
         return nullptr;
@@ -94,10 +127,11 @@ std::shared_ptr< UblkDisk > Raid0Disk::get_device(uint32_t stripe_offset) const 
     return _stripe_array[stripe_offset]->disk;
 }
 
-std::list< int > Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
-    auto fds = std::list< int >();
+std::vector< int > Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
+    auto fds = std::vector< int >();
     for (auto& stripe : _stripe_array) {
-        fds.splice(fds.end(), stripe->disk->prepare(q, iouring_device_start + fds.size()));
+        auto child = stripe->disk->prepare(q, iouring_device_start + fds.size());
+        fds.insert(fds.end(), child.begin(), child.end());
     }
     return fds;
 }
@@ -177,7 +211,7 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                             RLOGT("Perform {}: ublk sync_io -> "
                                   "[stripe_off:{}|logical_sector:{}|logical_len:{:#0x}]",
                                   op == UBLK_IO_OP_READ ? "READ" : "WRITE", stripe_off, logical_off >> SECTOR_SHIFT,
-                                  __iovec_len(iov, iov + nr_iovs))
+                                  iovec_len(iov, iov + nr_iovs))
                             return _stripe_array[stripe_off]->disk->sync_iov(op, iov, nr_iovs, logical_off);
                         });
 }
@@ -243,7 +277,7 @@ static const uint8_t magic_bytes[16] = {0127, 0345, 072,  0211, 0254, 033,  070,
                                         0125, 0377, 0204, 065,  0131, 0120, 0306, 047};
 constexpr auto SB_VERSION = 1;
 
-static raid0::SuperBlock* read_superblock(UblkDisk& device) {
+static raid0::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid0::SuperBlock);
     RLOGT("Reading Superblock from: [{}] {}%{} == {}", device, sb_size, device.block_size(),
           sb_size % device.block_size())
@@ -264,7 +298,7 @@ static raid0::SuperBlock* read_superblock(UblkDisk& device) {
     return static_cast< raid0::SuperBlock* >(iov.iov_base);
 }
 
-static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb) {
+static io_result write_superblock(ublk_disk& device, raid0::SuperBlock* sb) {
     auto const sb_size = sizeof(raid0::SuperBlock);
     RLOGT("Writing Superblock to: [{}]", device)
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
@@ -278,7 +312,7 @@ static io_result write_superblock(UblkDisk& device, raid0::SuperBlock* sb) {
 // Read and load the RAID0 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
 static std::expected< raid0::SuperBlock*, std::error_condition >
-load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off) {
+load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t& stripe_size, uint16_t const stripe_off) {
     auto sb = read_superblock(device);
     if (!sb) return std::unexpected(std::make_error_condition(std::errc::io_error));
 
@@ -328,4 +362,18 @@ load_superblock(UblkDisk& device, boost::uuids::uuid const& uuid, uint32_t& stri
     return sb;
 }
 
+std::shared_ptr< ublk_disk > make_raid0_disk(boost::uuids::uuid const& uuid, uint32_t stripe_size_bytes,
+                                             std::vector< std::shared_ptr< ublk_disk > >&& disks) {
+    return std::make_shared< Raid0Disk >(uuid, stripe_size_bytes, std::move(disks));
+}
+
+namespace raid0 {
+
+std::shared_ptr< ublk_disk > get_device(ublk_disk const& disk, uint32_t stripe_offset) noexcept {
+    auto const* r0 = dynamic_cast< Raid0Disk const* >(&disk);
+    if (!r0) return nullptr;
+    return r0->get_device(stripe_offset);
+}
+
+} // namespace raid0
 } // namespace ublkpp

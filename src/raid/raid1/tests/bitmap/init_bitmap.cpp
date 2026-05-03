@@ -37,8 +37,8 @@ TEST(Raid1, InitBitmap) {
         .WillRepeatedly([max_tx = device->max_tx(), &total_written,
                          &max_pages](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
             EXPECT_LE(nr_vecs, max_pages);
-            total_written += ublkpp::__iovec_len(iovecs, iovecs + nr_vecs);
-            EXPECT_LE(ublkpp::__iovec_len(iovecs, iovecs + nr_vecs), max_tx);
+            total_written += ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+            EXPECT_LE(ublkpp::iovec_len(iovecs, iovecs + nr_vecs), max_tx);
             EXPECT_GE(addr, ublkpp::raid1::Bitmap::page_size());       // Expect write to bitmap!
             EXPECT_LE(addr, 100 * ublkpp::raid1::Bitmap::page_size()); // Expect write to bitmap!
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::Bitmap::page_size()));

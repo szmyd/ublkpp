@@ -8,6 +8,8 @@ extern "C" {
 #include <map>
 #include <tuple>
 
+#include "lib/internal/common.hpp"
+
 namespace ublkpp::raid0 {
 
 constexpr auto k_page_size = 4 * Ki;

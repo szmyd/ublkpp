@@ -1,4 +1,4 @@
-#include "ublkpp/ublkpp.hpp"
+#include "ublkpp/target.hpp"
 
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
@@ -15,6 +15,8 @@
 
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "lib/logging.hpp"
+#include "lib/internal/common.hpp"
+#include "lib/internal/ublkpp_int.hpp"
 #include <ublkpp/lib/cqe_state.hpp>
 #include "ublkpp_tgt_impl.hpp"
 
@@ -31,7 +33,7 @@ using namespace std::chrono_literals;
 
 namespace ublkpp {
 
-ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > d) :
+ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d) :
         volume_uuid(vol_id), device(std::move(d)), metrics(UblkIOMetrics(to_string(vol_id))) {}
 
 static std::mutex _map_lock;
@@ -55,8 +57,6 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
     return false;
 }
 
-// bit 63 = is_target_io (matches ublksrv_priv.h encoding)
-static constexpr uint64_t k_target_bit = 1ULL << 63;
 // Matches UBLKSRV_IO_IDLE_SECS defined privately in ublksrv.c
 static constexpr int k_io_idle_secs = 20;
 
@@ -221,7 +221,11 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 
     // Start processing I/Os
     if (!recovery) {
-        if (auto err = ublksrv_ctrl_set_params(ctrl_dev, dev_ptr->params()); err)
+        // ublksrv_ctrl_set_params is missing const-correctness in the C header; the call does
+        // not mutate. Cast away const at the kernel-API boundary only.
+        if (auto err =
+                ublksrv_ctrl_set_params(ctrl_dev, const_cast< ublk_params* >(detail::params_access::of(*dev_ptr)));
+            err)
             return std::unexpected(std::error_condition(err, std::system_category()));
         if (auto err = ublksrv_ctrl_start_dev(ctrl_dev, getpid()); 0 > err)
             return std::unexpected(std::error_condition(err, std::system_category()));
@@ -238,7 +242,7 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
 
-    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     auto io = reinterpret_cast< async_io* >(data->private_data);
     io->_pool.clear();
     io->_tag = data->tag;
@@ -300,7 +304,7 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 
     auto ublksrv_tgt = &dev->tgt;
     ublksrv_tgt->io_data_size = sizeof(struct async_io);
-    ublksrv_tgt->dev_size = ublk_disk->params()->basic.dev_sectors << SECTOR_SHIFT;
+    ublksrv_tgt->dev_size = ublk_disk->capacity();
     ublksrv_tgt->tgt_ring_depth = 256;
 
     // iouring FD 0 is reserved for the ublkc device; prepare is called per queue in init_queue.
@@ -313,12 +317,12 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 static void deinit_tgt(const struct ublksrv_dev*) { TLOGD("Deinit tgt!") }
 static void idle_transition(ublksrv_queue const* q, bool enter) {
     TLOGT("Idle Trans: {}", enter)
-    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     device->idle_transition(q, enter);
 }
 static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
-    auto device = reinterpret_cast< UblkDisk* >(q->dev->tgt.tgt_data);
+    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
     // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
     if (!device->prepare(q, 0).empty()) return -1;
@@ -335,7 +339,7 @@ static void deinit_queue(const struct ublksrv_queue* q) {
 }
 
 // Setup ublksrv ctrl device and initiate adding the target to the ublksrv service and handle all device traffic
-ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< UblkDisk > device,
+ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > device,
                                          int device_id) {
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
     if (0 <= device_id) tgt->device_recovering = true;
@@ -368,7 +372,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
         .reserved = {0, 0, 0, 0, 0} // Reserved
     });
 
-    TLOGD("Starting {} [uuid:{}]", static_pointer_cast< UblkDisk >(device), to_string(vol_id))
+    TLOGD("Starting {} [uuid:{}]", static_pointer_cast< ublk_disk >(device), to_string(vol_id))
     tgt->dev_data = std::make_unique< ublksrv_dev_data >(ublksrv_dev_data{
         .dev_id = device_id,
         .max_io_buf_bytes = SISL_OPTIONS["max_io_size"].as< uint32_t >(),
@@ -399,7 +403,7 @@ ublkpp_tgt::ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p) : _p(p) {}
 ublkpp_tgt::~ublkpp_tgt() = default;
 
 std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; }
-std::shared_ptr< UblkDisk > ublkpp_tgt::device() const { return _p->device; }
+std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }

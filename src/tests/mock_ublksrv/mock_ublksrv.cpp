@@ -8,7 +8,7 @@ extern "C" {
 
 #include <ublksrv.h>
 
-#include "ublkpp/lib/common.hpp"
+#include "lib/internal/common.hpp"
 
 namespace ublkpp {
 
@@ -16,7 +16,7 @@ namespace ublkpp {
 static constexpr size_t k_max_io_size = DEF_BUF_SIZE;
 static constexpr size_t k_sector_align = 512;
 
-MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_queues) :
+MockUblksrv::MockUblksrv(std::shared_ptr< ublk_disk > disk, int q_depth, int nr_queues) :
         _q_depth(q_depth),
         _disk(std::move(disk)),
         _tags(q_depth),
@@ -44,7 +44,7 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
     }
 
     // Simulate init_queue: call prepare once per queue thread so the disk can count queues
-    // and perform per-queue initialization (e.g. Raid1DiskImpl sets _nr_hw_queues and enables resync).
+    // and perform per-queue initialization (e.g. Raid1Disk sets _nr_hw_queues and enables resync).
     for (int qi = 0; qi < nr_queues; ++qi) {
         for (auto const fd : _disk->prepare(&_queues[qi], _dev.tgt.nr_fds)) {
             if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;

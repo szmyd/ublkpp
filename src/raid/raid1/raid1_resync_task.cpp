@@ -188,11 +188,11 @@ static inline io_result __copy_region(iovec* iovec, int nr_vecs, uint64_t addr, 
     auto res = src.sync_iov(UBLK_IO_OP_READ, iovec, nr_vecs, addr);
     if (res) {
         if (res = dest.sync_iov(UBLK_IO_OP_WRITE, iovec, nr_vecs, addr); !res) {
-            RLOGW("Could not write clean chunks of [sz:{}] [res:{}]", __iovec_len(iovec, iovec + nr_vecs),
+            RLOGW("Could not write clean chunks of [sz:{}] [res:{}]", iovec_len(iovec, iovec + nr_vecs),
                   res.error().message())
         }
     } else {
-        RLOGE("Could not read Data of [sz:{}] [res:{}]", __iovec_len(iovec, iovec + nr_vecs), res.error().message())
+        RLOGE("Could not read Data of [sz:{}] [res:{}]", iovec_len(iovec, iovec + nr_vecs), res.error().message())
     }
     return res;
 }

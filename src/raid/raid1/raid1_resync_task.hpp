@@ -7,7 +7,7 @@
 
 #include <sisl/fds/atomic_status_counter.hpp>
 
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/raid.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
 

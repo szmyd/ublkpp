@@ -9,7 +9,7 @@ TEST(Raid0, WrongUUIDA) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid0::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid0::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid0::k_page_size);
             auto superblock = reinterpret_cast< ublkpp::raid0::SuperBlock* >(iovecs->iov_base);
@@ -17,8 +17,8 @@ TEST(Raid0, WrongUUIDA) {
             return ublkpp::raid0::k_page_size;
         });
 
-    EXPECT_THROW(ublkpp::Raid0Disk(boost::uuids::string_generator()(test_uuid), 128 * Ki,
-                                   std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b}),
+    EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::string_generator()(test_uuid), 128 * Ki,
+                                         std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b}),
                  std::runtime_error);
 }
 
@@ -30,7 +30,7 @@ TEST(Raid0, WrongUUIDB) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid0::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid0::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid0::k_page_size);
 
@@ -41,7 +41,7 @@ TEST(Raid0, WrongUUIDB) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid0::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid0::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid0::k_page_size);
             auto superblock = reinterpret_cast< ublkpp::raid0::SuperBlock* >(iovecs->iov_base);
@@ -49,7 +49,7 @@ TEST(Raid0, WrongUUIDB) {
             return ublkpp::raid0::k_page_size;
         });
 
-    EXPECT_THROW(ublkpp::Raid0Disk(boost::uuids::string_generator()(test_uuid), 128 * Ki,
-                                   std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b}),
+    EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::string_generator()(test_uuid), 128 * Ki,
+                                         std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b}),
                  std::runtime_error);
 }

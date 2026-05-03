@@ -5,7 +5,7 @@ TEST(Raid1, IdleTransitionEnter) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Should not crash - manages internal resync state
     raid_device.idle_transition(nullptr, true);
@@ -20,7 +20,7 @@ TEST(Raid1, IdleTransitionRoundTrip) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Should not crash - manages internal resync state
     // enter must precede exit to satisfy the ublksrv contract (both devices are available
@@ -38,7 +38,7 @@ TEST(Raid1, CollectAsyncEmpty) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     std::list< ublkpp::async_result > results;
     raid_device.collect_async(nullptr, results);
@@ -55,7 +55,7 @@ TEST(Raid1, HandleFlush) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     auto ublk_data = make_io_data(UBLK_IO_OP_FLUSH);
     auto res = raid_device.handle_flush(nullptr, &ublk_data, 0);

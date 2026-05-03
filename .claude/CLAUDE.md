@@ -48,7 +48,8 @@ conan build -s:h build_type=Debug --build missing ublkpp
 # Release / Coverage / Sanitizers
 conan build -s:h build_type=Release --build missing ublkpp
 conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
-conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
+conan build -s:h build_type=Debug -o sanitize=address --build missing ublkpp
+conan build -s:h build_type=Debug -o sanitize=thread --build missing ublkpp
 
 # Format code (applied automatically after edits to C/C++ files)
 # Run on each modified file: clang-format -style=file -i -fallback-style=none file.cpp
@@ -59,7 +60,7 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 **Style:** 4-space indent, 120-char lines, `#pragma once`, left pointer alignment (`Type* ptr`), C++23
 
 **Naming:**
-- Classes: `PascalCase` (Raid1Disk)
+- Classes: `PascalCase` (Raid1ResyncTask)
 - Functions: `snake_case` (async_iov)
 - Members: `_snake_case` (_device)
 - Constants: `k_snake_case` (k_page_size)
@@ -68,12 +69,12 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 
 **Error Handling:**
 - Use `std::expected<T, std::error_condition>`
-- Type alias: `io_result = std::expected<int, std::error_condition>`
+- Type alias: `io_result = std::expected<size_t, std::error_condition>`
 - Log errors before returning: `DLOGE("...", strerror(errno))`
 
 **Logging:**
 - Use SISL macros: `RLOGW`, `DLOGE`, `TLOGD`, `TLOGE`, `LOGINFO`
-- Modules: `ublksrv`, `ublk_tgt`, `ublk_raid`, `ublk_drivers`, `libiscsi`
+- Modules: `ublksrv`, `ublk_tgt`, `ublk_raid`, `ublk_drivers`
 
 ## Development Workflow
 
@@ -130,9 +131,9 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 
 ```
 src/
-├── driver/   # FSDisk, iSCSIDisk, HomeBlkDisk
-├── lib/      # UblkDisk base, utilities
-├── metrics/  # IO, FSDisk, RAID metrics
+├── driver/   # File-backed backend implementation
+├── lib/      # ublk_disk base, utilities
+├── metrics/  # IO and RAID metrics
 ├── raid/     # RAID0, RAID1 (bitmap, superblock)
 └── target/   # ublkpp_tgt
 

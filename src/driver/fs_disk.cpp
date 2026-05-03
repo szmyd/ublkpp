@@ -1,4 +1,4 @@
-#include "ublkpp/drivers/fs_disk.hpp"
+#include "ublkpp/drivers.hpp"
 
 extern "C" {
 #include <fcntl.h>
@@ -17,10 +17,14 @@ extern "C" {
 #include <ublksrv_utils.h>
 #include <ublksrv.h>
 
+#include <ublkpp/lib/cqe_state.hpp>
+#include <ublkpp/lib/disk_task.hpp>
+#include <ublkpp/lib/ublk_disk.hpp>
+
 #include "fs_disk_impl.hpp"
+#include "lib/internal/common.hpp"
 #include "lib/logging.hpp"
 #include "metrics/ublk_fsdisk_metrics.hpp"
-#include <ublkpp/lib/cqe_state.hpp>
 #include "target/ublkpp_tgt_impl.hpp"
 
 namespace ublkpp {
@@ -45,7 +49,31 @@ static bool buffered_uring_broken() {
 }
 static bool const k_buffered_uring_broken = buffered_uring_broken();
 
-FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) : UblkDisk(), _path(path) {
+// File-local concrete ublk_disk; constructed only via the make_fs_disk factory below. The public
+// header exposes only the factory; consumers (raid composers, target wiring) operate against the
+// ublk_disk virtual interface.
+class FSDisk : public ublk_disk {
+    std::filesystem::path _path;
+    int _fd{-1};
+    bool _block_device{false};
+    std::unique_ptr< UblkFSDiskMetrics > _metrics;
+
+public:
+    explicit FSDisk(std::filesystem::path const& path, std::string const& parent_id = "");
+    ~FSDisk() override;
+
+    std::string id() const noexcept override { return _path.native(); }
+
+    disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                               uint64_t addr) override;
+    io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
+
+private:
+    std::pair< io_result, cqe_state* > handle_discard(ublksrv_queue const* q, ublk_io_data const* data, uint32_t len,
+                                                      uint64_t addr);
+};
+
+FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) : ublk_disk(), _path(path) {
     // Create metrics with parent_id for correlation
     if (!parent_id.empty()) { _metrics = std::make_unique< UblkFSDiskMetrics >(parent_id, _path.string()); }
     auto const str_path = _path.native();
@@ -104,7 +132,7 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
     if (overlayfs) {
         DLOGD("overlayfs detected — O_DIRECT not supported by io_uring on this fs, using BUFFERED.")
     } else if (!fcntl(_fd, F_SETFL, O_DIRECT)) {
-        direct_io = true;
+        _direct_io = true;
     } else {
         DLOGD("Unable to support DIRECT I/O, using BUFFERED.")
     }
@@ -119,7 +147,7 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
 
 FSDisk::~FSDisk() {
     if (0 <= _fd) {
-        if (!direct_io) fdatasync(_fd);
+        if (!_direct_io) fdatasync(_fd);
         close(_fd);
     }
 }
@@ -128,22 +156,12 @@ FSDisk::~FSDisk() {
 // This is an optimization to register the Linux FDs in the kernel, currently it is disabled
 // as we don't support unregistering an FD during RAID1::swap_devcice, re-enable if this is fixed. and
 // enable IOSQE_FIXED_FILE below.
-// std::list< int > FSDisk::prepare(int const) {
+// std::vector< int > FSDisk::prepare(int const) {
 //    RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
 //    _uring_device = iouring_device_start;
 //    // We duplicate the FD here so ublksrv doesn't close it before we're ready
 //    return {dup(_fd)};
 //}
-
-static inline auto next_sqe(ublksrv_queue const* q) {
-    auto r = q->ring_ptr;
-    if (0 == io_uring_sq_space_left(r)) [[unlikely]]
-        io_uring_submit(r); // LCOV_EXCL_LINE
-    auto sqe = io_uring_get_sqe(r);
-    //    if (sqe) [[likely]]
-    //        io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
-    return sqe;
-}
 
 disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                    uint64_t addr) {
@@ -161,9 +179,9 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
         state = discard_state;
     } else {
         DLOGT("{} {} : [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
-              _path.native(), data->tag, addr, __iovec_len(iovecs, iovecs + nr_vecs))
+              _path.native(), data->tag, addr, iovec_len(iovecs, iovecs + nr_vecs))
         // LCOV_EXCL_START — kernel <= 5.4 sync fallback, not exercised in production
-        if (!direct_io && k_buffered_uring_broken) {
+        if (!_direct_io && k_buffered_uring_broken) {
             auto r = sync_iov(op, iovecs, nr_vecs, static_cast< off_t >(addr));
             if (!r) co_return -static_cast< int >(r.error().value());
             co_return 0; // inline completion
@@ -230,7 +248,7 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         DLOGE("Direct read on un-opened device!")
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
-    auto const len = __iovec_len(iovecs, iovecs + nr_vecs);
+    [[maybe_unused]] auto const len = iovec_len(iovecs, iovecs + nr_vecs);
     DLOGT("{} {} : [INTERNAL] ublk io [addr:{:#0x}|len:{:#0x}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
           _path.native(), addr, len)
     DEBUG_ASSERT_GE(capacity(), len + addr, "Access beyond device bounds!");
@@ -250,6 +268,10 @@ io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t ad
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return res;
+}
+
+std::shared_ptr< ublk_disk > make_fs_disk(std::filesystem::path const& path, std::string const& parent_id) {
+    return std::make_shared< FSDisk >(path, parent_id);
 }
 
 } // namespace ublkpp

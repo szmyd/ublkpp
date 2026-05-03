@@ -4,9 +4,11 @@
 #include <ublk_cmd.h>
 
 #include "logging.hpp"
+#include "internal/common.hpp"
+#include "internal/ublkpp_int.hpp"
 namespace ublkpp {
 
-UblkDisk::UblkDisk() :
+ublk_disk::ublk_disk() :
         _params(std::make_unique< ublk_params >(ublk_params{
             .len = 0,
             .types = UBLK_PARAM_TYPE_BASIC | UBLK_PARAM_TYPE_DMA_ALIGN,
@@ -41,34 +43,34 @@ UblkDisk::UblkDisk() :
                 },
         })) {}
 
-UblkDisk::~UblkDisk() = default;
+ublk_disk::~ublk_disk() = default;
 
-std::string UblkDisk::to_string() const {
-    auto const cap_denom = capacity() >= Ti ? Gi : Mi;
-    return fmt::format("[{}, size={}{}, lbs={:#0x}]", id(), capacity() / cap_denom, cap_denom == Gi ? "Gi" : "Mi",
-                       block_size());
-}
-uint32_t UblkDisk::block_size() const noexcept { return 1 << _params->basic.logical_bs_shift; }
-uint32_t UblkDisk::max_tx() const noexcept { return _params->basic.max_sectors << SECTOR_SHIFT; }
-bool UblkDisk::can_discard() const noexcept { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
-uint64_t UblkDisk::capacity() const noexcept { return _params->basic.dev_sectors << SECTOR_SHIFT; }
+uint32_t ublk_disk::block_size() const noexcept { return 1 << _params->basic.logical_bs_shift; }
+uint32_t ublk_disk::physical_block_size() const noexcept { return 1 << _params->basic.physical_bs_shift; }
+uint32_t ublk_disk::max_tx() const noexcept { return _params->basic.max_sectors << SECTOR_SHIFT; }
+bool ublk_disk::can_discard() const noexcept { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
+uint32_t ublk_disk::discard_granularity() const noexcept { return _params->discard.discard_granularity; }
+uint64_t ublk_disk::capacity() const noexcept { return _params->basic.dev_sectors << SECTOR_SHIFT; }
 
-DefunctDisk::DefunctDisk() : UblkDisk() {
-    direct_io = true;
-    auto& our_params = *params();
-    our_params.types |= UBLK_PARAM_TYPE_DISCARD;
-    our_params.basic.logical_bs_shift = 9;
-    our_params.basic.physical_bs_shift = 9;
-}
+namespace detail {
+ublk_params const* params_access::of(ublk_disk const& d) noexcept { return d.params(); }
+} // namespace detail
 
-std::string DefunctDisk::id() const noexcept { return "~DEFUNCT~"; }
+namespace {
+// Implementation shim for make_missing_disk(). Lives entirely in this TU; callers see only
+// the base ublk_disk through the shared_ptr returned by the factory.
+struct missing_disk_impl : ublk_disk {
+    missing_disk_impl() noexcept {
+        _is_missing = true;
+        _direct_io = true;
+        auto& our_params = *params();
+        our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+        our_params.basic.logical_bs_shift = 9;
+        our_params.basic.physical_bs_shift = 9;
+    }
+};
+} // namespace
 
-disk_task< int > DefunctDisk::async_iov(ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) {
-    co_return -EIO; // LCOV_EXCL_LINE
-}
-
-io_result DefunctDisk::sync_iov(uint8_t, iovec*, uint32_t, off_t) noexcept {
-    return std::unexpected(std::make_error_condition(std::errc::io_error));
-}
+std::shared_ptr< ublk_disk > make_missing_disk() { return std::make_shared< missing_disk_impl >(); }
 
 } // namespace ublkpp

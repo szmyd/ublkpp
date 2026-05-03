@@ -8,7 +8,8 @@
 #include <boost/uuid/string_generator.hpp>
 #include <ublksrv.h>
 
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/raid.hpp"
+#include "raid/raid1/raid1_impl.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
 #include "tests/test_disk.hpp"
 
@@ -57,7 +58,7 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
         .WillRepeatedly([op = (OP), side_b = (dev_b), f = (fail), s = (sz),                                            \
                          o = (off)](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {               \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
-            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
+            EXPECT_EQ(s, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));                                                 \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
@@ -73,7 +74,7 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
         .WillOnce([op = (OP), side_b = (dev_b), f = (fail), s = (sz),                                                  \
                    o = (off)](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {                     \
             EXPECT_EQ(1U, nr_vecs);                                                                                    \
-            EXPECT_EQ(s, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));                                               \
+            EXPECT_EQ(s, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));                                                 \
             EXPECT_EQ(o, addr);                                                                                        \
             if (f) return std::unexpected(std::make_error_condition(std::errc::io_error));                             \
             if (UBLK_IO_OP_READ == op && nullptr != iovecs->iov_base) {                                                \
@@ -114,7 +115,7 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
 
 // Helper function to wait for both devices to become clean
 // Returns true if both devices are clean, false if timeout
-inline bool wait_for_clean_state(ublkpp::Raid1Disk& raid_device,
+inline bool wait_for_clean_state(ublkpp::raid1::Raid1Disk& raid_device,
                                  std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
     using namespace std::chrono_literals;
     auto const start = std::chrono::steady_clock::now();

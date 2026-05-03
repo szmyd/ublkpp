@@ -5,7 +5,7 @@
 TEST(Raid1, SyncIoTracksReadFailures) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Device A fails sync read, device B succeeds
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(1).WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
@@ -34,7 +34,7 @@ TEST(Raid1, SyncIoTracksReadFailures) {
 TEST(Raid1, IdleProbeRecoversSingleUnavailDevice) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Induce UNAVAIL on device_a via a failing sync read
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(1).WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
@@ -71,7 +71,7 @@ TEST(Raid1, IdleProbeRecoversSingleUnavailDevice) {
 TEST(Raid1, IdleProbeKeepsUnavailOnProbeFailure) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Induce UNAVAIL on device_a
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(1).WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
@@ -108,7 +108,7 @@ TEST(Raid1, IdleProbeKeepsUnavailOnProbeFailure) {
 TEST(Raid1, IdleExitSkipsProbe) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Induce UNAVAIL on device_a
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(1).WillOnce([](uint8_t, iovec*, uint32_t, off_t) {
@@ -146,7 +146,7 @@ TEST(Raid1, IdleExitSkipsProbe) {
 TEST(Raid1, IdleProbeNoOpWhenBothClean) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Both CLEAN — no extra sync_iov expected (GMock catches unexpected calls)
     raid_device.idle_transition(nullptr, true);

@@ -8,7 +8,7 @@ using namespace std::chrono_literals;
 // Poll until bytes_to_sync reaches 0 AND no device is SYNCING, or the timeout elapses.
 // bytes_to_sync drains before the route is restored to EITHER, so checking both avoids
 // a race where we observe bytes_to_sync==0 but device_b still shows SYNCING.
-static void wait_for_resync(ublkpp::Raid1Disk* raid, int timeout_ms = 5000) {
+static void wait_for_resync(ublkpp::raid1::Raid1Disk* raid, int timeout_ms = 5000) {
     auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
         auto const s = raid->replica_states();

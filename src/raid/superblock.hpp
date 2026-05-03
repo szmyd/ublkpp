@@ -10,7 +10,7 @@
 namespace ublkpp {
 
 template < class SB >
-inline SB* read_superblock(UblkDisk& device) noexcept {
+inline SB* read_superblock(ublk_disk& device) noexcept {
     RLOGT("Reading Superblock from: [{}] {}%{} == {}", device, SB::SIZE, device.block_size(),
           SB::SIZE % device.block_size())
     DEBUG_ASSERT_EQ(0, SB::SIZE % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
@@ -31,7 +31,7 @@ inline SB* read_superblock(UblkDisk& device) noexcept {
 }
 
 template < typename SB >
-inline io_result write_superblock(UblkDisk& device, SB* sb) noexcept {
+inline io_result write_superblock(ublk_disk& device, SB* sb) noexcept {
     RLOGT("Writing Superblock to: [{}]", device)
     DEBUG_ASSERT_EQ(0, SB::SIZE % device.block_size(), "Device [{}] blocksize does not support alignment of [{}B]",
                     device, SB::SIZE)

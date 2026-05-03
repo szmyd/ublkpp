@@ -1,4 +1,4 @@
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/raid.hpp"
 
 #include <optional>
 #include <set>
@@ -37,10 +37,7 @@ constexpr auto k_min_page_depth = k_min_chunk_size * k_page_size * k_bits_in_byt
 constexpr uint64_t k_max_user_data =
     (unsigned __int128)(k_min_page_depth - k_page_size) * (UINT64_MAX - sizeof(SuperBlock)) / k_min_page_depth;
 
-// True if the dirty device is a DefunctDisk type
-#define DEFUNCT_DEVICE(d) (std::dynamic_pointer_cast< DefunctDisk >((d)) != nullptr)
-
-MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > device) :
+MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > device) :
         disk(std::move(device)) {
     auto chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
     if (k_min_chunk_size > chunk_size) {
@@ -48,8 +45,8 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< Ublk
         throw std::runtime_error("Invalid Chunk Size");
     } // LCOV_EXCL_STOP
 
-    // It is not a failure to be able to load the superblock from a DefunctDevice
-    if (DEFUNCT_DEVICE(disk)) return;
+    // It is not a failure to be able to load the superblock from a missing-leg placeholder
+    if (disk->is_missing()) return;
 
     auto read_super = load_superblock(*disk, uuid, chunk_size);
     if (!read_super) {
@@ -68,11 +65,11 @@ struct RouteState {
     bool is_degraded;
 };
 
-Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                             std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) :
-        UblkDisk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {
+Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
+                     std::shared_ptr< ublk_disk > dev_b, std::string const& parent_id) :
+        ublk_disk(), _uuid(uuid), _str_uuid(boost::uuids::to_string(uuid)) {
     // At least one device has to be "real"
-    if (DEFUNCT_DEVICE(dev_a) && DEFUNCT_DEVICE(dev_b))
+    if (dev_a->is_missing() && dev_b->is_missing())
         throw std::runtime_error("Can not run with both devices missing"); // LCOV_EXCL_LINE
 
     // Create metrics with parent_id for correlation
@@ -88,18 +85,17 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
     __init_bitmap_and_degraded_route();
 
     // Initialize resync_task
-    _resync_task = std::make_shared< Raid1ResyncTask >(_dirty_bitmap, reserved_size, block_size(),
+    _resync_task = std::make_shared< Raid1ResyncTask >(_dirty_bitmap, _reserved_size, block_size(),
                                                        params()->basic.max_sectors << SECTOR_SHIFT, _raid_metrics);
 
     // Write the up-to-date superblocks and mark devices as in use
     __become_active();
 }
 
-void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std::shared_ptr< UblkDisk > const& dev_b) {
+void Raid1Disk::__init_params(std::shared_ptr< ublk_disk > const& dev_a, std::shared_ptr< ublk_disk > const& dev_b) {
     RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
 
-    direct_io = true;          // RAID-1 prefers DIO; downgraded below if any member doesn't support it
-    uses_ublk_iouring = false; // RAID1 drives its own retry/failover coroutines; tgt must not complete io directly
+    _direct_io = true; // RAID-1 prefers DIO; downgraded below if any member doesn't support it
 
     // Discover overall Device parameters
     auto& our_params = *params();
@@ -110,37 +106,39 @@ void Raid1DiskImpl::__init_params(std::shared_ptr< UblkDisk > const& dev_a, std:
     our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
 
     // Now find the what size we should actually set based on the smallest provided device
-    for (auto device_array = std::set< std::shared_ptr< UblkDisk > >{dev_a, dev_b}; auto const& device : device_array) {
-        if (!device->direct_io) {
+    for (auto device_array = std::set< std::shared_ptr< ublk_disk > >{dev_a, dev_b};
+         auto const& device : device_array) {
+        if (!device->direct_io()) {
             RLOGW("Device {} does not support O_DIRECT - RAID-1 will use buffered I/O (backend caching not bypassed!)",
                   device)
-            direct_io = false; // LCOV_EXCL_LINE
+            _direct_io = false; // LCOV_EXCL_LINE
         }
-        our_params.basic.dev_sectors = std::min(our_params.basic.dev_sectors, device->params()->basic.dev_sectors);
+        our_params.basic.dev_sectors =
+            std::min< uint64_t >(our_params.basic.dev_sectors, device->capacity() >> SECTOR_SHIFT);
         our_params.basic.logical_bs_shift =
-            std::max(our_params.basic.logical_bs_shift, device->params()->basic.logical_bs_shift);
+            std::max(our_params.basic.logical_bs_shift, static_cast< uint8_t >(ilog2(device->block_size())));
         our_params.basic.physical_bs_shift =
-            std::max(our_params.basic.physical_bs_shift, device->params()->basic.physical_bs_shift);
+            std::max(our_params.basic.physical_bs_shift, static_cast< uint8_t >(ilog2(device->physical_block_size())));
 
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
 
     auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
-    reserved_size = sizeof(SuperBlock) + bitmap_size;
+    _reserved_size = sizeof(SuperBlock) + bitmap_size;
 
     // Align user-data to max_sector size
-    reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - reserved_size) %
+    _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) %
         (our_params.basic.max_sectors << SECTOR_SHIFT);
 
     // Reserve space for the superblock/bitmap
-    our_params.basic.dev_sectors -= (reserved_size >> SECTOR_SHIFT);
+    our_params.basic.dev_sectors -= (_reserved_size >> SECTOR_SHIFT);
 
     if (can_discard())
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 }
 
-void Raid1DiskImpl::__load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< UblkDisk > dev_a,
-                                                 std::shared_ptr< UblkDisk > dev_b, std::string const& parent_id) {
+void Raid1Disk::__load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
+                                             std::shared_ptr< ublk_disk > dev_b, std::string const& parent_id) {
     // Load SuperBlocks to determine original layout
     _device_a = std::make_shared< MirrorDevice >(uuid, std::move(dev_a));
     if (_device_a->new_device) {
@@ -176,7 +174,7 @@ void Raid1DiskImpl::__load_and_select_superblock(boost::uuids::uuid const& uuid,
     if (_device_a->new_device && _device_b->new_device) _sb->fields.bitmap.age = htobe64(1);
 }
 
-void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
+void Raid1Disk::__init_bitmap_and_degraded_route() {
     // Read in existing dirty BITMAP pages
     _dirty_bitmap = std::make_shared< Bitmap >(capacity(), be32toh(_sb->fields.bitmap.chunk_size), block_size(),
                                                _sb->superbitmap_reserved, _str_uuid);
@@ -187,13 +185,13 @@ void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
     // Use physical slot references (_device_a/_device_b) directly to avoid the ambiguity of
     // role-relative state captured by __capture_route_state(). The read_route enum refers to
     // physical slots (DEVA=_device_a, DEVB=_device_b), so mapping must be slot-based.
-    if (DEFUNCT_DEVICE(_device_a->disk) || DEFUNCT_DEVICE(_device_b->disk)) {
-        RLOGW("RAID1 device [uuid:{}] is running with a defunct device!", _str_uuid)
-        bool const a_is_defunct = DEFUNCT_DEVICE(_device_a->disk);
+    if (_device_a->disk->is_missing() || _device_b->disk->is_missing()) {
+        RLOGW("RAID1 device [uuid:{}] is running with a missing device!", _str_uuid)
+        bool const a_is_missing = _device_a->disk->is_missing();
         // Route reads to whichever physical slot is live
-        _read_route_cache.store(a_is_defunct ? read_route::DEVB : read_route::DEVA, std::memory_order_release);
+        _read_route_cache.store(a_is_missing ? read_route::DEVB : read_route::DEVA, std::memory_order_release);
         // Load bitmap from the live slot; don't bump age - we may get the original disk back via swap
-        _dirty_bitmap->load_from(*(a_is_defunct ? _device_b : _device_a)->disk);
+        _dirty_bitmap->load_from(*(a_is_missing ? _device_b : _device_a)->disk);
     } else if (_device_a->new_device xor _device_b->new_device) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
@@ -218,7 +216,7 @@ void Raid1DiskImpl::__init_bitmap_and_degraded_route() {
     }
 }
 
-void Raid1DiskImpl::__become_active() {
+void Raid1Disk::__become_active() {
     // Mark the devices as ACTIVE and write the updated superblocks
     auto const state = __capture_route_state();
     _sb->fields.clean_unmount = 0x0;
@@ -231,7 +229,7 @@ void Raid1DiskImpl::__become_active() {
         }
         return;
     }
-    if (DEFUNCT_DEVICE(state.backup_dev->disk)) return;
+    if (state.backup_dev->disk->is_missing()) return;
     if (!write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
         if (!__become_degraded(false, &state, false)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
@@ -239,7 +237,7 @@ void Raid1DiskImpl::__become_active() {
     }
 }
 
-Raid1DiskImpl::~Raid1DiskImpl() {
+Raid1Disk::~Raid1Disk() {
     RLOGD("Shutting down; [uuid:{}]", _str_uuid)
     _resync_task->stop();
 
@@ -247,7 +245,7 @@ Raid1DiskImpl::~Raid1DiskImpl() {
 
     auto const state = __capture_route_state();
     // Write out our dirty bitmap
-    if (state.is_degraded && !DEFUNCT_DEVICE(state.backup_dev->disk)) {
+    if (state.is_degraded && !state.backup_dev->disk->is_missing()) {
         RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *state.active_dev->disk)
         if (auto res = _dirty_bitmap->sync_to(*state.active_dev->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
@@ -268,11 +266,12 @@ Raid1DiskImpl::~Raid1DiskImpl() {
         write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
-std::list< int > Raid1DiskImpl::prepare(ublksrv_queue const* q, int const iouring_device_start) {
+std::vector< int > Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
     // Always collect FDs from child disks - each queue thread may need its own set.
     auto fds = _device_a->disk->prepare(q, iouring_device_start);
-    fds.splice(fds.end(), _device_b->disk->prepare(q, iouring_device_start + fds.size()));
+    auto b_fds = _device_b->disk->prepare(q, iouring_device_start + fds.size());
+    fds.insert(fds.end(), b_fds.begin(), b_fds.end());
 
     // Enable resync only on the first call (first queue thread).
     if (_nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
@@ -297,9 +296,8 @@ std::list< int > Raid1DiskImpl::prepare(ublksrv_queue const* q, int const iourin
 //
 // The order of the _read_route_cache CAS, swap(), and unavail.clear() below must be preserved to keep
 // the read-retry loop in __capture_route_state() correct.
-bool Raid1DiskImpl::__swap_device(std::string const& outgoing_device_id,
-                                  std::shared_ptr< MirrorDevice >& incoming_mirror,
-                                  raid1::read_route const& cur_route) {
+bool Raid1Disk::__swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
+                              raid1::read_route const& cur_route) {
     auto lg = std::scoped_lock< std::mutex >(_ctrl_lock);
 
     bool const swapping_device_a = (_device_a->disk->id() == outgoing_device_id);
@@ -407,7 +405,7 @@ __attribute__((noinline, no_sanitize_thread, no_sanitize("address")))
 #else
 __attribute__((noinline))
 #endif
-RouteState Raid1DiskImpl::__capture_route_state() const {
+RouteState Raid1Disk::__capture_route_state() const {
     while (true) {
         auto a = _device_a;
         auto b = _device_b;
@@ -440,7 +438,7 @@ static inline std::shared_ptr< MirrorDevice > const& __route_to_device(RouteStat
 // as the _outgoing_ device.
 //
 // * _incoming_ device must support DirectI/O w/o volatile caching
-// * _incoming_ device must be >= the (capacity() + reserved_size) of the Array
+// * _incoming_ device must be >= the (capacity() + _reserved_size) of the Array
 // * _incoming_ device lbs must be <= the lbs of the Array (k_page_size)
 // * _Outgoing_ device is part of a Clean array *OR* the dirty device in a
 //   Degraded arrary
@@ -460,17 +458,18 @@ static inline std::shared_ptr< MirrorDevice > const& __route_to_device(RouteStat
 //
 // Anytime we determine that a replacement disk is *new* we must dirty _every_
 // bit in the Bitmap and do a FULL resync.
-std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoing_device_id,
-                                                       std::shared_ptr< UblkDisk > incoming_device) {
-    if (!incoming_device->direct_io) {
+std::shared_ptr< ublk_disk > Raid1Disk::swap_device(std::string const& outgoing_device_id,
+                                                    std::shared_ptr< ublk_disk > incoming_device) {
+    if (!incoming_device->direct_io()) {
         RLOGW("Replacement device {} does not support O_DIRECT - RAID-1 will use buffered I/O (backend caching not "
               "bypassed!)",
               incoming_device)
     }
     auto& our_params = *params();
-    if ((our_params.basic.dev_sectors + (reserved_size >> SECTOR_SHIFT)) >
-            incoming_device->params()->basic.dev_sectors ||
-        (our_params.basic.logical_bs_shift < incoming_device->params()->basic.logical_bs_shift)) {
+    auto const incoming_sectors = incoming_device->capacity() >> SECTOR_SHIFT;
+    auto const incoming_lbs_shift = static_cast< uint8_t >(ilog2(incoming_device->block_size()));
+    if ((our_params.basic.dev_sectors + (_reserved_size >> SECTOR_SHIFT)) > incoming_sectors ||
+        (our_params.basic.logical_bs_shift < incoming_lbs_shift)) {
         RLOGE("Refusing to use device, requires: [lbs<={} && cap>={}Ki]!", 1 << our_params.basic.logical_bs_shift,
               (our_params.basic.dev_sectors << SECTOR_SHIFT) / Ki)
         return incoming_device;
@@ -517,7 +516,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
 
     try {
         // TODO we need to save the SuperBitmap Here!
-        if (!DEFUNCT_DEVICE(incoming_mirror->disk) && incoming_mirror->new_device)
+        if (!incoming_mirror->disk->is_missing() && incoming_mirror->new_device)
             _dirty_bitmap->init_to(incoming_mirror->disk);
     } catch (std::runtime_error const&) {
         toggle_resync(old_resync_flag);
@@ -541,7 +540,7 @@ std::shared_ptr< UblkDisk > Raid1DiskImpl::swap_device(std::string const& outgoi
     return incoming_mirror->disk;
 }
 
-raid1::array_state Raid1DiskImpl::replica_states() const noexcept {
+raid1::array_state Raid1Disk::replica_states() const noexcept {
     auto const sz_to_sync = _dirty_bitmap->dirty_data_est();
     auto const state = __capture_route_state();
 
@@ -580,7 +579,7 @@ raid1::array_state Raid1DiskImpl::replica_states() const noexcept {
     }
 }
 
-std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskImpl::replicas() const noexcept {
+std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > Raid1Disk::replicas() const noexcept {
     auto const state = __capture_route_state();
     // Return devices in their logical positions (A, B) based on current route
     // When route == DEVA: active is A, backup is B
@@ -593,7 +592,7 @@ std::pair< std::shared_ptr< UblkDisk >, std::shared_ptr< UblkDisk > > Raid1DiskI
     }
 }
 
-io_result Raid1DiskImpl::__become_clean() {
+io_result Raid1Disk::__become_clean() {
     auto const state = __capture_route_state();
     if (read_route::EITHER == state.route) return 0;
 
@@ -624,7 +623,7 @@ io_result Raid1DiskImpl::__become_clean() {
 // and __swap_device.  The _read_route_cache CAS below is the synchronization gate: if
 // __swap_device wins the CAS first, this call sees old_route != EITHER and returns early (already
 // degraded or concurrent swap in progress).  No additional lock is required.
-io_result Raid1DiskImpl::__become_degraded(bool failed_is_active, RouteState const* cur_state, bool spawn_resync) {
+io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_state, bool spawn_resync) {
     // Surviving device is backup if active failed, active if backup failed.
     // new_route = the physical slot (DEVA/DEVB) of the surviving device.
     bool const active_is_b = (cur_state->route == read_route::DEVB);
@@ -669,8 +668,8 @@ io_result Raid1DiskImpl::__become_degraded(bool failed_is_active, RouteState con
     return 0;
 }
 
-disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
-                                                      uint32_t nr_vecs, uint64_t addr, uint32_t len) {
+disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
+                                                  uint32_t nr_vecs, uint64_t addr, uint32_t len) {
     thread_local raid1::read_route last_read = raid1::read_route::DEVB;
     auto const state = __capture_route_state();
 
@@ -694,7 +693,7 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
     last_read = route;
     auto const& primary_dev = __route_to_device(state, route);
 
-    auto primary_task = primary_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + reserved_size);
+    auto primary_task = primary_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size);
     primary_task._coro.resume();
     auto const r = co_await primary_task.started();
 
@@ -709,15 +708,15 @@ disk_task< int > Raid1DiskImpl::__failover_read_async(ublksrv_queue const* q, ub
     auto const other_route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
     auto const& failover_dev = __route_to_device(state, other_route);
 
-    auto failover_task = failover_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + reserved_size);
+    auto failover_task = failover_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size);
     failover_task._coro.resume();
     auto const r2 = co_await failover_task.started();
 
     co_return r2 >= 0 ? r2 : -EIO;
 }
 
-Raid1DiskImpl::WriteBackupMode Raid1DiskImpl::__compute_backup_mode(RouteState const& state, uint64_t addr,
-                                                                    uint32_t len, bool is_discard) const noexcept {
+Raid1Disk::WriteBackupMode Raid1Disk::__compute_backup_mode(RouteState const& state, uint64_t addr, uint32_t len,
+                                                            bool is_discard) const noexcept {
     if (!state.is_degraded) return WriteBackupMode::WRITE;
     if (state.backup_dev->unavail.test(std::memory_order_acquire)) return WriteBackupMode::SKIP;
     if (_dirty_bitmap->is_dirty(addr, len)) {
@@ -729,10 +728,10 @@ Raid1DiskImpl::WriteBackupMode Raid1DiskImpl::__compute_backup_mode(RouteState c
     return WriteBackupMode::WRITE;
 }
 
-disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
-                                          uint32_t nr_vecs, uint64_t addr) {
+disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                                      uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
-    auto const len = static_cast< uint32_t >(__iovec_len(iovecs, iovecs + nr_vecs));
+    auto const len = static_cast< uint32_t >(iovec_len(iovecs, iovecs + nr_vecs));
 
     if (op == UBLK_IO_OP_FLUSH) co_return 0;
 
@@ -752,7 +751,7 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     auto const _guard = raid1::ResyncWriteGuard{*_resync_task};
     auto const bm = __compute_backup_mode(state, addr, len, is_discard);
 
-    auto const adj_addr = addr + reserved_size;
+    auto const adj_addr = addr + _reserved_size;
     auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr);
     active_task._coro.resume();
 
@@ -804,14 +803,14 @@ disk_task< int > Raid1DiskImpl::async_iov(ublksrv_queue const* q, ublk_io_data c
     co_return active_res;
 }
 
-io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
-    auto const len = static_cast< uint32_t >(__iovec_len(iovecs, iovecs + nr_vecs));
-    auto const lba = addr >> params()->basic.logical_bs_shift;
+io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
+    auto const len = static_cast< uint32_t >(iovec_len(iovecs, iovecs + nr_vecs));
+    [[maybe_unused]] auto const lba = addr >> params()->basic.logical_bs_shift;
     RLOGT("Received {}: [lba:{:#0x}|len:{:#0x}] [uuid:{}]", op == UBLK_IO_OP_READ ? "READ" : "WRITE", lba, len,
           _str_uuid)
 
     auto const state = __capture_route_state();
-    auto const adj_addr = addr + static_cast< off_t >(reserved_size);
+    auto const adj_addr = addr + static_cast< off_t >(_reserved_size);
 
     if (UBLK_IO_OP_READ == op) {
         // Flat read with inline failover -- mirrors __failover_read_async without coroutines or flags.
@@ -886,7 +885,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
     return active_res;
 }
 
-void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
+void Raid1Disk::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     if (!enter) {
         DEBUG_ASSERT(_idle_queue_count.load(std::memory_order_relaxed) > 0,                      // LCOV_EXCL_LINE
                      "idle_transition exit without matching enter - ublksrv contract violated"); // LCOV_EXCL_LINE
@@ -910,7 +909,7 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     // Immediate synchronous probe: clear UNAVAIL on any device that has already recovered.
     auto const immediate_probe = [&](std::shared_ptr< MirrorDevice > const& mirror) {
         if (!mirror->unavail.test(std::memory_order_acquire)) return;
-        if (probe_mirror(*mirror, reserved_size)) RLOGD("Idle probe: device recovered: {}", *mirror->disk)
+        if (probe_mirror(*mirror, _reserved_size)) RLOGD("Idle probe: device recovered: {}", *mirror->disk)
     };
     immediate_probe(state.active_dev);
     immediate_probe(state.backup_dev);
@@ -921,19 +920,52 @@ void Raid1DiskImpl::idle_transition(ublksrv_queue const*, bool enter) noexcept {
     auto lk = std::unique_lock{_idle_probe_lock};
     auto const locked_state = __capture_route_state();
     if (locked_state.is_degraded) return;
-    _idle_probe_a.launch(locked_state.active_dev, reserved_size);
-    _idle_probe_b.launch(locked_state.backup_dev, reserved_size);
+    _idle_probe_a.launch(locked_state.active_dev, _reserved_size);
+    _idle_probe_b.launch(locked_state.backup_dev, _reserved_size);
 }
 
-void Raid1DiskImpl::toggle_resync(bool t) {
+void Raid1Disk::toggle_resync(bool t) {
     _resync_enabled.store(t, std::memory_order_relaxed);
     if (t) {
         auto const state = __capture_route_state();
-        if (read_route::EITHER != state.route && !DEFUNCT_DEVICE(state.backup_dev->disk)) {
+        if (read_route::EITHER != state.route && !state.backup_dev->disk->is_missing()) {
             _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); });
         }
     } else
         _resync_task->stop();
 }
+
+namespace {
+// Public free functions dispatch through the impl class via dynamic_cast; non-Raid1 disks return
+// safe defaults so callers can stay generic across composite topologies.
+inline Raid1Disk* as_raid1(ublk_disk& d) noexcept { return dynamic_cast< Raid1Disk* >(&d); }
+inline Raid1Disk const* as_raid1(ublk_disk const& d) noexcept { return dynamic_cast< Raid1Disk const* >(&d); }
+} // namespace
+
+std::shared_ptr< ublk_disk > swap_device(ublk_disk& disk, std::string const& old_device_id,
+                                         std::shared_ptr< ublk_disk > new_device) {
+    auto* r1 = as_raid1(disk);
+    RELEASE_ASSERT(r1, "swap_device called on non-Raid1 disk");
+    return r1->swap_device(old_device_id, std::move(new_device));
+}
+
+array_state replica_states(ublk_disk const& disk) noexcept {
+    auto const* r1 = as_raid1(disk);
+    if (!r1) return array_state{};
+    return r1->replica_states();
+}
+
+std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > replicas(ublk_disk const& disk) noexcept {
+    auto const* r1 = as_raid1(disk);
+    if (!r1) return {nullptr, nullptr};
+    return r1->replicas();
+}
+
 } // namespace raid1
+
+std::shared_ptr< ublk_disk > make_raid1_disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
+                                             std::shared_ptr< ublk_disk > dev_b, std::string const& parent_id) {
+    return std::make_shared< raid1::Raid1Disk >(uuid, std::move(dev_a), std::move(dev_b), parent_id);
+}
+
 } // namespace ublkpp

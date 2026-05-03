@@ -17,7 +17,7 @@
 
 #include "../fs_disk_impl.hpp"
 #include <ublkpp/lib/cqe_state.hpp>
-#include "ublkpp/lib/common.hpp"
+#include "lib/internal/common.hpp"
 
 namespace {
 

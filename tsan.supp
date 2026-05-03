@@ -21,7 +21,7 @@
 #       so on-disk state is consistent. Pod restart / UBLK_F_USER_RECOVERY handles recovery.
 #       The race requires swap_device during a zero-I/O window with a concurrent management
 #       API call -- accepted risk given swaps occur at most once per device lifetime.
-race:ublkpp::raid1::Raid1DiskImpl::__capture_route_state
+race:ublkpp::raid1::Raid1Disk::__capture_route_state
 
 # GMock internal data race in concurrent tests
 # GMock's expectation management is not thread-safe by design, but our

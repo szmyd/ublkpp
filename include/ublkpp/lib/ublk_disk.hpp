@@ -1,13 +1,13 @@
 #pragma once
 
 #include <expected>
-#include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <fmt/format.h>
+#include <sisl/logging/logging.h>
 
-#include "common.hpp"
 #include "disk_task.hpp"
 
 struct iovec;
@@ -17,62 +17,99 @@ struct ublk_params;
 
 namespace ublkpp {
 
+namespace detail {
+// Forward declaration only. The actual accessor is a static member of this struct, defined in
+// src/lib/internal/ublkpp_int.hpp (not installed) and used exclusively by ublksrv handshake
+// code in src/target. Befriending a forward-declared struct keeps the accessor's signature out
+// of the public header entirely.
+struct params_access;
+} // namespace detail
+
 using io_result = std::expected< size_t, std::error_condition >;
-class UblkDisk : public std::enable_shared_from_this< UblkDisk > {
+
+class ublk_disk;
+using disk_handle = std::shared_ptr< ublk_disk >;
+
+// Base class for every disk in the stack (leaf drivers and RAID composites alike).
+//
+// Construction is restricted to subclasses; consumers obtain instances via the factory
+// functions in <ublkpp/drivers.hpp> and <ublkpp/raid.hpp>. For a placeholder representing
+// an absent mirror leg, use ublkpp::make_missing_disk(); never default-construct directly.
+class ublk_disk {
     std::unique_ptr< ublk_params > _params;
 
+    friend struct detail::params_access;
+
+protected:
+    bool _is_missing{false};
+    bool _direct_io{false};
+
+    ublk_disk();
+
+    // Subclass ctors mutate _params here to declare the disk's geometry.
+    ublk_params* params() noexcept { return _params.get(); }
+    ublk_params const* params() const noexcept { return _params.get(); }
+
 public:
-    bool direct_io{false};
-
-    // If this is `true` the tgt will expect the Device to call `ublksrv_complete_io`
-    bool uses_ublk_iouring{true};
-
-    UblkDisk();
-    virtual ~UblkDisk();
+    virtual ~ublk_disk();
 
     // Constant parameters for device
     // ================
-    virtual uint32_t block_size() const noexcept;
-    virtual uint32_t max_tx() const noexcept;
-    virtual bool can_discard() const noexcept;
-    virtual uint64_t capacity() const noexcept;
+    uint32_t block_size() const noexcept;
+    uint32_t physical_block_size() const noexcept;
+    uint32_t max_tx() const noexcept;
+    bool can_discard() const noexcept;
+    uint32_t discard_granularity() const noexcept;
+    uint64_t capacity() const noexcept;
+    bool direct_io() const noexcept { return _direct_io; }
+    bool is_missing() const noexcept { return _is_missing; }
     // ================
 
-    virtual ublk_params* params() noexcept { return _params.get(); }
-    virtual ublk_params const* params() const noexcept { return _params.get(); }
-    virtual std::string id() const noexcept = 0;
+    // Defaults below are safety nets for the missing-disk case. Real subclasses MUST override.
+    // Asserting in debug catches subclasses that forgot to implement; release returns a benign
+    // failure so a missing leg routed-to by mistake just errors instead of crashing.
 
-    std::string to_string() const;
+    virtual std::string id() const noexcept {
+        RELEASE_ASSERT(_is_missing, "id() called on a non-missing ublk_disk that did not override");
+        return "~MISSING~";
+    }
 
     // Async I/O with explicit scatter-gather list and address. Called when the operation targets
-    // a sub-range or offset that differs from what ublk_io_data describes — the caller owns the
-    // buffer layout and address computation. All concrete leaf disks must override this.
+    // a sub-range or offset that differs from what ublk_io_data describes; the caller owns the
+    // buffer layout and address computation.
     // For DISCARD, iovecs[0].iov_len is the length.
-    virtual disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
-                                       uint32_t nr_vecs, uint64_t addr) = 0;
+    virtual disk_task< int > async_iov(ublksrv_queue const* /*q*/, ublk_io_data const* /*data*/, iovec* /*iovecs*/,
+                                       uint32_t /*nr_vecs*/, uint64_t /*addr*/) {
+        RELEASE_ASSERT(_is_missing, "async_iov() called on a non-missing ublk_disk that did not override");
+        co_return -EIO;
+    }
 
-    virtual io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept = 0;
+    virtual io_result sync_iov(uint8_t /*op*/, iovec* /*iovecs*/, uint32_t /*nr_vecs*/, off_t /*addr*/) noexcept {
+        RELEASE_ASSERT(_is_missing, "sync_iov() called on a non-missing ublk_disk that did not override");
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
 
-    // Initialize Device for io_uring
-    virtual std::list< int > prepare(ublksrv_queue const*, int const) { return {}; }
+    // Called once per queue at startup. Returns file descriptors to register in the queue's
+    // io_uring fixed-file table; the kernel will assign indices starting at `iouring_device_start`.
+    // Composite drivers (raid0/raid1) propagate to children, concatenating the returned vectors.
+    // Default: no FDs (subclasses without ring-registered FDs need not override).
+    virtual std::vector< int > prepare(ublksrv_queue const* /*q*/, int const /*iouring_device_start*/) { return {}; }
 
-    // I/O has become idle event
-    virtual void idle_transition(ublksrv_queue const*, bool) {};
+    // Called by the queue when the I/O stream transitions in/out of idle (no inflight + no
+    // pending for k_io_idle_secs). `entering_idle = true` on entry, false on exit. Composite
+    // drivers propagate to children. Default: no-op.
+    virtual void idle_transition(ublksrv_queue const* /*q*/, bool /*entering_idle*/) {};
 };
 
-inline auto format_as(UblkDisk const& device) { return fmt::format("{}", device.to_string()); }
-inline auto format_as(std::shared_ptr< UblkDisk > const& p) { return fmt::format("{}", *p); }
-
-class DefunctDisk : public UblkDisk {
-public:
-    DefunctDisk();
-
-    std::string id() const noexcept override;
-
-    disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
-                               uint64_t addr) override;
-
-    io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
-};
+inline auto format_as(ublk_disk const& device) {
+    constexpr uint64_t kMi = 1ULL << 20;
+    constexpr uint64_t kGi = 1ULL << 30;
+    constexpr uint64_t kTi = 1ULL << 40;
+    auto const cap = device.capacity();
+    auto const cap_denom = cap >= kTi ? kGi : kMi;
+    return fmt::format("[{}, size={}{}, lbs={:#0x}]", device.id(), cap / cap_denom, cap_denom == kGi ? "Gi" : "Mi",
+                       device.block_size());
+}
+inline auto format_as(std::shared_ptr< ublk_disk > const& p) { return format_as(*p); }
 
 } // namespace ublkpp

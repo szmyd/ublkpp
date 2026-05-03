@@ -8,7 +8,8 @@
 #include <ublksrv.h>
 
 #include "ublkpp/lib/cqe_state.hpp"
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/raid.hpp"
+#include "raid/raid1/raid1_impl.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
 #include "raid/tests/raid_test_common.hpp"
 #include "tests/mock_ublksrv/mock_ublksrv.hpp"
@@ -20,7 +21,7 @@ using ::testing::Return;
 using ::ublkpp::Gi;
 using ::ublkpp::io_result;
 using ::ublkpp::Ki;
-using ::ublkpp::UblkDisk;
+using ::ublkpp::ublk_disk;
 using ::ublkpp::test::make_async_iov_action;
 
 static const ublkpp::raid1::SuperBlock async_raid1_superblock = {
@@ -40,7 +41,7 @@ struct AsyncRaid1Fixture : public ::testing::Test {
     static constexpr std::string_view k_uuid = "ada40737-30e3-49fe-9942-5a287d71eb3f";
 
     std::shared_ptr< ublkpp::AsyncTestDisk > disk_a, disk_b;
-    std::shared_ptr< ublkpp::Raid1Disk > raid;
+    std::shared_ptr< ublkpp::raid1::Raid1Disk > raid;
     std::unique_ptr< ublkpp::MockUblksrv > mock;
 
     void SetUp() override {
@@ -51,8 +52,8 @@ struct AsyncRaid1Fixture : public ::testing::Test {
         disk_a = std::make_shared< NiceMock< ublkpp::AsyncTestDisk > >(pa);
         disk_b = std::make_shared< NiceMock< ublkpp::AsyncTestDisk > >(pb);
 
-        ON_CALL(*disk_a, prepare(_, _)).WillByDefault(Return(std::list< int >{}));
-        ON_CALL(*disk_b, prepare(_, _)).WillByDefault(Return(std::list< int >{}));
+        ON_CALL(*disk_a, prepare(_, _)).WillByDefault(Return(std::vector< int >{}));
+        ON_CALL(*disk_b, prepare(_, _)).WillByDefault(Return(std::vector< int >{}));
 
         ON_CALL(*disk_a, sync_iov(_, _, _, _))
             .WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {
@@ -72,8 +73,8 @@ struct AsyncRaid1Fixture : public ::testing::Test {
         ON_CALL(*disk_a, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
         ON_CALL(*disk_b, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
 
-        raid = std::make_shared< ublkpp::Raid1Disk >(boost::uuids::string_generator()(std::string(k_uuid)), disk_a,
-                                                     disk_b);
+        raid = std::make_shared< ublkpp::raid1::Raid1Disk >(boost::uuids::string_generator()(std::string(k_uuid)),
+                                                            disk_a, disk_b);
         mock = std::make_unique< ublkpp::MockUblksrv >(raid);
         // Disable auto-resync AFTER prepare() runs so _resync_enabled=false for test bodies.
         // Tests that explicitly test resync call toggle_resync(true) themselves.
