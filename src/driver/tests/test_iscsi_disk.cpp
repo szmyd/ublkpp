@@ -96,7 +96,8 @@ TEST_F(iSCSIDiskTest, SyncReadWriteRoundtrip) {
     auto const block_size = disk->block_size();
 
     AlignedBuffer write_buf(block_size);
-    for (size_t i = 0; i < block_size; ++i) write_buf.data()[i] = static_cast< uint8_t >(i & 0xFF);
+    for (size_t i = 0; i < block_size; ++i)
+        write_buf.data()[i] = static_cast< uint8_t >(i & 0xFF);
 
     iovec iov{.iov_base = write_buf.get(), .iov_len = block_size};
     auto wres = disk->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0);
