@@ -41,7 +41,7 @@ void Raid1AvailProbeTask::launch(std::shared_ptr< MirrorDevice > mirror, uint64_
             }
             if (st.stop_requested()) break;
             if (!mirror->unavail.test(std::memory_order_acquire)) continue;
-            if (!probe_mirror(*mirror, rs)) { RLOGW("Idle probe: device still unavailable: {}", *mirror->disk) }
+            if (!probe_mirror(*mirror, rs)) { RLOGD("Idle probe: device still unavailable: {}", *mirror->disk) }
         }
     });
 }
