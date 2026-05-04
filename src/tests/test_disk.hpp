@@ -6,7 +6,7 @@
 #include <sisl/logging/logging.h>
 #include <ublksrv.h>
 
-#include "lib/internal/common.hpp"
+#include "lib/common.hpp"
 
 using ::ublkpp::ilog2;
 using ::ublkpp::Ki;

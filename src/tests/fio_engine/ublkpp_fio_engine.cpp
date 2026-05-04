@@ -34,7 +34,7 @@ extern "C" {
 #include "ublkpp/drivers.hpp"
 #include "ublkpp/raid.hpp"
 
-#include "lib/internal/common.hpp"
+#include "lib/common.hpp"
 #include "mock_ublksrv/mock_ublksrv.hpp"
 
 // Suppress fio's fallback syscall wrappers — glibc on this platform

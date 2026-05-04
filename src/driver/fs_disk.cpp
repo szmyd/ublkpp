@@ -22,7 +22,7 @@ extern "C" {
 #include <ublkpp/lib/ublk_disk.hpp>
 
 #include "fs_disk_impl.hpp"
-#include "lib/internal/common.hpp"
+#include "lib/common.hpp"
 #include "lib/logging.hpp"
 #include "metrics/ublk_fsdisk_metrics.hpp"
 #include "target/ublkpp_tgt_impl.hpp"

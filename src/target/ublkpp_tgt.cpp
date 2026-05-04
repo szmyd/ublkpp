@@ -15,10 +15,15 @@
 
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "lib/logging.hpp"
-#include "lib/internal/common.hpp"
-#include "lib/internal/ublkpp_int.hpp"
+#include "lib/common.hpp"
 #include <ublkpp/lib/cqe_state.hpp>
 #include "ublkpp_tgt_impl.hpp"
+
+namespace ublkpp::detail {
+struct params_access {
+    static ublk_params const* of(ublk_disk const& d) noexcept { return d.params(); }
+};
+} // namespace ublkpp::detail
 
 SISL_OPTION_GROUP(ublkpp_tgt,
                   (max_io_size, "", "max_io_size", "Maximum I/O size before split",

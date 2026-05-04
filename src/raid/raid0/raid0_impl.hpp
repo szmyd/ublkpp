@@ -8,7 +8,7 @@ extern "C" {
 #include <map>
 #include <tuple>
 
-#include "lib/internal/common.hpp"
+#include "lib/common.hpp"
 
 namespace ublkpp::raid0 {
 

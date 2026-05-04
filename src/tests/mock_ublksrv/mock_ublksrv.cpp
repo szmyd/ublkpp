@@ -8,7 +8,7 @@ extern "C" {
 
 #include <ublksrv.h>
 
-#include "lib/internal/common.hpp"
+#include "lib/common.hpp"
 
 namespace ublkpp {
 

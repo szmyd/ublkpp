@@ -4,8 +4,7 @@
 #include <ublk_cmd.h>
 
 #include "logging.hpp"
-#include "internal/common.hpp"
-#include "internal/ublkpp_int.hpp"
+#include "common.hpp"
 namespace ublkpp {
 
 ublk_disk::ublk_disk() :
@@ -51,10 +50,6 @@ uint32_t ublk_disk::max_tx() const noexcept { return _params->basic.max_sectors 
 bool ublk_disk::can_discard() const noexcept { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
 uint32_t ublk_disk::discard_granularity() const noexcept { return _params->discard.discard_granularity; }
 uint64_t ublk_disk::capacity() const noexcept { return _params->basic.dev_sectors << SECTOR_SHIFT; }
-
-namespace detail {
-ublk_params const* params_access::of(ublk_disk const& d) noexcept { return d.params(); }
-} // namespace detail
 
 namespace {
 // Implementation shim for make_missing_disk(). Lives entirely in this TU; callers see only

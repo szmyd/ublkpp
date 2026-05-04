@@ -17,7 +17,7 @@
 #include <ublksrv.h>
 
 #include "ublkpp/drivers.hpp"
-#include "lib/internal/common.hpp"
+#include "lib/common.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
 
 SISL_LOGGING_INIT(ublk_drivers)

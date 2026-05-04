@@ -10,7 +10,7 @@ extern "C" {
 
 #include "ublkpp/lib/ublk_disk.hpp"
 
-#include "lib/internal/common.hpp"
+#include "lib/common.hpp"
 
 namespace ublkpp {
 
