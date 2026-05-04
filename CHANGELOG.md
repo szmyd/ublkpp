@@ -10,6 +10,7 @@ Coroutine I/O refactor (issue #210): replace the ublksrv process-io loop and leg
 - target: I/O path is now a `exec::task<void>` coroutine (`async_iov`) spawned into an `exec::async_scope`; `run_queue_loop` drives the scope and drains via `co_await scope.on_empty()` after the CQE loop exits, removing the `in_flight` atomic counter
 - target: `ublkpp_tgt::destroy()` renamed to `static remove(unique_ptr<ublkpp_tgt>)`; destructor intentionally leaves the device live for pod-restart recovery via `UBLK_F_USER_RECOVERY`
 - **Breaking**: removed `handle_rw`, `queue_tgt_io`, `handle_discard`, `sub_cmd_t`, and the `open_for_uring`/`handle_io_async`/`handle_iov_async` virtual surface -- replaced by `prepare` and `async_iov`
+- **Breaking**: updaetd sisl to v14.x which drops Folly and iomgr (in testing) dependencies.
 
 ## 0.22.2
 - raid1: Fix `stop()` IDLE→STOPPING race - when the resync thread finishes naturally and
