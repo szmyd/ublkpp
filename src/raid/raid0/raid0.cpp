@@ -227,31 +227,30 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // Eagerly start each child task so all SQEs are in-flight before the first co_await,
     // preserving kernel parallelism. All tasks must be drained even on error to avoid
     // dangling _waiter handles in cqe_state.
-    std::vector< disk_task< int > > stripe_tasks;
+    std::vector< hot_task< int > > stripe_tasks;
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
 
+        // No data buffer: contiguous stripe ranges can be coalesced rather than scattered per-stripe.
         for (auto const& [stripe_off, region] : raid0::merged_subcmds(_stride_width, _stripe_size, addr, len)) {
             auto const& [logical_off, logical_len] = region;
-            // stripe_iov is a loop-local variable; _coro.resume() runs async_iov synchronously
-            // (reading iov_len) before the task suspends, so the stack variable is safe.
+            // stripe_iov is a loop-local variable; start() advances async_iov past the iov_len
+            // read before suspending, so the stack variable is safe.
             auto stripe_iov = iovec{.iov_base = nullptr, .iov_len = logical_len};
-            auto task = _stripe_array[stripe_off]->disk->async_iov(q, data, &stripe_iov, 1, logical_off);
-            task._coro.resume();
-            stripe_tasks.push_back(std::move(task));
+            stripe_tasks.push_back(
+                _stripe_array[stripe_off]->disk->async_iov(q, data, &stripe_iov, 1, logical_off).start());
         }
     } else {
         // READ / WRITE: fan out across stripes via __distribute.
-        auto res = __distribute(iovecs, addr,
-                                [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
-                                                               uint64_t logical_off) -> io_result {
-                                    auto task =
-                                        _stripe_array[stripe_off]->disk->async_iov(q, data, iov, nr_iovs, logical_off);
-                                    task._coro.resume();
-                                    stripe_tasks.push_back(std::move(task));
-                                    return 1;
-                                });
+        auto res = __distribute(
+            iovecs, addr,
+            [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
+                                           uint64_t logical_off) -> io_result {
+                stripe_tasks.push_back(
+                    _stripe_array[stripe_off]->disk->async_iov(q, data, iov, nr_iovs, logical_off).start());
+                return 1;
+            });
 
         if (!res) co_return -EIO;
     }
@@ -263,10 +262,9 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // multi-stripe RAID0 IO; FSDisk-only and single-stripe paths are unaffected.
     if (q && q->ring_ptr) io_uring_submit(q->ring_ptr);
 
-    // Await each stripe task. started() fast-paths tasks that completed synchronously.
     int total = 0;
     for (auto& t : stripe_tasks) {
-        auto r = co_await t.started();
+        auto r = co_await t;
         if (r < 0) co_return r;
         total += r;
     }

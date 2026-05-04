@@ -89,16 +89,13 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     _async_tasks[tag].reset();
 
     if (op == UBLK_IO_OP_FLUSH) {
-        auto flush_task = []() -> disk_task< int > { co_return 0; }();
-        flush_task._coro.resume();
-        _async_tasks[tag].emplace(std::move(flush_task));
+        _async_tasks[tag].emplace([]() -> disk_task< int > { co_return 0; }().start());
         return io_result{0};
     }
     ts.iov.iov_base = reinterpret_cast< void* >(ts.iod.addr);
     ts.iov.iov_len = ts.iod.nr_sectors << SECTOR_SHIFT;
-    auto task = _disk->async_iov(&_queues[0], &ts.data, &ts.iov, 1, ts.iod.start_sector << SECTOR_SHIFT);
-    task._coro.resume(); // start lazy coroutine; runs until first co_await *state
-    _async_tasks[tag].emplace(std::move(task));
+    _async_tasks[tag].emplace(
+        _disk->async_iov(&_queues[0], &ts.data, &ts.iov, 1, ts.iod.start_sector << SECTOR_SHIFT).start());
     // Pool size == number of CqeStates registered (one per pending stripe SQE)
     return io_result{_io_states[tag]._pool.size()};
 }
@@ -116,7 +113,7 @@ void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out)
 
     if (auto h = std::exchange(state->_waiter, {})) h.resume();
     auto& opt = _async_tasks[tag];
-    if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
+    if (opt && opt->done()) out.push_back({tag, opt->result()});
 }
 
 std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int result) {
@@ -133,13 +130,13 @@ std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int resu
     if (!target) {
         // No suspended state — task may have completed synchronously (e.g. flush).
         // result is ignored; return the task's value if it finished.
-        if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
+        if (opt && opt->done()) out.push_back({tag, opt->result()});
         return out;
     }
     target->_result = result;
     target->_result_ready = true;
     if (auto h = std::exchange(target->_waiter, {})) h.resume();
-    if (opt && opt->_coro.done()) out.push_back({tag, opt->_coro.promise()._value});
+    if (opt && opt->done()) out.push_back({tag, opt->result()});
     return out;
 }
 

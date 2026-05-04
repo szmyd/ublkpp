@@ -81,8 +81,8 @@ private:
     // async_io _pool — one per tag, mirrors what init_queue does via placement new
     std::vector< async_io > _io_states;
 
-    // disk_task handles for the async API path — one optional slot per tag
-    std::vector< std::optional< disk_task< int > > > _async_tasks;
+    // hot_task handles for the async API path — one optional slot per tag
+    std::vector< std::optional< hot_task< int > > > _async_tasks;
 
     // Aligned I/O buffers — one per tag, DEF_BUF_SIZE bytes each
     std::vector< uint8_t > _io_buf_storage;

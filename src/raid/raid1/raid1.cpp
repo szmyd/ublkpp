@@ -693,9 +693,8 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
     last_read = route;
     auto const& primary_dev = __route_to_device(state, route);
 
-    auto primary_task = primary_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size);
-    primary_task._coro.resume();
-    auto const r = co_await primary_task.started();
+    auto primary_task = primary_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
+    auto const r = co_await primary_task;
 
     if (r >= 0) {
         primary_dev->unavail.clear(std::memory_order_release);
@@ -708,9 +707,8 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
     auto const other_route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
     auto const& failover_dev = __route_to_device(state, other_route);
 
-    auto failover_task = failover_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size);
-    failover_task._coro.resume();
-    auto const r2 = co_await failover_task.started();
+    auto failover_task = failover_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
+    auto const r2 = co_await failover_task;
 
     co_return r2 >= 0 ? r2 : -EIO;
 }
@@ -752,16 +750,14 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     auto const bm = __compute_backup_mode(state, addr, len, is_discard);
 
     auto const adj_addr = addr + _reserved_size;
-    auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr);
-    active_task._coro.resume();
+    auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start();
 
-    std::optional< disk_task< int > > backup_task;
+    std::optional< hot_task< int > > backup_task;
     if (bm != WriteBackupMode::SKIP) {
-        backup_task.emplace(state.backup_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr));
-        backup_task->_coro.resume();
+        backup_task.emplace(state.backup_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start());
     }
 
-    auto const active_res = co_await active_task.started();
+    auto const active_res = co_await active_task;
 
     if (active_res < 0) {
         _dirty_bitmap->dirty_region(addr, len);
@@ -771,13 +767,13 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
             // would be wrong when disk_b succeeded (backup holds valid data, and EITHER-mode reads
             // could otherwise route to the failed disk_a and serve stale data).
             if (backup_task) {
-                auto const backup_res = co_await backup_task->started();
+                auto const backup_res = co_await *backup_task;
                 co_return backup_res >= 0 ? backup_res : -EIO;
             }
             co_return -EIO;
         }
         if (backup_task) {
-            auto const backup_res = co_await backup_task->started();
+            auto const backup_res = co_await *backup_task;
             co_return backup_res >= 0 ? backup_res : -EIO;
         }
         co_return -EIO;
@@ -788,7 +784,7 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         co_return active_res;
     }
 
-    auto const backup_res = co_await backup_task->started();
+    auto const backup_res = co_await *backup_task;
 
     if (backup_res < 0) {
         _dirty_bitmap->dirty_region(addr, len);

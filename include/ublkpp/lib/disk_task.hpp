@@ -6,7 +6,7 @@
 namespace ublkpp {
 
 template < typename T >
-struct StartedTaskAwaitable;
+struct hot_task;
 
 // Lightweight lazy coroutine task for per-disk async I/O. Composable via symmetric transfer:
 // co_await disk_task<T> inside an exec::task<void> or another disk_task<U> suspends the caller
@@ -14,6 +14,10 @@ struct StartedTaskAwaitable;
 //
 // run_queue_loop drives all resumption: CQEs install a handle in cqe_state::_waiter and call
 // h.resume(), which propagates back to the caller via final_suspend symmetric transfer.
+//
+// For fan-out (RAID): call .start() on each child task before co_await-ing any of them.
+// start() advances the child to its first suspension point (submitting the SQE) and returns
+// a hot_task<T> that is directly co_awaitable.
 //
 // Lifetime: the coroutine frame is owned by the disk_task object. Move-only; the caller
 // must co_await (consuming the task) before the object is destroyed.
@@ -60,22 +64,34 @@ struct disk_task {
     }
     T await_resume() noexcept { return _coro.promise()._value; }
 
-    // Returns an awaitable for a task already started via _coro.resume().
-    // await_ready() fast-paths synchronous completions.
-    StartedTaskAwaitable< T > started() noexcept { return {*this}; }
+    // Starts the lazy coroutine and returns an owning awaitable for the result.
+    // Advances the coroutine to its first suspension point (submitting its SQE),
+    // then returns control to the caller. Fan-out: call start() on all children
+    // before co_await-ing any of them.
+    hot_task< T > start() && noexcept;
 };
 
-// Awaitable for a disk_task<T> that was already started via _coro.resume(). Used when the caller
+// Owning, already-started task returned by disk_task<T>::start(). Used when the caller
 // eagerly starts all child tasks (to submit SQEs in parallel) before suspending on results.
 // await_ready() fast-paths tasks that completed synchronously before the co_await.
 // Thread-safe: queue thread is single-threaded so no CQE can arrive between await_ready and
 // await_suspend - the child cannot complete between the two calls.
 template < typename T >
-struct StartedTaskAwaitable {
-    disk_task< T >& task;
-    bool await_ready() const noexcept { return task._coro.done(); }
-    void await_suspend(std::coroutine_handle<> cont) noexcept { task._coro.promise()._continuation = cont; }
-    T await_resume() const noexcept { return task._coro.promise()._value; }
+struct hot_task {
+    disk_task< T > _task;
+
+    bool await_ready() const noexcept { return _task._coro.done(); }
+    void await_suspend(std::coroutine_handle<> cont) noexcept { _task._coro.promise()._continuation = cont; }
+    T await_resume() const noexcept { return _task._coro.promise()._value; }
+
+    bool done() const noexcept { return _task._coro.done(); }
+    T result() const noexcept { return _task._coro.promise()._value; }
 };
+
+template < typename T >
+hot_task< T > disk_task< T >::start() && noexcept {
+    _coro.resume();
+    return hot_task< T >{std::move(*this)};
+}
 
 } // namespace ublkpp
