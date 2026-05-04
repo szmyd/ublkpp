@@ -287,7 +287,7 @@ TEST(Raid1, YourTestName) {
 
 ### Core Dependencies
 
-- **[sisl](https://github.com/eBay/sisl)**: Logging, options, utilities
+- **[sisl](https://github.com/eBay/sisl)** v14+: Logging, options, metrics, HTTP server
 - **[ublksrv](https://github.com/ublk-org/ublksrv)**: ublk driver interface
 - **isa-l**: RAID acceleration primitives
 - **boost**: UUID generation
@@ -295,7 +295,6 @@ TEST(Raid1, YourTestName) {
 
 ### Optional Dependencies
 
-- **[iomgr](https://github.com/eBay/IOManager)**: Async I/O (for testing)
 
 ### Build Tools
 

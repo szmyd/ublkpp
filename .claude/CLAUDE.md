@@ -133,8 +133,8 @@ it like a standard-library type." Internal classes keep traditional `PascalCase`
 
 ## Dependencies
 
-**Core:** `sisl` stable/v13.x (logging/options), `ublksrv`, `isa-l`
-**Test:** `iomgr`, `gtest`, `fio`
+**Core:** `sisl` v14+ (logging, options, metrics, HTTP server), `ublksrv`, `isa-l`
+**Test:** `gtest`, `fio`
 **Build:** Conan 2.0, CMake 3.x, C++23 (GCC 13+ or Clang 17+), clang-format
 
 ## Project Structure
@@ -153,16 +153,16 @@ example/         # ublkpp_disk
 
 ## CI
 
-`merge_build.yml` runs on `ubuntu-24.04` for pushes to `main` and PRs targeting `main` or `feature/*`.
+Four named jobs on `ubuntu-24.04`, triggered on push to `main` and PRs targeting `main`/`feature/*`. All use `conan-channel: "dev"` (sisl@oss/dev).
 
-| Build type | malloc | Tooling |
-|---|---|---|
-| Debug | libc | Sanitize |
-| Debug | libc | Coverage |
-| Release | tcmalloc | None |
+| Job | Compiler | Build type | Sanitizer |
+|---|---|---|---|
+| GccAddressSanitize | GCC | Debug | address |
+| GccThreadSanitize | GCC | Debug | thread |
+| GccCoverage | GCC | Debug | none (coverage=True) |
+| ClangRelease | Clang | Release | none |
 
-Dependency-cache jobs build sisl stable/v13.x and iomgr stable/v12.x before the ublkpp package build on non-PR
-events. PR builds run formatting checks and build/test the package without saving caches.
+`SislDeps` (builds/caches sisl upstream) runs before `UblkPPDeps` on non-PR events; on PRs it still runs but skips the cache-save step.
 
 ## Git Workflow
 
