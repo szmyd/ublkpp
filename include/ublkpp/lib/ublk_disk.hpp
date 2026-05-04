@@ -9,11 +9,11 @@
 #include <sisl/logging/logging.h>
 
 #include "disk_task.hpp"
+#include <ublkpp/lib/ublk_params.hpp>
 
 struct iovec;
 struct ublk_io_data;
 struct ublksrv_queue;
-struct ublk_params;
 
 namespace ublkpp {
 

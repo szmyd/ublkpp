@@ -2,8 +2,6 @@
 
 #include "ublkpp/lib/ublk_disk.hpp"
 
-struct ublk_params;
-
 namespace ublkpp::detail {
 
 // Access broker for the raw ublk_params owned by ublk_disk. Restricted to ublksrv handshake

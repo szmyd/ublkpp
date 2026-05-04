@@ -72,7 +72,7 @@ class UBlkPPConan(ConanFile):
         self.requires("sisl/[^13.2]", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
-        self.requires("ublksrv/nbi.1.5.0.1")
+        self.requires("ublksrv/nbi.1.5.0.1", transitive_headers=True)
 
     def layout(self):
         self.folders.source = "."
