@@ -337,9 +337,9 @@ bool Raid1Disk::__swap_device(std::string const& outgoing_device_id, std::shared
 
 // ##########################################!! WARNING !!##########################################
 // One should not directly access _device_a, _device_b or _read_route directly following this point.
-// It is running in a multi-threaded case and subject to swap_device an become_degraded altering
+// It is subject to multi-threading in that case and subject to hotswap or degradation altering
 // these values between your memory loads. Use the following method to access this in a consistent
-// manner that is race-free
+// manner that is race-free and use it across the co-routine frame
 // ##########################################!! WARNING !!##########################################
 
 // ═══════════════════════════════════════════════════════════════════════════════
