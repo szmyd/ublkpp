@@ -14,8 +14,9 @@ TEST_F(AsyncRaid0Fixture, PreSqeErrorPropagatesEio) {
     EXPECT_EQ(completions[0].result, -EIO);
 }
 
-TEST_F(AsyncRaid0Fixture, PostCqeNegativeResultPropagatesAndSkipsRemaining) {
-    // First stripe returns -EIO; task exits immediately without awaiting second stripe.
+TEST_F(AsyncRaid0Fixture, PostCqeNegativeResultDrainsAndPropagatesError) {
+    // First stripe errors; second stripe succeeds. Both must be awaited before result
+    // to avoid resuming a destroyed coroutine frame when the second CQE arrives.
     EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
     EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
     EXPECT_CALL(*disk_c, submit_iov(_, _, _, _, _)).Times(0);
@@ -24,8 +25,12 @@ TEST_F(AsyncRaid0Fixture, PostCqeNegativeResultPropagatesAndSkipsRemaining) {
     ASSERT_TRUE(res);
     EXPECT_EQ(res.value(), 2u); // both dispatched before first co_await
 
-    // First CQE delivers error — task short-circuits and is done immediately.
-    auto completions = mock->inject_cqe(0, -EIO);
+    // First CQE delivers error — task NOT done yet; must drain stripe B first.
+    auto mid = mock->inject_cqe(0, -EIO);
+    EXPECT_TRUE(mid.empty()); // task still awaiting second stripe
+
+    // Second CQE delivers success — task now complete, first error wins.
+    auto completions = mock->inject_cqe(0, static_cast< int >(k_stripe_size));
     ASSERT_EQ(completions.size(), 1u);
     EXPECT_EQ(completions[0].result, -EIO);
 }

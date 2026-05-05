@@ -263,12 +263,15 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     if (q && q->ring_ptr) io_uring_submit(q->ring_ptr);
 
     int total = 0;
+    int err = 0;
     for (auto& t : stripe_tasks) {
         auto r = co_await t;
-        if (r < 0) co_return r;
-        total += r;
+        if (r < 0 && !err)
+            err = r;
+        else
+            total += r;
     }
-    co_return total;
+    co_return err ? err : total;
 }
 
 static const uint8_t magic_bytes[16] = {0127, 0345, 072,  0211, 0254, 033,  070,  0146,
