@@ -61,7 +61,17 @@ static std::shared_ptr< ublkpp::ublk_disk > get_driver(std::string const& resour
     if (auto path = std::filesystem::path(resource); std::filesystem::exists(path)) {
         return ublkpp::make_fs_disk(path, metrics_id);
     }
-    return ublkpp::make_missing_disk();
+#ifdef HAVE_ISCSI
+    // From libiscsi.h iSCSI URLs are in the form:
+    //   iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>
+    try {
+        return ublkpp::make_iscsi_disk(resource);
+    } catch (std::exception const&) {
+#endif
+        return ublkpp::make_missing_disk();
+#ifdef HAVE_ISCSI
+    }
+#endif
 }
 
 Result create_loop(boost::uuids::uuid const& id, std::string const& path) {
@@ -97,7 +107,7 @@ Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > con
     auto raid_uuid = boost::uuids::to_string(id);
 
     try {
-        // Create file-backed devices with RAID1 UUID for correlation
+        // Create FSDisk devices with RAID1 UUID for correlation
         auto dev_a = get_driver(*layout.begin(), raid_uuid);
         auto dev_b = get_driver(*(layout.begin() + 1), raid_uuid);
 

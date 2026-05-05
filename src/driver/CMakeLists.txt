@@ -9,6 +9,19 @@ target_link_libraries(fs_disk
     ublksrv::ublksrv
 )
 
+if(${libiscsi_FOUND})
+    add_library(iscsi_disk OBJECT)
+    target_sources(iscsi_disk PRIVATE
+        iscsi_disk.cpp
+    )
+    target_link_libraries(iscsi_disk
+        sisl::cache
+        ublksrv::ublksrv
+        STDEXEC::stdexec
+        libiscsi::libiscsi
+    )
+endif()
+
 
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 

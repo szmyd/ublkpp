@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.31.0 feature: native iSCSI support with libiscsi
+
 ## 0.30.0 refactor: async coroutine I/O, public API 1.0.0 uplift, and RAID1 hardening
  - Async I/O (Phases 1-11):
    - cqe_state pool per queue; raw cqe_state* encoded directly in SQE user_data
@@ -19,27 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  - **Breaking**: removed `handle_rw`, `queue_tgt_io`, `handle_discard`, `sub_cmd_t`, and the `open_for_uring`/`handle_io_async`/`handle_iov_async` virtual surface -- replaced by `prepare` and `async_iov`
  - **Breaking**: updaetd sisl to v14.x which drops Folly and iomgr (in testing) dependencies.
 
-## 0.22.2
-- raid1: Fix `stop()` IDLE→STOPPING race - when the resync thread finishes naturally and
+## 0.22.x
+- raid1: Fix `stop()` IDLE->STOPPING race - when the resync thread finishes naturally and
   `stop()` is called before `join()`, the `IDLE+joinable` handler now returns `SUCCESS` instead
-  of `RETRY_WITH_SLEEP`, preventing an accidental `CAS(IDLE→STOPPING)` that left no thread to
+  of `RETRY_WITH_SLEEP`, preventing an accidental `CAS(IDLE->STOPPING)` that left no thread to
   clear the state; subsequent `launch()` call in `swap_device()` would spin forever.
-
-## 0.22.1
-- raid1: Fix dequeue/resume race - `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed.
+- raid1: Fix dequeue/resume race - `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE->ACTIVE transition are one indivisible CAS; `__resume()` is removed.
 - raid1: Fix enqueue/pause race - `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
 - raid1: Replace GCC `__builtin_popcount`/`__builtin_clz`/`__builtin_ctz` with C++23 `std::popcount`/`std::countl_zero`/`std::countr_zero`
 - build: `libatomic` is now declared as a Conan system lib on Linux - propagated automatically to consumers, no downstream changes required
-
-## 0.22.0
 - raid1: Fix multi-queue idle probe race conditions - probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
 - **Breaking**: `UblkDisk::open_for_uring` signature changed from `(int)` to `(ublksrv_queue const*, int)` - out-of-tree subclasses must update their override
-
-## 0.21.6
-- raid0: Fix stale alive_cmds in __distribute() corrupting the next I/O on the same thread after a failed multi-stride operation
-
-## 0.21.5
-- raid1: Only log in reference to Resync if it was actually running.
 
 ## 0.21.x
 - raid0: Fix stale alive_cmds in __distribute() corrupting the next I/O on the same thread after a failed multi-stride operation
@@ -106,7 +98,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - raid1: Reservation size is now dynamically calculated during init, prevents resize
 
 ## 0.15.x
-- Fix homeblock_disk linkage
 - Enable C++23 extensions
 - Replace usage of folly::Expected with std::expected
 
@@ -136,7 +127,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.11.x
 - raid1: Fix Bitmap bugs when representing > 4Gi
-- ublkpp_disk: Support for HomeBlkDisk type
 - raid1: Another resync_task termination fix
 - raid1: Fix resync_task termination
 - raid1: Resync task handles no-dirty pages
@@ -181,14 +171,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.6.x
 - raid1: Do not re-write unchanged pages
 - raid1: Round-Robin reading
-- homeblk_disk: Disable by default
 - raid1: Calculate reserved area based on limits
 - ublkpp_tgt: Clear async_event before calling process_result
 - raid1: Bitmap words should be encoded as NETWORK byte order
 - raid1: Records dirty chunks to the BITMAP pages
 
 ## 0.5.x
-- homeblk_disk : introduced
 - raid1: more intelligent retry handling
 - ublkpp_tgt : fix narrowing conversion
 

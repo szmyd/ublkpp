@@ -14,6 +14,7 @@ list(APPEND LIBRARY_OBJECTS
   $<TARGET_OBJECTS:raid0>
   $<TARGET_OBJECTS:raid1>
   $<TARGET_OBJECTS:fs_disk>
+  $<TARGET_OBJECTS:iscsi_disk>
   $<TARGET_OBJECTS:ublkpp_tgt>
   $<TARGET_OBJECTS:ublk_disk>
   $<TARGET_OBJECTS:ublk_metrics>
@@ -24,6 +25,11 @@ list(APPEND LIBRARY_LINKS
     ublksrv::ublksrv
     STDEXEC::stdexec
   )
+if(${libiscsi_FOUND})
+list(APPEND LIBRARY_LINKS
+    libiscsi::libiscsi
+)
+endif()
 
 add_library(ublkpp)
 target_sources(ublkpp PRIVATE

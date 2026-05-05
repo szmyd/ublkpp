@@ -1,0 +1,29 @@
+# RAID10 over four iSCSI LUNs with cross-stripe block size to exercise the
+# RAID0 accumulator (a single write that wraps the stripe and hits the same
+# RAID1 pair twice).
+#
+# RAID10 = RAID0 over two RAID1 pairs. With chunk_size=32k, stride_width=64k.
+# bs=96k = 3 x chunk_size. Each IO maps as:
+#   [0..32k)   -> RAID1 pair A  (iovec #1)
+#   [32k..64k) -> RAID1 pair B  (iovec #1, flushed)
+#   [64k..96k) -> RAID1 pair A  (iovec #2, flushed as 2-iovec scatter-gather
+#                                through RAID1 -> two iSCSI WRITE16 SCSI ops)
+#
+# This exercises the RAID0 __distribute accumulation path AND fans the
+# resulting multi-iovec writes through libiscsi's async path with the
+# coroutine-model service-loop cascade.
+[global]
+ioengine=external:${ENGINE_SO}
+disk_type=raid10
+disk_url=${ISCSI_URL_1}|${ISCSI_URL_2}|${ISCSI_URL_3}|${ISCSI_URL_4}
+raid_chunk_size=32768
+bs=96k
+iodepth=32
+verify=md5
+verify_fatal=1
+time_based=0
+direct=0
+
+[write-verify]
+rw=write
+size=96m

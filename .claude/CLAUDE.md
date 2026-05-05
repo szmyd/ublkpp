@@ -66,8 +66,9 @@ it like a standard-library type." Internal classes keep traditional `PascalCase`
 
 - **Public API types** (in `include/ublkpp/`): `lower_snake_case` for both classes and free
   functions; e.g. base class `ublk_disk`, alias `disk_handle`, factories `make_fs_disk`,
-  `make_raid0_disk`, `make_raid1_disk`, target `ublkpp_tgt`. Drivers and RAID arrays are
-  not exposed as classes; they are opaque `disk_handle`s constructed via factories.
+  `make_iscsi_disk`, `make_raid0_disk`, `make_raid1_disk`, target `ublkpp_tgt`. Drivers and
+  RAID arrays are **not** exposed as classes; they are opaque `disk_handle`s constructed via
+  factories.
 - **Internal classes** (in `src/`): `PascalCase`; e.g. `SuperBlock`, `Bitmap`, `Raid1Disk`
   (the impl behind `make_raid1_disk`), `MirrorDevice`, `Raid1ResyncTask`.
 - **Functions / methods:** `snake_case` everywhere (`async_iov`, `prepare`, `swap_device`).
@@ -83,7 +84,7 @@ it like a standard-library type." Internal classes keep traditional `PascalCase`
 
 **Logging:**
 - Use SISL macros: `RLOGW`, `DLOGE`, `TLOGD`, `TLOGE`, `LOGINFO`
-- Modules: `ublksrv`, `ublk_tgt`, `ublk_raid`, `ublk_drivers`
+- Modules: `ublksrv`, `ublk_tgt`, `ublk_raid`, `ublk_drivers`, `libiscsi`
 
 ## Development Workflow
 
@@ -136,14 +137,15 @@ it like a standard-library type." Internal classes keep traditional `PascalCase`
 **Core:** `sisl` v14+ (logging, options, metrics, HTTP server), `ublksrv`, `isa-l`
 **Test:** `gtest`, `fio`
 **Build:** Conan 2.0, CMake 3.x, C++23 (GCC 13+ or Clang 17+), clang-format
+**Optional:** `libiscsi` (iSCSI backend; `-o ublkpp/*:iscsi=True`)
 
 ## Project Structure
 
 ```
 src/
-├── driver/   # File-backed backend implementation
+├── driver/   # File-backed and libiscsi-backed disk implementations (behind make_*_disk)
 ├── lib/      # ublk_disk base, disk_task, cqe_state, utilities
-├── metrics/  # IO and RAID metrics
+├── metrics/  # IO, file-backed disk, RAID metrics
 ├── raid/     # RAID0, RAID1 (bitmap, superblock)
 └── target/   # ublkpp_tgt
 

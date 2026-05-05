@@ -9,7 +9,13 @@
 
 // Convenience module list for SISL_LOGGING_INIT. Append the consumer's own
 // modules after this list.
+// `libiscsi` is folded in automatically when HAVE_ISCSI is set (propagated via the
+// Conan package's cpp_info.defines).
+#ifdef HAVE_ISCSI
+#define UBLKPP_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers, libiscsi
+#else
 #define UBLKPP_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers
+#endif
 
 namespace ublkpp {
 

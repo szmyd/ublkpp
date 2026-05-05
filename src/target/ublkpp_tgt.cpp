@@ -378,14 +378,21 @@ static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
     auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
-    // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
-    auto const prep = device->prepare(q, 0);
-    if (!prep.fds.empty()) return -1;
-    // async_io is placement-new'd into ublksrv-calloc'd bytes; _pool is pre-reserved to the SQE
-    // ceiling so push_back during I/O never reallocates and cqe_state* pointers stay stable.
-    for (int i = 0; i < q->q_depth; ++i) {
-        auto* io = new (ublksrv_io_private_data(q, i)) async_io{};
-        io->_pool.reserve(prep.max_sqes_per_io);
+    // unregistered with io_uring and fixed-file I/O would crash -- treat it as a fatal init failure.
+    // prepare() can throw (iSCSIDisk: per-queue login failure across the C boundary).
+    try {
+        // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
+        auto const prep = device->prepare(q, 0);
+        if (!prep.fds.empty()) return -1;
+        // async_io is placement-new'd into ublksrv-calloc'd bytes; _pool is pre-reserved to the SQE
+        // ceiling so push_back during I/O never reallocates and cqe_state* pointers stay stable.
+        for (int i = 0; i < q->q_depth; ++i) {
+            auto* io = new (ublksrv_io_private_data(q, i)) async_io{};
+            io->_pool.reserve(prep.max_sqes_per_io);
+        }
+    } catch (std::exception const& e) {
+        TLOGE("Queue {} prepare() threw: {}", q->q_id, e.what())
+        return -1;
     }
     return 0;
 }
