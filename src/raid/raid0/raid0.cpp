@@ -252,6 +252,9 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
                 return 1;
             });
 
+        // INVARIANT: the lambda always returns io_result{1} so !res is unreachable today.
+        // If the lambda ever becomes fallible, stripe_tasks must be drained here before returning
+        // to avoid dangling cqe_state::_waiter handles in the CQE ring.
         if (!res) co_return -EIO;
     }
 

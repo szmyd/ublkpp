@@ -100,7 +100,7 @@ inline std::pair< cqe_state*, uint64_t > build_cqe_state_data(ublk_io_data const
 inline io_uring_sqe* next_sqe(ublksrv_queue const* q) {
     auto* r = q->ring_ptr;
     if (0 == io_uring_sq_space_left(r)) [[unlikely]]
-        io_uring_submit(r);
+        if (io_uring_submit(r) < 0) return nullptr;
     return io_uring_get_sqe(r);
 }
 

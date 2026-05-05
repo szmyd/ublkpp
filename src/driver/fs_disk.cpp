@@ -189,6 +189,8 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
         // LCOV_EXCL_STOP
 
         auto sqe = next_sqe(q);
+        if (!sqe) [[unlikely]]
+            co_return -EBUSY;
         DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!");
 
         if (UBLK_IO_OP_READ == op) {
@@ -223,6 +225,8 @@ std::pair< io_result, cqe_state* > FSDisk::handle_discard(ublksrv_queue const* q
     DLOGD("DISCARD {}: [tag:{:#0x}] ublk io [addr:{:#0x}|len:{:#0x}]", _path.native(), data->tag, addr, len)
     if (!_block_device) {
         auto sqe = next_sqe(q);
+        if (!sqe) [[unlikely]]
+            return {std::unexpected(std::make_error_condition(std::errc::device_or_resource_busy)), nullptr};
         io_uring_prep_fallocate(sqe, _fd, discard_to_fallocate(data->iod), addr, len);
 
         auto [state, sqe_data] = build_cqe_state_data(data);

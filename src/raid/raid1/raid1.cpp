@@ -563,11 +563,11 @@ io_result Raid1Disk::__become_clean() {
     // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
     bool const active_is_device_b = (state.route == read_route::DEVB);
 
-    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, state.route);
+    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
         !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
-    if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, state.route);
+    if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
         !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
@@ -647,7 +647,7 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
     auto failover_task = (*failover_dev)->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
     auto const r2 = co_await failover_task;
 
-    co_return r2 >= 0 ? r2 : -EIO;
+    co_return r2;
 }
 
 std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
