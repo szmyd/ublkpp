@@ -28,11 +28,15 @@ TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
     ON_CALL(*disk_a, prepare(_, _)).WillByDefault(Return(std::vector< int >{}));
     ON_CALL(*disk_b, prepare(_, _)).WillByDefault(Return(std::vector< int >{}));
 
-    ON_CALL(*disk_a, sync_iov(_, _, _, _)).WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {
-        if (op == UBLK_IO_OP_READ && iovecs && iovecs->iov_base)
-            memcpy(iovecs->iov_base, &degraded_sb, ublkpp::raid1::k_page_size);
-        return static_cast< int >(iovecs->iov_len);
-    });
+    ON_CALL(*disk_a, sync_iov(_, _, _, _))
+        .WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t off) -> io_result {
+            if (op == UBLK_IO_OP_READ) {
+                // Non-SB reads fail: prevents resync from cleaning dirty regions before the test.
+                if (off != 0) return std::unexpected(std::make_error_condition(std::errc::io_error));
+                if (iovecs && iovecs->iov_base) memcpy(iovecs->iov_base, &degraded_sb, ublkpp::raid1::k_page_size);
+            }
+            return static_cast< int >(iovecs->iov_len);
+        });
     ON_CALL(*disk_b, sync_iov(_, _, _, _)).WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {
         if (op == UBLK_IO_OP_READ && iovecs && iovecs->iov_base) {
             memcpy(iovecs->iov_base, &async_raid1_superblock, ublkpp::raid1::k_page_size);
@@ -53,16 +57,19 @@ TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
     ASSERT_GT(raid->replica_states().bytes_to_sync, 0u);
     raid->toggle_resync(false);
 
-    // Active device is called once; backup must not be touched (it has stale data).
-    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(0);
+    // Run in a fresh thread to isolate the thread_local read-route cursor from other tests.
+    std::thread([&] {
+        // Active device is called once; backup must not be touched (it has stale data).
+        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
+        EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(0);
 
-    auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
-    ASSERT_TRUE(res);
-    EXPECT_EQ(res.value(), 1u);
+        auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res.value(), 1u);
 
-    // Active fails → !failover_dev (dirty) → -EAGAIN immediately.
-    auto completions = mock->inject_cqe(0, -EIO);
-    ASSERT_EQ(completions.size(), 1u);
-    EXPECT_EQ(completions[0].result, -EAGAIN);
+        // Active fails → !failover_dev (dirty) → -EAGAIN immediately.
+        auto completions = mock->inject_cqe(0, -EIO);
+        ASSERT_EQ(completions.size(), 1u);
+        EXPECT_EQ(completions[0].result, -EAGAIN);
+    }).join();
 }

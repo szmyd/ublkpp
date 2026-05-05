@@ -660,9 +660,11 @@ Raid1Disk::__select_read_devices(RouteState const& state, uint64_t addr, uint32_
     } else {
         route = (last_read == read_route::DEVB) ? read_route::DEVA : read_route::DEVB;
     }
+    // In degraded mode, any dirty region means the backup holds stale data -- regardless of
+    // which device was chosen as primary. Redirect to active if needed, and suppress failover.
     bool backup_stale = false;
-    if (state.is_degraded && route != state.route && _dirty_bitmap->is_dirty(addr, len)) {
-        route = state.route;
+    if (state.is_degraded && _dirty_bitmap->is_dirty(addr, len)) {
+        if (route != state.route) route = state.route;
         backup_stale = true;
     }
     if (!state.is_degraded && __route_to_device(state, route)->unavail.test(std::memory_order_acquire)) {
