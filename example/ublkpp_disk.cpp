@@ -16,10 +16,6 @@
 #include <ublkpp/raid.hpp>
 #include <ublkpp/target.hpp>
 
-#ifdef HAVE_ISCSI
-#include <ublkpp/drivers/iscsi_disk.hpp>
-#endif
-
 SISL_OPTION_GROUP(ublkpp_disk,
                   (uuid, "", "vol_id", "Volume UUID to use (else random)", ::cxxopts::value< std::string >(), ""),
                   (loop, "", "loop", "Attach a single device 1-to-1", ::cxxopts::value< std::string >(), "<path>"),
@@ -38,13 +34,7 @@ SISL_OPTION_GROUP(ublkpp_disk,
 
 SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
-#ifdef HAVE_ISCSI
-#define ISCSI_MODS , libiscsi
-#else
-#define ISCSI_MODS
-#endif
-
-SISL_LOGGING_INIT(ublksrv, UBLKPP_LOG_MODS ISCSI_MODS)
+SISL_LOGGING_INIT(ublksrv, UBLKPP_LOG_MODS)
 
 ///
 // Clean shutdown
@@ -74,7 +64,7 @@ static std::shared_ptr< ublkpp::ublk_disk > get_driver(std::string const& resour
 #ifdef HAVE_ISCSI
     // From libiscsi.h iSCSI URLs are in the form:
     //   iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>
-    return std::make_unique< ublkpp::iSCSIDisk >(resource);
+    return ublkpp::make_iscsi_disk(resource);
 #else
     return ublkpp::make_missing_disk();
 #endif
@@ -113,7 +103,7 @@ Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > con
     auto raid_uuid = boost::uuids::to_string(id);
 
     try {
-        // Create file-backed devices with RAID1 UUID for correlation
+        // Create FSDisk devices with RAID1 UUID for correlation
         auto dev_a = get_driver(*layout.begin(), raid_uuid);
         auto dev_b = get_driver(*(layout.begin() + 1), raid_uuid);
 

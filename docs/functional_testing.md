@@ -14,12 +14,12 @@ fio job file
 libublkpp_fio_engine.so          (custom fio external engine)
      │  disk_type / disk_files / raid_chunk_size options
      ▼
-disk_handle ───────────────► make_fs_disk / make_raid0_disk / make_raid1_disk
-     │
-     ▼
-MockUblksrv
-(io_uring SQE/CQE loop)
-     │
+ublk_disk  ─────────────────────► make_fs_disk / make_iscsi_disk / make_raid0_disk / make_raid1_disk
+     │                               │           │
+     ▼                               │           │
+MockUblksrv                          │           │
+(io_uring SQE/CQE loop)              │           │
+     │                               ▼           ▼
      └──────────────────────► backing image files (*.img)
                                   (regular files on disk)
 ```
@@ -41,7 +41,9 @@ src/tests/fio_engine/
     ├── raid1_rw.fio        # RAID1 write-verify
     ├── raid10_rw.fio       # RAID10 write-verify
     ├── raid0_cross_stripe.fio   # RAID0 cross-stripe boundary (bs=96k)
-    └── raid10_cross_stripe.fio  # RAID10 cross-stripe boundary (bs=96k)
+    ├── raid10_cross_stripe.fio  # RAID10 cross-stripe boundary (bs=96k)
+    ├── iscsi_rw.fio             # Single-LUN iSCSI write-verify
+    └── iscsi_raid10_rw.fio      # RAID10 over four iSCSI LUNs (cross-stripe)
 ```
 
 Backing images land in `<build_dir>/src/tests/fio_engine/test_data/`.
@@ -88,12 +90,14 @@ ctest --test-dir build/Debug -L Functional -j4 --output-on-failure
 
 | CTest name | Job file | Topology | bs | Size | What it exercises |
 |---|---|---|---|---|---|
-| `FunctionalFSDisk` | `fsdisk_rw.fio` | File-backed disk (1 file) | 4k–64k | 64 MiB | Baseline I/O, single-device path |
+| `FunctionalFSDisk` | `fsdisk_rw.fio` | File-backed (1 file) | 4k–64k | 64 MiB | Baseline I/O, single-device path |
 | `FunctionalRAID0` | `raid0_rw.fio` | RAID0 (2 files) | 4k–64k | 64 MiB | Stripe distribution, chunk alignment |
 | `FunctionalRAID1` | `raid1_rw.fio` | RAID1 (2 files) | 4k–64k | 64 MiB | Mirror replication, bitmap tracking |
 | `FunctionalRAID10` | `raid10_rw.fio` | RAID10 (4 files) | 4k–64k | 64 MiB | Full RAID10 stack (stripe + mirror) |
 | `FunctionalRAID0CrossStripe` | `raid0_cross_stripe.fio` | RAID0 (2 files) | 96k fixed | 96 MiB | Cross-stripe splitting, iovec accumulation |
 | `FunctionalRAID10CrossStripe` | `raid10_cross_stripe.fio` | RAID10 (4 files) | 96k fixed | 96 MiB | Cross-stripe through RAID0 + RAID1 layers |
+| `FunctionalISCSI` | `iscsi_rw.fio` | iSCSI (1 LUN) | 4k–64k | 32 MiB | Single-LUN iSCSI write-verify via libiscsi |
+| `FunctionalISCSIRAID10` | `iscsi_raid10_rw.fio` | RAID10 over 4 iSCSI LUNs | 96k fixed | 96 MiB | RAID10 cross-stripe through libiscsi async path |
 
 ### Cross-stripe tests explained
 
@@ -119,11 +123,13 @@ each mirror pair.
 1. Parses the custom fio options (`disk_type`, `disk_files`, `raid_chunk_size`).
 2. Pre-allocates backing files via `posix_fallocate` (falls back to `ftruncate` on tmpfs).
 3. Constructs the requested disk type:
-   - **`fsdisk`** — `make_fs_disk(path)`
-   - **`raid0`** — `make_raid0_disk(uuid, chunk_size, [make_fs_disk(...)...])`
-   - **`raid1`** — `make_raid1_disk(uuid, make_fs_disk(a), make_fs_disk(b))`
-   - **`raid10`** — `make_raid0_disk(uuid, chunk_size, [raid1_pair_a, raid1_pair_b])` (two RAID1 pairs
-     striped together)
+   - **`fsdisk`**: `make_fs_disk(path)`
+   - **`iscsi`**: `make_iscsi_disk(url)` (libiscsi initiator; URL form
+     `iscsi://[user%password@]host[:port]/iqn/lun`)
+   - **`raid0`**: `make_raid0_disk(uuid, chunk_size, [legs...])`
+   - **`raid1`**: `make_raid1_disk(uuid, leg_a, leg_b)`
+   - **`raid10`**: `make_raid0_disk(uuid, chunk_size, [raid1_pair_a, raid1_pair_b])` (two RAID1
+     pairs striped together; legs may be file-backed or iSCSI)
 4. Wraps the disk in `MockUblksrv` (io_uring SQE/CQE loop, no kernel module).
 5. Allocates a tag array (size = `iodepth`) for in-flight I/O tracking.
 
@@ -134,8 +140,9 @@ namespace), so the superblock check passes across fio job sections that reopen t
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `disk_type` | string | `fsdisk` | Disk topology: `fsdisk`, `raid0`, `raid1`, `raid10` |
-| `disk_files` | string | *(required)* | Colon-separated backing file paths |
+| `disk_type` | string | `fsdisk` | Disk topology: `fsdisk`, `iscsi`, `raid0`, `raid1`, `raid10` |
+| `disk_files` | string | *(one of)* | Colon-separated backing file paths (file-backed legs) |
+| `disk_url` | string | *(one of)* | Pipe-separated iSCSI URLs (iSCSI legs) |
 | `raid_chunk_size` | int | `32768` | RAID chunk size in bytes |
 
 ### Environment variables (set by CMake)
@@ -143,7 +150,7 @@ namespace), so the superblock check passes across fio job sections that reopen t
 | Variable | Used by |
 |---|---|
 | `ENGINE_SO` | Passed as `ioengine=external:${ENGINE_SO}` in job files |
-| `TEST_FILE` | Single file-backed disk path |
+| `TEST_FILE` | File-backed disk single backing path |
 | `TEST_FILE_A` … `TEST_FILE_D` | RAID backing paths (A/B for RAID0/1, A–D for RAID10) |
 | `ASAN_OPTIONS=verify_asan_link_order=0` | ASan builds only — suppresses link-order warning |
 | `LD_PRELOAD=<engine.so>` | Release/tcmalloc builds — works around static TLS block exhaustion |
@@ -270,9 +277,50 @@ above.
 | `FunctionalRAID10` | 180 s |
 | `FunctionalRAID0CrossStripe` | 180 s |
 | `FunctionalRAID10CrossStripe` | 180 s |
+| `FunctionalISCSI` | 120 s |
+| `FunctionalISCSIRAID10` | 180 s |
 
 RAID1 and RAID10 are slower because every write is replicated to both mirror members and the
 dirty bitmap is updated.
+
+---
+
+## iSCSI Functional Tests
+
+The `FunctionalISCSI*` tests require a running iSCSI target on `127.0.0.1:13260` exporting at
+least four LUNs under `iqn.2026-05.test.ublkpp:lun0`. CTest brings the target up and tears it
+down automatically via the `iscsi_target` fixture, which wraps
+[`src/driver/tests/iscsi_tgtd_setup.sh`](../src/driver/tests/iscsi_tgtd_setup.sh) (`tgtd start`
+/ `tgtd stop`).
+
+### Soft-skip behavior
+
+The setup script exits 0 (allowing the fixture to "succeed") and the C++ tests probe the port
+at runtime, calling `GTEST_SKIP()` if the target is unreachable. So a missing `tgtd`/`tgtadm`,
+a port already squatted by something other than `tgtd`, or an inaccessible `/var/run/tgtd`
+all surface as **Skipped** (green) rather than failing the suite. CI runs with `tgtd`
+preinstalled; local dev boxes without it just skip.
+
+### Local setup
+
+`tgtd` writes its per-port lock under `/var/run/tgtd/`. The directory must be writable by
+the test runner. Three options:
+
+1. Run as root.
+2. One-shot (lost on reboot, since `/var/run` is tmpfs):
+   ```bash
+   sudo mkdir -p /var/run/tgtd && sudo chown $USER /var/run/tgtd
+   ```
+3. Persistent (survives reboot):
+   ```bash
+   echo 'd /var/run/tgtd 0755 $USER $USER -' | sudo tee /etc/tmpfiles.d/tgtd.conf
+   sudo systemd-tmpfiles --create /etc/tmpfiles.d/tgtd.conf
+   ```
+
+Override the port (`ISCSI_TEST_PORT`, default 13260), control port
+(`ISCSI_TEST_CTRL_PORT`, default 13261), state directory (`ISCSI_TEST_STATE`, default
+`/tmp/ublkpp_iscsi_test`), or LUN count (`ISCSI_TEST_LUN_COUNT`, default 4) via env vars
+if those defaults clash on your machine.
 
 ---
 

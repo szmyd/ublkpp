@@ -113,6 +113,10 @@ set(FIO_BASE_ARGS
     --allow_file_create=0
 )
 
+# fio's exit code is 0 even when a child process crashes ("got signal=N" line in
+# stdout); match that to mark the ctest entry as Failed instead of silently Passed.
+set(FIO_FAIL_REGEX "got signal=")
+
 # --- FSDisk ---
 add_test(NAME FunctionalFSDisk
     COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
@@ -138,6 +142,7 @@ set_tests_properties(FunctionalFSDisk PROPERTIES
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 120
     LABELS "Functional"
+    FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
 )
 
 # --- RAID0 ---
@@ -151,6 +156,7 @@ set_tests_properties(FunctionalRAID0 PROPERTIES
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 120
     LABELS "Functional"
+    FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
 )
 
 # --- RAID1 ---
@@ -164,6 +170,7 @@ set_tests_properties(FunctionalRAID1 PROPERTIES
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 180
     LABELS "Functional"
+    FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
 )
 
 # --- RAID10 ---
@@ -177,6 +184,7 @@ set_tests_properties(FunctionalRAID10 PROPERTIES
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 180
     LABELS "Functional"
+    FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
 )
 
 # --- RAID0 cross-stripe (bs=96k forces iovec accumulation in __distribute) ---
@@ -190,6 +198,7 @@ set_tests_properties(FunctionalRAID0CrossStripe PROPERTIES
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 180
     LABELS "Functional"
+    FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
 )
 
 # --- RAID10 cross-stripe (same pattern through RAID0+RAID1 stack) ---
@@ -203,7 +212,43 @@ set_tests_properties(FunctionalRAID10CrossStripe PROPERTIES
     FIXTURES_REQUIRED FunctionalImages
     TIMEOUT 180
     LABELS "Functional"
+    FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
 )
+
+# --- iSCSI (chains onto the iscsi_target fixture from src/driver/tests) ---
+if (libiscsi_FOUND)
+    set(ISCSI_BASE "iscsi://127.0.0.1:13260/iqn.2026-05.test.ublkpp:lun0")
+    set(ISCSI_URL "${ISCSI_BASE}/1")
+    add_test(NAME FunctionalISCSI
+        COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/jobs/iscsi_rw.fio
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    # When tgtd is unavailable, ISCSISetup soft-skips and CTest auto-skips this
+    # test via FIXTURES_REQUIRED — no SKIP_REGULAR_EXPRESSION needed.
+    set_tests_properties(FunctionalISCSI PROPERTIES
+        ENVIRONMENT "ENGINE_SO=${ENGINE_SO};ISCSI_URL=${ISCSI_URL};${FUNCTIONAL_ENV}"
+        FIXTURES_REQUIRED iscsi_target
+        TIMEOUT 120
+        LABELS "Functional"
+        FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
+    )
+
+    # RAID10 over four iSCSI LUNs: exercises RAID0 striping + RAID1 mirroring +
+    # iSCSIDisk service-loop cascade with realistic concurrency.
+    add_test(NAME FunctionalISCSIRAID10
+        COMMAND ${FIO_EXECUTABLE} ${FIO_BASE_ARGS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/jobs/iscsi_raid10_rw.fio
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(FunctionalISCSIRAID10 PROPERTIES
+        ENVIRONMENT "ENGINE_SO=${ENGINE_SO};ISCSI_URL_1=${ISCSI_BASE}/1;ISCSI_URL_2=${ISCSI_BASE}/2;ISCSI_URL_3=${ISCSI_BASE}/3;ISCSI_URL_4=${ISCSI_BASE}/4;${FUNCTIONAL_ENV}"
+        FIXTURES_REQUIRED iscsi_target
+        TIMEOUT 180
+        LABELS "Functional"
+        FAIL_REGULAR_EXPRESSION "${FIO_FAIL_REGEX}"
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Convenience target: cmake --build <dir> --target functional

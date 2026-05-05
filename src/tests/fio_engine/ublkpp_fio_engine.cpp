@@ -5,11 +5,17 @@
 ///
 /// Usage (fio job file):
 ///   ioengine=external:${ENGINE_SO}
-///   disk_type=fsdisk          # or raid0 / raid1
-///   disk_files=/tmp/a.img     # colon-separated for RAID
+///   disk_type=fsdisk          # or raid0 / raid1 / raid10 / iscsi
+///   disk_files=/tmp/a.img     # colon-separated for RAID with file legs
+///   disk_url=iscsi://...      # single URL for iscsi; pipe-separated ('|')
+///                             # for RAID with iSCSI legs. URLs contain ':'
+///                             # natively and fio treats ';' as an inline
+///                             # comment marker, so '|' is the list sep.
+///                             # Overrides disk_files when both set.
 ///   raid_chunk_size=32768     # optional, default 32 KiB
 
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -73,14 +79,19 @@ SISL_OPTIONS_ENABLE(logging, raid1)
 static void ensure_sisl_init() {
     static std::once_flag flag;
     std::call_once(flag, []() {
+        // Default to warn so functional-test stdout shows fio's job/stats output without being
+        // drowned in DLOGT/DLOGD traffic from the engine. Override via UBLKPP_FIO_LOG_LEVEL when
+        // debugging (any sisl level: critical/error/warn/info/debug/trace).
+        char const* env_level = std::getenv("UBLKPP_FIO_LOG_LEVEL");
+        std::string level = env_level ? env_level : "warn";
         int argc = 3;
         char prog[] = "ublkpp_fio";
         char v_flag[] = "-v";
-        char v_level[] = "debug";
-        char* argv[] = {prog, v_flag, v_level};
+        std::vector< char > level_buf(level.begin(), level.end());
+        level_buf.push_back('\0');
+        char* argv[] = {prog, v_flag, level_buf.data()};
         SISL_OPTIONS_LOAD(argc, argv, logging, raid1);
         sisl::logging::SetLogger("ublkpp_fio");
-        // Set trace on all loggers — including SISL per-module loggers already created
         spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
     });
 }
@@ -90,8 +101,9 @@ static void ensure_sisl_init() {
 // ---------------------------------------------------------------------------
 struct ublkpp_options {
     void* pad;                    // required: first field must be void* (thread_data placeholder)
-    char* disk_type;              // "fsdisk" | "raid0" | "raid1"
+    char* disk_type;              // "fsdisk" | "raid0" | "raid1" | "raid10" | "iscsi"
     char* disk_files;             // colon-separated backing file paths
+    char* disk_url;               // iSCSI URL (used when disk_type=iscsi)
     unsigned int raid_chunk_size; // bytes, default 32 KiB
 };
 
@@ -111,6 +123,15 @@ static fio_option engine_options[] = {
         .type = FIO_OPT_STR_STORE,
         .off1 = offsetof(struct ublkpp_options, disk_files),
         .help = "Colon-separated backing file paths",
+        .category = FIO_OPT_C_ENGINE,
+        .group = FIO_OPT_G_INVALID,
+    },
+    {
+        .name = "disk_url",
+        .lname = "Disk URL",
+        .type = FIO_OPT_STR_STORE,
+        .off1 = offsetof(struct ublkpp_options, disk_url),
+        .help = "iSCSI URL (used when disk_type=iscsi)",
         .category = FIO_OPT_C_ENGINE,
         .group = FIO_OPT_G_INVALID,
     },
@@ -161,12 +182,12 @@ static boost::uuids::uuid uuid_for_paths(std::vector< std::string > const& paths
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-static std::vector< std::string > split_colon(char const* s) {
+static std::vector< std::string > split_on(char const* s, char delim) {
     std::vector< std::string > result;
     if (!s || !*s) return result;
     std::istringstream ss(s);
     std::string token;
-    while (std::getline(ss, token, ':'))
+    while (std::getline(ss, token, delim))
         if (!token.empty()) result.push_back(token);
     return result;
 }
@@ -233,61 +254,88 @@ static int ublkpp_init(struct thread_data* td) {
     auto* opts = reinterpret_cast< ublkpp_options* >(td->eo);
     char const* disk_type = (opts && opts->disk_type) ? opts->disk_type : "fsdisk";
     char const* disk_files = (opts && opts->disk_files) ? opts->disk_files : "";
+    char const* disk_url = (opts && opts->disk_url) ? opts->disk_url : "";
     uint32_t chunk_size = (opts && opts->raid_chunk_size) ? opts->raid_chunk_size : 32768u;
+    std::string const type(disk_type);
 
-    auto paths = split_colon(disk_files);
-    if (paths.empty()) {
-        log_err("ublkpp_fio: disk_files option is required\n");
-        return -1;
-    }
+    // RAID composition can use either FSDisk legs (disk_files) or iSCSIDisk legs
+    // (disk_url, pipe-separated). disk_url takes precedence when both are set.
+    auto paths = split_on(disk_files, ':');
+    // URLs use '|' as list sep: ':' is part of every iSCSI URL (host:port, IQN
+    // suffix) and ';' is fio's inline-comment marker which silently strips the
+    // value. For type=iscsi (single URL), pass through unsplit.
+    auto urls =
+        (type == "iscsi" && disk_url && *disk_url) ? std::vector< std::string >{disk_url} : split_on(disk_url, '|');
+    bool const use_iscsi_legs = (type == "raid0" || type == "raid1" || type == "raid10") && !urls.empty();
 
-    // Size: use td->o.size + td->o.start_offset, rounded to sector, plus
-    // 64 MiB overhead for RAID metadata / superblocks
-    uint64_t const disk_size = ((td->o.size + td->o.start_offset + 511ULL) & ~511ULL) + (64ULL << 20);
-
-    for (auto const& p : paths) {
-        if (!ensure_file_size(p, disk_size)) {
-            log_err("ublkpp_fio: cannot allocate backing file %s\n", p.c_str());
+    if (type != "iscsi" && !use_iscsi_legs) {
+        if (paths.empty()) {
+            log_err("ublkpp_fio: disk_files option is required\n");
             return -1;
+        }
+        uint64_t const disk_size = ((td->o.size + td->o.start_offset + 511ULL) & ~511ULL) + (64ULL << 20);
+        for (auto const& p : paths) {
+            if (!ensure_file_size(p, disk_size)) {
+                log_err("ublkpp_fio: cannot allocate backing file %s\n", p.c_str());
+                return -1;
+            }
         }
     }
 
     // Build the disk
     std::shared_ptr< ublkpp::ublk_disk > disk;
+    auto const& leg_ids = use_iscsi_legs ? urls : paths;
+    auto make_leg = [&](size_t i) -> std::shared_ptr< ublkpp::ublk_disk > {
+        if (use_iscsi_legs) {
+#ifdef HAVE_ISCSI
+            return ublkpp::make_iscsi_disk(urls[i]);
+#else
+            throw std::runtime_error("iSCSI legs requested but engine built without HAVE_ISCSI");
+#endif
+        }
+        return ublkpp::make_fs_disk(paths[i]);
+    };
     try {
-        std::string const type(disk_type);
-        if (type == "fsdisk") {
+        if (type == "iscsi") {
+#ifdef HAVE_ISCSI
+            if (!disk_url || !*disk_url) {
+                log_err("ublkpp_fio: disk_type=iscsi requires disk_url\n");
+                return -1;
+            }
+            disk = ublkpp::make_iscsi_disk(disk_url);
+#else
+            log_err("ublkpp_fio: iscsi disk_type requested but engine built without HAVE_ISCSI\n");
+            return -1;
+#endif
+        } else if (type == "fsdisk") {
             disk = ublkpp::make_fs_disk(paths[0]);
         } else if (type == "raid0") {
-            if (paths.size() < 2) {
-                log_err("ublkpp_fio: raid0 requires at least 2 disk_files\n");
+            if (leg_ids.size() < 2) {
+                log_err("ublkpp_fio: raid0 requires at least 2 legs (disk_files or disk_url)\n");
                 return -1;
             }
             std::vector< std::shared_ptr< ublkpp::ublk_disk > > members;
-            for (auto const& p : paths)
-                members.push_back(ublkpp::make_fs_disk(p));
-            disk = ublkpp::make_raid0_disk(uuid_for_paths(paths), chunk_size, std::move(members));
+            for (size_t i = 0; i < leg_ids.size(); ++i)
+                members.push_back(make_leg(i));
+            disk = ublkpp::make_raid0_disk(uuid_for_paths(leg_ids), chunk_size, std::move(members));
         } else if (type == "raid1") {
-            if (paths.size() < 2) {
-                log_err("ublkpp_fio: raid1 requires 2 disk_files\n");
+            if (leg_ids.size() < 2) {
+                log_err("ublkpp_fio: raid1 requires 2 legs (disk_files or disk_url)\n");
                 return -1;
             }
-            disk = ublkpp::make_raid1_disk(uuid_for_paths(paths), ublkpp::make_fs_disk(paths[0]),
-                                           ublkpp::make_fs_disk(paths[1]));
+            disk = ublkpp::make_raid1_disk(uuid_for_paths(leg_ids), make_leg(0), make_leg(1));
         } else if (type == "raid10") {
-            if (paths.size() != 4) {
-                log_err("ublkpp_fio: raid10 requires exactly 4 disk_files\n");
+            if (leg_ids.size() != 4) {
+                log_err("ublkpp_fio: raid10 requires exactly 4 legs (disk_files or disk_url)\n");
                 return -1;
             }
             // RAID10: two mirrored pairs striped together
-            std::vector< std::string > const pair_a_paths{paths[0], paths[1]};
-            std::vector< std::string > const pair_b_paths{paths[2], paths[3]};
-            auto pair_a = ublkpp::make_raid1_disk(uuid_for_paths(pair_a_paths), ublkpp::make_fs_disk(paths[0]),
-                                                  ublkpp::make_fs_disk(paths[1]));
-            auto pair_b = ublkpp::make_raid1_disk(uuid_for_paths(pair_b_paths), ublkpp::make_fs_disk(paths[2]),
-                                                  ublkpp::make_fs_disk(paths[3]));
+            std::vector< std::string > const pair_a_ids{leg_ids[0], leg_ids[1]};
+            std::vector< std::string > const pair_b_ids{leg_ids[2], leg_ids[3]};
+            auto pair_a = ublkpp::make_raid1_disk(uuid_for_paths(pair_a_ids), make_leg(0), make_leg(1));
+            auto pair_b = ublkpp::make_raid1_disk(uuid_for_paths(pair_b_ids), make_leg(2), make_leg(3));
             std::vector< std::shared_ptr< ublkpp::ublk_disk > > members{std::move(pair_a), std::move(pair_b)};
-            disk = ublkpp::make_raid0_disk(uuid_for_paths(paths), chunk_size, std::move(members));
+            disk = ublkpp::make_raid0_disk(uuid_for_paths(leg_ids), chunk_size, std::move(members));
         } else {
             log_err("ublkpp_fio: unknown disk_type '%s'\n", disk_type);
             return -1;

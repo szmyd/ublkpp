@@ -102,7 +102,6 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
 
 void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out) {
     auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~(1ULL << 63));
-    int const tag = state->_owner->_tag;
     int const res = cqe->res;
 
     // Consume the CQE immediately so peek sees the next one
@@ -112,8 +111,26 @@ void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out)
     state->_result_ready = true;
 
     if (auto h = std::exchange(state->_waiter, {})) h.resume();
-    auto& opt = _async_tasks[tag];
-    if (opt && opt->done()) out.push_back({tag, opt->result()});
+
+    // TODO: consider mirroring ublkpp_tgt's __handle_io_async pattern -- wrap each
+    // slot in an outer task that co_awaits async_iov and reports {tag, result} on
+    // its own. That removes the divergence below and exercises the disk_task<int>
+    // awaiter side (currently only _coro.done() is checked, so awaiter regressions
+    // slip past).
+    //
+    // After resumption, any number of slot tasks may have become done. Per-IO
+    // states resume their own slot directly (state->_owner -> tagged async_io),
+    // but stand-alone service-loop states (iSCSIDisk POLL_ADD, _owner=nullptr)
+    // drive cascades through libiscsi callbacks that can resume one or more
+    // slot coroutines. Scan all slots and harvest completed tasks; reset after
+    // reporting so subsequent CQEs do not re-emit the same completion.
+    for (int t = 0; t < static_cast< int >(_async_tasks.size()); ++t) {
+        auto& opt = _async_tasks[t];
+        if (opt && opt->done()) {
+            out.push_back({t, opt->result()});
+            opt.reset();
+        }
+    }
 }
 
 std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int result) {

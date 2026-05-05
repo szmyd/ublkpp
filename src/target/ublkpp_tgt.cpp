@@ -103,7 +103,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     if (auto h = std::exchange(state->_waiter, {})) h.resume(); // per-state resume (disk_task path)
                 } catch (std::exception const& e) {
                     TLOGE("I/O threw exception: [{}]", e.what())
-                    ublksrv_complete_io(q, state->_owner->_tag, -EIO);
+                    // _owner is null for stand-alone service-loop states (e.g. iSCSIDisk POLL_ADD)
+                    if (state->_owner) ublksrv_complete_io(q, state->_owner->_tag, -EIO);
                 }
             } else {
                 // ublk command CQE (FETCH/COMMIT) -- delegate to libublksrv
@@ -329,8 +330,14 @@ static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
     auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
-    // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
-    if (!device->prepare(q, 0).empty()) return -1;
+    // unregistered with io_uring and fixed-file I/O would crash -- treat it as a fatal init failure.
+    // prepare() can throw (iSCSIDisk: per-queue login failure across the C boundary).
+    try {
+        if (!device->prepare(q, 0).empty()) return -1;
+    } catch (std::exception const& e) {
+        TLOGE("Queue {} prepare() threw: {}", q->q_id, e.what())
+        return -1;
+    }
     // async_io contains std::deque members; ublksrv allocates raw bytes via calloc, so we must
     // placement-new to properly construct each IO slot's async_io.
     for (int i = 0; i < q->q_depth; ++i)

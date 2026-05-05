@@ -58,7 +58,12 @@ include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(sisl REQUIRED)
 find_package(ublksrv REQUIRED)
 find_package(isa-l REQUIRED)
+find_package(libiscsi QUIET)
 find_package(fio QUIET)
+
+if (libiscsi_FOUND)
+    add_compile_options(-DHAVE_ISCSI)
+endif()
 
 add_subdirectory (src)
 if ((DEFINED ENABLE_TESTS) AND (${ENABLE_TESTS}))

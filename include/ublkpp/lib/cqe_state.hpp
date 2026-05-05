@@ -35,9 +35,9 @@ namespace ublkpp {
 //   - Per-IO (build_cqe_state_data path): allocated in async_io::_pool, owned
 //     by the IO slot, _owner non-null so the loop can call ublksrv_complete_io
 //     with -EIO if the coroutine throws.
-//   - Stand-alone service loops: coroutine-frame-local, _owner = nullptr, and
-//     callers handle their own errors. Encode the user_data manually with
-//     `reinterpret_cast<uint64_t>(state) | k_target_bit`.
+//   - Stand-alone (e.g. iSCSIDisk POLL_ADD service loop): coroutine-frame-local,
+//     _owner = nullptr, callers handle their own errors. Encode the user_data
+//     manually with `reinterpret_cast<uint64_t>(state) | k_target_bit`.
 //
 // Reference implementation: src/driver/fs_disk.cpp.
 // =============================================================================
@@ -70,7 +70,7 @@ struct async_io {
 //
 // _owner is nullable: per-IO cqe_states (build_cqe_state_data path) point at the slot's
 // async_io so an exception on resume can be reported via ublksrv_complete_io. Stand-alone
-// cqe_states set _owner = nullptr; callers handle their own errors.
+// cqe_states (long-lived service loops) set _owner = nullptr; callers handle their own errors.
 struct cqe_state {
     async_io* _owner{nullptr};
     int _result{0};

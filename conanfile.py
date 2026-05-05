@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.30.0"
+    version = "0.31.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -25,12 +25,14 @@ class UBlkPPConan(ConanFile):
                 "fPIC": ['True', 'False'],
                 "coverage": ['True', 'False'],
                 "sanitize": ['address', 'thread', 'False'],
+                "iscsi": ['True', 'False'],
                 }
     default_options = {
                 'shared': False,
                 'fPIC': True,
                 'coverage': False,
                 'sanitize': False,
+                'iscsi': True,
             }
 
     exports_sources = (
@@ -72,6 +74,8 @@ class UBlkPPConan(ConanFile):
 
         self.requires("isa-l/2.30.0")
         self.requires("ublksrv/nbi.1.5.0.1", transitive_headers=True)
+        if self.options.get_safe("iscsi"):
+            self.requires("libiscsi/1.20.3")
 
     def layout(self):
         self.folders.source = "."
@@ -127,7 +131,11 @@ class UBlkPPConan(ConanFile):
         cmake.configure()
         cmake.build()
         if not self.conf.get("tools.build:skip_test", default=False):
-            self.run(f"ctest --test-dir '{self.build_folder}' --output-on-failure")
+            # Unit tests: quiet on success.
+            self.run(f"ctest --test-dir '{self.build_folder}' -LE Functional --output-on-failure")
+            # Functional tests (fio-driven): always surface stdout so the per-job stats block is
+            # visible. The engine .so defaults to log level 'warn' so fio's stats aren't swamped.
+            self.run(f"ctest --test-dir '{self.build_folder}' -L Functional --verbose")
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)
@@ -139,6 +147,9 @@ class UBlkPPConan(ConanFile):
         self.cpp_info.requires = ["sisl::cache", "isa-l::isa-l", "ublksrv::ublksrv"]
         if self.settings.os == "Linux":
             self.cpp_info.system_libs = ["atomic"]
+        if (self.options.get_safe("iscsi")):
+            self.cpp_info.requires.extend(["libiscsi::libiscsi"])
+            self.cpp_info.defines.append("HAVE_ISCSI")
         if self.options.get_safe("sanitize") and self.options.sanitize != "False":
             if self.options.sanitize == "thread":
                 self.cpp_info.sharedlinkflags.append("-fsanitize=thread")

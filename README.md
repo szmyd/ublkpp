@@ -12,7 +12,7 @@
 - **RAID1 Resilient Bitmap**: Memory-efficient dirty tracking (4 KiB page tracks 1 GiB data)
 - **Hot Device Replacement**: Swap devices in degraded RAID1 arrays without downtime
 - **Lock-Free I/O Path**: Read/write operations use lock-free algorithms (x86-64/ARM64)
-- **Factory-Based API**: File-backed disks and RAID compositions through supported factory functions
+- **Multiple Backends**: File-backed (`make_fs_disk`) and in-process iSCSI initiator (`make_iscsi_disk`, libiscsi-based)
 - **Coroutine I/O**: Single-event-loop, CQE-driven coroutine pipeline
 - **Comprehensive Testing**: High test coverage with unit and functional (fio-driven) tests
 - **Modern C++**: Built with C++23, leveraging `std::expected` for error handling
@@ -59,6 +59,9 @@ conan build -s:h build_type=Debug -o ublkpp/*:coverage=True --build missing .
 # With sanitizers (address or thread)
 conan build -s:h build_type=Debug -o ublkpp/*:sanitize=address --build missing .
 conan build -s:h build_type=Debug -o ublkpp/*:sanitize=thread --build missing .
+
+# Optional iSCSI backend (in-process libiscsi initiator; no kernel iSCSI module needed)
+conan build -o ublkpp/*:iscsi=True --build missing .
 ```
 
 ## 🏗️ Architecture
@@ -68,12 +71,12 @@ conan build -s:h build_type=Debug -o ublkpp/*:sanitize=thread --build missing .
 ```
 ublkpp/
 ├── include/ublkpp/       # Public headers
-│   ├── drivers.hpp       # File-backed disk factory
+│   ├── drivers.hpp       # make_fs_disk, make_iscsi_disk factories
 │   ├── raid.hpp          # RAID factories and helpers
 │   ├── target.hpp        # ublk target interface
 │   └── lib/              # Base disk subclassing API
 ├── src/
-│   ├── driver/           # File-backed backend implementation
+│   ├── driver/           # Backend implementations
 │   ├── lib/              # Core ublk_disk base classes
 │   ├── metrics/          # I/O and RAID metrics
 │   ├── raid/             # RAID logic (bitmap, superblock)
@@ -86,6 +89,7 @@ ublkpp/
 - **`ublk_disk`**: Base class for all block devices
 - **`disk_handle`**: Shared ownership handle for disks and RAID composites
 - **`make_fs_disk()`**: File/block-backed disk construction
+- **`make_iscsi_disk()`**: Factory for an in-process libiscsi-backed disk (optional, `-o ublkpp/*:iscsi=True`)
 - **`make_raid0_disk()` / `make_raid1_disk()`**: RAID composition factories
 - **`raid0::*` / `raid1::*`**: Free-function helpers for topology and mirror management
 - **`ublkpp_tgt`**: Exposes devices to kernel via ublk
@@ -164,6 +168,11 @@ sudo ublkpp_disk --raid10 file1.dat,file2.dat,file3.dat,file4.dat
 
 # Recover existing device
 sudo ublkpp_disk --device_id 0 --raid1 /dev/sde,/dev/sdf
+
+# iSCSI legs (libiscsi initiator, no kernel iSCSI module required)
+sudo ublkpp_disk --raid1 \
+    iscsi://user%password@10.0.0.1/iqn.2026-05.example:lun0/1,\
+    iscsi://user%password@10.0.0.2/iqn.2026-05.example:lun0/1
 ```
 
 ### Verify Device
@@ -191,18 +200,21 @@ $ sudo mount /dev/ublkb0 /mnt
 
 ### Naming Conventions
 
+The library uses a **two-tier convention** to telegraph the boundary between the stable
+public surface and internal implementation detail.
+
 | Element | Convention | Example |
 |---------|------------|---------|
 | **Public API types** (`include/ublkpp/`) | `lower_snake_case` | `ublk_disk`, `disk_handle`, `ublkpp_tgt` |
-| **Public API factories** (free functions) | `make_<thing>` | `make_fs_disk()`, `make_raid1_disk()` |
+| **Public API factories** (free functions) | `make_<thing>` | `make_fs_disk()`, `make_iscsi_disk()`, `make_raid1_disk()` |
 | **Internal classes** (`src/`) | `PascalCase` | `SuperBlock`, `Bitmap`, `Raid1Disk` (impl), `MirrorDevice` |
 | Functions / methods | `snake_case` | `async_iov()`, `prepare()`, `swap_device()` |
 | Members | `_snake_case` | `_device`, `_dirty_bitmap` |
 | Constants | `k_snake_case` | `k_page_size` |
 | Macros / Enums | `SCREAMING_SNAKE_CASE` | `UBLK_IO_OP_WRITE` |
 
-Driver and RAID array implementations are not part of the public surface; consumers construct
-opaque `disk_handle`s via `make_*_disk()` factories and compose them.
+Driver and RAID array implementations are **not** part of the public surface; consumers
+construct opaque `disk_handle`s via `make_*_disk()` factories and compose them.
 
 ### Workflow
 
@@ -295,6 +307,7 @@ TEST(Raid1, YourTestName) {
 
 ### Optional Dependencies
 
+- **[libiscsi](https://github.com/sahlberg/libiscsi)**: in-process iSCSI initiator. Enables the `make_iscsi_disk()` driver, which speaks SCSI/iSCSI directly from the queue thread via io_uring `POLL_ADD`, removing the need for a host kernel iSCSI module or `/etc/iscsi` state. Enable with `-o ublkpp/*:iscsi=True`.
 
 ### Build Tools
 

@@ -7,9 +7,12 @@
 
 #include <boost/uuid/uuid.hpp>
 
-// Convenience module list for SISL_LOGGING_INIT. Append the consumer's own
-// modules after this list.
-#ifdef HAVE_LIBISCSI
+// Convenience module list for SISL_LOGGING_INIT. Prepend `ublksrv` (the underlying
+// kernel-interface library, always required) and append any consumer-specific modules.
+// `libiscsi` is folded in automatically when HAVE_ISCSI is set (propagated via the
+// Conan package's cpp_info.defines). Example:
+//   SISL_LOGGING_INIT(ublksrv, UBLKPP_LOG_MODS, my_app)
+#ifdef HAVE_ISCSI
 #define UBLKPP_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers, libiscsi
 #else
 #define UBLKPP_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers
