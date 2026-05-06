@@ -54,7 +54,7 @@ public:
     uint32_t stripe_size() const noexcept { return _stripe_size; }
 
     std::string id() const noexcept override { return "RAID0"; }
-    std::vector< int > prepare(ublksrv_queue const*, int const iouring_device) override;
+    prepare_result prepare(ublksrv_queue const*, int const iouring_device) override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;
@@ -127,26 +127,33 @@ std::shared_ptr< ublk_disk > Raid0Disk::get_device(uint32_t stripe_offset) const
     return _stripe_array[stripe_offset]->disk;
 }
 
-std::vector< int > Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
-    auto fds = std::vector< int >();
+// Upper bound on distinct stripes touched by a single I/O.
+// +1 for start-alignment: an unaligned start can spill into one extra stripe.
+// Capped by device count because __distribute gathers all iovecs per device into one task.
+static inline size_t stripes_for_io(size_t io_size, size_t stride_width, size_t nr_stripes) {
+    return std::min((io_size + stride_width - 1) / stride_width + 1, nr_stripes);
+}
+
+Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
+    prepare_result result;
+    result.max_sqes_per_io = 0;
+    // At most k stripes are active concurrently per max-size I/O. Each active stripe dispatches
+    // one child async_iov that submits child.max_sqes_per_io SQEs into the shared pool. Sum the
+    // first k contributions (homogeneous arrays: all equal, so order is irrelevant).
+    auto const k = stripes_for_io(max_tx(), _stride_width, _stripe_array.size());
+    size_t counted = 0;
     for (auto& stripe : _stripe_array) {
-        auto child = stripe->disk->prepare(q, iouring_device_start + fds.size());
-        fds.insert(fds.end(), child.begin(), child.end());
+        auto child = stripe->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
+        result.fds.insert(result.fds.end(), child.fds.begin(), child.fds.end());
+        if (counted++ < k) result.max_sqes_per_io += child.max_sqes_per_io;
     }
-    return fds;
+    return result;
 }
 
 void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
     for (auto const& stripe : _stripe_array) {
         stripe->disk->probe_tick(q);
     }
-}
-
-// Upper bound on distinct stripes touched by a single I/O.
-// +1 for start-alignment: an unaligned start can spill into one extra stripe.
-// Capped by device count because __distribute gathers all iovecs per device into one task.
-static inline size_t stripes_for_io(size_t io_size, size_t stride_width, size_t nr_stripes) {
-    return std::min((io_size + stride_width - 1) / stride_width + 1, nr_stripes);
 }
 
 /// This is the primary I/O handler call for RAID0

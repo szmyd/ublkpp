@@ -31,6 +31,7 @@ struct FireAndForget {
 
 TEST(AsyncIo, NextStateCreatesNewState) {
     ublkpp::async_io io{};
+    io._pool.reserve(1);
     auto* s = io.next_state();
     ASSERT_NE(s, nullptr);
     EXPECT_EQ(s->_owner, &io);
@@ -41,6 +42,7 @@ TEST(AsyncIo, NextStateCreatesNewState) {
 
 TEST(AsyncIo, NextStateGrowsPool) {
     ublkpp::async_io io{};
+    io._pool.reserve(3);
     auto* s1 = io.next_state();
     auto* s2 = io.next_state();
     auto* s3 = io.next_state();
@@ -51,10 +53,11 @@ TEST(AsyncIo, NextStateGrowsPool) {
 
 TEST(AsyncIo, NextStateAddressStability) {
     ublkpp::async_io io{};
+    io._pool.reserve(64);
     auto* first = io.next_state();
     for (int i = 1; i < 64; ++i)
         io.next_state();
-    // std::deque guarantees push_back doesn't invalidate existing pointers
+    // std::vector with pre-reserved capacity guarantees push_back doesn't invalidate pointers
     EXPECT_EQ(first, &io._pool.front());
 }
 
@@ -64,6 +67,7 @@ TEST(AsyncIo, NextStateAddressStability) {
 
 TEST(BuildCqeStateData, RegistersStateInPool) {
     ublkpp::async_io io{};
+    io._pool.reserve(1);
     ublk_io_data fake{};
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
@@ -79,6 +83,7 @@ TEST(BuildCqeStateData, RegistersStateInPool) {
 
 TEST(BuildCqeStateData, EachCallGrowsPool) {
     ublkpp::async_io io{};
+    io._pool.reserve(3);
     ublk_io_data fake{};
     fake.private_data = &io;
     ublkpp::build_cqe_state_data(&fake);
@@ -89,6 +94,7 @@ TEST(BuildCqeStateData, EachCallGrowsPool) {
 
 TEST(BuildCqeStateData, ReturnedPointerMatchesDecodedUserData) {
     ublkpp::async_io io{};
+    io._pool.reserve(1);
     ublk_io_data fake{};
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);

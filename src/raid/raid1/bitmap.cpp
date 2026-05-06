@@ -248,7 +248,8 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
                                                                   : (((uint64_t)0b1 << bits_to_read) - 1)
                                                        << (shift_offset - (bits_to_read - 1)));
             bits_left -= bits_to_read;
-            if (0 != (cur_word->load(std::memory_order_relaxed) & bits_to_check)) return true;
+            if (0 != (std::atomic_ref< word_t >(*cur_word).load(std::memory_order_relaxed) & bits_to_check))
+                return true;
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
@@ -305,7 +306,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         auto const clear_mask = ~htobe64(64 == bits_to_write ? UINT64_MAX
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
-        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_relaxed);
+        auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_and(clear_mask, std::memory_order_relaxed);
         _dirty_chunks_est.fetch_sub(
             std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
                      static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)))),
@@ -350,7 +351,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
         // Find the first dirty word
         uint64_t word = 0;
         for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
-            word = be64toh((page + word_off)->load(std::memory_order_relaxed));
+            word = be64toh(std::atomic_ref< word_t >(*(page + word_off)).load(std::memory_order_relaxed));
             if (0 == word) continue;
             logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
 
@@ -397,7 +398,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_relaxed);
+            auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_or(bits_to_set, std::memory_order_relaxed);
             _dirty_chunks_est.fetch_add(std::popcount(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;

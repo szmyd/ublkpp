@@ -358,11 +358,14 @@ static int init_queue(const struct ublksrv_queue* q, void**) {
     auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
     // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
-    if (!device->prepare(q, 0).empty()) return -1;
-    // async_io contains std::deque members; ublksrv allocates raw bytes via calloc, so we must
-    // placement-new to properly construct each IO slot's async_io.
-    for (int i = 0; i < q->q_depth; ++i)
-        new (ublksrv_io_private_data(q, i)) async_io{};
+    auto const prep = device->prepare(q, 0);
+    if (!prep.fds.empty()) return -1;
+    // async_io is placement-new'd into ublksrv-calloc'd bytes; _pool is pre-reserved to the SQE
+    // ceiling so push_back during I/O never reallocates and cqe_state* pointers stay stable.
+    for (int i = 0; i < q->q_depth; ++i) {
+        auto* io = new (ublksrv_io_private_data(q, i)) async_io{};
+        io->_pool.reserve(prep.max_sqes_per_io);
+    }
     return 0;
 }
 

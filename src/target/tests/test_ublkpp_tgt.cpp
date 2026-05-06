@@ -12,6 +12,7 @@ SISL_OPTIONS_ENABLE(logging)
 
 TEST(cqe_state, NextStateAllocatesDistinctStates) {
     ublkpp::async_io io{};
+    io._pool.reserve(2);
     auto* s1 = io.next_state();
     auto* s2 = io.next_state();
     EXPECT_NE(s1, s2);
@@ -22,6 +23,7 @@ TEST(cqe_state, NextStateAllocatesDistinctStates) {
 
 TEST(cqe_state, BuildCqeStateDataEncodesTargetBit) {
     ublkpp::async_io io{};
+    io._pool.reserve(1);
     ublk_io_data fake{};
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);

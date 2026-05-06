@@ -64,6 +64,7 @@ public:
 
     std::string id() const noexcept override { return _path.native(); }
 
+    prepare_result prepare(ublksrv_queue const*, int const) override;
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
@@ -156,12 +157,16 @@ FSDisk::~FSDisk() {
 // This is an optimization to register the Linux FDs in the kernel, currently it is disabled
 // as we don't support unregistering an FD during RAID1::swap_devcice, re-enable if this is fixed. and
 // enable IOSQE_FIXED_FILE below.
-// std::vector< int > FSDisk::prepare(int const) {
+// prepare_result FSDisk::prepare(ublksrv_queue const*, int const iouring_device_start) {
 //    RELEASE_ASSERT_GT(_fd, -1, "FileDescriptor invalid {}", _fd)
 //    _uring_device = iouring_device_start;
 //    // We duplicate the FD here so ublksrv doesn't close it before we're ready
-//    return {dup(_fd)};
+//    return {.fds = {dup(_fd)}, .max_sqes_per_io = 1};
 //}
+
+FSDisk::prepare_result FSDisk::prepare(ublksrv_queue const*, int const) {
+    return {.max_sqes_per_io = 1}; // READ/WRITE submit 1 SQE; FLUSH and block-DISCARD submit 0
+}
 
 disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                    uint64_t addr) {

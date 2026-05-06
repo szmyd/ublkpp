@@ -119,6 +119,10 @@ public:
                     std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
     ~Raid1ResyncTask() noexcept;
 
+    // Probe a mirror device: reads at reserved_size, clears unavail on success,
+    // sets unavail on failure. Returns true if device is available.
+    static bool probe_mirror(MirrorDevice& mirror, uint64_t reserved_size) noexcept;
+
     void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
 
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,

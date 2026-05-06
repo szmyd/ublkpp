@@ -92,15 +92,27 @@ public:
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    // Called once per queue at startup. Returns file descriptors to register in the queue's
-    // io_uring fixed-file table; the kernel will assign indices starting at `iouring_device_start`.
-    // Composite drivers (raid0/raid1) propagate to children, concatenating the returned vectors.
-    // Default: no FDs (subclasses without ring-registered FDs need not override).
-    virtual std::vector< int > prepare(ublksrv_queue const* /*q*/, int const /*iouring_device_start*/) { return {}; }
+    // Returned by prepare(). Carries the file descriptors to register in the queue's io_uring
+    // fixed-file table and the maximum number of SQEs this disk may submit for a single user I/O.
+    // The target uses max_sqes_per_io to pre-reserve async_io::_pool at queue-init time so that
+    // push_back during I/O never reallocates and cqe_state* pointers in SQE user_data stay stable.
+    struct prepare_result {
+        std::vector< int > fds{};
+        size_t max_sqes_per_io{1};
+    };
 
-    // Called by run_queue_loop when a probe timeout CQE fires (user_data == k_target_bit, null
-    // state sentinel). Implementations probe device health synchronously; the tgt handles
-    // resubmit. Composite drivers (raid0/raid1) propagate to children. Default: no-op.
+    // Called once per queue at startup. Returns file descriptors to register in the queue's
+    // io_uring fixed-file table (kernel assigns indices starting at iouring_device_start) and the
+    // SQE ceiling for pre-reserving the per-tag cqe_state pool. Composite drivers propagate to
+    // children, concatenating fds and combining max_sqes_per_io.
+    // Default: no FDs, 1 SQE (subclasses that submit 0 or >1 SQEs per I/O must override).
+    virtual prepare_result prepare(ublksrv_queue const* /*q*/, int const /*iouring_device_start*/) { return {}; }
+
+    // Called by run_queue_loop when a probe timeout CQE fires. Probes ALL mirrors on every tick,
+    // not only unavail ones; so silent healthy-to-failed transitions are detected within
+    // k_io_idle_secs, not only after the next user I/O hits the failed device. No-op when
+    // is_degraded: the resync task owns health monitoring in that state.
+    // Composite drivers propagate to children. Default: no-op.
     virtual void probe_tick(ublksrv_queue const* /*q*/) noexcept {}
 };
 

@@ -14,20 +14,20 @@ TEST(Raid1, OpenDevices) {
     EXPECT_CALL(*device_a, prepare(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
         EXPECT_EQ(start_idx, fd_off);
         // Return 2 FDs here, maybe it's another RAID1 device?
-        return std::vector< int >{INT_MAX - 2, INT_MAX - 3};
+        return ublkpp::ublk_disk::prepare_result{.fds = {INT_MAX - 2, INT_MAX - 3}};
     });
     EXPECT_CALL(*device_b, prepare(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
         // Device A took 2 uring offsets
         EXPECT_EQ(start_idx + 2, fd_off);
-        return std::vector< int >{INT_MAX - 1};
+        return ublkpp::ublk_disk::prepare_result{.fds = {INT_MAX - 1}};
     });
 
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-    auto fd_list = raid_device.prepare(nullptr, 2);
-    EXPECT_EQ(3, fd_list.size());
-    EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 3)));
-    EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 2)));
-    EXPECT_NE(fd_list.end(), std::find(fd_list.begin(), fd_list.end(), (INT_MAX - 1)));
+    auto result = raid_device.prepare(nullptr, 2);
+    EXPECT_EQ(3, result.fds.size());
+    EXPECT_NE(result.fds.end(), std::find(result.fds.begin(), result.fds.end(), (INT_MAX - 3)));
+    EXPECT_NE(result.fds.end(), std::find(result.fds.begin(), result.fds.end(), (INT_MAX - 2)));
+    EXPECT_NE(result.fds.end(), std::find(result.fds.begin(), result.fds.end(), (INT_MAX - 1)));
 
     // expect unmount_clean update on both devices (healthy array, no degradation)
     EXPECT_TO_WRITE_SB(device_a);

@@ -9,7 +9,6 @@
 #include <sisl/options/options.h>
 
 #include "bitmap.hpp"
-#include "raid1_avail_probe.hpp"
 #include "raid1_impl.hpp"
 #include "raid1_resync_task.hpp"
 #include "lib/logging.hpp"
@@ -58,11 +57,23 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk
 }
 
 // Route state capture
+//
+// The destructor is marked no_sanitize_thread in debug builds to balance the hidden
+// shared_ptr refcount increments performed by __capture_route_state() (also no_sanitize_thread).
+// Without this, TSAN sees N visible decrements without corresponding visible increments, causing
+// its shadow counter to diverge and falsely report heap-use-after-free on the last release.
 struct RouteState {
     std::shared_ptr< MirrorDevice > active_dev;
     std::shared_ptr< MirrorDevice > backup_dev;
     raid1::read_route route;
     bool is_degraded;
+
+#ifndef NDEBUG
+    __attribute__((no_sanitize_thread, no_sanitize("address"))) ~RouteState() {
+        active_dev.reset();
+        backup_dev.reset();
+    }
+#endif
 };
 
 Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
@@ -266,17 +277,20 @@ Raid1Disk::~Raid1Disk() {
         write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
-std::vector< int > Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
+Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
     // Always collect FDs from child disks - each queue thread may need its own set.
-    auto fds = _device_a->disk->prepare(q, iouring_device_start);
-    auto b_fds = _device_b->disk->prepare(q, iouring_device_start + fds.size());
-    fds.insert(fds.end(), b_fds.begin(), b_fds.end());
+    auto result = _device_a->disk->prepare(q, iouring_device_start);
+    auto b = _device_b->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
+    result.fds.insert(result.fds.end(), b.fds.begin(), b.fds.end());
+    // Writes fan out to both mirrors concurrently; both SQE sets land in the same pool simultaneously.
+    // Failover reads are sequential (max of the two), but write is the worst case.
+    result.max_sqes_per_io += b.max_sqes_per_io;
 
     // Enable resync only on the first call (first queue thread).
     if (_nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
 
-    return fds;
+    return result;
 }
 
 // ── Mutual exclusion between __swap_device and __become_degraded ─────────────────────────────────
@@ -711,9 +725,8 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start();
 
     std::optional< hot_task< int > > backup_task;
-    if (bm != WriteBackupMode::SKIP) {
+    if (bm != WriteBackupMode::SKIP)
         backup_task.emplace(state.backup_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start());
-    }
 
     auto const active_res = co_await active_task;
 
@@ -826,9 +839,9 @@ void Raid1Disk::probe_tick(ublksrv_queue const*) noexcept {
     auto const state = __capture_route_state();
     if (state.is_degraded) return; // resync task handles probing in degraded mode
 
-    if (!probe_mirror(*state.active_dev, _reserved_size))
+    if (!Raid1ResyncTask::probe_mirror(*state.active_dev, _reserved_size))
         RLOGD("Idle probe: device unavailable: {}", *state.active_dev->disk)
-    if (!probe_mirror(*state.backup_dev, _reserved_size))
+    if (!Raid1ResyncTask::probe_mirror(*state.backup_dev, _reserved_size))
         RLOGD("Idle probe: device unavailable: {}", *state.backup_dev->disk)
 }
 

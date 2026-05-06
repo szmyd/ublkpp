@@ -45,18 +45,23 @@ MockUblksrv::MockUblksrv(std::shared_ptr< ublk_disk > disk, int q_depth, int nr_
 
     // Simulate init_queue: call prepare once per queue thread so the disk can count queues
     // and perform per-queue initialization (e.g. Raid1Disk sets _nr_hw_queues and enables resync).
+    size_t max_sqes_per_io = 1;
     for (int qi = 0; qi < nr_queues; ++qi) {
-        for (auto const fd : _disk->prepare(&_queues[qi], _dev.tgt.nr_fds)) {
+        auto const prep = _disk->prepare(&_queues[qi], _dev.tgt.nr_fds);
+        for (auto const fd : prep.fds) {
             if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;
         }
+        max_sqes_per_io = prep.max_sqes_per_io;
     }
 
-    // Wire up per-tag data.iod pointers and async_io backing storage
+    // Wire up per-tag data.iod pointers and async_io backing storage; pre-reserve pool to the
+    // SQE ceiling so push_back during I/O never reallocates and cqe_state* pointers stay stable.
     for (int tag = 0; tag < q_depth; ++tag) {
         _tags[tag].data.tag = tag;
         _tags[tag].data.iod = &_tags[tag].iod;
         _tags[tag].data.private_data = &_io_states[tag];
         _io_states[tag]._tag = tag;
+        _io_states[tag]._pool.reserve(max_sqes_per_io);
     }
 
     // Allocate sector-aligned I/O buffers (one per tag)

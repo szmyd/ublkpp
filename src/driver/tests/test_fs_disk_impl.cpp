@@ -124,6 +124,7 @@ TEST(FsDiskImpl, UblkOperationValues) {
 TEST(FsDiskImpl, CqeStateTargetBitEncoding) {
     // build_cqe_state_data must set bit 63; run_queue_loop checks this to identify target CQEs.
     ublkpp::async_io io{};
+    io._pool.reserve(1);
     ublk_io_data fake{};
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);

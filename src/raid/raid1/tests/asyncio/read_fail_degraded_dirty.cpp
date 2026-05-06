@@ -27,8 +27,8 @@ TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
                    .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = htobe64(2)}},
         .superbitmap_reserved = {0x00}};
 
-    ON_CALL(*disk_a, prepare(_, _)).WillByDefault(Return(std::vector< int >{}));
-    ON_CALL(*disk_b, prepare(_, _)).WillByDefault(Return(std::vector< int >{}));
+    ON_CALL(*disk_a, prepare(_, _)).WillByDefault(Return(ublkpp::ublk_disk::prepare_result{}));
+    ON_CALL(*disk_b, prepare(_, _)).WillByDefault(Return(ublkpp::ublk_disk::prepare_result{}));
 
     ON_CALL(*disk_a, sync_iov(_, _, _, _))
         .WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t off) -> io_result {

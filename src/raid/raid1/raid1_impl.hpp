@@ -5,7 +5,6 @@
 
 #include "ublkpp/raid.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
-#include "raid1_avail_probe.hpp"
 #include "raid1_superblock.hpp"
 
 namespace ublkpp {
@@ -131,7 +130,7 @@ public:
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
-    std::vector< int > prepare(ublksrv_queue const* q, int const iouring_device) override;
+    prepare_result prepare(ublksrv_queue const* q, int const iouring_device) override;
     void probe_tick(ublksrv_queue const* q) noexcept override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,

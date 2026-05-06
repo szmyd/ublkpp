@@ -2,8 +2,8 @@
 
 #include <coroutine>
 #include <cstdint>
-#include <deque>
 #include <utility>
+#include <vector>
 
 #include <liburing.h>
 #include <sisl/logging/logging.h>
@@ -60,15 +60,17 @@ struct cqe_state;
 // deinit_queue. _pool is cleared at the start of each new I/O in __handle_io_async (the
 // tgt C callback).
 struct async_io {
-    std::deque< cqe_state > _pool{}; // stable addresses: push_back never invalidates pointers
-    int _tag{-1};                    // set in tgt __handle_io_async; read by run_queue_loop on error
+    // Pre-reserved in init_queue to prepare_result::max_sqes_per_io. push_back never
+    // reallocates when size < capacity, so cqe_state* pointers in SQE user_data stay stable.
+    std::vector< cqe_state > _pool{};
+    int _tag{-1}; // set in tgt __handle_io_async; read by run_queue_loop on error
 
     // Allocates a fresh cqe_state in the _pool and returns a stable pointer to it.
     cqe_state* next_state();
 };
 
-// Tracks a single inflight sub-operation. Stored in async_io::_pool (std::deque, so push_back
-// is pointer-stable). _result and _result_ready are written by run_queue_loop before resuming
+// Tracks a single inflight sub-operation. Stored in async_io::_pool (pre-reserved std::vector,
+// so push_back is pointer-stable). _result and _result_ready are written by run_queue_loop before resuming
 // _waiter. Implements the awaitable protocol directly: co_await *state suspends until the CQE
 // arrives.
 //
@@ -87,6 +89,8 @@ struct cqe_state {
 };
 
 inline cqe_state* async_io::next_state() {
+    DEBUG_ASSERT(_pool.size() < _pool.capacity(),
+                 "cqe_state pool exhausted; prepare_result::max_sqes_per_io underestimated")
     _pool.push_back(cqe_state{._owner = this});
     return &_pool.back();
 }

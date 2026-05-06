@@ -12,12 +12,12 @@
 
 namespace ublkpp::raid1 {
 
-static_assert(sizeof(uint64_t) == sizeof(std::atomic_uint64_t), "BITMAP Cannot be ATOMIC!");
+static_assert(std::atomic_ref< uint64_t >::is_always_lock_free, "word_t atomic operations must be lock-free");
 static_assert(std::atomic< uint64_t* >::is_always_lock_free,
               "Page pointer must be lock-free for concurrent bitmap access");
 class Bitmap {
 public:
-    using word_t = std::atomic_uint64_t;
+    using word_t = uint64_t;
 
     struct PageData {
         // Null ptr = page is clean (no memory allocated). Lazy-allocated on first dirty_region.
