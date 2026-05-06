@@ -104,8 +104,8 @@ ublkpp/
 - Two-way mirroring with dirty bitmap tracking
 - Degraded mode operation (single device failure)
 - Hot device replacement via `swap_device()`
-- Optimistic recovery with INTERNAL writes
-- Configurable read routing (PRIMARY, SECONDARY, EITHER)
+- Optimistic write recovery with dirty-bitmap-guided resync
+- Read routing round-robbins
 
 **Bitmap Efficiency:**
 - 4 KiB pages track 32 KiB chunks (default)
@@ -295,6 +295,8 @@ TEST(Raid1, YourTestName) {
 
 ### Optional Dependencies
 
+- **[stdexec](https://github.com/NVIDIA/stdexec)**: C++ sender/receiver framework (fetched automatically via CMake FetchContent)
+- **fio**: Functional I/O testing (optional; tests skip gracefully if absent)
 
 ### Build Tools
 
@@ -307,6 +309,8 @@ TEST(Raid1, YourTestName) {
 
 - **[CHANGELOG.md](CHANGELOG.md)**: Version history and release notes
 - **[CLAUDE.md](.claude/CLAUDE.md)**: Development guidelines and workflows
+- **[docs/error_codes.md](docs/error_codes.md)**: RAID async_iov error code reference (EIO vs EAGAIN matrix)
+- **[docs/functional_testing.md](docs/functional_testing.md)**: Functional test procedures
 - **[Linux ublk Documentation](https://docs.kernel.org/block/ublk.html)**: Kernel driver details
 
 ## 🤝 Contributing
