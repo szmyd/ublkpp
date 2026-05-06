@@ -1,5 +1,7 @@
 // Regression: degraded array + dirty bitmap region + active device async read failure must return
 // -EAGAIN (transient, kernel can retry), not fall through to the backup which holds stale data.
+// Invariant: active device must NOT have unavail set after the failure - in degraded mode
+// unavail is only set on the backup (failed) device.
 
 #include "async_raid1_common.hpp"
 

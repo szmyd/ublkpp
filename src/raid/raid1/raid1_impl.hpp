@@ -51,14 +51,8 @@ class Raid1Disk : public ublk_disk {
     //         (2) _pending_results - serializes prepare() insertions across queue threads.
     std::mutex _ctrl_lock;
 
-    // Multi-queue idle tracking: probe starts when all queues are idle, stops on any active transition
+    // Counts prepare() calls; used to enable resync on the first queue init.
     std::atomic_uint16_t _nr_hw_queues{0};
-    std::atomic_uint16_t _idle_queue_count{0};
-
-    // Idle-scoped periodic health monitors
-    std::mutex _idle_probe_lock;
-    Raid1AvailProbeTask _idle_probe_a;
-    Raid1AvailProbeTask _idle_probe_b;
 
     // Shared read/write routing helpers used by both async_iov and sync_iov.
     // Returns {primary_dev, failover_dev}. failover_dev is nullopt when the backup holds stale
@@ -138,7 +132,7 @@ public:
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
     std::vector< int > prepare(ublksrv_queue const* q, int const iouring_device) override;
-    void idle_transition(ublksrv_queue const* q, bool enter) noexcept override;
+    void probe_tick(ublksrv_queue const* q) noexcept override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;

@@ -1,8 +1,8 @@
 #include "async_raid1_common.hpp"
 
-// idle_transition(true) on a healthy array — both devices available, no probing triggered.
-TEST_F(AsyncRaid1Fixture, IdleTransitionEnter) {
-    raid->idle_transition(nullptr, true);
+// probe_tick on a healthy array — probes both devices, states remain CLEAN.
+TEST_F(AsyncRaid1Fixture, ProbeTickHealthyArray) {
+    raid->probe_tick(nullptr);
 
     auto const states = raid->replica_states();
     EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);
@@ -10,10 +10,10 @@ TEST_F(AsyncRaid1Fixture, IdleTransitionEnter) {
     EXPECT_EQ(states.bytes_to_sync, 0u);
 }
 
-// idle_transition enter+exit round trip — satisfies the ublksrv enter-before-exit contract.
-TEST_F(AsyncRaid1Fixture, IdleTransitionRoundTrip) {
-    raid->idle_transition(nullptr, true);
-    raid->idle_transition(nullptr, false);
+// probe_tick called twice — idempotent, no crash.
+TEST_F(AsyncRaid1Fixture, ProbeTickIdempotent) {
+    raid->probe_tick(nullptr);
+    raid->probe_tick(nullptr);
 
     auto const states = raid->replica_states();
     EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::CLEAN);

@@ -176,20 +176,16 @@ TEST(Raid1, SwapStayingWriteFail) {
     EXPECT_TO_WRITE_SB(device_b);
 }
 
-// Test: swap_device while idle probes are running stops the stale probe jthreads (Bug 2 fix).
-// Without the fix, _idle_probe_b would continue holding the outgoing MirrorDevice and
-// call sync_iov on it ~avail_delay seconds after the swap, causing an unexpected-call
-// failure and a potential use-after-free.
+// Test: probe_tick after swap_device targets the new device, not the swapped-out one.
+// Without tgt-driven probe_tick, a stale jthread could hold the old MirrorDevice and call
+// sync_iov on it after the swap. probe_tick re-captures route state on every call so the
+// outgoing device is never probed after swap_device returns.
 TEST(Raid1, SwapDeviceWhileIdle) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
-
-    // Enter idle — launches _idle_probe_a (on device_a) and _idle_probe_b (on device_b).
-    // Both devices are CLEAN so immediate_probe skips (no sync_iov). Probes sleep avail_delay.
-    raid_device.idle_transition(nullptr, true);
 
     // Swap device_b for a new device. swap_device must stop both probe jthreads so that
     // _idle_probe_b (which captured device_b's MirrorDevice) cannot probe the outgoing device.

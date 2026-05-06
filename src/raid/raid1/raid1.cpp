@@ -21,10 +21,10 @@ SISL_OPTION_GROUP(raid1,
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
                   (resync_level, "", "resync_level", "Resync prioritization level (0-32)",
                    cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"),
-                  (avail_delay, "", "avail_delay", "Delay between checking if a degraded device is available again",
-                   cxxopts::value< std::uint32_t >()->default_value("5"), "<seconds>"),
                   (resync_delay, "", "resync_delay", "Delay between I/O and Resync context switches",
-                   cxxopts::value< std::uint32_t >()->default_value("300"), "<microseconds> (us)"))
+                   cxxopts::value< std::uint32_t >()->default_value("300"), "<microseconds> (us)"),
+                  (avail_delay, "", "avail_delay", "Seconds between idle device availability probes",
+                   cxxopts::value< std::uint32_t >()->default_value("5"), "<seconds>"))
 
 namespace ublkpp {
 
@@ -485,11 +485,6 @@ std::shared_ptr< ublk_disk > Raid1Disk::swap_device(std::string const& outgoing_
     // Atomically swap the device or fail; fail if swapping sole active device
     if (__swap_device(outgoing_device_id, incoming_mirror, state.route)) {
         if (_raid_metrics) _raid_metrics->record_device_swap(); // GCOVR_EXCL_BR_LINE
-        // Stop stale probes - they hold a shared_ptr to the outgoing MirrorDevice.
-        // _idle_probe_lock guards _probe members against concurrent launch() in idle_transition.
-        auto lk = std::unique_lock{_idle_probe_lock};
-        _idle_probe_a.stop();
-        _idle_probe_b.stop();
     }
 
     // Now set back to IDLE state and kick a resync task off
@@ -639,7 +634,7 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
         primary_dev->unavail.clear(std::memory_order_release);
         co_return r;
     }
-    if (!primary_dev->unavail.test_and_set(std::memory_order_acquire))
+    if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
         RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
     if (!failover_dev) co_return -EAGAIN;
@@ -778,7 +773,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             primary_dev->unavail.clear(std::memory_order_release);
             return primary_res;
         }
-        if (!primary_dev->unavail.test_and_set(std::memory_order_acquire))
+        if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
             RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
         if (!failover_dev) return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
@@ -827,43 +822,14 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     return active_res;
 }
 
-void Raid1Disk::idle_transition(ublksrv_queue const*, bool enter) noexcept {
-    if (!enter) {
-        DEBUG_ASSERT(_idle_queue_count.load(std::memory_order_relaxed) > 0,                      // LCOV_EXCL_LINE
-                     "idle_transition exit without matching enter - ublksrv contract violated"); // LCOV_EXCL_LINE
-        _idle_queue_count.fetch_sub(1, std::memory_order_acq_rel);
-        auto lk = std::unique_lock{_idle_probe_lock};
-        _idle_probe_a.stop();
-        _idle_probe_b.stop();
-        return;
-    }
-
-    // Start probes only when all queue threads are idle.
-    // When _nr_hw_queues == 0 (no prepare call yet), prev+1 < 0 is always false for
-    // uint16_t, so the probe fires unconditionally - preserving compat with zero-queue callers
-    // that skip prepare (e.g. tests that call idle_transition directly).
-    auto const prev = _idle_queue_count.fetch_add(1, std::memory_order_acq_rel);
-    if (prev + 1 < _nr_hw_queues.load(std::memory_order_acquire)) return;
-
+void Raid1Disk::probe_tick(ublksrv_queue const*) noexcept {
     auto const state = __capture_route_state();
-    if (state.is_degraded) return; // Resync task handles avail probing in degraded mode
+    if (state.is_degraded) return; // resync task handles probing in degraded mode
 
-    // Immediate synchronous probe: clear UNAVAIL on any device that has already recovered.
-    auto const immediate_probe = [&](std::shared_ptr< MirrorDevice > const& mirror) {
-        if (!mirror->unavail.test(std::memory_order_acquire)) return;
-        if (probe_mirror(*mirror, _reserved_size)) RLOGD("Idle probe: device recovered: {}", *mirror->disk)
-    };
-    immediate_probe(state.active_dev);
-    immediate_probe(state.backup_dev);
-
-    // Re-capture state under the lock so launch() uses the device that is actually current.
-    // swap_device() holds _idle_probe_lock while calling stop(), so acquiring the lock here
-    // ensures we cannot start a background probe for a device that was just swapped out.
-    auto lk = std::unique_lock{_idle_probe_lock};
-    auto const locked_state = __capture_route_state();
-    if (locked_state.is_degraded) return;
-    _idle_probe_a.launch(locked_state.active_dev, _reserved_size);
-    _idle_probe_b.launch(locked_state.backup_dev, _reserved_size);
+    if (!probe_mirror(*state.active_dev, _reserved_size))
+        RLOGD("Idle probe: device unavailable: {}", *state.active_dev->disk)
+    if (!probe_mirror(*state.backup_dev, _reserved_size))
+        RLOGD("Idle probe: device unavailable: {}", *state.backup_dev->disk)
 }
 
 void Raid1Disk::toggle_resync(bool t) {

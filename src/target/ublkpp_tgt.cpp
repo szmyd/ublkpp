@@ -68,13 +68,25 @@ static constexpr int k_io_idle_secs = 20;
 struct ublkpp_queue_state {
     ublkpp_tgt_impl* tgt;
     exec::async_scope scope;
+    bool is_idle{false};
 
     explicit ublkpp_queue_state(ublkpp_tgt_impl* t) : tgt(t) {}
 };
 
+static void submit_probe_timeout(ublksrv_queue const* q) {
+    if (auto* sqe = next_sqe(q)) {
+        // clang-format off
+        __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
+        // clang-format on
+        io_uring_prep_timeout(sqe, &ts, 0, 0);
+        sqe->user_data = k_target_bit; // null-pointer sentinel: probe CQE, no cqe_state
+        io_uring_submit(q->ring_ptr);
+    }
+}
+
 // Our own CQE processing loop, replacing ublksrv_process_io.
-// Target CQEs carry a raw cqe_state* in bits 62:0 with bit 63 set; decoded via pointer cast.
-// Ublk command CQEs delegate to ublksrv.
+// Target CQEs have bit 63 set; bits 62:0 hold a raw cqe_state* (non-null) for I/O completions
+// or zero for probe timeout CQEs (null-pointer sentinel). Ublk command CQEs delegate to ublksrv.
 //
 // Drain correctness: ublksrv_queue_is_done returns true only when ublksrv has no pending I/O
 // commands. We call ublksrv_complete_io at the end of __handle_io_async, after co_await
@@ -95,15 +107,23 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
         int count{0};
         io_uring_for_each_cqe(ring, head, cqe) {
             if (cqe->user_data & k_target_bit) {
-                // target io_uring CQE -- user_data is a raw cqe_state* | k_target_bit
                 auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
-                state->_result = cqe->res;
-                state->_result_ready = true;
-                try {
-                    if (auto h = std::exchange(state->_waiter, {})) h.resume(); // per-state resume (disk_task path)
-                } catch (std::exception const& e) {
-                    TLOGE("I/O threw exception: [{}]", e.what())
-                    if (state->_owner) ublksrv_complete_io(q, state->_owner->_tag, -EIO);
+                if (!state) {
+                    // probe timeout CQE — only ETIME triggers a probe tick; other results ignored.
+                    if (cqe->res == -ETIME) {
+                        qs->tgt->device->probe_tick(q);
+                        if (qs->is_idle) submit_probe_timeout(q);
+                    }
+                } else {
+                    // target io_uring CQE — user_data is a raw cqe_state* | k_target_bit
+                    state->_result = cqe->res;
+                    state->_result_ready = true;
+                    try {
+                        if (auto h = std::exchange(state->_waiter, {})) h.resume(); // per-state resume (disk_task path)
+                    } catch (std::exception const& e) {
+                        TLOGE("I/O threw exception: [{}]", e.what())
+                        if (state->_owner) ublksrv_complete_io(q, state->_owner->_tag, -EIO);
+                    }
                 }
             } else {
                 // ublk command CQE (FETCH/COMMIT) -- delegate to libublksrv
@@ -320,11 +340,16 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
 }
 
 static void deinit_tgt(const struct ublksrv_dev*) { TLOGD("Deinit tgt!") }
+
 static void idle_transition(ublksrv_queue const* q, bool enter) {
     TLOGT("Idle Trans: {}", enter)
-    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
-    device->idle_transition(q, enter);
+    auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
+    qs->is_idle = enter;
+    // On exit: let any in-flight probe timeout fire naturally; is_idle=false prevents
+    // resubmission, and a spurious probe_tick during active I/O is harmless.
+    if (enter) submit_probe_timeout(q);
 }
+
 static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
     auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
@@ -337,6 +362,7 @@ static int init_queue(const struct ublksrv_queue* q, void**) {
         new (ublksrv_io_private_data(q, i)) async_io{};
     return 0;
 }
+
 static void deinit_queue(const struct ublksrv_queue* q) {
     TLOGD("Deinit Queue")
     for (int i = 0; i < q->q_depth; ++i)

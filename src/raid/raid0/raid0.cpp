@@ -59,7 +59,7 @@ public:
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;
 
-    void idle_transition(ublksrv_queue const*, bool) override;
+    void probe_tick(ublksrv_queue const* q) noexcept override;
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
 };
@@ -136,9 +136,9 @@ std::vector< int > Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_
     return fds;
 }
 
-void Raid0Disk::idle_transition(ublksrv_queue const* q, bool enter) {
+void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
     for (auto const& stripe : _stripe_array) {
-        stripe->disk->idle_transition(q, enter);
+        stripe->disk->probe_tick(q);
     }
 }
 

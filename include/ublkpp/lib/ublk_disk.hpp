@@ -98,10 +98,10 @@ public:
     // Default: no FDs (subclasses without ring-registered FDs need not override).
     virtual std::vector< int > prepare(ublksrv_queue const* /*q*/, int const /*iouring_device_start*/) { return {}; }
 
-    // Called by the queue when the I/O stream transitions in/out of idle (no inflight + no
-    // pending for k_io_idle_secs). `entering_idle = true` on entry, false on exit. Composite
-    // drivers propagate to children. Default: no-op.
-    virtual void idle_transition(ublksrv_queue const* /*q*/, bool /*entering_idle*/) {};
+    // Called by run_queue_loop when a probe timeout CQE fires (user_data == k_target_bit, null
+    // state sentinel). Implementations probe device health synchronously; the tgt handles
+    // resubmit. Composite drivers (raid0/raid1) propagate to children. Default: no-op.
+    virtual void probe_tick(ublksrv_queue const* /*q*/) noexcept {}
 };
 
 inline auto format_as(ublk_disk const& device) {

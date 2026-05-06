@@ -46,6 +46,10 @@ namespace ublkpp {
 // from ublksrv command SQEs (FETCH/COMMIT). On x86_64/ARM64, canonical userspace
 // addresses use <=48 bits, so bit 63 is always zero in any valid pointer; the OR
 // is safe and reversible with `& ~k_target_bit`.
+//
+// Probe timeout CQEs reuse k_target_bit with a null pointer (user_data == k_target_bit).
+// run_queue_loop checks state == nullptr after stripping the bit to distinguish them from
+// real I/O CQEs.
 constexpr uint64_t k_target_bit = 1ULL << 63;
 
 struct cqe_state;
