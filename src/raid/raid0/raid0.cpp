@@ -129,9 +129,11 @@ std::shared_ptr< ublk_disk > Raid0Disk::get_device(uint32_t stripe_offset) const
 
 // Upper bound on distinct stripes touched by a single I/O.
 // +1 for start-alignment: an unaligned start can spill into one extra stripe.
-// Capped by device count because __distribute gathers all iovecs per device into one task.
-static inline size_t stripes_for_io(size_t io_size, size_t stride_width, size_t nr_stripes) {
-    return std::min((io_size + stride_width - 1) / stride_width + 1, nr_stripes);
+// Denominator is stripe_size (not stride_width): an io_size < stride_width can still touch
+// multiple per-disk stripes if it crosses a stripe boundary. Capped by device count because
+// __distribute gathers all iovecs per device into one task.
+static inline size_t stripes_for_io(size_t io_size, size_t stripe_size, size_t nr_stripes) {
+    return std::min((io_size + stripe_size - 1) / stripe_size + 1, nr_stripes);
 }
 
 Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
@@ -140,7 +142,7 @@ Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const i
     // At most k stripes are active concurrently per max-size I/O. Each active stripe dispatches
     // one child async_iov that submits child.max_sqes_per_io SQEs into the shared pool. Sum the
     // first k contributions (homogeneous arrays: all equal, so order is irrelevant).
-    auto const k = stripes_for_io(max_tx(), _stride_width, _stripe_array.size());
+    auto const k = stripes_for_io(max_tx(), _stripe_size, _stripe_array.size());
     size_t counted = 0;
     for (auto& stripe : _stripe_array) {
         auto child = stripe->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
@@ -243,7 +245,7 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // dangling _waiter handles in cqe_state.
     std::vector< hot_task< int > > stripe_tasks;
     try {
-        stripe_tasks.reserve(stripes_for_io(iovec_len(iovecs, iovecs + nr_vecs), _stride_width, _stripe_array.size()));
+        stripe_tasks.reserve(stripes_for_io(iovec_len(iovecs, iovecs + nr_vecs), _stripe_size, _stripe_array.size()));
     } catch (std::bad_alloc const&) { co_return -ENOMEM; }
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {

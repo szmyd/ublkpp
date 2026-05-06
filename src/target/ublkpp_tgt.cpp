@@ -31,7 +31,7 @@ SISL_OPTION_GROUP(ublkpp_tgt,
                   (nr_hw_queues, "", "nr_hw_queues", "Number of Hardware Queues (threads) per target",
                    cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
                   (qdepth, "", "qdepth", "I/O Queue Depth per target",
-                   cxxopts::value< std::uint16_t >()->default_value("32"), "<qd>"),
+                   cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"),
                   (feature_zero_copy, "", "feature_zero_copy", "Enable ZeroCopy Feature", cxxopts::value< bool >(), ""))
 
 using namespace std::chrono_literals;
@@ -333,7 +333,15 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
     auto ublksrv_tgt = &dev->tgt;
     ublksrv_tgt->io_data_size = sizeof(struct async_io);
     ublksrv_tgt->dev_size = ublk_disk->capacity();
-    ublksrv_tgt->tgt_ring_depth = 256;
+
+    // Size the io_uring ring to hold all in-flight SQEs across the full queue depth.
+    // prepare() with nullptr collects the SQE ceiling without triggering per-queue side effects
+    // (e.g. Raid1 resync enable); each queue's pool is reserved separately in init_queue.
+    // +1 per I/O slot for the ublksrv FETCH/COMMIT control SQEs that share the same ring.
+    // +1 total for the idle probe timeout SQE, which may still be in-flight when I/O resumes.
+    auto const max_sqes = ublk_disk->prepare(nullptr, 0).max_sqes_per_io;
+    auto const qd = static_cast< unsigned int >(ublksrv_ctrl_get_dev_info(cdev)->queue_depth);
+    ublksrv_tgt->tgt_ring_depth = qd * (static_cast< unsigned int >(max_sqes) + 1) + 1;
 
     // iouring FD 0 is reserved for the ublkc device; prepare is called per queue in init_queue.
     // NOTE: if future disks export non-empty FDs they must be registered here (before ublksrv_queue_init

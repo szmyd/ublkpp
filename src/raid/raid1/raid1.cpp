@@ -279,7 +279,8 @@ Raid1Disk::~Raid1Disk() {
 
 Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
-    // Always collect FDs from child disks - each queue thread may need its own set.
+    // When q is null (called from init_tgt purely for the SQE ceiling), skip the side effects:
+    // no FDs to collect and no queue-count increment.
     auto result = _device_a->disk->prepare(q, iouring_device_start);
     auto b = _device_b->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
     result.fds.insert(result.fds.end(), b.fds.begin(), b.fds.end());
@@ -287,8 +288,8 @@ Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const i
     // Failover reads are sequential (max of the two), but write is the worst case.
     result.max_sqes_per_io += b.max_sqes_per_io;
 
-    // Enable resync only on the first call (first queue thread).
-    if (_nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
+    // Enable resync only on the first real queue init (q != nullptr guards the probe-only call).
+    if (q && _nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
 
     return result;
 }
@@ -866,19 +867,28 @@ inline Raid1Disk const* as_raid1(ublk_disk const& d) noexcept { return dynamic_c
 std::shared_ptr< ublk_disk > swap_device(ublk_disk& disk, std::string const& old_device_id,
                                          std::shared_ptr< ublk_disk > new_device) {
     auto* r1 = as_raid1(disk);
-    RELEASE_ASSERT(r1, "swap_device called on non-Raid1 disk");
+    if (!r1) {
+        RLOGE("swap_device called on non-Raid1 disk: {}", *r1);
+        return new_device;
+    }
     return r1->swap_device(old_device_id, std::move(new_device));
 }
 
 array_state replica_states(ublk_disk const& disk) noexcept {
     auto const* r1 = as_raid1(disk);
-    if (!r1) return array_state{};
+    if (!r1) {
+        RLOGW("replica_states called on non-Raid1 disk: {}", *r1);
+        return array_state{};
+    }
     return r1->replica_states();
 }
 
 std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > replicas(ublk_disk const& disk) noexcept {
     auto const* r1 = as_raid1(disk);
-    if (!r1) return {nullptr, nullptr};
+    if (!r1) {
+        RLOGW("replicas called on non-Raid1 disk: {}", *r1);
+        return {nullptr, nullptr};
+    }
     return r1->replicas();
 }
 
