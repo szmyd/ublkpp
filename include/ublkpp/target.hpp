@@ -9,11 +9,7 @@
 
 // Convenience module list for SISL_LOGGING_INIT. Append the consumer's own
 // modules after this list.
-#ifdef HAVE_LIBISCSI
-#define UBLKPP_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers, libiscsi
-#else
 #define UBLKPP_LOG_MODS ublk_tgt, ublk_raid, ublk_drivers
-#endif
 
 namespace ublkpp {
 

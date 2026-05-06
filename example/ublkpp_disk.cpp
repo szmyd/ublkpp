@@ -16,10 +16,6 @@
 #include <ublkpp/raid.hpp>
 #include <ublkpp/target.hpp>
 
-#ifdef HAVE_ISCSI
-#include <ublkpp/drivers/iscsi_disk.hpp>
-#endif
-
 SISL_OPTION_GROUP(ublkpp_disk,
                   (uuid, "", "vol_id", "Volume UUID to use (else random)", ::cxxopts::value< std::string >(), ""),
                   (loop, "", "loop", "Attach a single device 1-to-1", ::cxxopts::value< std::string >(), "<path>"),
@@ -38,13 +34,7 @@ SISL_OPTION_GROUP(ublkpp_disk,
 
 SISL_OPTIONS_ENABLE(ENABLED_OPTIONS)
 
-#ifdef HAVE_ISCSI
-#define ISCSI_MODS , libiscsi
-#else
-#define ISCSI_MODS
-#endif
-
-SISL_LOGGING_INIT(ublksrv, UBLKPP_LOG_MODS ISCSI_MODS)
+SISL_LOGGING_INIT(ublksrv, UBLKPP_LOG_MODS)
 
 ///
 // Clean shutdown
@@ -71,13 +61,7 @@ static std::shared_ptr< ublkpp::ublk_disk > get_driver(std::string const& resour
     if (auto path = std::filesystem::path(resource); std::filesystem::exists(path)) {
         return ublkpp::make_fs_disk(path, metrics_id);
     }
-#ifdef HAVE_ISCSI
-    // From libiscsi.h iSCSI URLs are in the form:
-    //   iscsi://[<username>[%<password>]@]<host>[:<port>]/<target-iqn>/<lun>
-    return std::make_unique< ublkpp::iSCSIDisk >(resource);
-#else
     return ublkpp::make_missing_disk();
-#endif
 }
 
 Result create_loop(boost::uuids::uuid const& id, std::string const& path) {
