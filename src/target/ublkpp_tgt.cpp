@@ -301,6 +301,9 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
 // I/O Handler, first entry-point to us for all I/O
 static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
+    // scope.spawn() throws if the scope has been stopped, but that race cannot occur: the
+    // ublksrv io_uring is fully drained before the queue state (and its async_scope) is
+    // destroyed, so no new handle_io_async callbacks can arrive after stop is requested.
     qs->scope.spawn(stdexec::on(exec::inline_scheduler{}, __handle_io_async(q, data)));
     return 0;
 }

@@ -142,6 +142,13 @@ void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
     }
 }
 
+// Upper bound on distinct stripes touched by a single I/O.
+// +1 for start-alignment: an unaligned start can spill into one extra stripe.
+// Capped by device count because __distribute gathers all iovecs per device into one task.
+static inline size_t stripes_for_io(size_t io_size, size_t stride_width, size_t nr_stripes) {
+    return std::min((io_size + stride_width - 1) / stride_width + 1, nr_stripes);
+}
+
 /// This is the primary I/O handler call for RAID0
 //
 //  RAID0 is primarily responsible for splitting an I/O request across several stripes. These operations can cross
@@ -228,6 +235,9 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // preserving kernel parallelism. All tasks must be drained even on error to avoid
     // dangling _waiter handles in cqe_state.
     std::vector< hot_task< int > > stripe_tasks;
+    try {
+        stripe_tasks.reserve(stripes_for_io(iovec_len(iovecs, iovecs + nr_vecs), _stride_width, _stripe_array.size()));
+    } catch (std::bad_alloc const&) { co_return -ENOMEM; }
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
