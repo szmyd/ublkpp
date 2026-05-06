@@ -32,7 +32,7 @@ include(FetchContent)
 FetchContent_Declare(
     stdexec
     GIT_REPOSITORY https://github.com/NVIDIA/stdexec.git
-    GIT_TAG        nvhpc-25.09
+    GIT_TAG        ea0d8788da51a1671daa00b88bf238725f0844a8  # nvhpc-25.09
     GIT_SHALLOW    TRUE
 )
 set(STDEXEC_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
