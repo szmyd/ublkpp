@@ -31,12 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - raid1: Replace GCC `__builtin_popcount`/`__builtin_clz`/`__builtin_ctz` with C++23 `std::popcount`/`std::countl_zero`/`std::countr_zero`
 - build: `libatomic` is now declared as a Conan system lib on Linux - propagated automatically to consumers, no downstream changes required
 
-## 0.23.0
-- **Breaking**: Migrate to sisl v14 -- requires C++23, drops folly dependency
-- **Breaking**: Remove homeblocks support pending its own sisl v14 migration
-- example: Replace iomgr http_server with `sisl::HttpServer`; drop iomgr dependency from example binary
-- ci: Update all sisl action refs to `dev/v14.x`, drop iomgr build step
-
 ## 0.22.0
 - raid1: Fix multi-queue idle probe race conditions - probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
 - **Breaking**: `UblkDisk::open_for_uring` signature changed from `(int)` to `(ublksrv_queue const*, int)` - out-of-tree subclasses must update their override
