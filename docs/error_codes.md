@@ -7,7 +7,7 @@ Error codes returned directly by `Raid0Disk::async_iov` and `Raid1Disk::async_io
 
 | Op | Condition | Code | Retry safe | Notes |
 |---|---|---|---|---|
-| Any | `stripe_tasks.reserve()` throws `bad_alloc` | `-ENOMEM` | Yes | No SQEs submitted; no I/O started |
+| Any | `stripe_tasks.reserve()` throws `bad_alloc` | `-EAGAIN` | Yes | No SQEs submitted; no I/O started |
 | Any | `__distribute` returns error (currently unreachable) | `-EIO` | No | Invariant: lambda always succeeds today; guard for future |
 | READ | `io_uring_submit` fails after fan-out | `-EAGAIN` | Yes | SQEs in ring but not yet flushed; no data read |
 | WRITE / DISCARD | `io_uring_submit` fails after fan-out | `-EIO` | No | Stripes may partially commit once ring is eventually flushed |

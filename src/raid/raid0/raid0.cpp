@@ -67,6 +67,8 @@ public:
 Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
                      std::vector< std::shared_ptr< ublk_disk > >&& disks) :
         ublk_disk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
+    if (disks.empty()) throw std::invalid_argument("Raid0Disk: at least one disk required");
+    if (stripe_size_bytes == 0) throw std::invalid_argument("Raid0Disk: stripe_size_bytes must be non-zero");
     if (disks.size() > _max_stripe_cnt)
         throw std::invalid_argument(
             fmt::format("Raid0Disk: too many disks ({}), max is {}", disks.size(), _max_stripe_cnt));
@@ -246,7 +248,7 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     std::vector< hot_task< int > > stripe_tasks;
     try {
         stripe_tasks.reserve(stripes_for_io(iovec_len(iovecs, iovecs + nr_vecs), _stripe_size, _stripe_array.size()));
-    } catch (std::bad_alloc const&) { co_return -ENOMEM; }
+    } catch (std::bad_alloc const&) { co_return -EAGAIN; } // LCOV_EXCL_LINE
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;

@@ -719,7 +719,7 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
 
     // Halt the Resync Task for the duration of this write (both active and backup legs).
-    auto const _guard = raid1::ResyncWriteGuard{*_resync_task};
+    auto _guard = raid1::ResyncWriteGuard{*_resync_task};
     auto const bm = __compute_backup_mode(state, addr, len, is_discard);
 
     auto const adj_addr = addr + _reserved_size;

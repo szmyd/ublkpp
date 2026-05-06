@@ -308,7 +308,16 @@ static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     // scope.spawn() throws if the scope has been stopped, but that race cannot occur: the
     // ublksrv io_uring is fully drained before the queue state (and its async_scope) is
     // destroyed, so no new handle_io_async callbacks can arrive after stop is requested.
-    qs->scope.spawn(stdexec::on(exec::inline_scheduler{}, __handle_io_async(q, data)));
+    // Any other exception (e.g. bad_alloc from coroutine frame or spawn control block)
+    // must be caught here: if spawn throws, ublksrv_complete_io is never called and the
+    // tag slot is permanently hung. No I/O was submitted so no data was committed;
+    // EAGAIN is safe for the block layer to retry.
+    try {
+        qs->scope.spawn(stdexec::on(exec::inline_scheduler{}, __handle_io_async(q, data)));
+    } catch (...) { // LCOV_EXCL_START
+        TLOGE("handle_io_async: scope.spawn threw; completing tag {} with EAGAIN", data->tag)
+        ublksrv_complete_io(q, data->tag, -EAGAIN);
+    } // LCOV_EXCL_STOP
     return 0;
 }
 

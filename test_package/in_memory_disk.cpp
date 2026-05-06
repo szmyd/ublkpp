@@ -13,7 +13,7 @@ SISL_LOGGING_INIT(ublksrv)
 namespace ublkpp {
 class InMemoryDisk : public ublk_disk {
 public:
-    explicit InMemoryDisk(uint64_t capacity) {}
+    explicit InMemoryDisk(uint64_t capacity) { params()->basic.dev_sectors = capacity >> 9; }
     ~InMemoryDisk() override {}
 
     std::string id() const noexcept override { return "InMemoryDisk"; }

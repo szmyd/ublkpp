@@ -89,8 +89,8 @@ struct cqe_state {
 };
 
 inline cqe_state* async_io::next_state() {
-    DEBUG_ASSERT(_pool.size() < _pool.capacity(),
-                 "cqe_state pool exhausted; prepare_result::max_sqes_per_io underestimated")
+    RELEASE_ASSERT_LT(_pool.size(), _pool.capacity(),
+                      "cqe_state pool exhausted; prepare_result::max_sqes_per_io underestimated")
     _pool.push_back(cqe_state{._owner = this});
     return &_pool.back();
 }
