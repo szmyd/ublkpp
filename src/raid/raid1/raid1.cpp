@@ -868,7 +868,7 @@ std::shared_ptr< ublk_disk > swap_device(ublk_disk& disk, std::string const& old
                                          std::shared_ptr< ublk_disk > new_device) {
     auto* r1 = as_raid1(disk);
     if (!r1) {
-        RLOGE("swap_device called on non-Raid1 disk: {}", *r1);
+        RLOGE("swap_device called on non-Raid1 disk: {}", *new_device);
         return new_device;
     }
     return r1->swap_device(old_device_id, std::move(new_device));
@@ -877,7 +877,7 @@ std::shared_ptr< ublk_disk > swap_device(ublk_disk& disk, std::string const& old
 array_state replica_states(ublk_disk const& disk) noexcept {
     auto const* r1 = as_raid1(disk);
     if (!r1) {
-        RLOGW("replica_states called on non-Raid1 disk: {}", *r1);
+        RLOGW("replica_states called on non-Raid1 disk: {}", disk);
         return array_state{};
     }
     return r1->replica_states();
@@ -886,7 +886,7 @@ array_state replica_states(ublk_disk const& disk) noexcept {
 std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > replicas(ublk_disk const& disk) noexcept {
     auto const* r1 = as_raid1(disk);
     if (!r1) {
-        RLOGW("replicas called on non-Raid1 disk: {}", *r1);
+        RLOGW("replicas called on non-Raid1 disk: {}", disk);
         return {nullptr, nullptr};
     }
     return r1->replicas();
