@@ -105,11 +105,15 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 
         unsigned head{};
         int count{0};
+        int probe_count{0}; // probe timeout CQEs must not count as work for ublksrv_queue_update_idle
         io_uring_for_each_cqe(ring, head, cqe) {
             if (cqe->user_data & k_target_bit) {
                 auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
                 if (!state) {
                     // probe timeout CQE — only ETIME triggers a probe tick; other results ignored.
+                    // Excluded from io_count: counting it as work triggers idle_exit, setting
+                    // is_idle=false and preventing the probe from re-arming on subsequent fires.
+                    ++probe_count;
                     if (cqe->res == -ETIME) {
                         qs->tgt->device->probe_tick(q);
                         if (qs->is_idle) submit_probe_timeout(q);
@@ -132,7 +136,7 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
             ++count;
         }
         io_uring_cq_advance(ring, count);
-        ublksrv_queue_update_idle(q, ret, count);
+        ublksrv_queue_update_idle(q, ret, count - probe_count);
         queue_done = ublksrv_queue_is_done(q);
     }
 
