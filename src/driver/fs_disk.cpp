@@ -87,7 +87,7 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
     struct stat st{};
     // clang-format on
     if (fstat(_fd, &st) < 0) {
-        DLOGE("fstat({}) failed: ", str_path, strerror(errno))
+        DLOGE("fstat({}) failed: {}", str_path, strerror(errno))
         throw std::runtime_error("fstat Failed!");
     }
 

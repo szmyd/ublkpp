@@ -645,9 +645,7 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
     if (!failover_dev) co_return -EAGAIN;
 
     auto failover_task = (*failover_dev)->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
-    auto const r2 = co_await failover_task;
-
-    co_return r2;
+    co_return co_await failover_task;
 }
 
 std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
@@ -784,8 +782,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
         if (!failover_dev) return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
-        auto const failover_res = (*failover_dev)->disk->sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, adj_addr);
-        return failover_res ? failover_res : std::unexpected(std::make_error_condition(std::errc::io_error));
+        return (*failover_dev)->disk->sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, adj_addr);
     }
 
     // WRITE / DISCARD / WRITE_ZEROES: flat replication -- mirrors async_iov write path.
