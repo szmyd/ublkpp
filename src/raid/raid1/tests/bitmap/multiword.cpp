@@ -3,7 +3,7 @@
 TEST(Raid1, BITMAPMultiWordUpdate) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     auto const test_op = UBLK_IO_OP_WRITE;
@@ -24,7 +24,8 @@ TEST(Raid1, BITMAPMultiWordUpdate) {
         });
     EXPECT_SYNC_OP(test_op, device_b, true, true, test_sz, test_off + raid_device.reserved_size());
 
-    auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
+    auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+    auto res = raid_device.sync_iov(test_op, &iov, 1, test_off);
     ASSERT_TRUE(res);
     // No need to re-write on A side
     EXPECT_EQ(test_sz, res.value());

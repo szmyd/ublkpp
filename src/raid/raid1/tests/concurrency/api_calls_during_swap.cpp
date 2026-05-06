@@ -18,7 +18,7 @@ TEST(Raid1Concurrency, ReplicaStatesDuringSwap) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     std::atomic< bool > stop{false};
@@ -84,7 +84,7 @@ TEST(Raid1Concurrency, ReplicasDuringSwap) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     std::atomic< bool > stop{false};
@@ -137,7 +137,7 @@ TEST(Raid1Concurrency, MultipleAPICallersDuringSwap) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     std::atomic< bool > stop{false};
@@ -162,34 +162,32 @@ TEST(Raid1Concurrency, MultipleAPICallersDuringSwap) {
 
     std::this_thread::sleep_for(5ms);
 
-    // Swapper thread: perform one swap mid-flight
-    auto swapper = std::thread([&] {
-        auto device_c = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    // Perform swap in main thread while API callers run concurrently. Keeping
+    // old_dev here (not in a sub-thread) ensures device_b's shared_ptr
+    // lifetime is visible to TSAN and avoids a false heap-use-after-free
+    // caused by the no_sanitize_thread region in __capture_route_state hiding
+    // a refcount increment from TSAN's shadow memory.
+    auto device_c = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
 
-        EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_READ, _, _, _))
-            .Times(::testing::AtLeast(1))
-            .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
-                if (addr == 0) { memset(iovecs->iov_base, 0, iovecs->iov_len); }
-                return static_cast< int >(iovecs->iov_len);
-            });
+    EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AtLeast(1))
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
+            if (addr == 0) { memset(iovecs->iov_base, 0, iovecs->iov_len); }
+            return static_cast< int >(iovecs->iov_len);
+        });
 
-        EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(::testing::AnyNumber())
-            .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-                return static_cast< int >(iovecs->iov_len);
-            });
+    EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
-        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(::testing::AnyNumber())
-            .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-                return static_cast< int >(iovecs->iov_len);
-            });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
-        auto old_dev = raid_device.swap_device("DiskB", device_c);
-        EXPECT_EQ(old_dev, device_b);
-    });
-
-    swapper.join();
+    auto old_dev = raid_device.swap_device("DiskB", device_c);
+    EXPECT_EQ(old_dev, device_b);
 
     std::this_thread::sleep_for(5ms);
     stop.store(true, std::memory_order_relaxed);

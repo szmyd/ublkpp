@@ -4,10 +4,6 @@ add_compile_options(-Wall -Wextra -Werror)
 
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})
 
-if(${libiscsi_FOUND})
-add_compile_options(-DHAVE_LIBISCSI)
-endif()
-
 add_subdirectory (lib)
 add_subdirectory (metrics)
 add_subdirectory (raid)
@@ -26,17 +22,8 @@ list(APPEND LIBRARY_OBJECTS
 list(APPEND LIBRARY_LINKS
     isa-l::isa-l
     ublksrv::ublksrv
+    STDEXEC::stdexec
   )
-
-if(${homeblocks_FOUND})
-    list(APPEND LIBRARY_OBJECTS $<TARGET_OBJECTS:homeblk_disk>)
-    list(APPEND LIBRARY_LINKS homeblocks::homeblocks)
-endif()
-
-if(${libiscsi_FOUND})
-    list(APPEND LIBRARY_OBJECTS $<TARGET_OBJECTS:iscsi_disk>)
-    list(APPEND LIBRARY_LINKS libiscsi::libiscsi)
-endif()
 
 add_library(ublkpp)
 target_sources(ublkpp PRIVATE

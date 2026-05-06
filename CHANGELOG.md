@@ -4,21 +4,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.30.0 refactor: async coroutine I/O, public API 1.0.0 uplift, and RAID1 hardening
+ - Async I/O (Phases 1-11):
+   - cqe_state pool per queue; raw cqe_state* encoded directly in SQE user_data
+   - disk_task<T>/hot_task<T> coroutines with zero-overhead symmetric transfer
+   - exec::task<void> + stdexec async_scope replace co_io_job; scope.on_empty() drains in-flight work
+   - All disks implement pure-virtual async_iov; handle_io_async removed from vtable
+   - ublkpp_tgt owns the io_uring CQE loop (run_queue_loop); destroy() renamed to remove()
+   - ResyncWriteGuard RAII ensures enqueue/dequeue_write is always balanced in RAID1
+ - Public API (1.0.0 prep):
+   - make_fs_disk/make_raid0_disk/make_raid1_disk/make_missing_disk factories replace direct construction
+   - ublk_disk base + disk_handle ownership alias; geometry through explicit getters
+   - Public headers consolidated: drivers.hpp, raid.hpp, target.hpp
+ - **Breaking**: removed `handle_rw`, `queue_tgt_io`, `handle_discard`, `sub_cmd_t`, and the `open_for_uring`/`handle_io_async`/`handle_iov_async` virtual surface -- replaced by `prepare` and `async_iov`
+ - **Breaking**: updaetd sisl to v14.x which drops Folly and iomgr (in testing) dependencies.
+
 ## 0.22.2
-- raid1: Fix `stop()` IDLE→STOPPING race — when the resync thread finishes naturally and
+- raid1: Fix `stop()` IDLE→STOPPING race - when the resync thread finishes naturally and
   `stop()` is called before `join()`, the `IDLE+joinable` handler now returns `SUCCESS` instead
   of `RETRY_WITH_SLEEP`, preventing an accidental `CAS(IDLE→STOPPING)` that left no thread to
   clear the state; subsequent `launch()` call in `swap_device()` would spin forever.
 
 ## 0.22.1
-- raid1: Fix dequeue/resume race — `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed.
-- raid1: Fix enqueue/pause race — `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
+- raid1: Fix dequeue/resume race - `_resync_state` and `_outstanding_writes` are now packed into a single `sisl::atomic_status_counter` so the counter decrement and PAUSE→ACTIVE transition are one indivisible CAS; `__resume()` is removed.
+- raid1: Fix enqueue/pause race - `enqueue_write()` now always calls `__pause()` on every enqueue, not only the first; previously a concurrent second enqueuer could skip `__pause()` while the first was still establishing it, allowing resync to overwrite an in-flight write with stale data
 - raid1: Replace GCC `__builtin_popcount`/`__builtin_clz`/`__builtin_ctz` with C++23 `std::popcount`/`std::countl_zero`/`std::countr_zero`
-- build: `libatomic` is now declared as a Conan system lib on Linux — propagated automatically to consumers, no downstream changes required
+- build: `libatomic` is now declared as a Conan system lib on Linux - propagated automatically to consumers, no downstream changes required
 
 ## 0.22.0
-- raid1: Fix multi-queue idle probe race conditions — probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
-- **Breaking**: `UblkDisk::open_for_uring` signature changed from `(int)` to `(ublksrv_queue const*, int)` — out-of-tree subclasses must update their override
+- raid1: Fix multi-queue idle probe race conditions - probes now start only when all queues are idle, mutex serializes concurrent launch/stop calls, `open_for_uring` counts queue threads for accurate `nr_hw_queues`
+- **Breaking**: `UblkDisk::open_for_uring` signature changed from `(int)` to `(ublksrv_queue const*, int)` - out-of-tree subclasses must update their override
 
 ## 0.21.6
 - raid0: Fix stale alive_cmds in __distribute() corrupting the next I/O on the same thread after a failed multi-stride operation

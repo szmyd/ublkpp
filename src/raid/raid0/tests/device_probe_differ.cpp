@@ -10,18 +10,18 @@ TEST(Raid0, DiffereingDeviceProbing) {
     auto device_b =
         CREATE_DISK((TestParams{.capacity = 3 * Gi, .l_size = 4 * Ki, .p_size = 4 * Ki, .can_discard = false}));
 
-    auto raid_device = ublkpp::Raid0Disk(boost::uuids::random_generator()(), 32 * Ki,
-                                         std::vector< std::shared_ptr< UblkDisk > >{device_a, device_b});
+    auto raid_device = ublkpp::make_raid0_disk(boost::uuids::random_generator()(), 32 * Ki,
+                                               std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b});
     // Smallest disk was 3GiB, so 2 * 3GiB
-    EXPECT_EQ(raid_device.capacity(), (6 * Gi) - (512 * Ki));
+    EXPECT_EQ(raid_device->capacity(), (6 * Gi) - (512 * Ki));
 
-    EXPECT_EQ(raid_device.block_size(), 4 * Ki);
+    EXPECT_EQ(raid_device->block_size(), 4 * Ki);
 
     // PBS is the stripe size for RAID-0
-    EXPECT_EQ(raid_device.params()->basic.physical_bs_shift, ilog2(32 * Ki));
+    EXPECT_EQ(raid_device->physical_block_size(), 32 * Ki);
 
     // Device B lacks Discard support
-    EXPECT_EQ(raid_device.can_discard(), false);
+    EXPECT_EQ(raid_device->can_discard(), false);
     // Device A lacks DirectI/O support
-    EXPECT_EQ(raid_device.direct_io, false);
+    EXPECT_EQ(raid_device->direct_io(), false);
 }

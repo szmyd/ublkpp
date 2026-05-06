@@ -8,6 +8,7 @@ target_link_libraries(ublkpp_tgt
     ublk_metrics
     sisl::cache
     ublksrv::ublksrv
+    STDEXEC::stdexec
 )
 
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR})

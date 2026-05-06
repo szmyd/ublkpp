@@ -18,3 +18,15 @@ target_link_libraries (test_logging
   ublksrv::ublksrv
 )
 add_test(NAME LoggingTest COMMAND test_logging -cv warning --log_mods ublksrv:0)
+
+add_executable(test_cqe_state)
+target_sources(test_cqe_state PRIVATE
+   test_cqe_state.cpp
+  $<TARGET_OBJECTS:logging>
+)
+target_link_libraries(test_cqe_state
+  GTest::gmock
+  sisl::cache
+  ublksrv::ublksrv
+)
+add_test(NAME CqeStateTest COMMAND test_cqe_state -cv warning --log_mods ublksrv:0)

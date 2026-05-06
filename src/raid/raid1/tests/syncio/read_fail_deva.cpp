@@ -4,7 +4,7 @@
 TEST(Raid1, SyncIoReadDevAFail) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     auto const test_op = UBLK_IO_OP_READ;
     auto const test_off = 8 * Ki;
@@ -14,7 +14,8 @@ TEST(Raid1, SyncIoReadDevAFail) {
     EXPECT_SYNC_OP(test_op, device_b, true, false, test_sz, test_off + raid_device.reserved_size());
 
     RUN_IN_THREAD({
-        auto res = raid_device.sync_io(test_op, nullptr, test_sz, test_off);
+        auto iov = iovec{.iov_base = nullptr, .iov_len = test_sz};
+        auto res = raid_device.sync_iov(test_op, &iov, 1, test_off);
         ASSERT_TRUE(res);
         EXPECT_EQ(test_sz, res.value());
     });

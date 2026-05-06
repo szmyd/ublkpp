@@ -7,7 +7,7 @@ TEST(Raid1, ReadingSBProblems) {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, false, false);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, true, false, false);
         EXPECT_THROW(auto raid_device =
-                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                         ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Fail Read SB from DevB
@@ -15,7 +15,7 @@ TEST(Raid1, ReadingSBProblems) {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, true, false);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, false, true, true, false);
         EXPECT_THROW(auto raid_device =
-                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                         ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Fail Read SB from Both
@@ -23,14 +23,14 @@ TEST(Raid1, ReadingSBProblems) {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, true, true, false);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, true, true, true, false);
         EXPECT_THROW(auto raid_device =
-                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                         ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
     // Should not throw just dirty SB and pages
     {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, false, true);
         auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-        auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+        auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid_device.toggle_resync(false);
         // expect unmount_clean update
         EXPECT_TO_WRITE_SB(device_b);
@@ -42,7 +42,7 @@ TEST(Raid1, ReadingSBProblems) {
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, false, false, false, true);
         // Expect an extra WRITE to the SB when sync'ing the SB to DevB fails
         EXPECT_SYNC_OP_REPEAT(UBLK_IO_OP_WRITE, 2, device_a, false, false, ublkpp::raid1::k_page_size, 0UL);
-        auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+        auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid_device.toggle_resync(false);
         // expect unmount_clean update
         EXPECT_TO_WRITE_SB(device_a);
@@ -53,7 +53,7 @@ TEST(Raid1, ReadingSBProblems) {
         auto device_a = CREATE_DISK_F(TestParams{.capacity = Gi}, false, false, false, false, true);
         auto device_b = CREATE_DISK_F(TestParams{.capacity = Gi}, true, false, false, false, true);
         EXPECT_THROW(auto raid_device =
-                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                         ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
 
@@ -77,7 +77,7 @@ TEST(Raid1, ReadingSBProblems) {
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
             });
         EXPECT_THROW(auto raid_device =
-                         ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                         ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                      std::runtime_error);
     }
 }

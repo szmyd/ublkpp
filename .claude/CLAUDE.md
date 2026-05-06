@@ -43,12 +43,13 @@ Build environment configured in `~/.claude/CLAUDE.md` (local vs SSH).
 
 ```bash
 # Build Debug (auto-runs tests)
-conan build -s:h build_type=Debug --build missing ublkpp
+conan build -s:h build_type=Debug --build missing .
 
 # Release / Coverage / Sanitizers
-conan build -s:h build_type=Release --build missing ublkpp
-conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
-conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
+conan build -s:h build_type=Release --build missing .
+conan build -s:h build_type=Debug -o ublkpp/*:coverage=True --build missing .
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=address --build missing .
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=thread --build missing .
 
 # Format code (applied automatically after edits to C/C++ files)
 # Run on each modified file: clang-format -style=file -i -fallback-style=none file.cpp
@@ -58,22 +59,31 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 
 **Style:** 4-space indent, 120-char lines, `#pragma once`, left pointer alignment (`Type* ptr`), C++23
 
-**Naming:**
-- Classes: `PascalCase` (Raid1Disk)
-- Functions: `snake_case` (async_iov)
-- Members: `_snake_case` (_device)
-- Constants: `k_snake_case` (k_page_size)
-- Macros/Enums: `SCREAMING_SNAKE_CASE`
-- Namespaces: lowercase (ublkpp)
+**Naming (two-tier: public vs internal):**
+
+The public API is intentionally lower-case to telegraph "this is the stable surface, treat
+it like a standard-library type." Internal classes keep traditional `PascalCase`.
+
+- **Public API types** (in `include/ublkpp/`): `lower_snake_case` for both classes and free
+  functions; e.g. base class `ublk_disk`, alias `disk_handle`, factories `make_fs_disk`,
+  `make_raid0_disk`, `make_raid1_disk`, target `ublkpp_tgt`. Drivers and RAID arrays are
+  not exposed as classes; they are opaque `disk_handle`s constructed via factories.
+- **Internal classes** (in `src/`): `PascalCase`; e.g. `SuperBlock`, `Bitmap`, `Raid1Disk`
+  (the impl behind `make_raid1_disk`), `MirrorDevice`, `Raid1ResyncTask`.
+- **Functions / methods:** `snake_case` everywhere (`async_iov`, `prepare`, `swap_device`).
+- **Members:** `_snake_case` (`_device`, `_dirty_bitmap`).
+- **Constants:** `k_snake_case` (`k_page_size`).
+- **Macros / Enums:** `SCREAMING_SNAKE_CASE`.
+- **Namespaces:** lowercase (`ublkpp`, `ublkpp::raid1`).
 
 **Error Handling:**
 - Use `std::expected<T, std::error_condition>`
-- Type alias: `io_result = std::expected<int, std::error_condition>`
+- Type alias: `io_result = std::expected<size_t, std::error_condition>`
 - Log errors before returning: `DLOGE("...", strerror(errno))`
 
 **Logging:**
 - Use SISL macros: `RLOGW`, `DLOGE`, `TLOGD`, `TLOGE`, `LOGINFO`
-- Modules: `ublksrv`, `ublk_tgt`, `ublk_raid`, `ublk_drivers`, `libiscsi`
+- Modules: `ublksrv`, `ublk_tgt`, `ublk_raid`, `ublk_drivers`
 
 ## Development Workflow
 
@@ -81,7 +91,7 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 1. Write code
 2. Write tests (UNLESS ublksrv calls, docs, or build config only)
 3. Apply clang-format to edited files automatically (see below)
-4. Build: `conan build -s:h build_type=Debug --build missing ublkpp` (auto-runs tests)
+4. Build: `conan build -s:h build_type=Debug --build missing .` (auto-runs tests)
 
 **Formatting:**
 - ALWAYS run `clang-format -style=file -i -fallback-style=none` on each edited file
@@ -108,7 +118,7 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 
 **Coverage targets:**
 - High: 80%, Medium: 65%, Goal: 100% for new code
-- Generate: `conan build -o coverage=True`
+- Generate: `conan build -s:h build_type=Debug -o ublkpp/*:coverage=True --build missing .`
 
 ## RAID Specifics
 
@@ -123,22 +133,36 @@ conan build -s:h build_type=Debug -o sanitize=True --build missing ublkpp
 
 ## Dependencies
 
-**Core:** `sisl` (logging/options), `ublksrv` ([GitHub](https://github.com/ublk-org/ublksrv)), `iomgr` (test)
-**Build:** Conan 2.0, CMake 3.x, C++23 compiler, clang-format
+**Core:** `sisl` v14+ (logging, options, metrics, HTTP server), `ublksrv`, `isa-l`
+**Test:** `gtest`, `fio`
+**Build:** Conan 2.0, CMake 3.x, C++23 (GCC 13+ or Clang 17+), clang-format
 
 ## Project Structure
 
 ```
 src/
-├── driver/   # FSDisk, iSCSIDisk, HomeBlkDisk
-├── lib/      # UblkDisk base, utilities
-├── metrics/  # IO, FSDisk, RAID metrics
+├── driver/   # File-backed backend implementation
+├── lib/      # ublk_disk base, disk_task, cqe_state, utilities
+├── metrics/  # IO and RAID metrics
 ├── raid/     # RAID0, RAID1 (bitmap, superblock)
 └── target/   # ublkpp_tgt
 
 include/ublkpp/  # Public headers
 example/         # ublkpp_disk
 ```
+
+## CI
+
+Four named jobs on `ubuntu-24.04`, triggered on push to `main` and PRs targeting `main`/`feature/*`. All use `conan-channel: "dev"` (sisl@oss/dev).
+
+| Job | Compiler | Build type | Sanitizer |
+|---|---|---|---|
+| GccAddressSanitize | GCC | Debug | address |
+| GccThreadSanitize | GCC | Debug | thread |
+| GccCoverage | GCC | Debug | none (coverage=True) |
+| ClangRelease | Clang | Release | none |
+
+`SislDeps` (builds/caches sisl upstream) runs before `UblkPPDeps` on non-PR events; on PRs it still runs but skips the cache-save step.
 
 ## Git Workflow
 

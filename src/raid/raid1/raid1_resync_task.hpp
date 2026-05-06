@@ -7,7 +7,7 @@
 
 #include <sisl/fds/atomic_status_counter.hpp>
 
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/raid.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
 
@@ -97,9 +97,14 @@ class Raid1ResyncTask {
 
     resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept;
 
-    // Generic state transition helper - reduces duplication across launch/stop/pause
+    // Generic state transition helper - reduces duplication across launch/stop/pause.
+    // noinline: gcov attributes inlined template instructions to the call-site line numbers
+    // rather than to the template body, making the entire retry loop appear uncovered.
+    // Unlike __capture_route_state (which reads non-atomic shared_ptrs and must prevent the
+    // compiler from caching them across loop iterations), all state here is accessed through
+    // atomics — so noinline is a coverage tool, not a correctness requirement.
     template < typename StateHandler >
-    bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
+    [[gnu::noinline]] bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
 
     // This most happen, so we wait till the resync job becomes sleeping, then move it quickly to
     // PAUSE to prevent any resync opeartions from continuing to run (will block in __yield)
@@ -114,6 +119,10 @@ public:
                     std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
     ~Raid1ResyncTask() noexcept;
 
+    // Probe a mirror device: reads at reserved_size, clears unavail on success,
+    // sets unavail on failure. Returns true if device is available.
+    static bool probe_mirror(MirrorDevice& mirror, uint64_t reserved_size) noexcept;
+
     void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
 
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
@@ -125,7 +134,7 @@ public:
     inline void enqueue_write() noexcept {
         // Increment first, then establish pause. Safe because the caller submits I/O only after
         // this function returns, so no disk I/O is in-flight during the increment→pause window.
-        _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
+        std::ignore = _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
             ++cnt;
             return true;
         });
@@ -145,7 +154,31 @@ public:
         // This single CAS closes the race where a concurrent enqueue could see old_val==0,
         // find state still PAUSE (from the prior write), and early-exit __pause() — only for
         // __resume() to then clear PAUSE before the new write's I/O is submitted.
-        _state_and_writes.dec_xchng_status_ifz(resync_state::PAUSE, resync_state::ACTIVE);
+        std::ignore = _state_and_writes.dec_xchng_status_ifz(resync_state::PAUSE, resync_state::ACTIVE);
     }
 };
+
+// RAII guard that calls enqueue_write() on construction and dequeue_write() on destruction.
+// Call release() to dequeue early (e.g. at a specific co_await point in a coroutine).
+class ResyncWriteGuard {
+public:
+    explicit ResyncWriteGuard(Raid1ResyncTask& task) noexcept : _task(&task) { _task->enqueue_write(); }
+    ~ResyncWriteGuard() noexcept {
+        if (_task) _task->dequeue_write();
+    }
+    void release() noexcept {
+        if (_task) {
+            _task->dequeue_write();
+            _task = nullptr;
+        }
+    }
+    ResyncWriteGuard(ResyncWriteGuard&&) = delete;
+    ResyncWriteGuard(ResyncWriteGuard const&) = delete;
+    ResyncWriteGuard& operator=(ResyncWriteGuard&&) = delete;
+    ResyncWriteGuard& operator=(ResyncWriteGuard const&) = delete;
+
+private:
+    Raid1ResyncTask* _task;
+};
+
 } // namespace ublkpp::raid1

@@ -7,7 +7,7 @@ TEST(Raid1, ReplicaStatesHealthy) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     auto states = raid_device.replica_states();
 
@@ -26,7 +26,7 @@ TEST(Raid1, ReplicasAccess) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     auto [replica_a, replica_b] = raid_device.replicas();
 
@@ -43,7 +43,7 @@ TEST(Raid1, ToggleResyncDisable) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Disable resync
     raid_device.toggle_resync(false);
@@ -61,23 +61,9 @@ TEST(Raid1, IdMethod) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     EXPECT_EQ(raid_device.id(), "RAID1");
-
-    // Expect unmount_clean update
-    EXPECT_TO_WRITE_SB(device_a);
-    EXPECT_TO_WRITE_SB(device_b);
-}
-
-// Test: route_size returns 1
-TEST(Raid1, RouteSize) {
-    auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
-
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-
-    EXPECT_EQ(raid_device.route_size(), 1);
 
     // Expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
@@ -88,13 +74,14 @@ TEST(Raid1, RouteSize) {
 // After this swap: route=DEVB, new_device is in A slot (backup, unavail=false), device_b is active.
 // Caller must register the device_b staying-write and unmount expectations separately.
 static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_device,
-                                  std::shared_ptr< ublkpp::TestDisk >& device_b, ublkpp::Raid1Disk& raid_device) {
+                                  std::shared_ptr< ublkpp::TestDisk >& device_b,
+                                  ublkpp::raid1::Raid1Disk& raid_device) {
     // new device read returns all-zeros → new_device=true → init_to is called
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memset(iovecs->iov_base, 0x00, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
@@ -104,7 +91,7 @@ static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_devic
         .WillOnce([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             // init_to: bitmap write to new device
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_LT(addr, raid_device.reserved_size());
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // all zeros
@@ -113,7 +100,7 @@ static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_devic
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             // __swap_device: new device superblock commit (new_device is in A slot → device_b=0)
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             EXPECT_EQ(0, static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b);
             return ublkpp::raid1::k_page_size;
@@ -123,7 +110,7 @@ static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_devic
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(ublkpp::raid1::read_route::DEVB,
                       static_cast< ublkpp::raid1::read_route >(
                           reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.read_route));
@@ -137,7 +124,7 @@ TEST(Raid1, ReplicaStatesSyncingDEVB) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
@@ -169,7 +156,7 @@ TEST(Raid1, ReplicasAccessDEVB) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi, .id = "DiskA"}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi, .id = "DiskB"}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
     auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});

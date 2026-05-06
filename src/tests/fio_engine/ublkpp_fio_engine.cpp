@@ -31,10 +31,10 @@ extern "C" {
 #include <sisl/options/options.h>
 #include <spdlog/spdlog.h>
 
-#include "ublkpp/drivers/fs_disk.hpp"
-#include "ublkpp/raid/raid0.hpp"
-#include "ublkpp/raid/raid1.hpp"
+#include "ublkpp/drivers.hpp"
+#include "ublkpp/raid.hpp"
 
+#include "lib/common.hpp"
 #include "mock_ublksrv/mock_ublksrv.hpp"
 
 // Suppress fio's fallback syscall wrappers — glibc on this platform
@@ -60,7 +60,7 @@ extern "C" {
 #endif
 
 // ---------------------------------------------------------------------------
-// SISL initialisation — required before constructing any UblkDisk
+// SISL initialisation — required before constructing any ublk_disk
 // ---------------------------------------------------------------------------
 #ifdef BUILD_COVERAGE
 // Forward-declare at file scope — extern "C" is not allowed inside a function body.
@@ -131,7 +131,7 @@ static fio_option engine_options[] = {
 // Per-thread engine runtime state
 // ---------------------------------------------------------------------------
 struct EngineData {
-    std::shared_ptr< ublkpp::UblkDisk > disk;
+    std::shared_ptr< ublkpp::ublk_disk > disk;
     std::unique_ptr< ublkpp::MockUblksrv > mock;
     std::vector< io_u* > pending; // indexed by tag
     std::vector< io_u* > events;  // completions from last getevents()
@@ -253,28 +253,27 @@ static int ublkpp_init(struct thread_data* td) {
     }
 
     // Build the disk
-    std::shared_ptr< ublkpp::UblkDisk > disk;
+    std::shared_ptr< ublkpp::ublk_disk > disk;
     try {
         std::string const type(disk_type);
         if (type == "fsdisk") {
-            disk = std::make_shared< ublkpp::FSDisk >(paths[0]);
+            disk = ublkpp::make_fs_disk(paths[0]);
         } else if (type == "raid0") {
             if (paths.size() < 2) {
                 log_err("ublkpp_fio: raid0 requires at least 2 disk_files\n");
                 return -1;
             }
-            std::vector< std::shared_ptr< ublkpp::UblkDisk > > members;
+            std::vector< std::shared_ptr< ublkpp::ublk_disk > > members;
             for (auto const& p : paths)
-                members.push_back(std::make_shared< ublkpp::FSDisk >(p));
-            disk = std::make_shared< ublkpp::Raid0Disk >(uuid_for_paths(paths), chunk_size, std::move(members));
+                members.push_back(ublkpp::make_fs_disk(p));
+            disk = ublkpp::make_raid0_disk(uuid_for_paths(paths), chunk_size, std::move(members));
         } else if (type == "raid1") {
             if (paths.size() < 2) {
                 log_err("ublkpp_fio: raid1 requires 2 disk_files\n");
                 return -1;
             }
-            disk = std::make_shared< ublkpp::Raid1Disk >(uuid_for_paths(paths),
-                                                         std::make_shared< ublkpp::FSDisk >(paths[0]),
-                                                         std::make_shared< ublkpp::FSDisk >(paths[1]));
+            disk = ublkpp::make_raid1_disk(uuid_for_paths(paths), ublkpp::make_fs_disk(paths[0]),
+                                           ublkpp::make_fs_disk(paths[1]));
         } else if (type == "raid10") {
             if (paths.size() != 4) {
                 log_err("ublkpp_fio: raid10 requires exactly 4 disk_files\n");
@@ -283,14 +282,12 @@ static int ublkpp_init(struct thread_data* td) {
             // RAID10: two mirrored pairs striped together
             std::vector< std::string > const pair_a_paths{paths[0], paths[1]};
             std::vector< std::string > const pair_b_paths{paths[2], paths[3]};
-            auto pair_a = std::make_shared< ublkpp::Raid1Disk >(uuid_for_paths(pair_a_paths),
-                                                                std::make_shared< ublkpp::FSDisk >(paths[0]),
-                                                                std::make_shared< ublkpp::FSDisk >(paths[1]));
-            auto pair_b = std::make_shared< ublkpp::Raid1Disk >(uuid_for_paths(pair_b_paths),
-                                                                std::make_shared< ublkpp::FSDisk >(paths[2]),
-                                                                std::make_shared< ublkpp::FSDisk >(paths[3]));
-            std::vector< std::shared_ptr< ublkpp::UblkDisk > > members{std::move(pair_a), std::move(pair_b)};
-            disk = std::make_shared< ublkpp::Raid0Disk >(uuid_for_paths(paths), chunk_size, std::move(members));
+            auto pair_a = ublkpp::make_raid1_disk(uuid_for_paths(pair_a_paths), ublkpp::make_fs_disk(paths[0]),
+                                                  ublkpp::make_fs_disk(paths[1]));
+            auto pair_b = ublkpp::make_raid1_disk(uuid_for_paths(pair_b_paths), ublkpp::make_fs_disk(paths[2]),
+                                                  ublkpp::make_fs_disk(paths[3]));
+            std::vector< std::shared_ptr< ublkpp::ublk_disk > > members{std::move(pair_a), std::move(pair_b)};
+            disk = ublkpp::make_raid0_disk(uuid_for_paths(paths), chunk_size, std::move(members));
         } else {
             log_err("ublkpp_fio: unknown disk_type '%s'\n", disk_type);
             return -1;

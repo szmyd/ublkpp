@@ -12,8 +12,9 @@
 - **RAID1 Resilient Bitmap**: Memory-efficient dirty tracking (4 KiB page tracks 1 GiB data)
 - **Hot Device Replacement**: Swap devices in degraded RAID1 arrays without downtime
 - **Lock-Free I/O Path**: Read/write operations use lock-free algorithms (x86-64/ARM64)
-- **Multiple Backends**: File system, iSCSI, and HomeBlocks support
-- **Comprehensive Testing**: High test coverage with unit and integration tests
+- **Factory-Based API**: File-backed disks and RAID compositions through supported factory functions
+- **Coroutine I/O**: Single-event-loop, CQE-driven coroutine pipeline
+- **Comprehensive Testing**: High test coverage with unit and functional (fio-driven) tests
 - **Modern C++**: Built with C++23, leveraging `std::expected` for error handling
 - **Production Ready**: Thread-safe, handles degraded modes, optimistic recovery
 
@@ -43,25 +44,21 @@
 git clone https://github.com/szmyd/ublkpp
 cd ublkpp
 ./prepare_v2.sh
-conan build -s:h build_type=Debug --build missing ublkpp
+conan build -s:h build_type=Debug --build missing .
 ```
 
 ### Build Options
 
 ```bash
 # Release build
-conan build -s:h build_type=Release --build missing ublkpp
+conan build -s:h build_type=Release --build missing .
 
 # With coverage
-conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
+conan build -s:h build_type=Debug -o ublkpp/*:coverage=True --build missing .
 
 # With sanitizers (address or thread)
-conan build -s:h build_type=Debug -o sanitize=address --build missing ublkpp
-conan build -s:h build_type=Debug -o sanitize=thread --build missing ublkpp
-
-# Optional backends
-conan build -o homeblocks=True --build missing ublkpp
-conan build -o iscsi=True --build missing ublkpp
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=address --build missing .
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=thread --build missing .
 ```
 
 ## 🏗️ Architecture
@@ -71,11 +68,13 @@ conan build -o iscsi=True --build missing ublkpp
 ```
 ublkpp/
 ├── include/ublkpp/       # Public headers
-│   ├── raid/             # RAID0, RAID1 interfaces
-│   └── drivers/          # FSDisk, iSCSIDisk, HomeBlkDisk
+│   ├── drivers.hpp       # File-backed disk factory
+│   ├── raid.hpp          # RAID factories and helpers
+│   ├── target.hpp        # ublk target interface
+│   └── lib/              # Base disk subclassing API
 ├── src/
-│   ├── driver/           # Backend implementations
-│   ├── lib/              # Core UblkDisk base classes
+│   ├── driver/           # File-backed backend implementation
+│   ├── lib/              # Core ublk_disk base classes
 │   ├── metrics/          # I/O and RAID metrics
 │   ├── raid/             # RAID logic (bitmap, superblock)
 │   └── target/           # ublkpp_tgt
@@ -84,11 +83,12 @@ ublkpp/
 
 ### Core Abstractions
 
-- **`UblkDisk`**: Base class for all block devices
-- **`FSDisk`**: File-based block device implementation
-- **`Raid0Disk`**: Striping across multiple devices
-- **`Raid1Disk`**: Mirroring with bitmap-based resilience
-- **`UblkTarget`**: Exposes devices to kernel via ublk
+- **`ublk_disk`**: Base class for all block devices
+- **`disk_handle`**: Shared ownership handle for disks and RAID composites
+- **`make_fs_disk()`**: File/block-backed disk construction
+- **`make_raid0_disk()` / `make_raid1_disk()`**: RAID composition factories
+- **`raid0::*` / `raid1::*`**: Free-function helpers for topology and mirror management
+- **`ublkpp_tgt`**: Exposes devices to kernel via ublk
 
 ## 💾 RAID Features
 
@@ -104,8 +104,8 @@ ublkpp/
 - Two-way mirroring with dirty bitmap tracking
 - Degraded mode operation (single device failure)
 - Hot device replacement via `swap_device()`
-- Optimistic recovery with INTERNAL writes
-- Configurable read routing (PRIMARY, SECONDARY, EITHER)
+- Optimistic write recovery with dirty-bitmap-guided resync
+- Read routing round-robbins
 
 **Bitmap Efficiency:**
 - 4 KiB pages track 32 KiB chunks (default)
@@ -132,7 +132,7 @@ The `ublkpp_disk` application demonstrates all RAID capabilities with a single t
 
 ```bash
 # Build release version
-conan build -s:h build_type=Release --build missing ublkpp
+conan build -s:h build_type=Release --build missing .
 
 # Load kernel module
 sudo modprobe ublk_drv
@@ -193,11 +193,16 @@ $ sudo mount /dev/ublkb0 /mnt
 
 | Element | Convention | Example |
 |---------|------------|---------|
-| Classes | PascalCase | `Raid1Disk` |
-| Functions | snake_case | `async_iov()` |
-| Members | _snake_case | `_device` |
-| Constants | k_snake_case | `k_page_size` |
-| Macros/Enums | SCREAMING_SNAKE_CASE | `UBLK_IO_OP_WRITE` |
+| **Public API types** (`include/ublkpp/`) | `lower_snake_case` | `ublk_disk`, `disk_handle`, `ublkpp_tgt` |
+| **Public API factories** (free functions) | `make_<thing>` | `make_fs_disk()`, `make_raid1_disk()` |
+| **Internal classes** (`src/`) | `PascalCase` | `SuperBlock`, `Bitmap`, `Raid1Disk` (impl), `MirrorDevice` |
+| Functions / methods | `snake_case` | `async_iov()`, `prepare()`, `swap_device()` |
+| Members | `_snake_case` | `_device`, `_dirty_bitmap` |
+| Constants | `k_snake_case` | `k_page_size` |
+| Macros / Enums | `SCREAMING_SNAKE_CASE` | `UBLK_IO_OP_WRITE` |
+
+Driver and RAID array implementations are not part of the public surface; consumers construct
+opaque `disk_handle`s via `make_*_disk()` factories and compose them.
 
 ### Workflow
 
@@ -208,7 +213,7 @@ $ sudo mount /dev/ublkb0 /mnt
 ./apply-clang-format.sh
 
 # 4. Build and test
-conan build -s:h build_type=Debug --build missing ublkpp
+conan build -s:h build_type=Debug --build missing .
 ```
 
 ### Error Handling
@@ -216,7 +221,7 @@ conan build -s:h build_type=Debug --build missing ublkpp
 Uses `std::expected<T, std::error_condition>` pattern:
 
 ```cpp
-using io_result = std::expected<int, std::error_condition>;
+using io_result = std::expected<size_t, std::error_condition>;
 
 io_result write_data(uint64_t addr, uint32_t len) {
     if (auto res = device->sync_iov(UBLK_IO_OP_WRITE, iov, 1, addr); !res) {
@@ -244,17 +249,17 @@ src/<component>/tests/
 
 ```bash
 # Tests run automatically during build
-conan build -s:h build_type=Debug --build missing ublkpp
+conan build -s:h build_type=Debug --build missing .
 
 # Coverage report
-conan build -s:h build_type=Debug -o coverage=True --build missing ublkpp
+conan build -s:h build_type=Debug -o ublkpp/*:coverage=True --build missing .
 # View: build/Debug/coverage_html/index.html
 
 # Thread sanitizer
-conan build -s:h build_type=Debug -o sanitize=thread --build missing ublkpp
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=thread --build missing .
 
 # Address sanitizer
-conan build -s:h build_type=Debug -o sanitize=address --build missing ublkpp
+conan build -s:h build_type=Debug -o ublkpp/*:sanitize=address --build missing .
 ```
 
 ### Writing Tests
@@ -271,7 +276,7 @@ TEST(Raid1, YourTestName) {
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 
-    auto raid = ublkpp::Raid1Disk(uuid, device_a, device_b);
+    auto raid = ublkpp::make_raid1_disk(uuid, device_a, device_b);
 
     // Test logic...
     EXPECT_EQ(expected, actual);
@@ -282,16 +287,16 @@ TEST(Raid1, YourTestName) {
 
 ### Core Dependencies
 
-- **[sisl](https://github.com/eBay/sisl)**: Logging, options, utilities
+- **[sisl](https://github.com/eBay/sisl)** v14+: Logging, options, metrics, HTTP server
 - **[ublksrv](https://github.com/ublk-org/ublksrv)**: ublk driver interface
+- **isa-l**: RAID acceleration primitives
 - **boost**: UUID generation
 - **liburing**: io_uring support
 
 ### Optional Dependencies
 
-- **[iomgr](https://github.com/eBay/IOManager)**: Async I/O (for testing)
-- **[homeblks](https://github.com/eBay/HomeBlocks)**: HomeBlocks backend
-- **libiscsi**: iSCSI backend support
+- **[stdexec](https://github.com/NVIDIA/stdexec)**: C++ sender/receiver framework (fetched automatically via CMake FetchContent)
+- **fio**: Functional I/O testing (optional; tests skip gracefully if absent)
 
 ### Build Tools
 
@@ -304,6 +309,8 @@ TEST(Raid1, YourTestName) {
 
 - **[CHANGELOG.md](CHANGELOG.md)**: Version history and release notes
 - **[CLAUDE.md](.claude/CLAUDE.md)**: Development guidelines and workflows
+- **[docs/error_codes.md](docs/error_codes.md)**: RAID async_iov error code reference (EIO vs EAGAIN matrix)
+- **[docs/functional_testing.md](docs/functional_testing.md)**: Functional test procedures
 - **[Linux ublk Documentation](https://docs.kernel.org/block/ublk.html)**: Kernel driver details
 
 ## 🤝 Contributing

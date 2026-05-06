@@ -14,12 +14,12 @@ fio job file
 libublkpp_fio_engine.so          (custom fio external engine)
      │  disk_type / disk_files / raid_chunk_size options
      ▼
-UblkDisk  ─────────────────────► FSDisk / Raid0Disk / Raid1Disk
-     │                               │           │
-     ▼                               │           │
-MockUblksrv                          │           │
-(io_uring SQE/CQE loop)             │           │
-     │                               ▼           ▼
+disk_handle ───────────────► make_fs_disk / make_raid0_disk / make_raid1_disk
+     │
+     ▼
+MockUblksrv
+(io_uring SQE/CQE loop)
+     │
      └──────────────────────► backing image files (*.img)
                                   (regular files on disk)
 ```
@@ -36,7 +36,7 @@ src/tests/fio_engine/
 ├── CMakeLists.txt          # Build + CTest registration + `functional` target
 ├── ublkpp_fio_engine.cpp   # Engine implementation (init/queue/getevents/event/cleanup)
 └── jobs/
-    ├── fsdisk_rw.fio       # FSDisk write-verify
+    ├── fsdisk_rw.fio       # File-backed disk write-verify
     ├── raid0_rw.fio        # RAID0 write-verify
     ├── raid1_rw.fio        # RAID1 write-verify
     ├── raid10_rw.fio       # RAID10 write-verify
@@ -88,7 +88,7 @@ ctest --test-dir build/Debug -L Functional -j4 --output-on-failure
 
 | CTest name | Job file | Topology | bs | Size | What it exercises |
 |---|---|---|---|---|---|
-| `FunctionalFSDisk` | `fsdisk_rw.fio` | FSDisk (1 file) | 4k–64k | 64 MiB | Baseline I/O, single-device path |
+| `FunctionalFSDisk` | `fsdisk_rw.fio` | File-backed disk (1 file) | 4k–64k | 64 MiB | Baseline I/O, single-device path |
 | `FunctionalRAID0` | `raid0_rw.fio` | RAID0 (2 files) | 4k–64k | 64 MiB | Stripe distribution, chunk alignment |
 | `FunctionalRAID1` | `raid1_rw.fio` | RAID1 (2 files) | 4k–64k | 64 MiB | Mirror replication, bitmap tracking |
 | `FunctionalRAID10` | `raid10_rw.fio` | RAID10 (4 files) | 4k–64k | 64 MiB | Full RAID10 stack (stripe + mirror) |
@@ -119,10 +119,10 @@ each mirror pair.
 1. Parses the custom fio options (`disk_type`, `disk_files`, `raid_chunk_size`).
 2. Pre-allocates backing files via `posix_fallocate` (falls back to `ftruncate` on tmpfs).
 3. Constructs the requested disk type:
-   - **`fsdisk`** — `FSDisk(path)`
-   - **`raid0`** — `Raid0Disk(uuid, chunk_size, [FSDisk…])`
-   - **`raid1`** — `Raid1Disk(uuid, FSDisk_a, FSDisk_b)`
-   - **`raid10`** — `Raid0Disk(uuid, chunk_size, [Raid1Disk_A, Raid1Disk_B])` (two RAID1 pairs
+   - **`fsdisk`** — `make_fs_disk(path)`
+   - **`raid0`** — `make_raid0_disk(uuid, chunk_size, [make_fs_disk(...)...])`
+   - **`raid1`** — `make_raid1_disk(uuid, make_fs_disk(a), make_fs_disk(b))`
+   - **`raid10`** — `make_raid0_disk(uuid, chunk_size, [raid1_pair_a, raid1_pair_b])` (two RAID1 pairs
      striped together)
 4. Wraps the disk in `MockUblksrv` (io_uring SQE/CQE loop, no kernel module).
 5. Allocates a tag array (size = `iodepth`) for in-flight I/O tracking.
@@ -143,7 +143,7 @@ namespace), so the superblock check passes across fio job sections that reopen t
 | Variable | Used by |
 |---|---|
 | `ENGINE_SO` | Passed as `ioengine=external:${ENGINE_SO}` in job files |
-| `TEST_FILE` | FSDisk single backing path |
+| `TEST_FILE` | Single file-backed disk path |
 | `TEST_FILE_A` … `TEST_FILE_D` | RAID backing paths (A/B for RAID0/1, A–D for RAID10) |
 | `ASAN_OPTIONS=verify_asan_link_order=0` | ASan builds only — suppresses link-order warning |
 | `LD_PRELOAD=<engine.so>` | Release/tcmalloc builds — works around static TLS block exhaustion |

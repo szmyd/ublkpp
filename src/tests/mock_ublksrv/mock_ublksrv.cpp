@@ -8,7 +8,7 @@ extern "C" {
 
 #include <ublksrv.h>
 
-#include "ublkpp/lib/common.hpp"
+#include "lib/common.hpp"
 
 namespace ublkpp {
 
@@ -16,8 +16,13 @@ namespace ublkpp {
 static constexpr size_t k_max_io_size = DEF_BUF_SIZE;
 static constexpr size_t k_sector_align = 512;
 
-MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_queues) :
-        _q_depth(q_depth), _disk(std::move(disk)), _tags(q_depth), _queues(nr_queues) {
+MockUblksrv::MockUblksrv(std::shared_ptr< ublk_disk > disk, int q_depth, int nr_queues) :
+        _q_depth(q_depth),
+        _disk(std::move(disk)),
+        _tags(q_depth),
+        _queues(nr_queues),
+        _io_states(q_depth),
+        _async_tasks(q_depth) {
     // q_depth * 4 gives headroom for RAID1 write amplification (2x replicas +
     // 2x bitmap SQEs per user write) without false "ring full" auto-submits.
     if (io_uring_queue_init(q_depth * 4, &_ring, 0) < 0) throw std::runtime_error("io_uring_queue_init failed");
@@ -28,8 +33,8 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
     _dev.tgt.tgt_ring_depth = static_cast< unsigned >(q_depth);
     _dev.tgt.nr_fds = 1; // slot 0 reserved (mirrors ublkpp_tgt convention)
 
-    // Populate ublksrv_queue structs before calling open_for_uring so that any implementation
-    // which reads ring_ptr or dev inside open_for_uring sees valid values.
+    // Populate ublksrv_queue structs before calling prepare so that any implementation
+    // which reads ring_ptr or dev inside prepare sees valid values.
     for (int qi = 0; qi < nr_queues; ++qi) {
         _queues[qi].q_id = qi;
         _queues[qi].q_depth = q_depth;
@@ -38,19 +43,25 @@ MockUblksrv::MockUblksrv(std::shared_ptr< UblkDisk > disk, int q_depth, int nr_q
         _queues[qi].private_data = nullptr;
     }
 
-    // Simulate init_queue: call open_for_uring once per queue thread so the disk can count queues
-    // and perform per-queue initialization (e.g. Raid1DiskImpl sets _nr_hw_queues and enables resync).
+    // Simulate init_queue: call prepare once per queue thread so the disk can count queues
+    // and perform per-queue initialization (e.g. Raid1Disk sets _nr_hw_queues and enables resync).
+    size_t max_sqes_per_io = 1;
     for (int qi = 0; qi < nr_queues; ++qi) {
-        for (auto const fd : _disk->open_for_uring(&_queues[qi], _dev.tgt.nr_fds)) {
+        auto const prep = _disk->prepare(&_queues[qi], _dev.tgt.nr_fds);
+        for (auto const fd : prep.fds) {
             if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;
         }
+        max_sqes_per_io = prep.max_sqes_per_io;
     }
 
-    // Wire up per-tag data.iod pointers
+    // Wire up per-tag data.iod pointers and async_io backing storage; pre-reserve pool to the
+    // SQE ceiling so push_back during I/O never reallocates and cqe_state* pointers stay stable.
     for (int tag = 0; tag < q_depth; ++tag) {
         _tags[tag].data.tag = tag;
         _tags[tag].data.iod = &_tags[tag].iod;
-        _tags[tag].data.private_data = nullptr;
+        _tags[tag].data.private_data = &_io_states[tag];
+        _io_states[tag]._tag = tag;
+        _io_states[tag]._pool.reserve(max_sqes_per_io);
     }
 
     // Allocate sector-aligned I/O buffers (one per tag)
@@ -77,44 +88,63 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     ts.iod.nr_sectors = nr_sectors;
     ts.iod.start_sector = start_sector;
     ts.iod.addr = reinterpret_cast< uint64_t >(buf);
-    ts.sub_cmds_remaining = 0;
-    ts.result = 0;
 
-    auto res = _disk->queue_tgt_io(&_queues[0], &ts.data, 0);
-    if (!res) return res;
+    // Reset async_io state between IOs on the same tag slot
+    _io_states[tag]._pool.clear();
+    _async_tasks[tag].reset();
 
-    // Commit all SQEs queued by queue_tgt_io before we start polling
-    io_uring_submit(&_ring);
-
-    ts.sub_cmds_remaining = static_cast< int >(res.value());
-    return res;
+    if (op == UBLK_IO_OP_FLUSH) {
+        _async_tasks[tag].emplace([]() -> disk_task< int > { co_return 0; }().start());
+        return io_result{0};
+    }
+    ts.iov.iov_base = reinterpret_cast< void* >(ts.iod.addr);
+    ts.iov.iov_len = ts.iod.nr_sectors << SECTOR_SHIFT;
+    _async_tasks[tag].emplace(
+        _disk->async_iov(&_queues[0], &ts.data, &ts.iov, 1, ts.iod.start_sector << SECTOR_SHIFT).start());
+    // Pool size == number of CqeStates registered (one per pending stripe SQE)
+    return io_result{_io_states[tag]._pool.size()};
 }
 
 void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out) {
-    int const tag = static_cast< int >(user_data_to_tag(cqe->user_data));
-    auto const sub_cmd = static_cast< sub_cmd_t >(user_data_to_tgt_data(cqe->user_data));
+    if (!(cqe->user_data & k_target_bit)) return (void)io_uring_cqe_seen(&_ring, cqe);
+    auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
+    if (!state || !state->_owner) return (void)io_uring_cqe_seen(&_ring, cqe);
+    int const tag = state->_owner->_tag;
     int const res = cqe->res;
 
     // Consume the CQE immediately so peek sees the next one
     io_uring_cqe_seen(&_ring, cqe);
 
-    auto& ts = _tags[tag];
-    _disk->on_io_complete(&ts.data, sub_cmd, res);
+    state->_result = res;
+    state->_result_ready = true;
 
-    if (is_internal(sub_cmd)) {
-        // RAID1 bitmap completion — respond and potentially enqueue more SQEs
-        ts.sub_cmds_remaining--;
-        auto io_res = _disk->queue_internal_resp(&_queues[0], &ts.data, sub_cmd, res);
-        if (io_res && io_res.value() > 0) {
-            ts.sub_cmds_remaining += static_cast< int >(io_res.value());
-            io_uring_submit(&_ring);
+    if (auto h = std::exchange(state->_waiter, {})) h.resume();
+    auto& opt = _async_tasks[tag];
+    if (opt && opt->done()) out.push_back({tag, opt->result()});
+}
+
+std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int result) {
+    std::vector< Completion > out;
+    // Find the cqe_state currently suspended in the disk_task (_waiter is set)
+    cqe_state* target = nullptr;
+    for (auto& s : _io_states[tag]._pool) {
+        if (s._waiter) {
+            target = &s;
+            break;
         }
-    } else {
-        ts.result += res;
-        ts.sub_cmds_remaining--;
     }
-
-    if (ts.sub_cmds_remaining == 0) { out.push_back({tag, ts.result}); }
+    auto& opt = _async_tasks[tag];
+    if (!target) {
+        // No suspended state — task may have completed synchronously (e.g. flush).
+        // result is ignored; return the task's value if it finished.
+        if (opt && opt->done()) out.push_back({tag, opt->result()});
+        return out;
+    }
+    target->_result = result;
+    target->_result_ready = true;
+    if (auto h = std::exchange(target->_waiter, {})) h.resume();
+    if (opt && opt->done()) out.push_back({tag, opt->result()});
+    return out;
 }
 
 std::vector< MockUblksrv::Completion > MockUblksrv::poll(int min_completions, std::chrono::milliseconds timeout) {
@@ -129,8 +159,12 @@ std::vector< MockUblksrv::Completion > MockUblksrv::poll(int min_completions, st
         __kernel_timespec ts{.tv_sec = remaining_ms.count() / 1000,
                              .tv_nsec = (remaining_ms.count() % 1000) * 1'000'000LL};
 
+        // Match the production queue loop: submit pending SQEs and wait for at
+        // least one CQE in a single syscall. Callers of async_iov rely on the
+        // event loop to submit; using io_uring_wait_cqe_timeout here would leave
+        // queued SQEs in the SQ forever and hang.
         io_uring_cqe* cqe = nullptr;
-        int r = io_uring_wait_cqe_timeout(&_ring, &cqe, &ts);
+        int r = io_uring_submit_and_wait_timeout(&_ring, &cqe, 1, &ts, nullptr);
         if (r == -ETIME || r == -EINTR || r < 0 || cqe == nullptr) break;
 
         // Process this CQE then drain any additional ones that are ready

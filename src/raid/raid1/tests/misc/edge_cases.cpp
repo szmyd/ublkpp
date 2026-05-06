@@ -9,7 +9,7 @@ TEST(Raid1, SwapUnrecognizedDevice) {
     // device_c is not initialized into a RAID, so don't use CREATE_DISK macro
     auto device_c = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "device_c"});
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Try to swap a device that's not in the array (should fail and return incoming device)
     // This covers line 330: refusing to replace unrecognized mirror
@@ -28,7 +28,7 @@ TEST(Raid1, SwapDeviceAlreadyInArray) {
     auto device_a = CREATE_DISK_A((TestParams{.capacity = Gi}));
     auto device_b = CREATE_DISK_B((TestParams{.capacity = Gi}));
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 
     // Try to swap device_a with itself (should fail and return incoming device)
     // This covers line 333: device already in array, nothing to do
@@ -57,7 +57,7 @@ TEST(Raid1, BothDevicesSameSlot) {
                 // Set device_b = 1 (this is device B)
                 static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
-            return ublkpp::__iovec_len(iovecs, iovecs + 1);
+            return ublkpp::iovec_len(iovecs, iovecs + 1);
         });
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
@@ -67,11 +67,11 @@ TEST(Raid1, BothDevicesSameSlot) {
                 // ALSO set device_b = 1 (this is ALSO device B - invalid!)
                 static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
             }
-            return ublkpp::__iovec_len(iovecs, iovecs + 1);
+            return ublkpp::iovec_len(iovecs, iovecs + 1);
         });
 
     // Should throw runtime_error: "Found both devices were assigned the same slot!"
-    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+    EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                  std::runtime_error);
 }
 
@@ -87,7 +87,7 @@ TEST(Raid1, UncleanShutdownWhileDegraded) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
@@ -101,7 +101,7 @@ TEST(Raid1, UncleanShutdownWhileDegraded) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
@@ -117,7 +117,7 @@ TEST(Raid1, UncleanShutdownWhileDegraded) {
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             // __become_active: SB written with age bumped +16, route=DEVA, clean_unmount=0
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             EXPECT_EQ(ublkpp::raid1::read_route::DEVA, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
@@ -127,14 +127,14 @@ TEST(Raid1, UncleanShutdownWhileDegraded) {
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             // sync_to at shutdown: bitmap page written to active device
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); // bitmap area, not SB
             return ublkpp::raid1::k_page_size;
         })
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             // destructor: SB written with clean_unmount=1
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             EXPECT_EQ(1, sb->fields.clean_unmount);
@@ -145,12 +145,12 @@ TEST(Raid1, UncleanShutdownWhileDegraded) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             return ublkpp::raid1::k_page_size;
         });
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 }
 
 // Test 5: Unclean shutdown while healthy — route=EITHER, clean_unmount=0.
@@ -163,7 +163,7 @@ TEST(Raid1, UncleanShutdownWhileHealthy) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.clean_unmount = 0;
@@ -173,7 +173,7 @@ TEST(Raid1, UncleanShutdownWhileHealthy) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
@@ -188,7 +188,7 @@ TEST(Raid1, UncleanShutdownWhileHealthy) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             return ublkpp::raid1::k_page_size;
         });
@@ -196,12 +196,12 @@ TEST(Raid1, UncleanShutdownWhileHealthy) {
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::__iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             return ublkpp::raid1::k_page_size;
         });
 
-    auto raid_device = ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 }
@@ -222,7 +222,7 @@ TEST(Raid1, UncleanShutdownDegraded) {
                 sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
                 sb->fields.clean_unmount = 0; // UNCLEAN shutdown!
             }
-            return ublkpp::__iovec_len(iovecs, iovecs + 1);
+            return ublkpp::iovec_len(iovecs, iovecs + 1);
         });
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
@@ -234,6 +234,6 @@ TEST(Raid1, UncleanShutdownDegraded) {
     // This should trigger lines 222-224: unclean shutdown in degraded mode
     // Should dirty the entire bitmap and bump age
     // Note: Constructor will fail because device_b cannot be read, so we expect a throw
-    EXPECT_THROW(ublkpp::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+    EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                  std::runtime_error);
 }

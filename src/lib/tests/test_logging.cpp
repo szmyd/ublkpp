@@ -19,7 +19,7 @@ TEST(Logging, FlagSetting) {
     ublk_log("Test ::ublk_log %f", 1.1);
 }
 
-TEST(UblkDisk, ToString) {
+TEST(ublk_disk, ToString) {
     auto test_disk = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = ublkpp::Gi});
     LOGINFO("Test disk: {}", test_disk);
     EXPECT_STREQ("TestDisk", test_disk->id().c_str());

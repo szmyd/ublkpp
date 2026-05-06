@@ -14,7 +14,7 @@ struct free_page {
     void operator()(void* x) { free(x); }
 };
 
-size_t Bitmap::max_pages_per_tx(const UblkDisk& device) { return device.max_tx() / k_page_size; }
+size_t Bitmap::max_pages_per_tx(const ublk_disk& device) { return device.max_tx() / k_page_size; }
 
 Bitmap::Bitmap(uint64_t data_size, uint32_t chunk_size, uint32_t align, uint8_t* superbitmap_reserved,
                std::string const& id) :
@@ -75,15 +75,15 @@ Bitmap::calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size) noe
     );
 }
 
-void Bitmap::init_to(std::shared_ptr< UblkDisk > device) {
+void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
     // Clear the SuperBitmap when initializing a new bitmap
     _super_bitmap.clear_all();
 
-    // We skip this is the device past to us is really a DefunctDisk. DefunctDisks will never
-    // succeed WRITEs and *must* be swapped with another disk for the RAID1 to begin resync. So here
-    // we just return rather than inevitably throw below and have to add this logic add just call site.
-    if (std::dynamic_pointer_cast< DefunctDisk >(device) != nullptr) [[unlikely]] {
-        RLOGD("Device is DEFUNCT, skipping init_to")
+    // Skip if the device passed to us is a missing-leg placeholder. Missing disks will never
+    // succeed WRITEs and *must* be swapped with another disk for the RAID1 to begin resync. So
+    // we just return rather than inevitably throw below.
+    if (device->is_missing()) [[unlikely]] {
+        RLOGD("Device is MISSING, skipping init_to")
         return;
     }
 
@@ -106,7 +106,7 @@ void Bitmap::init_to(std::shared_ptr< UblkDisk > device) {
     }
 }
 
-io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
+io_result Bitmap::sync_to(ublk_disk& device, uint64_t offset) {
     // Allocate iovec array for batching consecutive pages
     auto const max_batch = max_pages_per_tx(device);
     auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
@@ -160,7 +160,7 @@ io_result Bitmap::sync_to(UblkDisk& device, uint64_t offset) {
     return 0;
 }
 
-void Bitmap::load_from(UblkDisk& device) {
+void Bitmap::load_from(ublk_disk& device) {
     // Note: SuperBitmap must be loaded from SuperBlock BEFORE calling this function.
     // load_from is called during single-threaded init — no concurrent access, no lock needed.
 
@@ -248,7 +248,8 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
                                                                   : (((uint64_t)0b1 << bits_to_read) - 1)
                                                        << (shift_offset - (bits_to_read - 1)));
             bits_left -= bits_to_read;
-            if (0 != (cur_word->load(std::memory_order_relaxed) & bits_to_check)) return true;
+            if (0 != (std::atomic_ref< word_t >(*cur_word).load(std::memory_order_relaxed) & bits_to_check))
+                return true;
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
@@ -305,7 +306,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         auto const clear_mask = ~htobe64(64 == bits_to_write ? UINT64_MAX
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
-        auto old_word = cur_word->fetch_and(clear_mask, std::memory_order_relaxed);
+        auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_and(clear_mask, std::memory_order_relaxed);
         _dirty_chunks_est.fetch_sub(
             std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
                      static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)))),
@@ -350,7 +351,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
         // Find the first dirty word
         uint64_t word = 0;
         for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
-            word = be64toh((page + word_off)->load(std::memory_order_relaxed));
+            word = be64toh(std::atomic_ref< word_t >(*(page + word_off)).load(std::memory_order_relaxed));
             if (0 == word) continue;
             logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
 
@@ -397,7 +398,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            auto old_word = cur_word->fetch_or(bits_to_set, std::memory_order_relaxed);
+            auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_or(bits_to_set, std::memory_order_relaxed);
             _dirty_chunks_est.fetch_add(std::popcount(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;
