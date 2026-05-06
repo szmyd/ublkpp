@@ -282,7 +282,13 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // the same thread would overwrite sub_cmds before the queue loop's submit_and_wait_timeout
     // hands the SQEs to the kernel, corrupting in-flight writev/readv. One extra syscall per
     // multi-stripe RAID0 IO; FSDisk-only and single-stripe paths are unaffected.
-    if (q && q->ring_ptr) io_uring_submit(q->ring_ptr);
+    // On submit failure, drain all tasks before returning so no _waiter handles are left dangling.
+    // Reads are safe to retry (EAGAIN); writes may have partially committed stripes, so EIO.
+    if (q && q->ring_ptr && io_uring_submit(q->ring_ptr) < 0) [[unlikely]] { // LCOV_EXCL_START
+        for (auto& t : stripe_tasks)
+            co_await t;
+        co_return op == UBLK_IO_OP_READ ? -EAGAIN : -EIO;
+    } // LCOV_EXCL_STOP
 
     int total = 0;
     int err = 0;
