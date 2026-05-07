@@ -113,33 +113,33 @@ TEST(RegionTracker, FillAndDrain) {
     EXPECT_TRUE(tracker.all_free());
 }
 
-// TSAN target: concurrent track/untrack on the SAME LBA range so overlaps() on a
-// third thread races with register and deregister on shared slots.
+// TSAN target: concurrent track/untrack on distinct LBA ranges while overlaps() on a
+// reader thread spans all of them, so TSAN sees the reader racing with every slot field.
+// Each writer thread owns its own LBA to avoid the duplicate-LBA untrack() race that
+// produces phantom slots (lba=X, len=0) and causes slot exhaustion.
 TEST(RegionTracker, ConcurrentRegisterUnregister) {
     constexpr uint32_t k_threads = 8;
     constexpr uint32_t k_iters = 200;
-    // Shared LBA — all threads compete for the same slots.
-    constexpr uint64_t k_shared_lba = 0;
     constexpr uint32_t k_len = 512;
-    // Slot count sized to 2× threads so no exhaustion occurs even when all threads hold
-    // their slot simultaneously.
+    // One slot per thread; sized to 2× so no exhaustion when all hold simultaneously.
     RegionTracker tracker(k_threads * 2);
 
     std::atomic< bool > stop{false};
-    // Reader thread: continuously calls overlaps() while writers are active.
-    // TSAN will flag any data races on the slot fields accessed here.
+    // Reader spans the full LBA range so overlaps() races with every writer's slot.
     std::thread reader([&] {
+        constexpr uint64_t k_span = static_cast< uint64_t >(k_threads) * 1024 * 1024 + k_len;
         while (!stop.load(std::memory_order_relaxed))
-            (void)tracker.overlaps(k_shared_lba, k_len);
+            (void)tracker.overlaps(0, k_span);
     });
 
     std::vector< std::thread > writers;
     writers.reserve(k_threads);
     for (uint32_t t = 0; t < k_threads; ++t) {
-        writers.emplace_back([&] {
+        writers.emplace_back([&tracker, t] {
+            auto const lba = static_cast< uint64_t >(t) * 1024 * 1024;
             for (uint32_t i = 0; i < k_iters; ++i) {
-                tracker.track(k_shared_lba, k_len);
-                tracker.untrack(k_shared_lba, k_len);
+                tracker.track(lba, k_len);
+                tracker.untrack(lba, k_len);
             }
         });
     }
