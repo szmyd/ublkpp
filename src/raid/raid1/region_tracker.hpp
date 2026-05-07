@@ -12,7 +12,8 @@
 namespace ublkpp::raid1 {
 
 // Lock-free bounded array tracking in-flight write LBA ranges.
-// Sized to 2 × queue_depth to accommodate one slot per primary and one per replica leg.
+// Sized to at least queue_depth (one slot per in-flight write; ResyncWriteGuard holds one slot
+// for the duration of each write regardless of how many replica legs it has).
 // Resync checks for overlap before and after each copy to avoid racing with writes.
 class RegionTracker {
 public:
@@ -47,21 +48,20 @@ public:
     }
 
     // Deregister a completed write. Finds the first matching slot and clears it.
-    // Two registrations for the same (lba, len) — primary and replica legs — are
-    // cleared independently, one per call.
     // len is reset to 0 before freeing lba so that any concurrent overlaps() call that
     // sees the slot mid-transition reads 0 and takes the conservative path rather than
     // seeing a stale non-zero value from a prior use.
     //
     // INVARIANT: block-device ordering guarantees no two concurrent writes to the same
-    // LBA with different sizes, so (lba, len) uniquely identifies the slot pair and the
+    // LBA with different sizes, so (lba, len) uniquely identifies the slot and the
     // len-then-CAS sequence cannot accidentally free a slot belonging to a different write.
     void unregister_write(uint64_t lba, uint32_t len) noexcept {
         for (auto& slot : _slots) {
             if (slot.lba.load(std::memory_order_relaxed) != lba) continue;
             if (slot.len.load(std::memory_order_relaxed) != len) continue;
             uint64_t expected = lba;
-            slot.len.store(0, std::memory_order_relaxed);
+            // release ordering: ensures the len=0 store is visible before the slot is reused
+            slot.len.store(0, std::memory_order_release);
             if (slot.lba.compare_exchange_strong(expected, k_free, std::memory_order_release,
                                                  std::memory_order_relaxed))
                 return;

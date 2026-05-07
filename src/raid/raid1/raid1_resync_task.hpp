@@ -61,6 +61,13 @@ class Raid1ResyncTask {
     // unrelated regions proceed without any global pause.
     RegionTracker _region_tracker;
 
+    // Monotonically increasing counter bumped on every dequeue_write. Captured in
+    // __run() before the copy READ (after Phase 1 passes). If the value has advanced
+    // by Phase 2, a write completed during the READ window; we treat the copied data as
+    // potentially stale and skip clean_region even if overlaps() now returns false.
+    std::atomic< uint64_t > _write_serial{0};
+    static_assert(std::atomic< uint64_t >::is_always_lock_free);
+
     std::mutex _launch_lock;
     std::thread _resync_task;
 
@@ -103,7 +110,10 @@ public:
 
     inline void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.register_write(lba, len); }
 
-    inline void dequeue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.unregister_write(lba, len); }
+    inline void dequeue_write(uint64_t lba, uint32_t len) noexcept {
+        _region_tracker.unregister_write(lba, len);
+        _write_serial.fetch_add(1, std::memory_order_release);
+    }
 };
 
 // RAII guard that calls enqueue_write() on construction and dequeue_write() on destruction.

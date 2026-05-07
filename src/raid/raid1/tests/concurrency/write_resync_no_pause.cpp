@@ -160,14 +160,16 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     // thread registers a write for the same region
     std::promise< void > copy_read_started;
     std::promise< void > write_registered;
+    auto write_registered_future = write_registered.get_future();
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillOnce([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+        .WillOnce([&, fut = std::move(write_registered_future)](uint8_t, iovec* iovecs, uint32_t,
+                                                                off_t) mutable -> ublkpp::io_result {
             copy_read_started.set_value();
-            write_registered.get_future().wait();
+            fut.wait();
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+            return ublkpp::iovec_len(iovecs, iovecs + 1);
         })
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
