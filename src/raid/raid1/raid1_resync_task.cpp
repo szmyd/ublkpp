@@ -208,6 +208,12 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
 
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
+
+    // When a dirty run is entirely blocked by in-flight writes (!any_copy), skip past it on
+    // the next sweep so higher-LBA dirty runs are not starved. Resets to 0 at the start of
+    // each outer iteration so a write that completes between sweeps is caught normally.
+    uint64_t resync_skip_from = 0;
+
     while (0 < nr_pages) {
         // Skip copies entirely if the dirty mirror is known unavailable
         if (dirty_mirror->unavail.test(std::memory_order_acquire)) {
@@ -224,14 +230,25 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
 
         // TODO Change this so it's easier to control with a future QoS algorithm
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
-        auto [logical_off, sz] = _dirty_bitmap->next_dirty();
+
+        // Use the skip cursor if a fully-conflicting run was detected last sweep.
+        auto [logical_off, sz] =
+            resync_skip_from > 0 ? _dirty_bitmap->next_dirty_after(resync_skip_from) : _dirty_bitmap->next_dirty();
+        if (0 == sz && resync_skip_from > 0) // nothing after cursor — wrap to beginning
+            std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
+        resync_skip_from = 0;
+
         // copies_left counts actual copies; Phase 1 skips do not consume budget.
         // any_copy tracks whether this inner pass produced at least one copy; if a full
-        // dirty run is exhausted via Phase-1 skips alone, we break to let __yield() fire
-        // rather than immediately re-entering the same conflicting run (CPU spin prevention).
+        // dirty run is exhausted via Phase-1 skips alone, we set resync_skip_from and break
+        // to let __yield() fire, advancing past the stuck run on the next sweep.
         bool any_copy = false;
         while (0 < sz && 0U < copies_left) {
             auto const iov_len = std::min(sz, _max_size);
+
+            // Capture generation before Phase 1 so Phase 2 can detect writes that complete
+            // entirely between the two checks (slot freed before Phase 2 runs).
+            auto const gen_before = _region_tracker.snapshot_gen();
 
             // Phase 1: pre-copy conflict check — skip this chunk if a write is in-flight
             // for this range. Advance within the dirty run so unrelated chunks still copy.
@@ -239,7 +256,10 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
                 sz -= iov_len;
                 logical_off += iov_len;
                 if (0 == sz) {
-                    if (!any_copy) break; // fully conflicting run — exit to yield
+                    if (!any_copy) {
+                        resync_skip_from = logical_off; // advance past conflicting run next sweep
+                        break;
+                    }
                     std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
                     any_copy = false;
                 }
@@ -250,10 +270,14 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
             // Copy Region from clean to dirty
             if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
-                // Phase 2: post-copy conflict check — a write may have arrived during the
-                // READ window. untrack() zeroes len before freeing lba, so overlaps()
-                // conservatively returns true during the teardown window.
-                if (!_region_tracker.overlaps(logical_off, iov_len)) {
+                // Phase 2: post-copy conflict check. Two cases require skipping clean_region:
+                //   (a) overlaps() — write is still in-flight (len=0 transitional window covers
+                //       the untrack() teardown period)
+                //   (b) completed_since() — write arrived AND fully completed during the READ
+                //       window, so its slot was freed before Phase 2 ran; the shadow log
+                //       records the completion for exactly this scenario.
+                if (!_region_tracker.overlaps(logical_off, iov_len) &&
+                    !_region_tracker.completed_since(logical_off, iov_len, gen_before)) {
                     clean_region(logical_off, iov->iov_len, *clean_mirror);
                     if (_metrics) { _metrics->record_resync_progress(iov->iov_len); } // GCOVR_EXCL_BR_LINE
                 }
@@ -316,6 +340,7 @@ void Raid1ResyncTask::stop() noexcept {
 
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
                                       std::chrono::microseconds const spin_time) noexcept {
+    _yield_count.fetch_add(1, std::memory_order_relaxed);
     auto cur_state = resync_state::ACTIVE;
 
     // Phase 1: Transition ACTIVE→SLEEPING (give I/O a chance to interrupt)

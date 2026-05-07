@@ -59,8 +59,9 @@ TEST(RegionTracker, UnregisterClearsSlot) {
 }
 
 TEST(RegionTracker, DuplicateLba_TwoSlots) {
-    // The tracker can hold two concurrent registrations for the same LBA; each untrack()
-    // clears exactly one slot. This exercises the slot-scan matching logic.
+    // The INVARIANT (block-device ordering) guarantees each write creates exactly one guard,
+    // so two concurrent registrations for the same (lba, len) cannot occur in production.
+    // This test exercises the slot-scan matching logic under that hypothetical scenario.
     RegionTracker tracker(16);
     tracker.track(100, 512);
     tracker.track(100, 512);

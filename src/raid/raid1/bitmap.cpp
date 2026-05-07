@@ -371,6 +371,55 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
     return std::make_pair(logical_off, sz);
 }
 
+// Scan for the first dirty chunk at or after min_lba. Mirrors next_dirty() but skips pages
+// whose base LBA is entirely below min_lba, and within the starting page masks bits for chunks
+// before min_lba. Returns {0, 0} if no dirty run exists at or after min_lba.
+std::pair< uint64_t, uint32_t > Bitmap::next_dirty_after(uint64_t min_lba) noexcept {
+    uint32_t const min_pg = static_cast< uint32_t >(min_lba / _page_width);
+
+    for (auto pg_off = _super_bitmap.next_set_bit(min_pg); pg_off < _num_pages;
+         pg_off = _super_bitmap.next_set_bit(pg_off + 1)) {
+        uint32_t sz = 0;
+        auto page = _page_map[pg_off].page.load(std::memory_order_acquire);
+        DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
+        if (!page) {
+            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off)
+            continue;
+        }
+
+        uint64_t const page_base = static_cast< uint64_t >(_page_width) * pg_off;
+
+        // Within min_pg: skip words and bits that correspond to chunks before min_lba.
+        // For subsequent pages the full page is scanned (word_start=0, bit_start=0).
+        uint64_t const offset_in_page = (pg_off == min_pg && min_lba > page_base) ? (min_lba - page_base) : 0;
+        uint32_t const min_chunk_in_page = static_cast< uint32_t >(offset_in_page / _chunk_size);
+        uint32_t const word_start = min_chunk_in_page / bits_in_word;
+        uint32_t const bit_start = min_chunk_in_page % bits_in_word;
+
+        uint64_t logical_off = page_base;
+        uint64_t word = 0;
+        for (auto word_off = word_start; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
+            word = be64toh(std::atomic_ref< word_t >(*(page + word_off)).load(std::memory_order_relaxed));
+            // Mask out bits (big-endian: bit 0 = MSB = smallest LBA in word) that fall before min_lba.
+            if (word_off == word_start && bit_start > 0) word &= (UINT64_MAX >> bit_start);
+            if (0 == word) continue;
+
+            logical_off = page_base + (word_off * bits_in_word * _chunk_size);
+            auto set_bit = std::countl_zero(word);
+            logical_off += set_bit * _chunk_size;
+            while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
+                sz += _chunk_size;
+            }
+            break;
+        }
+        if (sz > 0) {
+            if (_data_size < (logical_off + sz)) sz = static_cast< uint32_t >(_data_size - logical_off);
+            return std::make_pair(logical_off, sz);
+        }
+    }
+    return std::make_pair(0ULL, 0U);
+}
+
 // Returns:
 //      * page         : Pointer to the page
 //      * page_offset  : Page index

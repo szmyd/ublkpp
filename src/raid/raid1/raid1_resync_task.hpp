@@ -44,6 +44,10 @@ class Raid1ResyncTask {
     // Global counter for active resyncs across all RAID1 devices
     static inline std::atomic_uint32_t s_active_resyncs{0};
 
+    // Number of times __yield() has been called; used by tests to wait for at least one sweep
+    // without relying on wall-clock timing.
+    std::atomic< uint64_t > _yield_count{0};
+
     std::shared_ptr< raid1::Bitmap > const _dirty_bitmap;
     std::shared_ptr< ublkpp::UblkRaidMetrics > const _metrics;
 
@@ -105,6 +109,10 @@ public:
     void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.track(lba, len); }
 
     void dequeue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.untrack(lba, len); }
+
+    // Number of times __yield() has been called. Tests poll this to wait for at least one
+    // resync sweep without relying on wall-clock timing.
+    uint64_t yield_count() const noexcept { return _yield_count.load(std::memory_order_acquire); }
 };
 
 // RAII guard that calls enqueue_write() on construction and dequeue_write() on destruction.
