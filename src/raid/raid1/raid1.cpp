@@ -640,7 +640,9 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
 disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                                   uint32_t nr_vecs, uint64_t addr, uint32_t len) {
     auto const state = __capture_route_state();
-    auto const [primary_dev, failover_dev] = __select_read_devices(state, addr, len);
+    auto devices = __select_read_devices(state, addr, len);
+    auto& primary_dev = devices.first;
+    auto& failover_dev = devices.second;
 
     auto primary_task = primary_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
     auto const r = co_await primary_task;
