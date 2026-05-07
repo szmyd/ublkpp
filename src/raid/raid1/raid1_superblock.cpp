@@ -35,7 +35,12 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
 static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0305,
                                         0147, 072, 0310, 027, 0111, 0256, 033, 0144};
 
-constexpr auto SB_VERSION = 1;
+// SB v1: _reserved_size padded so user-data is a multiple of max_sectors_bytes.
+// SB v2: _reserved_size padded only to logical_bs (sufficient for O_DIRECT). Frees the
+//        ~511 KiB tail loss that v1 imposed on the array's user-data band.
+// The SB version is set on first init and never auto-upgraded; existing v1 arrays keep
+// their on-disk data layout exactly. New arrays (and md-import-created arrays) get v2.
+constexpr auto SB_VERSION = 2;
 
 static raid1::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid1::SuperBlock);
@@ -81,6 +86,7 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
         memset(sb, 0x00, raid1::k_page_size);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
+        sb->header.version = htobe16(SB_VERSION);
         sb->fields.clean_unmount = 1;
         sb->fields.bitmap.chunk_size = htobe32(chunk_size);
         sb->fields.bitmap.age = 0;
@@ -104,7 +110,14 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
 
-    if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
+    // Do NOT auto-upgrade the version: the alignment of _reserved_size on disk depends on it,
+    // and rewriting it without relocating data would corrupt the array. v1 arrays stay v1.
+    if (be16toh(sb->header.version) > SB_VERSION) {
+        RLOGE("Superblock version {} is newer than supported version {} on {}", be16toh(sb->header.version), SB_VERSION,
+              device)
+        free(sb);
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
     return std::make_pair(sb, was_new);
 }
 } // namespace ublkpp::raid1

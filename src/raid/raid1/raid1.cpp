@@ -86,11 +86,11 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk 
     // Create metrics with parent_id for correlation
     if (!parent_id.empty()) _raid_metrics = std::make_unique< UblkRaidMetrics >(parent_id, _str_uuid);
 
-    // Discover parameters and calculate reserved space
-    __init_params(dev_a, dev_b);
-
-    // Load devices, select best superblock, initialize route
+    // Load devices and select best superblock first so __init_params can branch on SB version.
     __load_and_select_superblock(uuid, std::move(dev_a), std::move(dev_b), parent_id);
+
+    // Discover parameters and calculate reserved space (uses _device_a/_device_b/_sb).
+    __init_params();
 
     // Initialize bitmap and handle initial degradation based on route determination
     __init_bitmap_and_degraded_route();
@@ -101,51 +101,6 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk 
 
     // Write the up-to-date superblocks and mark devices as in use
     __become_active();
-}
-
-void Raid1Disk::__init_params(std::shared_ptr< ublk_disk > const& dev_a, std::shared_ptr< ublk_disk > const& dev_b) {
-    RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, dev_a, dev_b)
-
-    _direct_io = true; // RAID-1 prefers DIO; downgraded below if any member doesn't support it
-
-    // Discover overall Device parameters
-    auto& our_params = *params();
-    our_params.types |= UBLK_PARAM_TYPE_DISCARD;
-    our_params.basic.io_opt_shift = ilog2(k_min_chunk_size);
-
-    // Set largest underlying user-data size we support as starting point
-    our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
-
-    // Now find the what size we should actually set based on the smallest provided device
-    for (auto device_array = std::set< std::shared_ptr< ublk_disk > >{dev_a, dev_b};
-         auto const& device : device_array) {
-        if (!device->direct_io()) {
-            RLOGW("Device {} does not support O_DIRECT - RAID-1 will use buffered I/O (backend caching not bypassed!)",
-                  device)
-            _direct_io = false; // LCOV_EXCL_LINE
-        }
-        our_params.basic.dev_sectors =
-            std::min< uint64_t >(our_params.basic.dev_sectors, device->capacity() >> SECTOR_SHIFT);
-        our_params.basic.logical_bs_shift =
-            std::max(our_params.basic.logical_bs_shift, static_cast< uint8_t >(ilog2(device->block_size())));
-        our_params.basic.physical_bs_shift =
-            std::max(our_params.basic.physical_bs_shift, static_cast< uint8_t >(ilog2(device->physical_block_size())));
-
-        if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
-    }
-
-    auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
-    _reserved_size = sizeof(SuperBlock) + bitmap_size;
-
-    // Align user-data to max_sector size
-    _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) %
-        (our_params.basic.max_sectors << SECTOR_SHIFT);
-
-    // Reserve space for the superblock/bitmap
-    our_params.basic.dev_sectors -= (_reserved_size >> SECTOR_SHIFT);
-
-    if (can_discard())
-        our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 }
 
 void Raid1Disk::__load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
@@ -183,6 +138,58 @@ void Raid1Disk::__load_and_select_superblock(boost::uuids::uuid const& uuid, std
 
     // Initialize Age if New
     if (_device_a->new_device && _device_b->new_device) _sb->fields.bitmap.age = htobe64(1);
+}
+
+void Raid1Disk::__init_params() {
+    RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, _device_a->disk, _device_b->disk)
+
+    _direct_io = true; // RAID-1 prefers DIO; downgraded below if any member doesn't support it
+
+    // Discover overall Device parameters
+    auto& our_params = *params();
+    our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+    our_params.basic.io_opt_shift = ilog2(k_min_chunk_size);
+
+    // Set largest underlying user-data size we support as starting point
+    our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
+
+    // Now find the what size we should actually set based on the smallest provided device
+    for (auto device_array = std::set< std::shared_ptr< ublk_disk > >{_device_a->disk, _device_b->disk};
+         auto const& device : device_array) {
+        if (!device->direct_io()) {
+            RLOGW("Device {} does not support O_DIRECT - RAID-1 will use buffered I/O (backend caching not bypassed!)",
+                  device)
+            _direct_io = false; // LCOV_EXCL_LINE
+        }
+        our_params.basic.dev_sectors =
+            std::min< uint64_t >(our_params.basic.dev_sectors, device->capacity() >> SECTOR_SHIFT);
+        our_params.basic.logical_bs_shift =
+            std::max(our_params.basic.logical_bs_shift, static_cast< uint8_t >(ilog2(device->block_size())));
+        our_params.basic.physical_bs_shift =
+            std::max(our_params.basic.physical_bs_shift, static_cast< uint8_t >(ilog2(device->physical_block_size())));
+
+        if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
+    }
+
+    auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
+    _reserved_size = sizeof(SuperBlock) + bitmap_size;
+
+    // Pad _reserved_size for alignment. Unit depends on the SB version:
+    //  v1: pad to max_sectors_bytes so user-data is a multiple of max_sectors. This was added
+    //      defensively against an observed kernel-dispatch artifact at end-of-device. Preserved
+    //      verbatim for v1 arrays so their on-disk layout is unchanged.
+    //  v2: pad to logical_bs only - the minimum required for O_DIRECT preadv/pwritev. Frees
+    //      the ~511 KiB tail loss v1 imposed.
+    auto const sb_version = be16toh(_sb->header.version);
+    auto const align = (sb_version >= 2) ? (static_cast< uint64_t >(1) << our_params.basic.logical_bs_shift)
+                                         : (static_cast< uint64_t >(our_params.basic.max_sectors) << SECTOR_SHIFT);
+    _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) % align;
+
+    // Reserve space for the superblock/bitmap
+    our_params.basic.dev_sectors -= (_reserved_size >> SECTOR_SHIFT);
+
+    if (can_discard())
+        our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
 }
 
 void Raid1Disk::__init_bitmap_and_degraded_route() {
