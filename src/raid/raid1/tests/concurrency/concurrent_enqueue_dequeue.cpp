@@ -8,50 +8,24 @@
 #include "raid/raid1/bitmap.hpp"
 #include "raid/raid1/raid1_impl.hpp"
 #include "raid/raid1/raid1_resync_task.hpp"
+#include "raid/raid1/raid1_superblock.hpp"
 
 using namespace std::chrono_literals;
 using namespace ublkpp::raid1;
 
-// Regression test for: dequeue_write() + __resume() race where the resync could run
-// concurrently with an in-flight write.
+// Verify that concurrent enqueue_write/dequeue_write pairs do not race with resync:
+// resync must never write the data region for [write_lba, write_lba + io_size) while a
+// write is tracked in-flight for that range.
 //
-// Root cause: the old dequeue_write() was two steps:
-//   1. fetch_sub → counter: 1→0
-//   2. (window) concurrent enqueue_write(): counter 0→1, __pause() finds state==PAUSE
-//      and early-exits — trusting the existing pause
-//   3. __resume() fires: CAS PAUSE→ACTIVE
-//   Result: resync runs with a write still conceptually in flight.
+// With per-region tracking, resync skips exactly the conflicting chunks via Phase 1 and
+// Phase 2 overlap checks; unrelated chunks in the same dirty run may still be copied.
 //
-// Fix: dec_xchng_status_ifz() atomically packs the decrement and PAUSE→ACTIVE into a
-// single CAS. If a concurrent enqueue increments before that CAS, the counter is >0
-// and no state transition occurs. If the CAS fires first, state is already ACTIVE when
-// the new enqueue runs, so __pause() correctly waits for SLEEPING rather than
-// early-exiting on the stale PAUSE.
+// Detection: IO threads bracket writes_in_flight around enqueue/dequeue.  The device_b
+// write mock converts the raw disk address back to a logical offset (by subtracting
+// _offset = Bitmap::page_size()) and flags a violation if that offset falls inside the
+// write range and writes_in_flight > 0.
 //
-// Test strategy: launch resync with slow copies (1ms delay) so it runs long enough
-// for the race window to be reached. From N I/O threads, rapidly fire enqueue_write /
-// dequeue_write pairs. The mock write callback checks whether any test-tracked write
-// is in flight — a positive means resync ran while a write owned the pause.
-//
-// Ordering contract:
-//   enqueue_write()         — pause is established; resync may not run past this point
-//   writes_in_flight.fetch_add  — record that we are in-flight
-//   [write runs]
-//   writes_in_flight.fetch_sub  — mark flight complete
-//   dequeue_write()         — release the pause
-//
-// This bracket guarantees: if the mock write fires while writes_in_flight > 0, the
-// invariant was violated. The ordering avoids false positives (no inflation before
-// enqueue returns) and detects the bug (inflation happens before __resume() fires).
-//
-// Detection limits:
-//   Race 1 (2–5 instruction window between old fetch_sub and __resume()): cannot be triggered
-//   probabilistically — its fix is analytically correct, not test-verified by this test. A
-//   plain Debug run cannot detect it.
-//   Race 2 (__pause() spin window): reliably detected under ASan/TSan where instrumentation
-//   widens the window; a green plain-Debug run is NOT a regression guard for Race 2.
-// CI configurations that skip sanitizers should treat this test as a smoke check only.
-// TSAN on nublox2_dev is the authoritative correctness signal for both races.
+// TSAN is the authoritative signal for data races on the RegionTracker itself.
 TEST(Raid1Concurrency, EnqueueDequeueRace) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
@@ -69,15 +43,24 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
 
+    // IO threads write to this LBA range; resync must not copy it while writes are in-flight.
+    constexpr uint32_t io_size = 512 * Ki;
+    constexpr uint64_t write_lba = 0;
+
     std::atomic< int > writes_in_flight{0};
     std::atomic< bool > overlap_detected{false};
     std::atomic< bool > resync_started{false};
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t raw_addr) -> ublkpp::io_result {
             resync_started.store(true, std::memory_order_release);
-            if (writes_in_flight.load(std::memory_order_acquire) > 0) {
+            // Convert raw disk address to logical offset (subtract the reserved bitmap area).
+            // Only flag a violation if this write targets the same range IO threads are using.
+            auto const logical_off = static_cast< uint64_t >(raw_addr) - k_page_size;
+            auto const write_end = write_lba + io_size;
+            if (logical_off < write_end && logical_off + io_size > write_lba &&
+                writes_in_flight.load(std::memory_order_acquire) > 0) {
                 overlap_detected.store(true, std::memory_order_release);
             }
             std::this_thread::sleep_for(1ms);
@@ -95,7 +78,6 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
     auto bitmap = std::make_shared< Bitmap >(Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
     bitmap->dirty_region(0, Gi);
 
-    constexpr uint32_t io_size = 512 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
 
@@ -110,18 +92,17 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
     for (int i = 0; i < k_n_threads; ++i) {
         io_threads.emplace_back([&] {
             for (int j = 0; j < k_iterations; ++j) {
-                task.enqueue_write();
-                // Only count as "in flight" after enqueue returns — by that point
-                // __pause() has completed and the resync is guaranteed to be PAUSED.
-                // This prevents false positives from the __pause() spin window.
+                task.enqueue_write(write_lba, io_size);
+                // Only count as "in flight" after enqueue returns — by that point the
+                // write is registered in the tracker and resync will skip this range.
                 writes_in_flight.fetch_add(1, std::memory_order_release);
 
                 std::this_thread::yield();
 
-                // Decrement before dequeue: resync cannot restart until dequeue fires,
-                // so the mock can't see a spurious writes_in_flight > 0.
+                // Decrement before dequeue so the mock can't see a spurious > 0 after
+                // the range is unregistered.
                 writes_in_flight.fetch_sub(1, std::memory_order_release);
-                task.dequeue_write();
+                task.dequeue_write(write_lba, io_size);
             }
         });
     }
@@ -130,6 +111,5 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
         t.join();
     task.stop();
 
-    EXPECT_FALSE(overlap_detected.load()) << "Resync ran while writes were in flight — "
-                                             "pause/resume race condition detected";
+    EXPECT_FALSE(overlap_detected.load()) << "Resync wrote to a region while a write was in-flight for that range";
 }

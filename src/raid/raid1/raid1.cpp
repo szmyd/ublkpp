@@ -718,8 +718,9 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     auto const state = __capture_route_state();
     auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
 
-    // Halt the Resync Task for the duration of this write (both active and backup legs).
-    auto _guard = raid1::ResyncWriteGuard{*_resync_task};
+    // Register this write's LBA range in the region tracker so resync skips only the
+    // conflicting chunk rather than pausing globally.
+    auto _guard = raid1::ResyncWriteGuard{*_resync_task, addr, len};
     auto const bm = __compute_backup_mode(state, addr, len, is_discard);
 
     auto const adj_addr = addr + _reserved_size;
@@ -797,8 +798,9 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     // WRITE / DISCARD / WRITE_ZEROES: flat replication -- mirrors async_iov write path.
     auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
 
-    // Halt the Resync Task before checking bitmap
-    auto _guard = raid1::ResyncWriteGuard{*_resync_task};
+    // Register this write's LBA range in the region tracker so resync skips only the
+    // conflicting chunk rather than pausing globally.
+    auto _guard = raid1::ResyncWriteGuard{*_resync_task, static_cast< uint64_t >(addr), len};
     auto const bm = __compute_backup_mode(state, static_cast< uint64_t >(addr), len, is_discard);
 
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);

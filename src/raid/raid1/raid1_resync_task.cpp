@@ -10,12 +10,14 @@
 namespace ublkpp::raid1 {
 
 Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size,
-                                 uint32_t max_io, std::shared_ptr< ublkpp::UblkRaidMetrics > metrics) :
+                                 uint32_t max_io, uint32_t slot_count,
+                                 std::shared_ptr< ublkpp::UblkRaidMetrics > metrics) :
         _dirty_bitmap(bitmap),
         _metrics(metrics),
         _io_size(io_size),
         _max_size(max_io),
         _offset(offset),
+        _region_tracker(slot_count),
         _resync_task() {
     if (!_dirty_bitmap) throw std::runtime_error("No Bitmap");
 }
@@ -32,7 +34,7 @@ template < typename StateHandler >
         auto [next_state, action] = handler(cur_state);
 
         switch (action) {
-        case transition_action::RETRY: // LCOV_EXCL_LINE -- only from SLEEPING/PAUSE arms
+        case transition_action::RETRY: // LCOV_EXCL_LINE
             cur_state = next_state;    // LCOV_EXCL_LINE
             break;                     // LCOV_EXCL_LINE
         case transition_action::RETRY_WITH_SLEEP:
@@ -111,7 +113,8 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     // If stopped, end now.
     if (resync_state::STOPPING == cur_state) {
         RLOGI("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
-        _state_and_writes.xchng_status(cur_state, resync_state::IDLE);
+        auto stopping = resync_state::STOPPING;
+        __cas_state(stopping, resync_state::IDLE);
         return;
     }
 
@@ -122,7 +125,8 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
 
     // Open up I/O Again
-    _state_and_writes.xchng_status(cur_state, resync_state::IDLE);
+    auto active = resync_state::ACTIVE;
+    __cas_state(active, resync_state::IDLE);
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
@@ -137,7 +141,6 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
                 return {state, transition_action::SUCCESS}; // LCOV_EXCL_LINE
             case resync_state::ACTIVE:
             case resync_state::SLEEPING:
-            case resync_state::PAUSE:
                 return {state, transition_action::EARLY_EXIT};
             case resync_state::STOPPING: // LCOV_EXCL_LINE -- transient; not deterministically catchable
                 return {resync_state::IDLE, transition_action::RETRY_WITH_SLEEP}; // LCOV_EXCL_LINE
@@ -223,11 +226,25 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
-            iov->iov_len = std::min(sz, _max_size);
+            auto const iov_len = std::min(sz, _max_size);
+
+            // Phase 1: pre-copy conflict check — skip this chunk if a write is in-flight
+            // for this range. Advance within the dirty run so unrelated chunks still copy.
+            if (_region_tracker.overlaps(logical_off, iov_len)) {
+                sz = (sz > iov_len) ? sz - iov_len : 0;
+                logical_off += iov_len;
+                if (0 == sz) break;
+                continue;
+            }
+
+            iov->iov_len = iov_len;
             // Copy Region from clean to dirty
             if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
-                clean_region(logical_off, iov->iov_len, *clean_mirror);
+                // Phase 2: post-copy conflict check — a write may have arrived during the READ.
+                // If so, skip clean_region; the bitmap stays dirty and the next sweep retries.
+                if (!_region_tracker.overlaps(logical_off, iov_len))
+                    clean_region(logical_off, iov->iov_len, *clean_mirror);
                 // Record resync progress
                 if (_metrics) { _metrics->record_resync_progress(iov->iov_len); } // GCOVR_EXCL_BR_LINE
             } else {
@@ -250,29 +267,13 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
     return cur_state;
 }
 
-void Raid1ResyncTask::__pause() noexcept {
-    __transition_to(resync_state::SLEEPING, resync_state::PAUSE, [](resync_state state) -> transition_result {
-        switch (state) {
-        case resync_state::IDLE:
-        case resync_state::PAUSE:
-        case resync_state::STOPPING:
-            return {state, transition_action::EARLY_EXIT};
-        case resync_state::SLEEPING: // LCOV_EXCL_LINE -- sub-ms window; not deterministically catchable
-            return {state, transition_action::RETRY}; // LCOV_EXCL_LINE
-        case resync_state::ACTIVE:
-            return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
-        }
-        std::unreachable();
-    });
-}
-
 // Abort any on-going resync task by moving to STOPPING and rejoin the thread
 void Raid1ResyncTask::stop() noexcept {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
-    // Targets SLEEPING or PAUSE → STOPPING (waits out ACTIVE first via RETRY_WITH_SLEEP).
+    // Targets SLEEPING → STOPPING (waits out ACTIVE first via RETRY_WITH_SLEEP).
     // Never CAS-es ACTIVE→STOPPING directly — this is what makes the ACTIVE→STOPPING
     // assert in __yield Phase 1 unreachable.
-    __transition_to(resync_state::PAUSE, resync_state::STOPPING, [this](resync_state state) -> transition_result {
+    __transition_to(resync_state::SLEEPING, resync_state::STOPPING, [this](resync_state state) -> transition_result {
         switch (state) {
         case resync_state::IDLE: {
             if (_resync_task.joinable()) return {state, transition_action::RETRY_WITH_SLEEP};
@@ -283,7 +284,6 @@ void Raid1ResyncTask::stop() noexcept {
         case resync_state::ACTIVE:
             return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
         case resync_state::SLEEPING: // LCOV_EXCL_START -- 0ns window with resync_delay=0
-        case resync_state::PAUSE:
             return {state, transition_action::RETRY};
             // LCOV_EXCL_STOP
         }
@@ -303,7 +303,7 @@ resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
 
     // Phase 1: Transition ACTIVE→SLEEPING (give I/O a chance to interrupt)
     while (!__cas_state(cur_state, resync_state::SLEEPING)) {
-        // STOPPING here is unreachable: stop() only CAS SLEEPING→STOPPING or PAUSE→STOPPING,
+        // STOPPING here is unreachable: stop() only CAS SLEEPING→STOPPING,
         // never ACTIVE→STOPPING, so this loop exits on the first successful CAS.
         DEBUG_ASSERT_NE(cur_state, resync_state::STOPPING, "impossible ACTIVE→STOPPING transition"); // LCOV_EXCL_LINE
     }
@@ -319,18 +319,7 @@ resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
     // Phase 3: Transition SLEEPING→ACTIVE (resume resync)
     while (!__cas_state(cur_state, resync_state::ACTIVE)) {
         if (resync_state::STOPPING == cur_state) return cur_state;
-
-        if (resync_state::PAUSE == cur_state) {
-            // A write is in flight; wait for dec_xchng_status_ifz to drive PAUSE→ACTIVE.
-            // We must not spin on PAUSE directly: __cas_state(PAUSE, ACTIVE) bypasses the
-            // write-count check inside dec_xchng_status_ifz and would race with it, producing
-            // two concurrent PAUSE→ACTIVE transitions. Instead we load IDLE as a local sentinel
-            // (IDLE is never stored in the atomic, so the next CAS always fails and re-reads the
-            // real state) and sleep to yield bandwidth to the write path. When the last write
-            // drains, dec_xchng_status_ifz transitions PAUSE→ACTIVE and we exit on the next CAS.
-            cur_state = resync_state::IDLE;         // LCOV_EXCL_LINE -- write must arrive during 0ns SLEEPING
-            std::this_thread::sleep_for(yield_for); // LCOV_EXCL_LINE
-        }
+        cur_state = resync_state::SLEEPING; // reset after spurious CAS failure
     }
     return resync_state::ACTIVE;
 }
