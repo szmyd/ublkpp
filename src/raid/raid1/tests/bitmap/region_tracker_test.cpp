@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "raid/raid1/region_tracker.hpp"
+#include "ublkpp/lib/common.hpp"
 
 using ublkpp::Ki;
 using ublkpp::raid1::RegionTracker;
