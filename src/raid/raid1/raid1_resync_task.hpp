@@ -7,6 +7,7 @@
 #include "ublkpp/raid/raid1.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
+#include "region_tracker.hpp"
 
 namespace ublkpp::raid1 {
 
@@ -18,12 +19,10 @@ class MirrorDevice;
 
 // State transitions:
 //   IDLE → ACTIVE (launch())
-//   ACTIVE ⟷ SLEEPING (yield for I/O)
-//   SLEEPING → PAUSE (I/O started, block resync)
-//   PAUSE → ACTIVE (I/O finished, resync can proceed)
+//   ACTIVE ⟷ SLEEPING (yield between copy batches)
 //   any → STOPPING (shutdown requested)
 //   STOPPING → IDLE (shutdown complete)
-ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
+ENUM(resync_state, uint8_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, STOPPING = 3);
 
 // State transition actions for __transition_to helper
 enum class transition_action : uint8_t {
@@ -55,7 +54,7 @@ class Raid1ResyncTask {
     uint64_t const _offset;
 
     std::atomic_uint8_t _resync_state;
-    std::atomic_uint32_t _outstanding_writes;
+    RegionTracker _region_tracker;
     std::thread _resync_task;
 
     // State access helpers to eliminate casting noise
@@ -89,13 +88,6 @@ class Raid1ResyncTask {
     template < typename StateHandler >
     bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
 
-    // This most happen, so we wait till the resync job becomes sleeping, then move it quickly to
-    // PAUSE to prevent any resync opeartions from continuing to run (will block in __yield)
-    void __pause() noexcept;
-    inline void __resume() noexcept {
-        auto cur_state = resync_state::PAUSE;
-        __cas_state_strong(cur_state, resync_state::ACTIVE);
-    }
     void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                 std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
 
@@ -103,7 +95,7 @@ class Raid1ResyncTask {
 
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
-                    std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
+                    uint32_t slot_count, std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
     ~Raid1ResyncTask() noexcept;
 
     void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
@@ -112,18 +104,10 @@ public:
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
     // Generic method to move Resync StateMachine to STOPPING
-    uint32_t stop() noexcept; // Returns the _outstanding_writes cnt here
+    void stop() noexcept;
 
-    inline void enqueue_write() noexcept {
-        auto const old_val = _outstanding_writes.fetch_add(1, std::memory_order_release);
-        if (0 == old_val) __pause();
-        DEBUG_ASSERT_LT(old_val, UINT32_MAX, "Outstanding Write Count Overflowed!");
-    }
+    inline void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.register_write(lba, len); }
 
-    inline void dequeue_write() noexcept {
-        auto const old_val = _outstanding_writes.fetch_sub(1, std::memory_order_acquire);
-        if (1 == old_val) __resume();
-        DEBUG_ASSERT_GT(old_val, 0, "Outstanding Write Count Underflowed!");
-    }
+    inline void dequeue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.unregister_write(lba, len); }
 };
 } // namespace ublkpp::raid1

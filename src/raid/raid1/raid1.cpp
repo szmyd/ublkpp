@@ -95,7 +95,8 @@ Raid1DiskImpl::Raid1DiskImpl(boost::uuids::uuid const& uuid, std::shared_ptr< Ub
 
     // Initialize resync_task
     _resync_task = std::make_shared< Raid1ResyncTask >(_dirty_bitmap, reserved_size, block_size(),
-                                                       params()->basic.max_sectors << SECTOR_SHIFT, _raid_metrics);
+                                                       params()->basic.max_sectors << SECTOR_SHIFT,
+                                                       2 * SISL_OPTIONS["qdepth"].as< uint16_t >(), _raid_metrics);
 
     // Write the up-to-date superblocks and mark devices as in use
     __become_active();
@@ -244,8 +245,7 @@ void Raid1DiskImpl::__become_active() {
 
 Raid1DiskImpl::~Raid1DiskImpl() {
     RLOGD("Shutting down; [uuid:{}]", _str_uuid)
-    [[maybe_unused]] auto cnt_at_stop = _resync_task->stop();
-    DEBUG_ASSERT_EQ(0, cnt_at_stop, "Outstanding Write Count is Non-Zero!");
+    _resync_task->stop();
 
     if (!_sb) return;
 
@@ -636,9 +636,9 @@ io_result Raid1DiskImpl::__handle_async_retry(sub_cmd_t sub_cmd, uint64_t addr, 
     // No Synchronous operations retry
     DEBUG_ASSERT_NOTNULL(async_data, "Retry on an synchronous I/O!"); // LCOV_EXCL_LINE
 
-    // Record this degraded operation in the bitmap, then unblock _resync_task (if exists)
+    // Record this degraded operation in the bitmap, then unregister from region tracker
     _dirty_bitmap->dirty_region(addr, len);
-    _resync_task->dequeue_write();
+    _resync_task->dequeue_write(addr, len);
 
     // Check if this sub_cmd went to what we currently consider Clean, if we're also dirty this is a fatal error
     auto const state = __capture_route_state();
@@ -686,7 +686,7 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     }
 
     // Sync IOVs have to track this differently as the do not receive on_io_complete
-    if (async_data) _resync_task->enqueue_write();
+    if (async_data) _resync_task->enqueue_write(addr, len);
 
     // Determine where we're going
     auto cur_subcmd = second_write ? captured_state->backup_subcmd : captured_state->active_subcmd;
@@ -695,12 +695,12 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
     // Queue the I/O on the active device
     auto active_res = func(*cur_disk, cur_subcmd);
     // Inline completion (sync fallback returns 0): on_io_complete won't fire, balance the enqueue now.
-    if (async_data && active_res.has_value() && active_res.value() == 0) _resync_task->dequeue_write();
+    if (async_data && active_res.has_value() && active_res.value() == 0) _resync_task->dequeue_write(addr, len);
 
     // If not-degraded and sub_cmd failed immediately, dirty bitmap and return result of op on alternate-path
     // This condition always returns before the nested call!
     if (!active_res) {
-        if (async_data) _resync_task->dequeue_write();
+        if (async_data) _resync_task->dequeue_write(addr, len);
         if (captured_state->is_degraded && !second_write) {
             RLOGE("Double failure! [tag:{:#0x},sub_cmd:{}]", async_data->tag, ublkpp::to_string(sub_cmd))
             return active_res;
@@ -714,13 +714,13 @@ io_result Raid1DiskImpl::__replicate(sub_cmd_t sub_cmd, auto&& func, uint64_t ad
         if (second_write) return backup_res;
 
         // Queue the I/O on the backup device after active failed
-        if (async_data) _resync_task->enqueue_write();
+        if (async_data) _resync_task->enqueue_write(addr, len);
         if (active_res = func(*captured_state->backup_dev->disk, captured_state->backup_subcmd); !active_res) {
-            if (async_data) _resync_task->dequeue_write();
+            if (async_data) _resync_task->dequeue_write(addr, len);
             return active_res;
         }
         // Inline completion on backup write: on_io_complete won't fire, balance the enqueue.
-        if (async_data && active_res.value() == 0) _resync_task->dequeue_write();
+        if (async_data && active_res.value() == 0) _resync_task->dequeue_write(addr, len);
         return active_res.value() + backup_res.value();
     }
     if (second_write) return active_res;
@@ -837,7 +837,7 @@ io_result Raid1DiskImpl::handle_internal(ublksrv_queue const*, ublk_io_data cons
         RLOGW("Dirtied: {:#0x}Ki Inline! @ lba:{:#0x} [uuid:{}]", len / Ki, lba, _str_uuid)
         _dirty_bitmap->dirty_region(addr, len);
     }
-    _resync_task->dequeue_write();
+    _resync_task->dequeue_write(addr, len);
     return io_result(0);
 }
 
@@ -914,7 +914,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
             },
             addr, len);
 
-    _resync_task->enqueue_write();
+    _resync_task->enqueue_write(static_cast< uint64_t >(addr), len);
     size_t res{0};
     auto io_res = __replicate(
         0U,
@@ -925,7 +925,7 @@ io_result Raid1DiskImpl::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, o
             return p_res;
         },
         addr, len);
-    _resync_task->dequeue_write();
+    _resync_task->dequeue_write(static_cast< uint64_t >(addr), len);
 
     if (!io_res) return io_res;
     return res;
@@ -954,13 +954,15 @@ void Raid1DiskImpl::on_io_complete(ublk_io_data const* data, sub_cmd_t sub_cmd, 
         }
     }
 
-    // Decrement outstanding write counter for writes (not reads), but only if it was a
-    // success.
-    // Error cases will be handled by __handle_async_retry
-    // as they need to dirty the BITMAP prior to unblocking the resync task.
+    // Unregister from region tracker for writes (not reads), but only on success.
+    // Error cases are handled by __handle_async_retry which dirties the BITMAP first.
     if (UBLK_IO_OP_READ != ublksrv_get_op(data->iod)) {
         DEBUG_ASSERT(!is_retry(sub_cmd), "Retried a WRITE command?!");
-        if (0 <= res && !is_internal(sub_cmd)) _resync_task->dequeue_write();
+        if (0 <= res && !is_internal(sub_cmd)) {
+            auto const w_addr = static_cast< uint64_t >(data->iod->start_sector) << 9u;
+            auto const w_len = static_cast< uint32_t >(data->iod->nr_sectors) << 9u;
+            _resync_task->dequeue_write(w_addr, w_len);
+        }
     }
 }
 

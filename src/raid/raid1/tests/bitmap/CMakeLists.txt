@@ -15,6 +15,7 @@ list(APPEND RAID1_TEST_SRCS
   bitmap/next_dirty.cpp
   bitmap/roundtrip_sync_load.cpp
   bitmap/super_bitmap_test.cpp
+  bitmap/region_tracker_test.cpp
   bitmap/sync_to_batching.cpp
   bitmap/sync_to_crash_scenarios.cpp
   bitmap/update_fail.cpp

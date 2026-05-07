@@ -5,8 +5,8 @@
 
 using namespace std::chrono_literals;
 
-// Test that writes arriving DURING active resync correctly pause/resume the outstanding_writes counter
-// This is the critical synchronization test for the atomic counter fixes
+// Test that writes arriving DURING active resync do not corrupt data.
+// With per-region tracking, resync skips only conflicting LBA ranges; unrelated regions proceed.
 TEST(Raid1, ConcurrentIODuringResync) {
     auto device_a = CREATE_DISK_A(TestParams{.capacity = Gi});
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});

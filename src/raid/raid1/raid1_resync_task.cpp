@@ -11,14 +11,15 @@
 namespace ublkpp::raid1 {
 
 Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size,
-                                 uint32_t max_io, std::shared_ptr< ublkpp::UblkRaidMetrics > metrics) :
+                                 uint32_t max_io, uint32_t slot_count,
+                                 std::shared_ptr< ublkpp::UblkRaidMetrics > metrics) :
         _dirty_bitmap(bitmap),
         _metrics(metrics),
         _io_size(io_size),
         _max_size(max_io),
         _offset(offset),
         _resync_state(static_cast< uint8_t >(resync_state::IDLE)), // Initial store, can't use helper
-        _outstanding_writes(0U),
+        _region_tracker(slot_count),
         _resync_task() {
     if (!_dirty_bitmap) throw std::runtime_error("No Bitmap");
 }
@@ -135,7 +136,6 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
                 return {state, transition_action::SUCCESS};
             case resync_state::ACTIVE:
             case resync_state::SLEEPING:
-            case resync_state::PAUSE:
                 return {state, transition_action::EARLY_EXIT};
             case resync_state::STOPPING:
                 return {resync_state::IDLE, transition_action::RETRY_WITH_SLEEP};
@@ -216,13 +216,33 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         while (0 < sz && 0U < copies_left--) {
-            iov->iov_len = std::min(sz, _max_size);
+            auto const iov_len = std::min(sz, _max_size);
+
+            // Phase 1: pre-copy conflict check — skip conflicting segment within dirty run.
+            // next_dirty() always scans from bit 0 so we advance manually within the run.
+            if (_region_tracker.overlaps(logical_off, iov_len)) {
+                sz = (sz > iov_len) ? sz - iov_len : 0;
+                logical_off += iov_len;
+                if (0 == sz) {
+                    // TODO: next_dirty() always scans from bit 0, so other dirty regions at
+                    // higher LBAs are unreachable while this conflicted region remains. A
+                    // next_dirty(start_offset) API on Bitmap would allow skipping past it.
+                    break;
+                }
+                continue;
+            }
+
+            iov->iov_len = iov_len;
             // Copy Region from clean to dirty
             if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
-                clean_region(logical_off, iov->iov_len, *clean_mirror);
+                // Phase 2: post-copy conflict check — write arrived during READ window.
+                // If a write is still in-flight for this region, skip clean_region so the
+                // bitmap stays dirty and the next sweep re-copies with fresh data.
+                if (!_region_tracker.overlaps(logical_off, iov_len)) clean_region(logical_off, iov_len, *clean_mirror);
+
                 // Record resync progress
-                if (_metrics) { _metrics->record_resync_progress(iov->iov_len); }
+                if (_metrics) { _metrics->record_resync_progress(iov_len); }
             } else {
                 dirty_mirror->unavail.test_and_set(std::memory_order_acquire);
                 break;
@@ -243,27 +263,10 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
     return cur_state;
 }
 
-void Raid1ResyncTask::__pause() noexcept {
-    __transition_to(resync_state::SLEEPING, resync_state::PAUSE, [](resync_state state) -> transition_result {
-        switch (state) {
-        case resync_state::IDLE:
-        case resync_state::PAUSE:
-        case resync_state::STOPPING:
-            return {state, transition_action::EARLY_EXIT};
-        case resync_state::SLEEPING:
-            return {state, transition_action::RETRY};
-        case resync_state::ACTIVE:
-            return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
-        }
-        std::unreachable();
-    });
-}
-
 // Abort any on-going resync task by moving to STOPPING and rejoin the thread
-uint32_t Raid1ResyncTask::stop() noexcept {
+void Raid1ResyncTask::stop() noexcept {
     RLOGI("Terminating Resync Task")
-    // Terminate any ongoing resync task
-    __transition_to(resync_state::PAUSE, resync_state::STOPPING, [](resync_state state) -> transition_result {
+    __transition_to(resync_state::SLEEPING, resync_state::STOPPING, [](resync_state state) -> transition_result {
         switch (state) {
         case resync_state::IDLE:
         case resync_state::STOPPING:
@@ -271,13 +274,12 @@ uint32_t Raid1ResyncTask::stop() noexcept {
         case resync_state::ACTIVE:
             return {resync_state::SLEEPING, transition_action::RETRY_WITH_SLEEP};
         case resync_state::SLEEPING:
-        case resync_state::PAUSE:
             return {state, transition_action::RETRY};
         }
         std::unreachable();
     });
     if (_resync_task.joinable()) _resync_task.join();
-    return _outstanding_writes.load(std::memory_order_acquire);
+    DEBUG_ASSERT(_region_tracker.all_free(), "RegionTracker: in-flight writes remain after stop");
 }
 
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
@@ -298,16 +300,10 @@ resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
     }
 
     // Phase 3: Transition SLEEPING→ACTIVE (resume resync)
+    cur_state = resync_state::SLEEPING;
     while (!__cas_state_weak(cur_state, resync_state::ACTIVE)) {
         if (resync_state::STOPPING == cur_state) return cur_state;
-
-        if (resync_state::PAUSE == cur_state) {
-            // I/O started during sleep - wait for it to complete
-            // Set to IDLE anticipating __resume() will transition PAUSE→ACTIVE
-            // This prevents busy-spinning and gives I/O threads priority
-            cur_state = resync_state::IDLE;
-            std::this_thread::sleep_for(yield_for);
-        }
+        cur_state = resync_state::SLEEPING; // reset after spurious CAS failure
     }
     return resync_state::ACTIVE;
 }
