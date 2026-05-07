@@ -39,6 +39,7 @@ pipeline {
         }
 
         stage("Ignition") {
+            options { timeout(time: 1, unit: 'HOURS') }
             steps {
                 script {
                     slackSend color: '#9B59B6', channel: "${SLACK_THREAD}", message: "⛽ *${PROJECT}* `${BRANCH_NAME}` build #${BUILD_NUMBER} \nAll systems Go...going somewhere anyways...\nLet's light this 🕯️... 3... 2... 1...!"
