@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <sys/uio.h>
 #include <thread>
 
 #include "metrics/ublk_raid_metrics.hpp"
