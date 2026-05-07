@@ -226,6 +226,10 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
         auto [logical_off, sz] = _dirty_bitmap->next_dirty();
         // copies_left counts actual copies; Phase 1 skips do not consume budget.
+        // any_copy tracks whether this inner pass produced at least one copy; if a full
+        // dirty run is exhausted via Phase-1 skips alone, we break to let __yield() fire
+        // rather than immediately re-entering the same conflicting run (CPU spin prevention).
+        bool any_copy = false;
         while (0 < sz && 0U < copies_left) {
             auto const iov_len = std::min(sz, _max_size);
 
@@ -234,31 +238,33 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
             if (_region_tracker.overlaps(logical_off, iov_len)) {
                 sz -= iov_len;
                 logical_off += iov_len;
-                if (0 == sz) std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
+                if (0 == sz) {
+                    if (!any_copy) break; // fully conflicting run — exit to yield
+                    std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
+                    any_copy = false;
+                }
                 continue;
             }
-
-            // Capture the write-completion serial AFTER Phase 1 passes. If any write
-            // completes between here and Phase 2, the serial will advance and we treat
-            // the copied data as potentially stale (even if overlaps() returns false).
-            auto const serial_before = _write_serial.load(std::memory_order_acquire);
 
             iov->iov_len = iov_len;
             // Copy Region from clean to dirty
             if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
-                // Phase 2: post-copy conflict check — a write may have arrived or completed
-                // during the READ window. If either the tracker or the serial says so, keep
-                // the region dirty so the next sweep re-copies with fresh data.
-                if (!_region_tracker.overlaps(logical_off, iov_len) &&
-                    _write_serial.load(std::memory_order_acquire) == serial_before)
+                // Phase 2: post-copy conflict check — a write may have arrived during the
+                // READ window. untrack() zeroes len before freeing lba, so overlaps()
+                // conservatively returns true during the teardown window.
+                if (!_region_tracker.overlaps(logical_off, iov_len)) {
                     clean_region(logical_off, iov->iov_len, *clean_mirror);
-                // Record resync progress
-                if (_metrics) { _metrics->record_resync_progress(iov->iov_len); } // GCOVR_EXCL_BR_LINE
+                    if (_metrics) { _metrics->record_resync_progress(iov->iov_len); } // GCOVR_EXCL_BR_LINE
+                }
+                any_copy = true;
                 --copies_left;
                 sz -= iov_len;
                 logical_off += iov_len;
-                if (0 == sz) std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
+                if (0 == sz) {
+                    std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
+                    any_copy = false;
+                }
             } else {
                 dirty_mirror->unavail.test_and_set(std::memory_order_acquire);
                 break;

@@ -97,7 +97,8 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk 
 
     // Initialize resync_task
     _resync_task = std::make_shared< Raid1ResyncTask >(_dirty_bitmap, _reserved_size, block_size(),
-                                                       params()->basic.max_sectors << SECTOR_SHIFT, 256, _raid_metrics);
+                                                       params()->basic.max_sectors << SECTOR_SHIFT,
+                                                       2 * SISL_OPTIONS["qdepth"].as< uint16_t >(), _raid_metrics);
 
     // Write the up-to-date superblocks and mark devices as in use
     __become_active();

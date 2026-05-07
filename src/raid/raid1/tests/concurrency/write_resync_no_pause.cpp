@@ -223,3 +223,73 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
 
     task.stop();
 }
+
+// Verify the core improvement: when a dirty run spans multiple chunks and only chunk 0
+// conflicts with an in-flight write, resync skips chunk 0 and copies chunk 1 in the same pass.
+// This is the key behaviour that distinguishes per-region tracking from the old global pause.
+TEST(Raid1Concurrency, MultiChunkDirtyRun_PartialSkip) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
+
+    // Track which LBAs resync actually reads.
+    std::atomic< int > reads_chunk0{0};
+    std::atomic< int > reads_chunk1{0};
+
+    constexpr uint32_t io_size = 32 * Ki;
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t raw_addr) -> ublkpp::io_result {
+            // Subtract the bitmap reserved area to recover the logical offset.
+            auto const logical = static_cast< uint64_t >(raw_addr) - Bitmap::page_size();
+            if (logical < io_size)
+                reads_chunk0.fetch_add(1, std::memory_order_relaxed);
+            else if (logical >= io_size && logical < 2 * io_size)
+                reads_chunk1.fetch_add(1, std::memory_order_relaxed);
+            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
+    auto mirror_b = std::make_shared< MirrorDevice >(uuid, device_b);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(Gi, io_size, 4 * Ki, superbitmap_buf.get());
+    // Dirty two adjacent chunks: [0, 32Ki) and [32Ki, 64Ki)
+    bitmap->dirty_region(0, 2 * io_size);
+
+    Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+
+    // Hold chunk 0 in-flight — resync must skip it but still copy chunk 1
+    task.enqueue_write(0, io_size);
+    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+
+    // Wait for chunk 1 to be copied while chunk 0 is held
+    auto const deadline = std::chrono::steady_clock::now() + 2000ms;
+    while (reads_chunk1.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    EXPECT_EQ(0, reads_chunk0.load()) << "Resync must not read chunk 0 while its write is in-flight";
+    EXPECT_GE(reads_chunk1.load(), 1) << "Resync must copy chunk 1 despite the hold on chunk 0";
+
+    // Release chunk 0 — resync copies it and the bitmap clears
+    task.dequeue_write(0, io_size);
+    EXPECT_TRUE(wait_for_bitmap_clean(bitmap, 2000ms))
+        << "Bitmap must become clean after the conflicting write on chunk 0 is released";
+
+    task.stop();
+}
