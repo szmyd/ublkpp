@@ -151,10 +151,11 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
 // passes but BEFORE clean_region is called, and correctly keeps the bitmap dirty.
 //
 // Sequence:
-//   Phase 1 check: no write in-flight, resync begins copy READ
-//   [test thread registers a write while READ is in progress]
-//   Copy WRITE completes, Phase 2 detects the in-flight write, skips clean_region
-//   Bitmap stays dirty until the write completes, resync re-copies, bitmap cleans
+//   Phase 1 check: no write in-flight, resync begins copy READ (mock blocks)
+//   [test thread registers write, then unblocks READ]
+//   Copy WRITE completes; Phase 2 sees write in-flight, skips clean_region
+//   Resync yields — yield_count() advances, giving a deterministic signal that Phase 2 ran
+//   Bitmap stays dirty; dequeue write; resync re-copies and cleans bitmap
 TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
@@ -163,8 +164,6 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     // thread registers a write for the same region.
     std::promise< void > copy_read_started;
     std::promise< void > write_registered;
-    // The first resync WRITE to dirty_mirror signals that Phase 2 has run.
-    std::promise< void > resync_write_done;
     auto write_registered_future = write_registered.get_future();
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
@@ -185,14 +184,8 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
-    // Intercept the first resync WRITE to dirty_mirror so we know exactly when Phase 2 runs.
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillOnce([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
-            auto const result = ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-            resync_write_done.set_value();
-            return result;
-        })
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -220,12 +213,18 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     // Register a write to LBA 0 AFTER Phase 1 passed; Phase 2 must catch it
     task.enqueue_write(0, io_size);
 
-    // Unblock the resync read — Phase 2 will detect the in-flight write and skip clean_region
+    // Capture yield count before unblocking the READ. After the READ is unblocked, the resync
+    // thread will complete the copy, Phase 2 will detect the in-flight write and skip
+    // clean_region, then call __yield(). Waiting for yield_count to advance is the only
+    // deterministic signal that Phase 2 has fully executed (and not just that the copy WRITE
+    // has started). Using a WillOnce hook on the device_b WRITE would fire before Phase 2
+    // runs, creating a race where dequeue_write could complete before Phase 2 checks overlaps().
+    auto const yield_before = task.yield_count();
     write_registered.set_value();
 
-    // Wait until the resync WRITE to dirty_mirror completes: at that point Phase 2 has run
-    // and decided to skip clean_region (write still in-flight). No wall-clock sleep needed.
-    resync_write_done.get_future().wait();
+    // Wait for the resync sweep to complete — Phase 2 has definitely run and yielded.
+    while (task.yield_count() == yield_before)
+        std::this_thread::sleep_for(1ms);
     EXPECT_GT(bitmap->dirty_pages(), 0U) << "Bitmap must remain dirty while Phase-2-detected write is in-flight";
 
     // Dequeue the write — resync can now copy the dirty region and mark it clean
