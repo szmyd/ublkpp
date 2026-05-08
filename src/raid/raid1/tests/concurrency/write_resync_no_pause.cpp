@@ -259,6 +259,12 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
+        // First call: MirrorDevice constructor's load_superblock READ at offset 0. Must not block.
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            if (iovecs->iov_base) memset(iovecs->iov_base, 0, iovecs->iov_len);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        })
+        // Second call: resync copy READ. Block until the test thread completes the write.
         .WillOnce([&, fut = std::move(write_fully_done_future)](uint8_t, iovec* iovecs, uint32_t,
                                                                 off_t) mutable -> ublkpp::io_result {
             read_started.set_value();
