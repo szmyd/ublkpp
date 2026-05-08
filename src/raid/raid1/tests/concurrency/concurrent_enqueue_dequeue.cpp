@@ -44,10 +44,17 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
         });
 
     // IO threads write to this LBA range; resync must not copy it while writes are in-flight.
+    // Each thread uses its own LBA range [tid * io_size, (tid+1) * io_size) so that no two
+    // threads ever have concurrent in-flight writes to the same LBA — which would violate
+    // block-device ordering and trigger spurious CAS failures in RegionTracker::untrack().
     constexpr uint32_t io_size = 512 * Ki;
-    constexpr uint64_t write_lba = 0;
+    constexpr int k_n_threads = 4;
 
-    std::atomic< int > writes_in_flight{0};
+    // Per-thread in-flight counters; indexed by tid = logical_off / io_size.
+    std::array< std::atomic< int >, k_n_threads > thread_in_flight{};
+    for (auto& c : thread_in_flight)
+        c.store(0, std::memory_order_relaxed);
+
     std::atomic< bool > overlap_detected{false};
     std::atomic< bool > resync_started{false};
 
@@ -56,13 +63,12 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
         .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t raw_addr) -> ublkpp::io_result {
             resync_started.store(true, std::memory_order_release);
             // Convert raw disk address to logical offset (subtract the reserved bitmap area).
-            // Only flag a violation if this write targets the same range IO threads are using.
+            // Determine which thread "owns" this LBA and flag a violation if that thread has
+            // an in-flight write while resync copies it.
             auto const logical_off = static_cast< uint64_t >(raw_addr) - k_page_size;
-            auto const write_end = write_lba + io_size;
-            if (logical_off < write_end && logical_off + io_size > write_lba &&
-                writes_in_flight.load(std::memory_order_acquire) > 0) {
+            auto const tid = static_cast< int >(logical_off / io_size);
+            if (tid < k_n_threads && thread_in_flight[tid].load(std::memory_order_acquire) > 0)
                 overlap_detected.store(true, std::memory_order_release);
-            }
             std::this_thread::sleep_for(1ms);
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
@@ -84,25 +90,25 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
     while (!resync_started.load(std::memory_order_acquire))
         std::this_thread::yield(); // Wait until resync has begun copying to device_b
 
-    constexpr int k_n_threads = 4;
     constexpr int k_iterations = 200;
     std::vector< std::thread > io_threads;
     io_threads.reserve(k_n_threads);
 
     for (int i = 0; i < k_n_threads; ++i) {
-        io_threads.emplace_back([&] {
+        io_threads.emplace_back([&, tid = i] {
+            auto const lba = static_cast< uint64_t >(tid) * io_size;
             for (int j = 0; j < k_iterations; ++j) {
-                task.enqueue_write(write_lba, io_size);
+                task.enqueue_write(lba, io_size);
                 // Only count as "in flight" after enqueue returns — by that point the
                 // write is registered in the tracker and resync will skip this range.
-                writes_in_flight.fetch_add(1, std::memory_order_release);
+                thread_in_flight[tid].fetch_add(1, std::memory_order_release);
 
                 std::this_thread::yield();
 
                 // Decrement before dequeue so the mock can't see a spurious > 0 after
                 // the range is unregistered.
-                writes_in_flight.fetch_sub(1, std::memory_order_release);
-                task.dequeue_write(write_lba, io_size);
+                thread_in_flight[tid].fetch_sub(1, std::memory_order_release);
+                task.dequeue_write(lba, io_size);
             }
         });
     }
