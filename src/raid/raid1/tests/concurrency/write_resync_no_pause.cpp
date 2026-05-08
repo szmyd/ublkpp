@@ -115,6 +115,9 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
     auto mirror_b = std::make_shared< MirrorDevice >(uuid, device_b);
+    // MirrorDevice constructor calls load_superblock which fires one READ on device_a.
+    // Reset the counter so only resync-initiated reads are measured.
+    resync_reads.store(0, std::memory_order_relaxed);
 
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = std::make_shared< Bitmap >(Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
