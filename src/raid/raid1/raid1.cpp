@@ -95,10 +95,17 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk 
     // Initialize bitmap and handle initial degradation based on route determination
     __init_bitmap_and_degraded_route();
 
-    // Initialize resync_task
-    _resync_task = std::make_shared< Raid1ResyncTask >(_dirty_bitmap, _reserved_size, block_size(),
-                                                       params()->basic.max_sectors << SECTOR_SHIFT,
-                                                       2 * SISL_OPTIONS["qdepth"].as< uint16_t >(), _raid_metrics);
+    // Initialize resync_task; slot_count = 2×qdepth so the tracker can hold every
+    // in-flight write at peak depth. Fall back to 256 (= 2×128 default) when the
+    // ublkpp_tgt option group is not loaded (unit test context).
+    uint32_t const resync_slots = []() -> uint32_t {
+        try {
+            return 2u * SISL_OPTIONS["qdepth"].as< uint16_t >();
+        } catch (...) { return 256u; }
+    }();
+    _resync_task =
+        std::make_shared< Raid1ResyncTask >(_dirty_bitmap, _reserved_size, block_size(),
+                                            params()->basic.max_sectors << SECTOR_SHIFT, resync_slots, _raid_metrics);
 
     // Write the up-to-date superblocks and mark devices as in use
     __become_active();
