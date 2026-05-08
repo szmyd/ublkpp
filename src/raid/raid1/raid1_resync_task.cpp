@@ -113,8 +113,9 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     // If stopped, end now.
     if (resync_state::STOPPING == cur_state) {
         RLOGI("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
-        auto stopping = resync_state::STOPPING;
-        __cas_state(stopping, resync_state::IDLE);
+        for (auto stopping = resync_state::STOPPING;
+             !__cas_state(stopping, resync_state::IDLE) && stopping == resync_state::STOPPING;)
+            ;
         return;
     }
 
@@ -125,8 +126,9 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
 
     // Open up I/O Again
-    auto active = resync_state::ACTIVE;
-    __cas_state(active, resync_state::IDLE);
+    for (auto active = resync_state::ACTIVE;
+         !__cas_state(active, resync_state::IDLE) && active == resync_state::ACTIVE;)
+        ;
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
@@ -334,8 +336,9 @@ void Raid1ResyncTask::stop() noexcept {
     // If the thread finished naturally (ACTIVE→IDLE) before stop() CAS'd IDLE→STOPPING,
     // it returned without ever seeing STOPPING and never cleared it. _launch_lock is held
     // so no concurrent caller can observe this window; reset to IDLE so launch() isn't stuck.
-    auto stopping = resync_state::STOPPING;
-    __cas_state(stopping, resync_state::IDLE);
+    for (auto stopping = resync_state::STOPPING;
+         !__cas_state(stopping, resync_state::IDLE) && stopping == resync_state::STOPPING;)
+        ;
 }
 
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,
