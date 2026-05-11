@@ -212,8 +212,8 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
     if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
 
     // When a dirty run is entirely blocked by in-flight writes (!any_copy), skip past it on
-    // the next sweep so higher-LBA dirty runs are not starved. Resets to 0 at the start of
-    // each outer iteration so a write that completes between sweeps is caught normally.
+    // the next sweep so higher-LBA dirty runs are not starved. Reset after use within each
+    // sweep; set at end of inner loop to advance past a stuck run on the next sweep.
     uint64_t resync_skip_from = 0;
 
     while (0 < nr_pages) {
@@ -240,7 +240,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
             std::tie(logical_off, sz) = _dirty_bitmap->next_dirty();
         resync_skip_from = 0;
 
-        // copies_left counts actual copies; Phase 1 skips do not consume budget.
+        // copies_left counts copy attempts (read+write to replica); only Phase 1 skips are free.
         // any_copy tracks whether this inner pass produced at least one copy; if a full
         // dirty run is exhausted via Phase-1 skips alone, we set resync_skip_from and break
         // to let __yield() fire, advancing past the stuck run on the next sweep.

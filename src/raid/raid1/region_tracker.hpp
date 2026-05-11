@@ -72,8 +72,10 @@ public:
     // len-then-CAS sequence cannot accidentally free a slot belonging to a different write.
     void untrack(uint64_t lba, uint32_t len) noexcept {
         for (auto& slot : _slots) {
-            if (slot.lba.load(std::memory_order_relaxed) != lba) continue;
-            if (slot.len.load(std::memory_order_relaxed) != len) continue;
+            // Acquire on lba synchronizes with the release-CAS in track() so the subsequent
+            // len load is ordered correctly on weakly-ordered hardware (arm64).
+            if (slot.lba.load(std::memory_order_acquire) != lba) continue;
+            if (slot.len.load(std::memory_order_acquire) != len) continue;
             uint64_t expected = lba;
 
             // Atomically claim a shadow slot. Each concurrent caller gets a distinct gen,
@@ -89,13 +91,12 @@ public:
             if (slot.lba.compare_exchange_strong(expected, k_free, std::memory_order_release,
                                                  std::memory_order_relaxed))
                 return;
-            // CAS failure here violates the block-device ordering invariant (two concurrent
-            // writes to the same LBA). The shadow entry was already published; the main slot
-            // is stuck with lba set and len=0, causing a permanent false-positive in overlaps().
-            // Log loudly in all builds so this is diagnosable before resync stalls.
-            DLOGE("RegionTracker: CAS failed for lba={:#x} — slot leaked, resync may stall", lba)
-            return;
+            // CAS failed: a concurrent untrack() for the same lba freed this slot first,
+            // which violates the block-device ordering invariant (no two concurrent writes to
+            // the same LBA). The shadow entry we published is valid (records a true completion).
+            // Continue scanning — our slot is a different entry with the same lba.
         }
+        DLOGE("RegionTracker: no slot found for lba={:#x} len={} — double untrack or invariant violation", lba, len)
         DEBUG_ASSERT(false, "RegionTracker: no slot found for lba={:#x} len={}", lba, len);
     }
 

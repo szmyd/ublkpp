@@ -40,11 +40,13 @@ pipeline {
 
         stage("Ignition") {
             steps {
-                timeout(time: 1, unit: 'HOURS') {
+                timeout(time: 45, unit: 'MINUTES') {
                     script {
                         slackSend color: '#9B59B6', channel: "${SLACK_THREAD}", message: "⛽ *${PROJECT}* `${BRANCH_NAME}` build #${BUILD_NUMBER} \nAll systems Go...going somewhere anyways...\nLet's light this 🕯️... 3... 2... 1...!"
                     }
                     sh "conan create -s:h build_type=Debug ${CONAN_FLAGS} ."
+                }
+                timeout(time: 45, unit: 'MINUTES') {
                     script {
                         slackSend color: '#E67E22', channel: "${SLACK_THREAD}", message: "🧑‍🚀 *${PROJECT}* `${BRANCH_NAME}`\n*Debug: green.* One more build between us and home.\nI've been in here long enough to start naming the compiler warnings. Don't ask.\nRelWithDebInfo... *please don't fail me now.*"
                     }
