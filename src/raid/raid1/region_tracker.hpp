@@ -96,7 +96,9 @@ public:
             // the same LBA). The shadow entry we published is valid (records a true completion).
             // Continue scanning — our slot is a different entry with the same lba.
         }
-        DLOGE("RegionTracker: no slot found for lba={:#x} len={} — double untrack or invariant violation", lba, len)
+        DLOGE("RegionTracker: no slot found for lba={:#x} len={} — block-device ordering invariant violated; "
+              "resync will stall permanently for this range",
+              lba, len)
         DEBUG_ASSERT(false, "RegionTracker: no slot found for lba={:#x} len={}", lba, len);
     }
 
