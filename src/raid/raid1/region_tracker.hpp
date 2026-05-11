@@ -192,6 +192,9 @@ private:
 
     std::vector< Slot > _slots;
     std::vector< ShadowEntry > _shadow;
+    // Wraps at 2^64. Unsigned wraparound is well-defined; completed_since() uses subtraction
+    // (head_now - gen_before) which remains correct across a wrap. At 1M IOPS the counter
+    // saturates in ~584,000 years.
     std::atomic< uint64_t > _shadow_head{0};
 };
 
