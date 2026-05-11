@@ -98,11 +98,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk 
     // Initialize resync_task; slot_count = 2×qdepth so the tracker can hold every
     // in-flight write at peak depth. Fall back to 256 (= 2×128 default) when the
     // ublkpp_tgt option group is not loaded (unit test context).
-    uint32_t const resync_slots = []() -> uint32_t {
-        try {
-            return 2u * SISL_OPTIONS["qdepth"].as< uint16_t >();
-        } catch (...) { return 256u; }
-    }();
+    uint32_t const resync_slots = SISL_OPTIONS.count("qdepth") ? 2u * SISL_OPTIONS["qdepth"].as< uint16_t >() : 256u;
     _resync_task =
         std::make_shared< Raid1ResyncTask >(_dirty_bitmap, _reserved_size, block_size(),
                                             params()->basic.max_sectors << SECTOR_SHIFT, resync_slots, _raid_metrics);
