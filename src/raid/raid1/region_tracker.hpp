@@ -30,7 +30,10 @@ public:
     static constexpr uint64_t k_free = std::numeric_limits< uint64_t >::max();
 
     explicit RegionTracker(uint32_t max_slots, uint32_t chunk_size) :
-            _slots(max_slots), _shadow(4u * max_slots), _chunk_size(chunk_size) {}
+            _slots(max_slots), _shadow(4u * max_slots), _chunk_size(chunk_size) {
+        DEBUG_ASSERT(max_slots > 0, "RegionTracker requires at least one slot");
+        DEBUG_ASSERT(chunk_size > 0, "RegionTracker chunk_size must be non-zero");
+    }
 
     // Register an in-flight write. Single CAS atomically claims the slot and publishes
     // both chunk_idx and chunk_count — no transitional window.
@@ -69,6 +72,8 @@ public:
     void untrack(uint64_t lba, uint32_t len) noexcept {
         auto const packed = pack(lba, len);
         for (auto& slot : _slots) {
+            // relaxed: untrack() is always called by the owner of the ResyncWriteGuard that
+            // called track(), or its destructor; the I/O completion provides the required ordering.
             if (slot.packed.load(std::memory_order_relaxed) != packed) continue;
 
             // Claim a shadow slot before freeing the main slot. This ensures _shadow_head
@@ -80,10 +85,11 @@ public:
             uint64_t expected = packed;
             if (!slot.packed.compare_exchange_strong(expected, k_free, std::memory_order_release,
                                                      std::memory_order_relaxed)) {
-                // Another thread freed this slot (same-lba invariant violation). Shadow entry
-                // was claimed but not yet published — write a dummy seq=0 so completed_since()
-                // returns true conservatively rather than hanging on an unpublished entry.
-                // Continue scanning for our actual slot.
+                // CAS failure here means the same packed value occupied two slots simultaneously
+                // (duplicate-LBA tracking). This is a test-only scenario — block-device ordering
+                // forbids concurrent writes to the same LBA in production. Write seq=0 for the
+                // already-claimed shadow gen (conservative: completed_since() returns true), then
+                // continue scanning for the second slot holding the same packed value.
                 _shadow[gen % _shadow.size()].seq.store(0, std::memory_order_release);
                 continue;
             }
@@ -142,6 +148,8 @@ public:
             if (_shadow[idx].seq.load(std::memory_order_acquire) != i + 1) return true;
             // Synchronized via seq acquire: lba and len are now valid.
             auto const sl = _shadow[idx].lba.load(std::memory_order_relaxed);
+            // Defensive: sl == k_free would mean the lba store was skipped, which cannot happen
+            // once seq matches (seq release is sequenced-after the lba store). Included for safety.
             if (sl == k_free) continue;
             auto const slen = _shadow[idx].len.load(std::memory_order_relaxed);
             if (sl < lba + len && sl + slen > lba) return true;
@@ -182,6 +190,12 @@ private:
 
     [[nodiscard]] uint64_t pack(uint64_t lba, uint32_t len) const noexcept {
         auto const chunk_idx = lba / _chunk_size;
+        // chunk_idx must fit in 32 bits: upper 32 bits of the packed slot hold chunk_idx,
+        // so volumes requiring chunk_idx >= 2^32 would silently truncate and produce false
+        // negatives (resync proceeds through a conflicting range). At the default 32 KiB
+        // chunk_size the limit is ~128 TiB.
+        DEBUG_ASSERT(chunk_idx < (1ULL << 32),
+                     "RegionTracker: chunk_idx overflow — volume too large for RegionTracker slot encoding");
         // Use ceiling to compute end chunk: a sub-chunk write (len < chunk_size) must occupy
         // at least 1 chunk; a write spanning a chunk boundary occupies 2+. Floor division
         // would give chunk_count=0 for sub-chunk writes, making overlaps() return false even

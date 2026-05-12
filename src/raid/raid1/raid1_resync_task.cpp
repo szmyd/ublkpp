@@ -115,7 +115,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         RLOGI("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         for (auto stopping = resync_state::STOPPING;
              !__cas_state(stopping, resync_state::IDLE) && stopping == resync_state::STOPPING;)
-            ;
+            std::this_thread::yield();
         return;
     }
 
@@ -128,7 +128,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     // Open up I/O Again
     for (auto active = resync_state::ACTIVE;
          !__cas_state(active, resync_state::IDLE) && active == resync_state::ACTIVE;)
-        ;
+        std::this_thread::yield();
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
@@ -338,7 +338,7 @@ void Raid1ResyncTask::stop() noexcept {
     // so no concurrent caller can observe this window; reset to IDLE so launch() isn't stuck.
     for (auto stopping = resync_state::STOPPING;
          !__cas_state(stopping, resync_state::IDLE) && stopping == resync_state::STOPPING;)
-        ;
+        std::this_thread::yield();
 }
 
 resync_state Raid1ResyncTask::__yield(std::chrono::microseconds const yield_for,

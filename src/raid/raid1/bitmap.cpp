@@ -357,7 +357,7 @@ std::pair< uint64_t, uint32_t > Bitmap::next_dirty_after(uint64_t min_lba) noexc
         uint32_t const word_start = min_chunk_in_page / bits_in_word;
         uint32_t const bit_start = min_chunk_in_page % bits_in_word;
 
-        uint64_t logical_off = page_base;
+        uint64_t logical_off = 0; // set inside the loop when a non-empty word is found
         uint64_t word = 0;
         for (auto word_off = word_start; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
             word = be64toh(std::atomic_ref< word_t >(*(page + word_off)).load(std::memory_order_relaxed));
