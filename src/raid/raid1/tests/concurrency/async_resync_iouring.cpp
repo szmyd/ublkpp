@@ -1,5 +1,6 @@
 #include "test_raid1_common.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
@@ -184,8 +185,9 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
 
     Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
 
-    // Hold chunk 0 in-flight. Resync must skip it but still copy chunk 1.
-    task.enqueue_write(0, k_chunk_size);
+    // RAII guard: releases the write hold if the test exits early via ASSERT, preventing
+    // the task destructor from blocking forever in join() with chunk 0 still held.
+    ResyncWriteGuard write_guard{task, 0, k_chunk_size};
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
 
     // Wait until resync has completed at least two sweeps (chunk 1 must have been copied by then).
@@ -198,26 +200,226 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
     EXPECT_GT(bitmap->dirty_pages(), 0U) << "Bitmap must remain dirty while chunk 0 write is held";
 
     // Verify chunk 1 was copied correctly.
-    std::vector< uint8_t > actual1(k_chunk_size, 0);
-    int verify_fd = open(dirty_path.c_str(), O_RDONLY);
-    ASSERT_GE(verify_fd, 0);
-    pread(verify_fd, actual1.data(), k_chunk_size, k_data_offset + k_chunk_size);
-    close(verify_fd);
-    EXPECT_EQ(chunk1_data, actual1) << "chunk 1 must be copied while chunk 0 is held";
+    {
+        std::vector< uint8_t > actual1(k_chunk_size, 0);
+        int verify_fd = open(dirty_path.c_str(), O_RDONLY);
+        ASSERT_GE(verify_fd, 0);
+        ASSERT_EQ(static_cast< ssize_t >(k_chunk_size),
+                  pread(verify_fd, actual1.data(), k_chunk_size, k_data_offset + k_chunk_size));
+        close(verify_fd);
+        EXPECT_EQ(chunk1_data, actual1) << "chunk 1 must be copied while chunk 0 is held";
+    }
 
     // Release chunk 0 — resync can now copy it and the bitmap clears.
-    task.dequeue_write(0, k_chunk_size);
+    write_guard.release();
     EXPECT_TRUE(wait_for_bitmap_clean(bitmap)) << "Bitmap must become clean after releasing chunk 0 write";
 
     // Verify chunk 0 was also copied correctly.
-    std::vector< uint8_t > actual0(k_chunk_size, 0);
-    verify_fd = open(dirty_path.c_str(), O_RDONLY);
-    ASSERT_GE(verify_fd, 0);
-    pread(verify_fd, actual0.data(), k_chunk_size, k_data_offset);
-    close(verify_fd);
-    EXPECT_EQ(chunk0_data, actual0) << "chunk 0 must be correctly copied after the write is released";
+    {
+        std::vector< uint8_t > actual0(k_chunk_size, 0);
+        int verify_fd = open(dirty_path.c_str(), O_RDONLY);
+        ASSERT_GE(verify_fd, 0);
+        ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual0.data(), k_chunk_size, k_data_offset));
+        close(verify_fd);
+        EXPECT_EQ(chunk0_data, actual0) << "chunk 0 must be correctly copied after the write is released";
+    }
 
     task.stop();
+    std::filesystem::remove(clean_path);
+    std::filesystem::remove(dirty_path);
+}
+
+// Verify the sync_iov fallback is used when backend_fd() returns -1 (TestDisk default).
+// Guards the __run() dispatch branch: if either mirror returns -1 from backend_fd(), the
+// task must use sync_iov rather than io_uring and still complete the resync correctly.
+// If the dispatch condition is broken (io_uring attempted with fd=-1), io_uring returns
+// -EBADF, __copy_region_async returns error, unavail is set, and wait_for_bitmap_clean times out.
+TEST(AsyncResyncIoUring, FallbackWhenNoFd) {
+    auto device_clean = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskClean"});
+    auto device_dirty =
+        std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskDirty", .is_slot_b = true});
+
+    std::atomic< int > sync_reads{0};
+    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([&sync_reads](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            sync_reads.fetch_add(1, std::memory_order_relaxed);
+            if (iovecs->iov_base) memset(iovecs->iov_base, 0, iovecs->iov_len);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_dirty, sync_iov(::testing::_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, device_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, device_dirty);
+    // Exclude the superblock READ issued by the MirrorDevice constructors.
+    sync_reads.store(0, std::memory_order_relaxed);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_chunk_size);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+
+    EXPECT_TRUE(wait_for_bitmap_clean(bitmap))
+        << "Sync fallback (backend_fd==-1) must complete resync and clean the bitmap";
+    task.stop();
+
+    EXPECT_GE(sync_reads.load(), 1)
+        << "sync_iov READ must have been called — confirms fallback path was taken, not io_uring";
+}
+
+// Verify that all dirty chunks are copied correctly when several are dirty simultaneously.
+// BasicCopy tests one chunk; this test uses four distinct byte patterns to catch address
+// arithmetic errors (wrong _offset or chunk stride) and buffer-reuse bugs across multiple
+// sequential io_uring READ_FIXED → WRITE_FIXED pairs using the same registered buffer.
+TEST(AsyncResyncIoUring, MultipleChunkCopy) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+
+    constexpr size_t k_num_chunks = 4;
+    constexpr std::array< uint8_t, k_num_chunks > k_patterns{0x11, 0x22, 0x33, 0x44};
+    for (size_t i = 0; i < k_num_chunks; ++i) {
+        std::vector< uint8_t > buf(k_chunk_size, k_patterns[i]);
+        ASSERT_EQ(static_cast< ssize_t >(k_chunk_size),
+                  pwrite(clean_raw_fd, buf.data(), k_chunk_size, k_data_offset + i * k_chunk_size));
+    }
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_num_chunks * k_chunk_size);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+
+    EXPECT_TRUE(wait_for_bitmap_clean(bitmap)) << "All dirty chunks must be resynced";
+    task.stop();
+
+    // Verify each chunk has the correct distinct pattern on the dirty mirror.
+    int verify_fd = open(dirty_path.c_str(), O_RDONLY);
+    ASSERT_GE(verify_fd, 0);
+    for (size_t i = 0; i < k_num_chunks; ++i) {
+        std::vector< uint8_t > expected(k_chunk_size, k_patterns[i]);
+        std::vector< uint8_t > actual(k_chunk_size, 0);
+        ASSERT_EQ(static_cast< ssize_t >(k_chunk_size),
+                  pread(verify_fd, actual.data(), k_chunk_size, k_data_offset + i * k_chunk_size));
+        EXPECT_EQ(expected, actual) << "Chunk " << i << " has wrong pattern after resync";
+    }
+    close(verify_fd);
+
+    std::filesystem::remove(clean_path);
+    std::filesystem::remove(dirty_path);
+}
+
+// Verify that the complete() callback fires exactly once after the io_uring resync path
+// copies all dirty chunks. All other tests pass [] {} as the callback; this test is the
+// only one that asserts the callback is actually invoked via the real-file io_uring path.
+TEST(AsyncResyncIoUring, CompleteCallbackFires) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_chunk_size);
+
+    std::atomic< int > callback_count{0};
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty,
+                [&callback_count] { callback_count.fetch_add(1, std::memory_order_release); });
+
+    // Wait for the callback directly — it fires in _start() right after __run() returns,
+    // which is after the last clean_region() call that zeroed all dirty bitmap pages.
+    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (callback_count.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    EXPECT_EQ(1, callback_count.load(std::memory_order_acquire))
+        << "complete() must fire exactly once after a successful io_uring resync";
+    EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean when complete() fires";
+
+    task.stop();
+    std::filesystem::remove(clean_path);
+    std::filesystem::remove(dirty_path);
+}
+
+// Verify the io_uring ring lifecycle across a stop+relaunch cycle. The ring is created per
+// launch and destroyed on stop; this test confirms the second launch creates a fresh ring,
+// resync completes, and data on the dirty mirror is correct after the interrupted first run.
+TEST(AsyncResyncIoUring, StopAndRelaunch) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+
+    constexpr uint8_t k_pattern = 0xCD;
+    std::vector< uint8_t > source(k_chunk_size, k_pattern);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pwrite(clean_raw_fd, source.data(), k_chunk_size, k_data_offset));
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+
+    // First launch: dirty one chunk and stop after the first sweep; destroys the ring.
+    bitmap->dirty_region(0, k_chunk_size);
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+    while (task.yield_count() < 1)
+        std::this_thread::sleep_for(1ms);
+    task.stop();
+
+    // Second launch: re-dirty (stop may have partially cleaned) and run to completion.
+    // A fresh ring must be initialised; the second resync must produce correct data.
+    bitmap->dirty_region(0, k_chunk_size);
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+    EXPECT_TRUE(wait_for_bitmap_clean(bitmap)) << "Second resync must complete after stop+relaunch";
+    task.stop();
+
+    std::vector< uint8_t > actual(k_chunk_size, 0);
+    int verify_fd = open(dirty_path.c_str(), O_RDONLY);
+    ASSERT_GE(verify_fd, 0);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual.data(), k_chunk_size, k_data_offset));
+    close(verify_fd);
+    EXPECT_EQ(source, actual) << "Data must be correct after stop+relaunch resync cycle";
+
     std::filesystem::remove(clean_path);
     std::filesystem::remove(dirty_path);
 }
