@@ -10,47 +10,51 @@
 using ublkpp::Ki;
 using ublkpp::raid1::RegionTracker;
 
+// Unit tests use chunk_size=1 (byte granularity) so lba/len values need not be
+// chunk-aligned. Production always uses the superblock chunk_size (default 32 KiB).
+static constexpr uint32_t k_chunk = 1;
+
 TEST(RegionTracker, EmptyNoOverlap) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     EXPECT_FALSE(tracker.overlaps(0, 512 * Ki));
     EXPECT_FALSE(tracker.overlaps(100, 512));
     EXPECT_TRUE(tracker.all_free());
 }
 
 TEST(RegionTracker, RegisterAndOverlapExact) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(100, 512);
     EXPECT_TRUE(tracker.overlaps(100, 512));
     EXPECT_FALSE(tracker.all_free());
 }
 
 TEST(RegionTracker, OverlapPartialLeft) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(200, 512);                 // [200, 712)
     EXPECT_TRUE(tracker.overlaps(100, 200)); // [100, 300) overlaps at [200, 300)
 }
 
 TEST(RegionTracker, OverlapPartialRight) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(100, 512);                 // [100, 612)
     EXPECT_TRUE(tracker.overlaps(500, 200)); // [500, 700) overlaps at [500, 612)
 }
 
 TEST(RegionTracker, OverlapContained) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(100, 512);                 // [100, 612)
     EXPECT_TRUE(tracker.overlaps(200, 100)); // [200, 300) fully inside registered range
 }
 
 TEST(RegionTracker, AdjacentNoOverlap) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(100, 512);                  // [100, 612)
     EXPECT_FALSE(tracker.overlaps(612, 100)); // [612, 712) — adjacent, not overlapping
     EXPECT_FALSE(tracker.overlaps(0, 100));   // [0, 100) — adjacent on the other side
 }
 
 TEST(RegionTracker, UnregisterClearsSlot) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(100, 512);
     EXPECT_TRUE(tracker.overlaps(100, 512));
     tracker.untrack(100, 512);
@@ -62,7 +66,7 @@ TEST(RegionTracker, DuplicateLba_TwoSlots) {
     // The INVARIANT (block-device ordering) guarantees each write creates exactly one guard,
     // so two concurrent registrations for the same (lba, len) cannot occur in production.
     // This test exercises the slot-scan matching logic under that hypothetical scenario.
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(100, 512);
     tracker.track(100, 512);
     EXPECT_TRUE(tracker.overlaps(100, 512));
@@ -76,7 +80,7 @@ TEST(RegionTracker, DuplicateLba_TwoSlots) {
 }
 
 TEST(RegionTracker, MultipleDistinctRanges) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(0, 512);
     tracker.track(1024, 512);
     tracker.track(4096, 512);
@@ -95,7 +99,7 @@ TEST(RegionTracker, MultipleDistinctRanges) {
 
 TEST(RegionTracker, FillAndDrain) {
     constexpr uint32_t k_slots = 8;
-    RegionTracker tracker(k_slots);
+    RegionTracker tracker(k_slots, k_chunk);
 
     for (uint32_t i = 0; i < k_slots; ++i)
         tracker.track(static_cast< uint64_t >(i) * 1024, 512);
@@ -123,7 +127,7 @@ TEST(RegionTracker, ConcurrentRegisterUnregister) {
     constexpr uint32_t k_iters = 200;
     constexpr uint32_t k_len = 512;
     // One slot per thread; sized to 2× so no exhaustion when all hold simultaneously.
-    RegionTracker tracker(k_threads * 2);
+    RegionTracker tracker(k_threads * 2, k_chunk);
 
     std::atomic< bool > stop{false};
     // Reader spans the full LBA range so overlaps() races with every writer's slot.
@@ -158,7 +162,7 @@ TEST(RegionTracker, ConcurrentRegisterUnregister) {
 // A write tracked then untracked before snapshot_gen is invisible to completed_since.
 // Only completions after gen_before are detected.
 TEST(RegionTracker, CompletedSince_BeforeSnapshotNotDetected) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     tracker.track(0, 512);
     tracker.untrack(0, 512); // completed before snapshot
 
@@ -168,7 +172,7 @@ TEST(RegionTracker, CompletedSince_BeforeSnapshotNotDetected) {
 
 // Basic: track, snapshot, untrack → completed_since detects the overlapping completion.
 TEST(RegionTracker, CompletedSince_OverlappingWriteDetected) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     auto const gen = tracker.snapshot_gen();
 
     tracker.track(0, 512);
@@ -179,7 +183,7 @@ TEST(RegionTracker, CompletedSince_OverlappingWriteDetected) {
 
 // A write to a non-overlapping range must not trigger completed_since.
 TEST(RegionTracker, CompletedSince_NonOverlappingWriteNotDetected) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     auto const gen = tracker.snapshot_gen();
 
     tracker.track(1024 * Ki, 512); // [1MiB, 1MiB+512)
@@ -191,7 +195,7 @@ TEST(RegionTracker, CompletedSince_NonOverlappingWriteNotDetected) {
 
 // Partial overlap: write at [256, 768), query [0, 512) → overlap at [256, 512)
 TEST(RegionTracker, CompletedSince_PartialOverlapDetected) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     auto const gen = tracker.snapshot_gen();
 
     tracker.track(256, 512); // [256, 768)
@@ -203,7 +207,7 @@ TEST(RegionTracker, CompletedSince_PartialOverlapDetected) {
 
 // Multiple writes: only the one overlapping the query range triggers completed_since.
 TEST(RegionTracker, CompletedSince_MultipleWrites_OnlyOverlappingDetected) {
-    RegionTracker tracker(16);
+    RegionTracker tracker(16, k_chunk);
     auto const gen = tracker.snapshot_gen();
 
     tracker.track(0, 512);
@@ -221,7 +225,7 @@ TEST(RegionTracker, CompletedSince_MultipleWrites_OnlyOverlappingDetected) {
 // completions before calling completed_since.
 TEST(RegionTracker, CompletedSince_ShadowOverflow_ReturnsTrueConservatively) {
     // slot_count=1 → shadow size=4. Five completions overflow the ring by one.
-    RegionTracker tracker(1);
+    RegionTracker tracker(1, k_chunk);
     auto const gen = tracker.snapshot_gen(); // capture before any completions
 
     // Each track/untrack uses the single main slot sequentially (no concurrency here).
@@ -253,7 +257,7 @@ TEST(RegionTracker, ConcurrentUntrack_CompletedSince_NoFalseNegatives) {
     constexpr uint32_t k_len = 512;
     // Each thread gets a distinct LBA range so main slots don't collide.
     // slot_count = 2×k_threads so all threads can be in-flight simultaneously.
-    RegionTracker tracker(k_threads * 2);
+    RegionTracker tracker(k_threads * 2, k_chunk);
 
     std::atomic< bool > any_false_negative{false};
 

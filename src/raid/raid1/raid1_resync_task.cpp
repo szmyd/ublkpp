@@ -10,14 +10,14 @@
 namespace ublkpp::raid1 {
 
 Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size,
-                                 uint32_t max_io, uint32_t slot_count,
+                                 uint32_t max_io, uint32_t slot_count, uint32_t chunk_size,
                                  std::shared_ptr< ublkpp::UblkRaidMetrics > metrics) :
         _dirty_bitmap(bitmap),
         _metrics(metrics),
         _io_size(io_size),
         _max_size(max_io),
         _offset(offset),
-        _region_tracker(slot_count),
+        _region_tracker(slot_count, chunk_size),
         _resync_task() {
     if (!_dirty_bitmap) throw std::runtime_error("No Bitmap");
 }

@@ -91,7 +91,8 @@ class Raid1ResyncTask {
 
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
-                    uint32_t slot_count = 256, std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
+                    uint32_t slot_count = 256, uint32_t chunk_size = 32768,
+                    std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
     ~Raid1ResyncTask() noexcept;
 
     // Probe a mirror device: reads at reserved_size, clears unavail on success,

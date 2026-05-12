@@ -16,30 +16,35 @@ namespace ublkpp::raid1 {
 // One slot is held per in-flight write (ResyncWriteGuard acquires one slot for the duration
 // of the write regardless of how many replica legs it touches). Size at construction to at
 // least queue_depth. Resync checks for overlap before and after each chunk copy.
+//
+// Slot layout — single atomic uint64_t:
+//   bits [63:32]  chunk index  = lba / chunk_size   (upper 32 bits)
+//   bits [31:0]   chunk count  = len / chunk_size   (lower 32 bits)
+//   sentinel      UINT64_MAX   = slot is free
+//
+// Packing both fields into one word eliminates the two-store transitional windows that the
+// previous lba+len design required: track() and untrack() are each a single CAS, and
+// overlaps() is a single load + plain range check with no special-casing.
 class RegionTracker {
 public:
     static constexpr uint64_t k_free = std::numeric_limits< uint64_t >::max();
 
-    explicit RegionTracker(uint32_t max_slots) : _slots(max_slots), _shadow(4u * max_slots) {}
+    explicit RegionTracker(uint32_t max_slots, uint32_t chunk_size) :
+            _slots(max_slots), _shadow(4u * max_slots), _chunk_size(chunk_size) {}
 
-    // Register an in-flight write. CAS on lba (release) claims the slot; len is published
-    // with release ordering. There is a narrow window between those two stores where
-    // slot_len reads as 0; overlaps() handles this conservatively — see overlaps() comment.
-    //
-    // Scan starts from lba % size to distribute hot-slot pressure across threads.
+    // Register an in-flight write. Single CAS atomically claims the slot and publishes
+    // both chunk_idx and chunk_count — no transitional window.
+    // Scan starts from chunk_idx % size to distribute hot-slot pressure across threads.
     void track(uint64_t lba, uint32_t len) noexcept {
+        auto const packed = pack(lba, len);
+        auto const start = (lba / _chunk_size) % _slots.size();
         while (true) {
-            auto const start = lba % _slots.size();
             for (size_t i = 0; i < _slots.size(); ++i) {
                 auto& slot = _slots[(start + i) % _slots.size()];
                 uint64_t expected = k_free;
-                // Release success ordering so overlaps()'s acquire load on slot.lba
-                // synchronizes with this store on all architectures (not just TSO).
-                if (slot.lba.compare_exchange_weak(expected, lba, std::memory_order_release,
-                                                   std::memory_order_relaxed)) {
-                    slot.len.store(len, std::memory_order_release);
+                if (slot.packed.compare_exchange_weak(expected, packed, std::memory_order_release,
+                                                      std::memory_order_relaxed))
                     return;
-                }
             }
             // Slot exhaustion: should never happen if sized to at least queue_depth.
             TLOGE("RegionTracker slot exhaustion — spinning (lba={:#x} len={})", lba, len)
@@ -47,16 +52,11 @@ public:
         }
     }
 
-    // Deregister a completed write. Finds the first matching slot and clears it.
-    // len is reset to 0 with release ordering before freeing lba so that any concurrent
-    // overlaps() call that sees the slot mid-transition reads 0 and takes the conservative
-    // path rather than seeing a stale non-zero value from a prior use.
+    // Deregister a completed write. Finds the matching slot and frees it with a single CAS.
     //
     // Shadow log: records a completed write for Phase 2 detection via completed_since().
     // Slot reservation uses fetch_add(acq_rel) so multiple concurrent callers each claim
-    // a distinct shadow slot — the previous relaxed-load+fetch_add sequence was not
-    // multi-producer safe and could cause two threads to overwrite the same shadow entry,
-    // silently dropping a completion and producing a false negative in completed_since().
+    // a distinct shadow slot.
     //
     // Protocol:
     //   1. fetch_add(acq_rel) atomically claims idx and bumps _shadow_head (gen is 0-based).
@@ -64,37 +64,36 @@ public:
     //   3. seq.store(gen+1, release) publishes the entry; completed_since() acquires on seq
     //      before reading lba/len, so it sees valid data once seq matches.
     //
-    // If the seq is not yet set when completed_since() scans this entry, it returns true
-    // conservatively (the completion happened but we don't know the range yet — safe).
-    //
     // INVARIANT: block-device ordering guarantees no two concurrent writes to the same
-    // LBA with different sizes, so (lba, len) uniquely identifies the slot and the
-    // len-then-CAS sequence cannot accidentally free a slot belonging to a different write.
+    // LBA with different sizes, so (lba, len) uniquely identifies the slot.
     void untrack(uint64_t lba, uint32_t len) noexcept {
+        auto const packed = pack(lba, len);
         for (auto& slot : _slots) {
-            // Acquire on lba synchronizes with the release-CAS in track() so the subsequent
-            // len load is ordered correctly on weakly-ordered hardware (arm64).
-            if (slot.lba.load(std::memory_order_acquire) != lba) continue;
-            if (slot.len.load(std::memory_order_acquire) != len) continue;
-            uint64_t expected = lba;
+            if (slot.packed.load(std::memory_order_relaxed) != packed) continue;
 
-            // Atomically claim a shadow slot. Each concurrent caller gets a distinct gen,
-            // so no two callers write to the same shadow entry.
+            // Claim a shadow slot before freeing the main slot. This ensures _shadow_head
+            // is visible to completed_since() before overlaps() can return false for this
+            // range: if Phase 2 races here, it will see head_now > gen_before and scan for
+            // the shadow entry (which seq guards until lba/len are written below).
             auto const gen = _shadow_head.fetch_add(1, std::memory_order_acq_rel);
+
+            uint64_t expected = packed;
+            if (!slot.packed.compare_exchange_strong(expected, k_free, std::memory_order_release,
+                                                     std::memory_order_relaxed)) {
+                // Another thread freed this slot (same-lba invariant violation). Shadow entry
+                // was claimed but not yet published — write a dummy seq=0 so completed_since()
+                // returns true conservatively rather than hanging on an unpublished entry.
+                // Continue scanning for our actual slot.
+                _shadow[gen % _shadow.size()].seq.store(0, std::memory_order_release);
+                continue;
+            }
+
             auto const idx = gen % _shadow.size();
             _shadow[idx].lba.store(lba, std::memory_order_relaxed);
             _shadow[idx].len.store(len, std::memory_order_relaxed);
             // Release publish: completed_since() acquires on seq before reading lba/len.
             _shadow[idx].seq.store(gen + 1, std::memory_order_release);
-
-            slot.len.store(0, std::memory_order_release);
-            if (slot.lba.compare_exchange_strong(expected, k_free, std::memory_order_release,
-                                                 std::memory_order_relaxed))
-                return;
-            // CAS failed: a concurrent untrack() for the same lba freed this slot first,
-            // which violates the block-device ordering invariant (no two concurrent writes to
-            // the same LBA). The shadow entry we published is valid (records a true completion).
-            // Continue scanning — our slot is a different entry with the same lba.
+            return;
         }
         DLOGE("RegionTracker: no slot found for lba={:#x} len={} — block-device ordering invariant violated; "
               "resync will stall permanently for this range",
@@ -103,23 +102,16 @@ public:
     }
 
     // Returns true if any in-flight write overlaps [lba, lba+len).
-    //
-    // Memory ordering: slot_lba is loaded with acquire, synchronizing-with the release-success
-    // CAS in track() — so once a non-free lba is visible, the subsequent len.store(release)
-    // is also ordered before our len.load(acquire). Two transitional windows exist where
-    // slot_len reads as 0:
-    //   track():   between the release CAS on lba and the subsequent len.store(release)
-    //   untrack(): between the len.store(0, release) and the lba CAS(release) that frees it
-    //
-    // In both windows, slot_len==0 on a non-free slot is treated as a potential conflict
-    // when slot_lba falls inside [lba, lba+len). This is a false positive only — at most one
-    // spurious resync yield per window, never a missed conflict.
+    // Single atomic load per slot — no transitional windows, no special-casing.
     [[nodiscard]] bool overlaps(uint64_t lba, uint32_t len) const noexcept {
+        auto const q_start = lba / _chunk_size;
+        auto const q_end = (lba + len + _chunk_size - 1) / _chunk_size; // exclusive, rounded up
         for (auto const& slot : _slots) {
-            auto const slot_lba = slot.lba.load(std::memory_order_acquire);
-            if (k_free == slot_lba) continue;
-            auto const slot_len = slot.len.load(std::memory_order_acquire);
-            if (slot_lba < lba + len && (0 == slot_len || slot_lba + slot_len > lba)) return true;
+            auto const val = slot.packed.load(std::memory_order_acquire);
+            if (k_free == val) continue;
+            auto const slot_start = val >> 32;
+            auto const slot_end = slot_start + (val & 0xffff'ffffULL); // exclusive
+            if (slot_start < q_end && slot_end > q_start) return true;
         }
         return false;
     }
@@ -160,26 +152,24 @@ public:
     // Returns true if no slots are occupied. Used as a post-stop integrity check.
     [[nodiscard]] bool all_free() const noexcept {
         for (auto const& slot : _slots)
-            if (k_free != slot.lba.load(std::memory_order_relaxed)) return false;
+            if (k_free != slot.packed.load(std::memory_order_relaxed)) return false;
         return true;
     }
 
 private:
     // Each slot occupies a full cache line to prevent false sharing between the resync
     // reader (overlaps()) and I/O writers (track/untrack) on adjacent slots.
+    // Single atomic uint64_t: upper 32 bits = chunk index, lower 32 bits = chunk count.
     struct alignas(64) Slot {
-        std::atomic< uint64_t > lba{k_free};
-        std::atomic< uint32_t > len{0};
+        std::atomic< uint64_t > packed{k_free};
     };
     static_assert(sizeof(Slot) == 64, "Slot must be cache-line sized");
     static_assert(std::atomic< uint64_t >::is_always_lock_free);
-    static_assert(std::atomic< uint32_t >::is_always_lock_free);
 
     // Shadow completion log: records recently completed writes for Phase 2 detection.
-    // Not cache-line padded — only accessed by the resync reader (completed_since) and
-    // I/O completion threads (untrack). seq provides the synchronization point: producers
-    // write lba/len then store seq(release); the reader acquires on seq before reading
-    // lba/len, so no additional padding is needed between the fields.
+    // Not cache-line padded — slots (16 KiB) + padded shadow (32 KiB) would exceed L1D
+    // on 32 KiB cores; keeping shadow entries dense (24 bytes) holds the combined working
+    // set within L1D on all server-class microarchitectures.
     //
     // Sized to 4× the main slot count so the ring overflows only when more than
     // 4×qdepth writes complete during a single __copy_region() call.
@@ -190,12 +180,17 @@ private:
         std::atomic< uint64_t > seq{0};
     };
 
+    [[nodiscard]] uint64_t pack(uint64_t lba, uint32_t len) const noexcept {
+        return ((lba / _chunk_size) << 32) | (len / _chunk_size);
+    }
+
     std::vector< Slot > _slots;
     std::vector< ShadowEntry > _shadow;
     // Wraps at 2^64. Unsigned wraparound is well-defined; completed_since() uses subtraction
     // (head_now - gen_before) which remains correct across a wrap. At 1M IOPS the counter
     // saturates in ~584,000 years.
     std::atomic< uint64_t > _shadow_head{0};
+    uint32_t _chunk_size;
 };
 
 } // namespace ublkpp::raid1
