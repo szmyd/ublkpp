@@ -92,6 +92,11 @@ public:
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
+    // Returns the raw backing file descriptor for use by out-of-band io_uring rings (e.g. the
+    // resync task's dedicated ring). Returns -1 for composite disks and test mocks that have
+    // no single underlying fd; callers fall back to sync_iov in that case.
+    virtual int backend_fd() const noexcept { return -1; }
+
     // Returned by prepare(). Carries the file descriptors to register in the queue's io_uring
     // fixed-file table and the maximum number of SQEs this disk may submit for a single user I/O.
     // The target uses max_sqes_per_io to pre-reserve async_io::_pool at queue-init time so that

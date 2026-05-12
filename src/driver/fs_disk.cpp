@@ -64,6 +64,8 @@ public:
 
     std::string id() const noexcept override { return _path.native(); }
 
+    int backend_fd() const noexcept override { return _fd; }
+
     prepare_result prepare(ublksrv_queue const*, int const) override;
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;

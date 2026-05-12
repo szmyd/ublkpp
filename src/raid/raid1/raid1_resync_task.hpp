@@ -6,6 +6,8 @@
 #include <sys/uio.h>
 #include <thread>
 
+#include <liburing.h>
+
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
 #include "region_tracker.hpp"
@@ -16,16 +18,17 @@ namespace ublkpp::raid1 {
 using namespace std::chrono_literals;
 constexpr auto k_state_spin_time = 50us;
 constexpr uint32_t k_default_slot_count = 256;
+// Depth of the dedicated resync io_uring ring: 2 SQEs per linked READ→WRITE pair + headroom.
+constexpr uint32_t k_resync_ring_depth = 4;
 
 class Bitmap;
 class MirrorDevice;
 
 // State transitions:
 //   IDLE → ACTIVE (launch())
-//   ACTIVE ⟷ SLEEPING (yield for I/O)
-//   any → STOPPING (shutdown requested)
+//   ACTIVE → STOPPING (stop() requested; io_uring wait_timeout provides the yield point)
 //   STOPPING → IDLE (shutdown complete)
-ENUM(resync_state, uint32_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, STOPPING = 3);
+ENUM(resync_state, uint32_t, IDLE = 0, ACTIVE = 1, STOPPING = 2);
 
 // State transition actions for __transition_to helper
 enum class transition_action : uint8_t {
@@ -78,7 +81,15 @@ class Raid1ResyncTask {
         return _state.compare_exchange_weak(expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
     }
 
-    resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept;
+    resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov, io_uring* ring, int clean_fd,
+                       int dirty_fd) noexcept;
+
+    // Submits a linked READ_FIXED → WRITE_FIXED pair to the dedicated resync ring and waits
+    // for both CQEs. The kernel executes the write immediately after the read without a
+    // userspace round-trip. buf must be the buffer registered at index 0 via
+    // io_uring_register_buffers.
+    io_result __copy_region_async(io_uring& ring, int clean_fd, int dirty_fd, void* buf, uint32_t len,
+                                  uint64_t addr) noexcept;
 
     // Generic state transition helper - reduces duplication across launch/stop.
     // noinline: gcov attributes inlined template instructions to the call-site line numbers
@@ -89,7 +100,10 @@ class Raid1ResyncTask {
     void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                 std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
 
-    resync_state __yield(std::chrono::microseconds const yield_for, std::chrono::microseconds const spin_time) noexcept;
+    // Increments _yield_count (so tests can observe sweep completion) and returns the current
+    // state. No sleep, no state transition — the io_uring submit_and_wait_timeout call in the
+    // copy loop provides natural I/O backpressure.
+    resync_state __yield() noexcept;
 
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
