@@ -20,15 +20,30 @@ using namespace ublkpp::raid1;
 // With per-region tracking, resync skips exactly the conflicting chunks via Phase 1 and
 // Phase 2 overlap checks; unrelated chunks in the same dirty run may still be copied.
 //
-// Detection: IO threads bracket writes_in_flight around enqueue/dequeue.  The device_b
-// write mock converts the raw disk address back to a logical offset (by subtracting
-// _offset = Bitmap::page_size()) and flags a violation if that offset falls inside the
-// write range and writes_in_flight > 0.
+// Detection: IO threads bracket writes_in_flight around enqueue/dequeue.  The device_a
+// read mock (which runs immediately after Phase 1) converts the raw disk address back to
+// a logical offset and flags a violation if writes_in_flight > 0 for that range — meaning
+// Phase 1 should have caught the overlap but returned false instead.
 //
 // TSAN is the authoritative signal for data races on the RegionTracker itself.
 TEST(Raid1Concurrency, EnqueueDequeueRace) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
+
+    // IO threads write to this LBA range; resync must not copy it while writes are in-flight.
+    // Each thread uses its own LBA range [tid * io_size, (tid+1) * io_size) so that no two
+    // threads ever have concurrent in-flight writes to the same LBA — which would violate
+    // block-device ordering and trigger spurious CAS failures in RegionTracker::untrack().
+    constexpr uint32_t io_size = 512 * Ki;
+    constexpr int k_n_threads = 4;
+
+    // Per-thread in-flight counters; indexed by tid = logical_off / io_size.
+    std::array< std::atomic< int >, k_n_threads > thread_in_flight{};
+    for (auto& c : thread_in_flight)
+        c.store(0, std::memory_order_relaxed);
+
+    std::atomic< bool > overlap_detected{false};
+    std::atomic< bool > resync_started{false};
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
@@ -51,21 +66,6 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
-
-    // IO threads write to this LBA range; resync must not copy it while writes are in-flight.
-    // Each thread uses its own LBA range [tid * io_size, (tid+1) * io_size) so that no two
-    // threads ever have concurrent in-flight writes to the same LBA — which would violate
-    // block-device ordering and trigger spurious CAS failures in RegionTracker::untrack().
-    constexpr uint32_t io_size = 512 * Ki;
-    constexpr int k_n_threads = 4;
-
-    // Per-thread in-flight counters; indexed by tid = logical_off / io_size.
-    std::array< std::atomic< int >, k_n_threads > thread_in_flight{};
-    for (auto& c : thread_in_flight)
-        c.store(0, std::memory_order_relaxed);
-
-    std::atomic< bool > overlap_detected{false};
-    std::atomic< bool > resync_started{false};
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
