@@ -282,6 +282,10 @@ io_result Raid1ResyncTask::__copy_region_async(io_uring& ring, int clean_fd, int
         RLOGE("Resync io_uring read failed: {}", strerror(-read_res))
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
+    if (read_res != static_cast< int >(len)) {
+        RLOGE("Resync io_uring short read: {} of {} bytes", read_res, len)
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
     if (write_res < 0) {
         RLOGE("Resync io_uring write failed: {}", strerror(-write_res))
         return std::unexpected(std::make_error_condition(std::errc::io_error));

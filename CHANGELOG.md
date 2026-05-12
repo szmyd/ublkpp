@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.32.0 feat(raid1): async resync via dedicated io_uring ring
+- Replace blocking `preadv2`/`pwritev2` resync copies with a per-launch `io_uring` ring
+  submitting linked `READ_FIXED → WRITE_FIXED` SQE pairs. The kernel chains the write
+  immediately after the read with a single `io_uring_enter()` syscall; no userspace
+  round-trip between the two operations. Expected throughput improvement: 10×–40× over
+  the previous synchronous path.
+- Fixed buffer registration (`io_uring_register_buffers`) pins the resync buffer at ring
+  init, eliminating per-I/O memory-pinning overhead (~2–10 µs/op).
+- `SLEEPING` state removed. `stop()` CASes `ACTIVE→STOPPING` directly; the 500 µs
+  `submit_and_wait_timeout` in the copy loop provides the natural yield/check point.
+- `backend_fd()` virtual method added to `ublk_disk`; `FSDisk` overrides to return its
+  backing fd. Non-FSDisk disks (composites, mocks) return -1 and fall back to `sync_iov`.
+- Per-launch ring lifecycle: ring created in `_start()`, destroyed after `__run()` returns,
+  ensuring a clean ring on each launch/stop/relaunch cycle.
+
 ## 0.31.0 raid1: replace global PAUSE with lock-free per-region write tracker
 - Replace global `PAUSE` state with `RegionTracker`: a lock-free flat slot array that tracks
   `(lba, len)` of each in-flight write. Resync now yields only for chunks that actually conflict
@@ -14,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `resync_skip_from` cursor + `next_dirty_after()`: prevents low-LBA dirty runs from starving
   higher-LBA runs under sustained write pressure.
 - Remove `PAUSE` state, `__pause()`, and `sisl::atomic_status_counter`; replace with plain
-  `std::atomic<resync_state>` (4 states: IDLE, ACTIVE, SLEEPING, STOPPING).
+  `std::atomic<resync_state>` (3 states: IDLE, ACTIVE, STOPPING; SLEEPING removed in 0.32.0).
 - `copies_left` budget consumed only by actual copy attempts; Phase 1 skips are free.
 
 ## 0.30.0 refactor: async coroutine I/O, public API 1.0.0 uplift, and RAID1 hardening

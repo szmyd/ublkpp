@@ -247,11 +247,9 @@ TEST(AsyncResyncIoUring, FallbackWhenNoFd) {
             if (iovecs->iov_base) memset(iovecs->iov_base, 0, iovecs->iov_len);
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
-    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
-            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-        });
+    // Resync only writes to the dirty mirror — the clean mirror must never be the write target.
+    // Times(0) catches argument-swap bugs (e.g. swapped clean/dirty in a future refactor).
+    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_WRITE, _, _, _)).Times(0);
     EXPECT_CALL(*device_dirty, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
