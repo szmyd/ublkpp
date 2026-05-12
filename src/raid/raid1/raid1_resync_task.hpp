@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "metrics/ublk_raid_metrics.hpp"
+#include "raid1_superblock.hpp"
 #include "region_tracker.hpp"
 #include "ublkpp/raid.hpp"
 
@@ -14,6 +15,7 @@ namespace ublkpp::raid1 {
 
 using namespace std::chrono_literals;
 constexpr auto k_state_spin_time = 50us;
+constexpr uint32_t k_default_slot_count = 256;
 
 class Bitmap;
 class MirrorDevice;
@@ -91,7 +93,7 @@ class Raid1ResyncTask {
 
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
-                    uint32_t slot_count = 256, uint32_t chunk_size = 32768,
+                    uint32_t slot_count = k_default_slot_count, uint32_t chunk_size = k_min_chunk_size,
                     std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
     ~Raid1ResyncTask() noexcept;
 
