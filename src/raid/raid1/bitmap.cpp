@@ -332,48 +332,9 @@ uint64_t Bitmap::dirty_data_est() const noexcept {
     return _dirty_chunks_est.load(std::memory_order_relaxed) * _chunk_size;
 }
 
-std::pair< uint64_t, uint32_t > Bitmap::next_dirty() noexcept {
-    uint32_t sz = 0;
-    uint64_t logical_off = 0;
-
-    // Jump directly to the next page marked dirty in the SuperBitmap.
-    for (auto pg_off = _super_bitmap.next_set_bit(0); pg_off < _num_pages;
-         pg_off = _super_bitmap.next_set_bit(pg_off + 1)) {
-        sz = 0;
-        auto page = _page_map[pg_off].page.load(std::memory_order_acquire);
-        DEBUG_ASSERT(page, "SuperBitmap invariant violated: bit {} set but page is null", pg_off);
-        if (!page) {
-            RLOGW("SuperBitmap invariant violated: bit {} set but page is null", pg_off)
-            continue;
-        }
-        logical_off = static_cast< uint64_t >(_page_width) * pg_off;
-
-        // Find the first dirty word
-        uint64_t word = 0;
-        for (auto word_off = 0U; (k_page_size / sizeof(word_t)) > word_off; ++word_off) {
-            word = be64toh(std::atomic_ref< word_t >(*(page + word_off)).load(std::memory_order_relaxed));
-            if (0 == word) continue;
-            logical_off += (word_off * bits_in_word * _chunk_size); // Adjust for word
-
-            // How long does the dirt stretch?
-            auto set_bit = std::countl_zero(word);
-            logical_off += set_bit * _chunk_size; // Adjust for bit within word
-            // Consume as many consecutive set-bits as we can in the rest of the word
-            while ((static_cast< int >(bits_in_word) > set_bit) && ((word >> (bits_in_word - (set_bit++) - 1)) & 0b1)) {
-                sz += _chunk_size;
-            }
-            break;
-            // TODO Test if IO is under load
-        }
-        if (_data_size < (logical_off + sz)) sz = (_data_size - logical_off);
-        break;
-    }
-    return std::make_pair(logical_off, sz);
-}
-
-// Scan for the first dirty chunk at or after min_lba. Mirrors next_dirty() but skips pages
-// whose base LBA is entirely below min_lba, and within the starting page masks bits for chunks
-// before min_lba. Returns {0, 0} if no dirty run exists at or after min_lba.
+// Scan for the first dirty chunk at or after min_lba. With min_lba=0 this is equivalent to
+// the old next_dirty(): scans from page 0 with no bit masking. Returns {0, 0} if no dirty
+// run exists at or after min_lba.
 std::pair< uint64_t, uint32_t > Bitmap::next_dirty_after(uint64_t min_lba) noexcept {
     uint32_t const min_pg = static_cast< uint32_t >(min_lba / _page_width);
 
