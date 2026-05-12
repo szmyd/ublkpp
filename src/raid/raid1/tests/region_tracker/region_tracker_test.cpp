@@ -287,3 +287,51 @@ TEST(RegionTracker, ConcurrentUntrack_CompletedSince_NoFalseNegatives) {
            "(multi-producer race: two threads wrote to the same shadow slot)";
     EXPECT_TRUE(tracker.all_free());
 }
+
+// --- chunk_size=512 tests: realistic granularity ---
+// All LBA/len values are multiples of 512. These exercise the chunk arithmetic
+// (division by 512 and 32-bit shift in pack()) with production-like granularity.
+static constexpr uint32_t k_chunk512 = 512;
+
+TEST(RegionTracker, Chunk512_ExactOverlap) {
+    RegionTracker tracker(16, k_chunk512);
+    tracker.track(0, 512);
+    EXPECT_TRUE(tracker.overlaps(0, 512));
+    tracker.untrack(0, 512);
+    EXPECT_FALSE(tracker.overlaps(0, 512));
+    EXPECT_TRUE(tracker.all_free());
+}
+
+TEST(RegionTracker, Chunk512_AdjacentNoOverlap) {
+    RegionTracker tracker(16, k_chunk512);
+    tracker.track(1024, 512);                  // [1024, 1536) = chunks [2, 3)
+    EXPECT_FALSE(tracker.overlaps(0, 1024));   // [0, 1024) = chunks [0, 2) — adjacent left
+    EXPECT_FALSE(tracker.overlaps(1536, 512)); // [1536, 2048) = chunks [3, 4) — adjacent right
+    EXPECT_TRUE(tracker.overlaps(512, 1024));  // [512, 1536) = chunks [1, 3) — overlaps
+}
+
+TEST(RegionTracker, Chunk512_MultiChunkRange) {
+    RegionTracker tracker(16, k_chunk512);
+    // Track a 4-chunk range: [2048, 4096) = chunks [4, 8)
+    tracker.track(2048, 2048);
+    EXPECT_TRUE(tracker.overlaps(0, 2560));     // [0, 2560) = chunks [0, 5) — overlaps at chunk 4
+    EXPECT_TRUE(tracker.overlaps(3584, 1024));  // [3584, 4608) = chunks [7, 9) — overlaps at chunk 7
+    EXPECT_FALSE(tracker.overlaps(0, 2048));    // [0, 2048) = chunks [0, 4) — adjacent left
+    EXPECT_FALSE(tracker.overlaps(4096, 1024)); // [4096, 5120) = chunks [8, 10) — adjacent right
+    tracker.untrack(2048, 2048);
+    EXPECT_TRUE(tracker.all_free());
+}
+
+TEST(RegionTracker, Chunk512_CompletedSince) {
+    RegionTracker tracker(16, k_chunk512);
+    auto const gen = tracker.snapshot_gen();
+
+    tracker.track(4096, 1024); // [4096, 5120) = chunks [8, 10)
+    tracker.untrack(4096, 1024);
+
+    EXPECT_TRUE(tracker.completed_since(4096, 1024, gen)); // exact match
+    EXPECT_TRUE(tracker.completed_since(3584, 1024, gen)); // partial overlap left
+    EXPECT_TRUE(tracker.completed_since(4608, 512, gen));  // partial overlap right
+    EXPECT_FALSE(tracker.completed_since(0, 4096, gen));   // [0, 4096) = chunks [0, 8) — adjacent
+    EXPECT_FALSE(tracker.completed_since(5120, 512, gen)); // [5120, 5632) = chunks [10, 11) — adjacent
+}
