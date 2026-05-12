@@ -315,9 +315,9 @@ TEST_F(AsyncRaid1Fixture, ResyncStopTerminatesWithoutDeadlock) {
     stopper.join(); // stop() must return; if it deadlocks the test hangs and fails
 }
 
-// An async write submitted while resync is running causes resync to pause (via enqueue_write /
-// __pause) until the write completes (dequeue_write). After the write CQE arrives, resync
-// resumes and clears all remaining dirty regions.
+// An async write submitted while resync is running registers its LBA range in the region
+// tracker. Resync skips the conflicting chunk until the write completes (dequeue_write).
+// After the write CQE arrives, resync retries and clears all remaining dirty regions.
 TEST_F(AsyncRaid1Fixture, ResyncBlockedByOutstandingWrites) {
     // Degrade and dirty 3 regions.
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
@@ -354,7 +354,7 @@ TEST_F(AsyncRaid1Fixture, ResyncBlockedByOutstandingWrites) {
     for (uint32_t i = 0; i + 1 < pending.value(); ++i)
         EXPECT_TRUE(mock->inject_cqe(10, 32 * Ki).empty());
 
-    // Complete the final cqe_state → dequeue_write() → resync transitions PAUSE→ACTIVE.
+    // Complete the final cqe_state → dequeue_write() → resync retries the conflicting chunk.
     auto comp = mock->inject_cqe(10, 32 * Ki);
     ASSERT_EQ(comp.size(), 1u);
 

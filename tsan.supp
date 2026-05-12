@@ -27,3 +27,13 @@ race:ublkpp::raid1::Raid1Disk::__capture_route_state
 # GMock's expectation management is not thread-safe by design, but our
 # tests set up expectations on the main thread before concurrent access
 race:testing::internal::FunctionMocker
+
+# MultipleAPICallersDuringSwap: false heap-use-after-free from __capture_route_state's
+# hidden refcount increment. __capture_route_state() (no_sanitize_thread) copies a
+# MirrorDevice shared_ptr without TSAN visibility; its RouteState destructor
+# (also no_sanitize_thread) drops the reference invisibly. The corresponding
+# MirrorDevice::~MirrorDevice() IS TSAN-instrumented and decrements TestDisk's control
+# block — making TSAN see one fewer increment than decrement and report use-after-free
+# when old_dev / device_b destruct at function exit. This is a false positive caused by
+# the deliberately accepted __capture_route_state race documented above.
+race:Raid1Concurrency_MultipleAPICallersDuringSwap_Test::TestBody

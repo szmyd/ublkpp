@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.31.0 raid1: replace global PAUSE with lock-free per-region write tracker
+- Replace global `PAUSE` state with `RegionTracker`: a lock-free flat slot array that tracks
+  `(lba, len)` of each in-flight write. Resync now yields only for chunks that actually conflict
+  with an in-flight write; unrelated regions copy without any yield.
+- Two-phase conflict check: Phase 1 (`overlaps()`) before copy, Phase 2 (`overlaps()` +
+  `completed_since()`) after copy. Shadow completion ring closes the race where a write arrives
+  and completes entirely during the READ window.
+- `resync_skip_from` cursor + `next_dirty_after()`: prevents low-LBA dirty runs from starving
+  higher-LBA runs under sustained write pressure.
+- Remove `PAUSE` state, `__pause()`, and `sisl::atomic_status_counter`; replace with plain
+  `std::atomic<resync_state>` (4 states: IDLE, ACTIVE, SLEEPING, STOPPING).
+- `copies_left` budget consumed only by actual copy attempts; Phase 1 skips are free.
+
 ## 0.30.0 refactor: async coroutine I/O, public API 1.0.0 uplift, and RAID1 hardening
  - Async I/O (Phases 1-11):
    - cqe_state pool per queue; raw cqe_state* encoded directly in SQE user_data
