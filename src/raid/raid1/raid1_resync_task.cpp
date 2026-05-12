@@ -326,7 +326,9 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
                 RLOGW("Resync blocked: dirty mirror unreachable for ~{}s (probe reads failing) [{}]",
                       consecutive_unavail * SISL_OPTIONS["avail_delay"].as< uint32_t >(), *dirty_mirror->disk)
             }
-            // Always sleep unavail_delay, checking STOPPING each tick.
+            // Sleep unavail_delay, checking STOPPING each tick.
+            // Always re-read state after the loop: if unavail_delay==0 (e.g. in tests)
+            // the inner while never runs and the STOPPING check inside never fires.
             {
                 auto const unavail_end = std::chrono::steady_clock::now() + unavail_delay;
                 while (std::chrono::steady_clock::now() < unavail_end) {
@@ -336,6 +338,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
                     }
                     std::this_thread::sleep_for(avail_delay);
                 }
+                if (resync_state::STOPPING != cur_state) cur_state = __load_state();
             }
             _yield_count.fetch_add(1, std::memory_order_relaxed);
             if (resync_state::STOPPING == cur_state) break;

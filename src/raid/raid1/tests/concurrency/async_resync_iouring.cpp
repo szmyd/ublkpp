@@ -247,9 +247,16 @@ TEST(AsyncResyncIoUring, FallbackWhenNoFd) {
             if (iovecs->iov_base) memset(iovecs->iov_base, 0, iovecs->iov_len);
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
-    // Resync only writes to the dirty mirror — the clean mirror must never be the write target.
-    // Times(0) catches argument-swap bugs (e.g. swapped clean/dirty in a future refactor).
-    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_WRITE, _, _, _)).Times(0);
+    // The resync task flushes cleared bitmap pages to the clean mirror (clean_region() →
+    // sync_iov WRITE at the bitmap page address, which is < k_data_offset). Data-region
+    // writes must never go to the clean mirror; assert the offset is within metadata.
+    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
+            EXPECT_LT(static_cast< uint64_t >(addr), static_cast< uint64_t >(k_data_offset))
+                << "Only bitmap-page writes allowed to clean mirror; data-region write is a bug";
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
     EXPECT_CALL(*device_dirty, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
