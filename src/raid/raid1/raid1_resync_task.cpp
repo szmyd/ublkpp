@@ -95,8 +95,12 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
                 // Register the full _max_size buffer once; io_uring pins pages at registration
                 // time, eliminating per-I/O memory-pinning overhead (~2–10 µs/op). Each
                 // individual copy uses only the first iov_len bytes of the registered region.
-                io_uring_register_buffers(&ring, &iov, 1);
-                ring_valid = true;
+                if (0 == io_uring_register_buffers(&ring, &iov, 1)) {
+                    ring_valid = true;
+                } else {
+                    RLOGW("Resync io_uring buffer registration failed ({}); falling back to sync I/O", strerror(errno))
+                    io_uring_queue_exit(&ring);
+                }
             } else {
                 RLOGW("Resync io_uring ring init failed ({}); falling back to sync I/O", strerror(errno))
             }
@@ -235,10 +239,13 @@ io_result Raid1ResyncTask::__copy_region_async(io_uring& ring, int clean_fd, int
     // execute the write immediately after the read completes — one io_uring_enter() syscall,
     // no userspace round-trip between the two operations.
     auto* read_sqe = io_uring_get_sqe(&ring);
+    auto* write_sqe = read_sqe ? io_uring_get_sqe(&ring) : nullptr;
+    if (!read_sqe || !write_sqe) {
+        RLOGE("Resync io_uring SQ ring full — ring depth {} too small", k_resync_ring_depth)
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
     io_uring_prep_read_fixed(read_sqe, clean_fd, buf, len, static_cast< int64_t >(addr), 0 /*buf_index*/);
     read_sqe->flags |= IOSQE_IO_LINK;
-
-    auto* write_sqe = io_uring_get_sqe(&ring);
     io_uring_prep_write_fixed(write_sqe, dirty_fd, buf, len, static_cast< int64_t >(addr), 0 /*buf_index*/);
 
     // Short timeout keeps stop() responsive: the resync loop wakes within k_stop_timeout_ns
@@ -249,10 +256,16 @@ io_result Raid1ResyncTask::__copy_region_async(io_uring& ring, int clean_fd, int
     int read_res = 0, write_res = 0;
     for (int cqes_needed = 2; cqes_needed > 0;) {
         io_uring_cqe* cqe = nullptr;
-        auto const r = io_uring_submit_and_wait_timeout(&ring, &cqe, 1,
-                                                        const_cast< __kernel_timespec* >(&k_stop_timeout), nullptr);
+        auto ts = k_stop_timeout;
+        auto const r = io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
         if (r < 0 && r != -ETIME) {
             RLOGE("io_uring_submit_and_wait_timeout: {}", strerror(-r))
+            // Drain any CQEs that completed before the error so the ring stays consistent.
+            io_uring_cqe* stale = nullptr;
+            while (io_uring_peek_cqe(&ring, &stale) == 0 && stale) {
+                io_uring_cqe_seen(&ring, stale);
+                stale = nullptr;
+            }
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         }
         if (cqe == nullptr) continue; // timeout — loop back and re-wait
@@ -295,21 +308,21 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
     while (0 < nr_pages) {
         // Skip copies entirely if the dirty mirror is known unavailable
         if (dirty_mirror->unavail.test(std::memory_order_acquire)) {
-            if (++consecutive_unavail % 10 == 0)
+            if (++consecutive_unavail % 10 == 0) {
                 RLOGW("Resync blocked: dirty mirror unreachable for ~{}s (probe reads failing) [{}]",
                       consecutive_unavail * SISL_OPTIONS["avail_delay"].as< uint32_t >(), *dirty_mirror->disk)
-                // Sleep unavail_delay in small increments, checking STOPPING each tick.
-                // No state transition needed — SLEEPING was removed along with the old pause mechanism.
-                {
-                    auto const unavail_end = std::chrono::steady_clock::now() + unavail_delay;
-                    while (std::chrono::steady_clock::now() < unavail_end) {
-                        if (resync_state::STOPPING == __load_state()) {
-                            cur_state = resync_state::STOPPING;
-                            break;
-                        }
-                        std::this_thread::sleep_for(avail_delay);
+            }
+            // Always sleep unavail_delay, checking STOPPING each tick.
+            {
+                auto const unavail_end = std::chrono::steady_clock::now() + unavail_delay;
+                while (std::chrono::steady_clock::now() < unavail_end) {
+                    if (resync_state::STOPPING == __load_state()) {
+                        cur_state = resync_state::STOPPING;
+                        break;
                     }
+                    std::this_thread::sleep_for(avail_delay);
                 }
+            }
             _yield_count.fetch_add(1, std::memory_order_relaxed);
             if (resync_state::STOPPING == cur_state) break;
             probe_mirror(*dirty_mirror, _offset);

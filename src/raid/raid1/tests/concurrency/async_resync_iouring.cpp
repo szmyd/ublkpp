@@ -40,7 +40,10 @@ std::pair< std::string, int > make_resync_test_file(bool is_device_b = false) {
     }
     auto sb = normal_superblock;
     if (is_device_b) sb.fields.device_b = 1;
-    pwrite(fd, &sb, k_page_size, 0);
+    if (pwrite(fd, &sb, k_page_size, 0) != static_cast< ssize_t >(k_page_size)) {
+        close(fd);
+        return {"", -1};
+    }
     return {std::string(path), fd};
 }
 
@@ -160,8 +163,10 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
     constexpr uint8_t k_pat1 = 0xBB;
     std::vector< uint8_t > chunk0_data(k_chunk_size, k_pat0);
     std::vector< uint8_t > chunk1_data(k_chunk_size, k_pat1);
-    pwrite(clean_raw_fd, chunk0_data.data(), k_chunk_size, k_data_offset);
-    pwrite(clean_raw_fd, chunk1_data.data(), k_chunk_size, k_data_offset + k_chunk_size);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size),
+              pwrite(clean_raw_fd, chunk0_data.data(), k_chunk_size, k_data_offset));
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size),
+              pwrite(clean_raw_fd, chunk1_data.data(), k_chunk_size, k_data_offset + k_chunk_size));
     close(clean_raw_fd);
     close(dirty_raw_fd);
 
