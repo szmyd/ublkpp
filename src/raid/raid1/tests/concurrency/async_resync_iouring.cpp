@@ -421,3 +421,57 @@ TEST(AsyncResyncIoUring, StopAndRelaunch) {
     std::filesystem::remove(clean_path);
     std::filesystem::remove(dirty_path);
 }
+
+// Verify stop() returns promptly when the dirty mirror becomes unavail DURING an active resync
+// sweep — i.e. the __run() unavail sleep loop, not _start()'s pre-ACTIVE unavail check.
+//
+// The existing StopDuringUnavailWait test (stop_during_unavail_wait.cpp) covers _start()'s
+// unavail loop (mirror unavail before launch). This test covers the distinct __run() path:
+//   1. Mirror starts available  → task becomes ACTIVE and enters __run().
+//   2. First write to dirty fails → dirty_mirror->unavail set inside __run().
+//   3. Task enters the unavail sleep loop (checks STOPPING every resync_delay ticks).
+//   4. stop() must complete within one avail_delay window + margin.
+TEST(AsyncResyncIoUring, StopDuringRunUnavail) {
+    auto device_clean = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskClean"});
+    auto device_dirty =
+        std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskDirty", .is_slot_b = true});
+
+    EXPECT_CALL(*device_clean, sync_iov(::testing::_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+
+    // First call: superblock read during MirrorDevice construction — must succeed.
+    // All subsequent calls (copy writes + probe reads): fail to keep the mirror unavail.
+    EXPECT_CALL(*device_dirty, sync_iov(::testing::_, _, _, _))
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return static_cast< int >(iovecs->iov_len);
+        })
+        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        });
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, device_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, device_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_test_file_size - k_data_offset);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+
+    // Wait until at least one sweep completes — by then the write has failed and the task
+    // is spinning in the __run() unavail loop checking STOPPING every resync_delay ticks.
+    while (task.yield_count() < 1)
+        std::this_thread::sleep_for(1ms);
+
+    auto const before = std::chrono::steady_clock::now();
+    task.stop();
+    auto const elapsed = std::chrono::steady_clock::now() - before;
+
+    // The __run() unavail loop checks STOPPING every resync_delay (default 300 µs).
+    // stop() must complete well within avail_delay (default 5 s). Use 10 s for CI margin.
+    EXPECT_LT(elapsed, 10000ms) << "stop() must complete promptly from within the __run() unavail loop";
+}

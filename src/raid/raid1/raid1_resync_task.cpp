@@ -260,11 +260,17 @@ io_result Raid1ResyncTask::__copy_region_async(io_uring& ring, int clean_fd, int
         auto const r = io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
         if (r < 0 && r != -ETIME) {
             RLOGE("io_uring_submit_and_wait_timeout: {}", strerror(-r))
-            // Drain any CQEs that completed before the error so the ring stays consistent.
-            io_uring_cqe* stale = nullptr;
-            while (io_uring_peek_cqe(&ring, &stale) == 0 && stale) {
-                io_uring_cqe_seen(&ring, stale);
-                stale = nullptr;
+            // The SQEs may still be in-flight; peek_cqe misses CQEs that haven't landed yet.
+            // Wait up to 1 s per remaining CQE so the ring is clean before we return.
+            // If a CQE doesn't arrive within that window the ring is considered unrecoverable.
+            constexpr __kernel_timespec k_drain_timeout{.tv_sec = 1, .tv_nsec = 0};
+            for (int to_drain = cqes_needed; to_drain > 0;) {
+                io_uring_cqe* s = nullptr;
+                auto ts = k_drain_timeout;
+                io_uring_submit_and_wait_timeout(&ring, &s, 1, &ts, nullptr);
+                if (!s) break; // no CQE within 1 s: ring is in bad state
+                io_uring_cqe_seen(&ring, s);
+                --to_drain;
             }
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         }
@@ -288,6 +294,10 @@ io_result Raid1ResyncTask::__copy_region_async(io_uring& ring, int clean_fd, int
     }
     if (write_res < 0) {
         RLOGE("Resync io_uring write failed: {}", strerror(-write_res))
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
+    if (write_res != static_cast< int >(len)) {
+        RLOGE("Resync io_uring short write: {} of {} bytes", write_res, len)
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
     return static_cast< size_t >(write_res);
@@ -434,7 +444,8 @@ void Raid1ResyncTask::stop() noexcept {
         case resync_state::STOPPING:
             return {state, transition_action::SUCCESS};
         case resync_state::ACTIVE:
-            return {state, transition_action::RETRY_WITH_SLEEP};
+            // CAS(ACTIVE→STOPPING) succeeds on the very next attempt; no sleep needed.
+            return {state, transition_action::RETRY};
         }
         std::unreachable();
     });
@@ -447,6 +458,11 @@ void Raid1ResyncTask::stop() noexcept {
         std::this_thread::yield();
 }
 
+// Increments _yield_count so tests can observe sweep completion and returns the current state.
+// No sleep — the io_uring submit_and_wait_timeout in the async copy loop provides natural I/O
+// backpressure. On the sync fallback path (__copy_region) there is no inter-sweep delay; callers
+// on that path may see higher CPU under fully-conflicted workloads, which is acceptable because
+// the sync path is used only by composite disks and test mocks, not production FSDisk instances.
 resync_state Raid1ResyncTask::__yield() noexcept {
     _yield_count.fetch_add(1, std::memory_order_relaxed);
     return __load_state();
