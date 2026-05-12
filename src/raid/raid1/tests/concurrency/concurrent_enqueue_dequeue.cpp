@@ -32,7 +32,16 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t raw_addr) -> ublkpp::io_result {
+            resync_started.store(true, std::memory_order_release);
+            // Check immediately after Phase 1 (which runs right before this read).
+            // If thread_in_flight > 0 here, Phase 1 saw a tracked write and must have returned
+            // true — we'd never reach this read. So any in-flight write visible here means
+            // Phase 1 missed it, which is the bug we're testing for.
+            auto const logical_off = static_cast< uint64_t >(raw_addr) - k_page_size;
+            auto const tid = static_cast< int >(logical_off / io_size);
+            if (tid < k_n_threads && thread_in_flight[tid].load(std::memory_order_acquire) > 0)
+                overlap_detected.store(true, std::memory_order_release);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAB, iovecs->iov_len);
             std::this_thread::sleep_for(1ms);
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
@@ -60,15 +69,7 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t raw_addr) -> ublkpp::io_result {
-            resync_started.store(true, std::memory_order_release);
-            // Convert raw disk address to logical offset (subtract the reserved bitmap area).
-            // Determine which thread "owns" this LBA and flag a violation if that thread has
-            // an in-flight write while resync copies it.
-            auto const logical_off = static_cast< uint64_t >(raw_addr) - k_page_size;
-            auto const tid = static_cast< int >(logical_off / io_size);
-            if (tid < k_n_threads && thread_in_flight[tid].load(std::memory_order_acquire) > 0)
-                overlap_detected.store(true, std::memory_order_release);
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             std::this_thread::sleep_for(1ms);
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
