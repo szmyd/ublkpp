@@ -273,11 +273,10 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
             if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
                 // Phase 2: post-copy conflict check. Two cases require skipping clean_region:
-                //   (a) overlaps() — write is still in-flight (len=0 transitional window covers
-                //       the untrack() teardown period)
+                //   (a) overlaps() — write is still in-flight (single CAS slot still holds
+                //       the packed value; k_free is not visible until untrack() completes).
                 //   (b) completed_since() — write arrived AND fully completed during the READ
-                //       window, so its slot was freed before Phase 2 ran; the shadow log
-                //       records the completion for exactly this scenario.
+                //       window; slot freed before Phase 2 ran; shadow log catches this.
                 if (!_region_tracker.overlaps(logical_off, iov_len) &&
                     !_region_tracker.completed_since(logical_off, iov_len, gen_before)) {
                     clean_region(logical_off, iov->iov_len, *clean_mirror);
