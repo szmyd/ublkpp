@@ -10,9 +10,10 @@
 using ublkpp::Ki;
 using ublkpp::raid1::RegionTracker;
 
-// Unit tests use chunk_size=1 (byte granularity) so lba/len values need not be
-// chunk-aligned. Production always uses the superblock chunk_size (default 32 KiB).
-static constexpr uint32_t k_chunk = 1;
+// Unit tests use chunk_size=4 so the chunk arithmetic (division/shift in pack() and
+// overlaps()) is actually exercised. All test LBA/len values are multiples of 4 so
+// no alignment padding is needed. Production uses the superblock chunk_size (32 KiB).
+static constexpr uint32_t k_chunk = 4;
 
 TEST(RegionTracker, EmptyNoOverlap) {
     RegionTracker tracker(16, k_chunk);
