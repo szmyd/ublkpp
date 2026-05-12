@@ -181,7 +181,13 @@ private:
     };
 
     [[nodiscard]] uint64_t pack(uint64_t lba, uint32_t len) const noexcept {
-        return ((lba / _chunk_size) << 32) | (len / _chunk_size);
+        auto const chunk_idx = lba / _chunk_size;
+        // Use ceiling to compute end chunk: a sub-chunk write (len < chunk_size) must occupy
+        // at least 1 chunk; a write spanning a chunk boundary occupies 2+. Floor division
+        // would give chunk_count=0 for sub-chunk writes, making overlaps() return false even
+        // with a slot occupied — causing both Phase 1 and Phase 2 to miss the conflict.
+        auto const chunk_end = (lba + len + _chunk_size - 1) / _chunk_size;
+        return (chunk_idx << 32) | (chunk_end - chunk_idx);
     }
 
     std::vector< Slot > _slots;

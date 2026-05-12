@@ -293,6 +293,30 @@ TEST(RegionTracker, ConcurrentUntrack_CompletedSince_NoFalseNegatives) {
 // (division by 512 and 32-bit shift in pack()) with production-like granularity.
 static constexpr uint32_t k_chunk512 = 512;
 
+// Sub-chunk write: len < chunk_size. pack() must round up to 1 chunk so overlaps()
+// returns true — floor division would give chunk_count=0 and miss the conflict entirely,
+// causing both Phase 1 and Phase 2 to incorrectly allow the resync to proceed.
+TEST(RegionTracker, Chunk512_SubChunkWriteDetected) {
+    RegionTracker tracker(16, k_chunk512);
+    tracker.track(0, 128);                    // 128 < 512: sub-chunk write, must occupy chunk [0, 1)
+    EXPECT_TRUE(tracker.overlaps(0, 512));    // same chunk
+    EXPECT_TRUE(tracker.overlaps(0, 128));    // exact byte range
+    EXPECT_FALSE(tracker.overlaps(512, 512)); // next chunk — no overlap
+    tracker.untrack(0, 128);
+    EXPECT_TRUE(tracker.all_free());
+}
+
+// Sub-chunk write spanning a chunk boundary.
+TEST(RegionTracker, Chunk512_SubChunkCrossBoundary) {
+    RegionTracker tracker(16, k_chunk512);
+    tracker.track(400, 200);                   // [400, 600) spans chunks 0 and 1
+    EXPECT_TRUE(tracker.overlaps(0, 512));     // chunk 0
+    EXPECT_TRUE(tracker.overlaps(512, 512));   // chunk 1
+    EXPECT_FALSE(tracker.overlaps(1024, 512)); // chunk 2 — no overlap
+    tracker.untrack(400, 200);
+    EXPECT_TRUE(tracker.all_free());
+}
+
 TEST(RegionTracker, Chunk512_ExactOverlap) {
     RegionTracker tracker(16, k_chunk512);
     tracker.track(0, 512);
