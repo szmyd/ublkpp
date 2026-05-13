@@ -117,9 +117,9 @@ ublkpp/
 - SuperBitmap optimization for fast initialization
 
 **Resync Features:**
-- Background resync with I/O coordination
-- Atomic counter synchronization between I/O and resync
-- Pause/resume on write operations
+- Background resync with per-region I/O coordination
+- Lock-free write tracking: resync yields only for chunks that conflict with an in-flight write
+- Two-phase conflict check with shadow completion log to close the mid-copy race window
 - Configurable delay intervals
 
 ### RAID10 (Stripe of Mirrors)
