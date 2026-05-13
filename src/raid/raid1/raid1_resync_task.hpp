@@ -2,19 +2,20 @@
 
 #include <atomic>
 #include <chrono>
-#include <thread>
 #include <functional>
+#include <sys/uio.h>
+#include <thread>
 
-#include <sisl/fds/atomic_status_counter.hpp>
-
-#include "ublkpp/raid.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
+#include "region_tracker.hpp"
+#include "ublkpp/raid.hpp"
 
 namespace ublkpp::raid1 {
 
 using namespace std::chrono_literals;
 constexpr auto k_state_spin_time = 50us;
+constexpr uint32_t k_default_slot_count = 256;
 
 class Bitmap;
 class MirrorDevice;
@@ -22,11 +23,9 @@ class MirrorDevice;
 // State transitions:
 //   IDLE → ACTIVE (launch())
 //   ACTIVE ⟷ SLEEPING (yield for I/O)
-//   SLEEPING → PAUSE (I/O started, block resync)
-//   PAUSE → ACTIVE (I/O finished, resync can proceed)
 //   any → STOPPING (shutdown requested)
 //   STOPPING → IDLE (shutdown complete)
-ENUM(resync_state, uint32_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, PAUSE = 3, STOPPING = 4);
+ENUM(resync_state, uint32_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, STOPPING = 3);
 
 // State transition actions for __transition_to helper
 enum class transition_action : uint8_t {
@@ -47,6 +46,10 @@ class Raid1ResyncTask {
     // Global counter for active resyncs across all RAID1 devices
     static inline std::atomic_uint32_t s_active_resyncs{0};
 
+    // Number of times __yield() has been called; used by tests to wait for at least one sweep
+    // without relying on wall-clock timing.
+    std::atomic< uint64_t > _yield_count{0};
+
     std::shared_ptr< raid1::Bitmap > const _dirty_bitmap;
     std::shared_ptr< ublkpp::UblkRaidMetrics > const _metrics;
 
@@ -57,58 +60,32 @@ class Raid1ResyncTask {
     // This is the offset we should copy the disks @ to avoid writing on the BITMAP itself.
     uint64_t const _offset;
 
-    // Packs resync_state (uint32_t status) + outstanding-write count (int32_t counter) into one
-    // 64-bit word operated on with a single lock-free CAS (resync_state is 32-bit so the packed
-    // struct is 8 bytes, natively atomic on x86-64 via CMPXCHG8B). Key guarantee:
-    // dec_xchng_status_ifz() decrements the counter and, only if it reaches zero AND
-    // status==PAUSE, atomically transitions to ACTIVE — eliminating the window where a concurrent
-    // enqueue_write() could see count==0 while state remains PAUSE, early-exit __pause(), and
-    // then race with a __resume() that fires afterward.
-    sisl::atomic_status_counter< resync_state, resync_state::IDLE > _state_and_writes;
-    // Verify that resync_state is still 32-bit so the combined struct stays lock-free.
-    static_assert(
-        [] {
-#pragma pack(1)
-            struct s {
-                int32_t c;
-                resync_state st;
-            };
-#pragma pack()
-            return std::atomic< s >::is_always_lock_free;
-        }(),
-        "_state_and_writes must be lock-free — did resync_state change away from uint32_t?");
+    std::atomic< resync_state > _state{resync_state::IDLE};
+    static_assert(std::atomic< resync_state >::is_always_lock_free);
+
+    // Tracks the LBA range of each in-flight write. Resync checks for overlap before
+    // and after each copy so it only skips regions that actually conflict with a write;
+    // unrelated regions proceed without any global pause.
+    RegionTracker _region_tracker;
+
     std::mutex _launch_lock;
     std::thread _resync_task;
 
-    // State access helpers to eliminate casting noise
-    resync_state __load_state() const noexcept { return _state_and_writes.get_status(); }
+    // State access helpers
+    resync_state __load_state() const noexcept { return _state.load(std::memory_order_acquire); }
 
     bool __cas_state(resync_state& expected, resync_state desired) noexcept {
-        auto const exp = expected;
-        return _state_and_writes.set_atomic_value([&](auto& /*cnt*/, auto& status) {
-            if (status == exp) {
-                status = desired;
-                return true;
-            }
-            expected = status;
-            return false;
-        });
+        return _state.compare_exchange_weak(expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
     }
 
     resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept;
 
-    // Generic state transition helper - reduces duplication across launch/stop/pause.
+    // Generic state transition helper - reduces duplication across launch/stop.
     // noinline: gcov attributes inlined template instructions to the call-site line numbers
     // rather than to the template body, making the entire retry loop appear uncovered.
-    // Unlike __capture_route_state (which reads non-atomic shared_ptrs and must prevent the
-    // compiler from caching them across loop iterations), all state here is accessed through
-    // atomics — so noinline is a coverage tool, not a correctness requirement.
     template < typename StateHandler >
     [[gnu::noinline]] bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
 
-    // This most happen, so we wait till the resync job becomes sleeping, then move it quickly to
-    // PAUSE to prevent any resync opeartions from continuing to run (will block in __yield)
-    void __pause() noexcept;
     void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                 std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
 
@@ -116,6 +93,7 @@ class Raid1ResyncTask {
 
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
+                    uint32_t slot_count = k_default_slot_count, uint32_t chunk_size = k_min_chunk_size,
                     std::shared_ptr< ublkpp::UblkRaidMetrics > metrics = nullptr);
     ~Raid1ResyncTask() noexcept;
 
@@ -131,44 +109,28 @@ public:
     // Generic method to move Resync StateMachine to STOPPING
     void stop() noexcept;
 
-    inline void enqueue_write() noexcept {
-        // Increment first, then establish pause. Safe because the caller submits I/O only after
-        // this function returns, so no disk I/O is in-flight during the increment→pause window.
-        std::ignore = _state_and_writes.set_atomic_value([](auto& cnt, auto& /*status*/) {
-            ++cnt;
-            return true;
-        });
-        // Always call __pause() — not just on the first enqueue. A concurrent first enqueuer may
-        // still be spinning inside __pause() when a second thread increments the counter; skipping
-        // __pause() here would let the second write proceed before PAUSE is established, allowing
-        // resync to overwrite it with stale data. __pause() is cheap when already PAUSE (O(1) CAS).
-        __pause();
-        DEBUG_ASSERT_LT(_state_and_writes.count(), INT32_MAX, "Outstanding Write Count Overflowed!");
-    }
+    void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.track(lba, len); }
 
-    inline void dequeue_write() noexcept {
-        // Release builds: this assert is elided; callers must guarantee balanced enqueue/dequeue
-        // (unbalanced calls cause the counter to go negative, preventing the PAUSE→ACTIVE transition).
-        DEBUG_ASSERT_GT(_state_and_writes.count(), 0, "Outstanding Write Count Underflowed!");
-        // Atomically decrement; if counter hits zero while state is PAUSE, transition to ACTIVE.
-        // This single CAS closes the race where a concurrent enqueue could see old_val==0,
-        // find state still PAUSE (from the prior write), and early-exit __pause() — only for
-        // __resume() to then clear PAUSE before the new write's I/O is submitted.
-        std::ignore = _state_and_writes.dec_xchng_status_ifz(resync_state::PAUSE, resync_state::ACTIVE);
-    }
+    void dequeue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.untrack(lba, len); }
+
+    // Number of times __yield() has been called. Tests poll this to wait for at least one
+    // resync sweep without relying on wall-clock timing.
+    uint64_t yield_count() const noexcept { return _yield_count.load(std::memory_order_acquire); }
 };
 
 // RAII guard that calls enqueue_write() on construction and dequeue_write() on destruction.
 // Call release() to dequeue early (e.g. at a specific co_await point in a coroutine).
 class ResyncWriteGuard {
 public:
-    explicit ResyncWriteGuard(Raid1ResyncTask& task) noexcept : _task(&task) { _task->enqueue_write(); }
+    ResyncWriteGuard(Raid1ResyncTask& task, uint64_t lba, uint32_t len) noexcept : _task(&task), _lba(lba), _len(len) {
+        _task->enqueue_write(_lba, _len);
+    }
     ~ResyncWriteGuard() noexcept {
-        if (_task) _task->dequeue_write();
+        if (_task) _task->dequeue_write(_lba, _len);
     }
     void release() noexcept {
         if (_task) {
-            _task->dequeue_write();
+            _task->dequeue_write(_lba, _len);
             _task = nullptr;
         }
     }
@@ -179,6 +141,8 @@ public:
 
 private:
     Raid1ResyncTask* _task;
+    uint64_t _lba;
+    uint32_t _len;
 };
 
 } // namespace ublkpp::raid1
