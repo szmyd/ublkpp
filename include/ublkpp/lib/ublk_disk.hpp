@@ -82,7 +82,7 @@ public:
     // Callers (e.g. Raid0Disk) may pass a pointer to a loop-local iovec that is destroyed after
     // start() returns; any access past the first suspension point is a use-after-free.
     virtual disk_task< int > async_iov(ublksrv_queue const* /*q*/, ublk_io_data const* /*data*/, iovec* /*iovecs*/,
-                                       uint32_t /*nr_vecs*/, uint64_t /*addr*/) {
+                                       uint32_t /*nr_vecs*/, uint64_t /*addr*/) noexcept {
         RELEASE_ASSERT(_is_missing, "async_iov() called on a non-missing ublk_disk that did not override");
         co_return -EIO;
     }

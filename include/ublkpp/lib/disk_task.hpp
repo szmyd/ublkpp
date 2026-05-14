@@ -43,7 +43,7 @@ struct disk_task {
         final_awaiter final_suspend() noexcept { return {}; }
 
         void return_value(T v) noexcept { _value = v; }
-        [[noreturn]] void unhandled_exception() { throw; }
+        [[noreturn]] void unhandled_exception() noexcept { std::terminate(); }
     };
 
     std::coroutine_handle< promise_type > _coro;

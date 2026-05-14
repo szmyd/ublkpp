@@ -79,7 +79,8 @@ static void submit_probe_timeout(ublksrv_queue const* q) {
         __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
         // clang-format on
         io_uring_prep_timeout(sqe, &ts, 0, 0);
-        sqe->user_data = k_target_bit; // null-pointer sentinel: probe CQE, no cqe_state
+        io_uring_sqe_set_data64(sqe,
+                                sisl::async::encode_managed_user_data(nullptr)); // sentinel: probe CQE, no cqe_state
         io_uring_submit(q->ring_ptr);
     }
 }
@@ -107,8 +108,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
         int count{0};
         int probe_count{0}; // probe timeout CQEs must not count as work for ublksrv_queue_update_idle
         io_uring_for_each_cqe(ring, head, cqe) {
-            if (cqe->user_data & k_target_bit) {
-                auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
+            if (sisl::async::is_managed_user_data(cqe->user_data)) {
+                auto* state = static_cast< cqe_state* >(sisl::async::decode_managed_user_data(cqe->user_data));
                 if (!state) {
                     // probe timeout CQE — only ETIME triggers a probe tick; other results ignored.
                     // Excluded from io_count: counting it as work triggers idle_exit, setting
@@ -119,15 +120,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                         if (qs->is_idle) submit_probe_timeout(q);
                     }
                 } else {
-                    // target io_uring CQE — user_data is a raw cqe_state* | k_target_bit
-                    state->_result = cqe->res;
-                    state->_result_ready = true;
-                    try {
-                        if (auto h = std::exchange(state->_waiter, {})) h.resume(); // per-state resume (disk_task path)
-                    } catch (std::exception const& e) {
-                        TLOGE("I/O threw exception: [{}]", e.what())
-                        if (state->_owner) ublksrv_complete_io(q, state->_owner->_tag, -EIO);
-                    }
+                    // target io_uring CQE — resume the coroutine waiting on this state
+                    sisl::async::complete_cqe_state(*state, cqe->res);
                 }
             } else {
                 // ublk command CQE (FETCH/COMMIT) -- delegate to libublksrv

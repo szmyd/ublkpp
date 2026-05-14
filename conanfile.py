@@ -68,7 +68,7 @@ class UBlkPPConan(ConanFile):
         self.test_requires("fio/nbi.3.28")
 
     def requirements(self):
-        self.requires("sisl/[^14.0]@oss/dev", transitive_headers=True)
+        self.requires("sisl/[^14.2]@oss/dev", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
         self.requires("ublksrv/nbi.1.5.0.1", transitive_headers=True)

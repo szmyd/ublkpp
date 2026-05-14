@@ -49,7 +49,7 @@ public:
     MOCK_METHOD(io_result, sync_iov, (uint8_t, iovec*, uint32_t, off_t offset), (override, noexcept));
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
-                               uint64_t addr) override {
+                               uint64_t addr) noexcept override {
         auto* io = reinterpret_cast< async_io* >(data->private_data);
         auto res = submit_iov(q, data, iovecs, nr_vecs, addr);
         if (!res) co_return -static_cast< int >(res.error().value());

@@ -106,8 +106,8 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
 }
 
 void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out) {
-    if (!(cqe->user_data & k_target_bit)) return (void)io_uring_cqe_seen(&_ring, cqe);
-    auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
+    if (!sisl::async::is_managed_user_data(cqe->user_data)) return (void)io_uring_cqe_seen(&_ring, cqe);
+    auto* state = static_cast< cqe_state* >(sisl::async::decode_managed_user_data(cqe->user_data));
     if (!state || !state->_owner) return (void)io_uring_cqe_seen(&_ring, cqe);
     int const tag = state->_owner->_tag;
     int const res = cqe->res;
@@ -115,10 +115,7 @@ void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out)
     // Consume the CQE immediately so peek sees the next one
     io_uring_cqe_seen(&_ring, cqe);
 
-    state->_result = res;
-    state->_result_ready = true;
-
-    if (auto h = std::exchange(state->_waiter, {})) h.resume();
+    sisl::async::complete_cqe_state(*state, res);
     auto& opt = _async_tasks[tag];
     if (opt && opt->done()) out.push_back({tag, opt->result()});
 }
@@ -140,9 +137,7 @@ std::vector< MockUblksrv::Completion > MockUblksrv::inject_cqe(int tag, int resu
         if (opt && opt->done()) out.push_back({tag, opt->result()});
         return out;
     }
-    target->_result = result;
-    target->_result_ready = true;
-    if (auto h = std::exchange(target->_waiter, {})) h.resume();
+    sisl::async::complete_cqe_state(*target, result);
     if (opt && opt->done()) out.push_back({tag, opt->result()});
     return out;
 }

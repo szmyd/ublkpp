@@ -57,7 +57,7 @@ public:
     prepare_result prepare(ublksrv_queue const*, int const iouring_device) override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
-                               uint64_t addr) override;
+                               uint64_t addr) noexcept override;
 
     void probe_tick(ublksrv_queue const* q) noexcept override;
 
@@ -235,7 +235,7 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 }
 
 disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
-                                      uint64_t addr) {
+                                      uint64_t addr) noexcept {
     auto const op = ublksrv_get_op(data->iod);
 
     if (op == UBLK_IO_OP_FLUSH) co_return 0;

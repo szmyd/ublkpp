@@ -706,7 +706,7 @@ Raid1Disk::WriteBackupMode Raid1Disk::__compute_backup_mode(RouteState const& st
 }
 
 disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
-                                      uint64_t addr) {
+                                      uint64_t addr) noexcept {
     auto const op = ublksrv_get_op(data->iod);
     auto const len = static_cast< uint32_t >(iovec_len(iovecs, iovecs + nr_vecs));
 

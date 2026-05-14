@@ -71,10 +71,8 @@ TEST(BuildCqeStateData, RegistersStateInPool) {
     ublk_io_data fake{};
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
-    // bit 63 marks it as a target SQE
-    EXPECT_NE(user_data & (1ULL << 63), 0ULL);
-    // lower bits decode to the registered cqe_state
-    auto* decoded = reinterpret_cast< ublkpp::cqe_state* >(user_data & ~(1ULL << 63));
+    EXPECT_TRUE(sisl::async::is_managed_user_data(user_data));
+    auto* decoded = static_cast< ublkpp::cqe_state* >(sisl::async::decode_managed_user_data(user_data));
     ASSERT_EQ(io._pool.size(), 1u);
     EXPECT_EQ(decoded, &io._pool.front());
     EXPECT_EQ(state, decoded);
@@ -98,7 +96,7 @@ TEST(BuildCqeStateData, ReturnedPointerMatchesDecodedUserData) {
     ublk_io_data fake{};
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
-    auto* decoded = reinterpret_cast< ublkpp::cqe_state* >(user_data & ~(1ULL << 63));
+    auto* decoded = static_cast< ublkpp::cqe_state* >(sisl::async::decode_managed_user_data(user_data));
     EXPECT_EQ(state, decoded);
 }
 
@@ -109,42 +107,26 @@ TEST(BuildCqeStateData, ReturnedPointerMatchesDecodedUserData) {
 // Coroutine that co_awaits *state and writes the result to *out.
 static FireAndForget await_cqe_and_capture(ublkpp::cqe_state* state, int* out) { *out = co_await *state; }
 
-TEST(cqe_state, AwaitReadyFalseWhenNotReady) {
-    ublkpp::async_io io{};
-    ublkpp::cqe_state state{._owner = &io, ._result_ready = false};
-    EXPECT_FALSE(state.await_ready());
-}
-
-TEST(cqe_state, AwaitReadyTrueWhenReady) {
-    ublkpp::async_io io{};
-    ublkpp::cqe_state state{._owner = &io, ._result_ready = true};
-    EXPECT_TRUE(state.await_ready());
-}
-
-TEST(cqe_state, AwaitResumeReturnsResult) {
-    ublkpp::async_io io{};
-    ublkpp::cqe_state state{._owner = &io, ._result = 42, ._result_ready = true};
-    EXPECT_EQ(state.await_resume(), 42);
-}
-
 TEST(cqe_state, AwaitSuspendInstallsWaiterInState) {
     ublkpp::async_io io{};
-    ublkpp::cqe_state state{._owner = &io, ._result_ready = false};
+    ublkpp::cqe_state state{};
+    state._owner = &io;
     EXPECT_FALSE(state._waiter);
     int captured = -1;
     await_cqe_and_capture(&state, &captured); // suspends; installs handle in state._waiter
     ASSERT_TRUE(state._waiter);
     EXPECT_EQ(captured, -1); // not resumed yet
 
-    state._result = 7;
-    state._result_ready = true;
-    state._waiter.resume(); // triggers await_resume() -> captured = 7
+    sisl::async::complete_cqe_state(state, 7); // writes _result, _result_ready, resumes _waiter
     EXPECT_EQ(captured, 7);
 }
 
 TEST(cqe_state, FastPathSkipsSuspendWhenAlreadyReady) {
     ublkpp::async_io io{};
-    ublkpp::cqe_state state{._owner = &io, ._result = 55, ._result_ready = true};
+    ublkpp::cqe_state state{};
+    state._owner = &io;
+    state._result = 55;
+    state._result_ready = true;
     int captured = -1;
     await_cqe_and_capture(&state, &captured); // await_ready=true -> no suspension
     EXPECT_FALSE(state._waiter);

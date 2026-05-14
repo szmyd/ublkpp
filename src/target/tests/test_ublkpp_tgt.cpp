@@ -27,9 +27,8 @@ TEST(cqe_state, BuildCqeStateDataEncodesTargetBit) {
     ublk_io_data fake{};
     fake.private_data = &io;
     auto const [state, user_data] = ublkpp::build_cqe_state_data(&fake);
-    // bit 63 is the target-io marker checked by run_queue_loop
-    EXPECT_NE(user_data & (1ULL << 63), 0ULL);
-    auto* decoded = reinterpret_cast< ublkpp::cqe_state* >(user_data & ~(1ULL << 63));
+    EXPECT_TRUE(sisl::async::is_managed_user_data(user_data));
+    auto* decoded = static_cast< ublkpp::cqe_state* >(sisl::async::decode_managed_user_data(user_data));
     EXPECT_EQ(state, decoded);
     EXPECT_EQ(state->_owner, &io);
 }

@@ -1,11 +1,11 @@
 #pragma once
 
-#include <coroutine>
 #include <cstdint>
 #include <utility>
 #include <vector>
 
 #include <liburing.h>
+#include <sisl/async/cqe_state.hpp>
 #include <sisl/logging/logging.h>
 #include <ublksrv.h>
 
@@ -27,9 +27,11 @@ namespace ublkpp {
 //   }
 //
 // The queue's CQE loop (run_queue_loop in src/target/ublkpp_tgt.cpp) inspects
-// bit 63 (k_target_bit) of cqe->user_data: if set, the remaining bits are a
-// cqe_state*; the loop writes _result, marks _result_ready, and resumes _waiter.
-// If clear, the CQE is delegated to ublksrv as a command completion.
+// sisl::async::is_managed_user_data(cqe->user_data): if set, the remaining bits
+// are a cqe_state*; the loop calls sisl::async::complete_cqe_state(*state, res)
+// which writes _result, marks _result_ready, and resumes _waiter via the
+// callback installed by await_suspend. If clear, the CQE is delegated to
+// ublksrv as a command completion.
 //
 // Two flavors of cqe_state:
 //   - Per-IO (build_cqe_state_data path): allocated in async_io::_pool, owned
@@ -37,22 +39,24 @@ namespace ublkpp {
 //     with -EIO if the coroutine throws.
 //   - Stand-alone service loops: coroutine-frame-local, _owner = nullptr, and
 //     callers handle their own errors. Encode the user_data manually with
-//     `reinterpret_cast<uint64_t>(state) | k_target_bit`.
+//     sisl::async::encode_managed_user_data(state).
 //
 // Reference implementation: src/driver/fs_disk.cpp.
 // =============================================================================
 
-// Bit 63 of cqe->user_data distinguishes target SQEs (custom-driver async I/O)
-// from ublksrv command SQEs (FETCH/COMMIT). On x86_64/ARM64, canonical userspace
-// addresses use <=48 bits, so bit 63 is always zero in any valid pointer; the OR
-// is safe and reversible with `& ~k_target_bit`.
-//
-// Probe timeout CQEs reuse k_target_bit with a null pointer (user_data == k_target_bit).
-// run_queue_loop checks state == nullptr after stripping the bit to distinguish them from
-// real I/O CQEs.
-constexpr uint64_t k_target_bit = 1ULL << 63;
+struct async_io;
 
-struct cqe_state;
+// Extends sisl::async::cqe_awaitable with _owner for ublksrv error reporting.
+// Inherits: _result, _result_ready, _waiter, _on_complete, _on_complete_ctx
+//           await_ready(), await_suspend(), await_resume()
+// Use sisl::async::complete_cqe_state(*state, res) to deliver a CQE result.
+//
+// _owner is nullable: per-IO cqe_states (build_cqe_state_data path) point at the slot's
+// async_io so errors can be reported via ublksrv_complete_io. Stand-alone cqe_states set
+// _owner = nullptr; callers handle their own errors.
+struct cqe_state : sisl::async::cqe_awaitable {
+    async_io* _owner{nullptr};
+};
 
 // Per-IO state tracking one inflight request, owned by the ublksrv-allocated io_data slot.
 //
@@ -69,29 +73,11 @@ struct async_io {
     cqe_state* next_state();
 };
 
-// Tracks a single inflight sub-operation. Stored in async_io::_pool (pre-reserved std::vector,
-// so push_back is pointer-stable). _result and _result_ready are written by run_queue_loop before resuming
-// _waiter. Implements the awaitable protocol directly: co_await *state suspends until the CQE
-// arrives.
-//
-// _owner is nullable: per-IO cqe_states (build_cqe_state_data path) point at the slot's
-// async_io so an exception on resume can be reported via ublksrv_complete_io. Stand-alone
-// cqe_states set _owner = nullptr; callers handle their own errors.
-struct cqe_state {
-    async_io* _owner{nullptr};
-    int _result{0};
-    bool _result_ready{false};
-    std::coroutine_handle<> _waiter{};
-
-    bool await_ready() const noexcept { return _result_ready; }
-    void await_suspend(std::coroutine_handle<> h) noexcept { _waiter = h; }
-    int await_resume() const noexcept { return _result; }
-};
-
 inline cqe_state* async_io::next_state() {
     RELEASE_ASSERT_LT(_pool.size(), _pool.capacity(),
                       "cqe_state pool exhausted; prepare_result::max_sqes_per_io underestimated")
-    _pool.push_back(cqe_state{._owner = this});
+    _pool.push_back(cqe_state{});
+    _pool.back()._owner = this; // designated-init can't reach inherited members in C++20
     return &_pool.back();
 }
 
@@ -99,7 +85,7 @@ inline cqe_state* async_io::next_state() {
 // {state*, encoded_user_data}. The caller co_awaits *state.
 inline std::pair< cqe_state*, uint64_t > build_cqe_state_data(ublk_io_data const* data) {
     auto* state = reinterpret_cast< async_io* >(data->private_data)->next_state();
-    return {state, reinterpret_cast< uint64_t >(state) | k_target_bit};
+    return {state, sisl::async::encode_managed_user_data(state)};
 }
 
 // Acquires an SQE from the queue's io_uring, submitting any pending SQEs first if the ring
