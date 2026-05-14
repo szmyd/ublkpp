@@ -133,6 +133,15 @@ inline MdSbBuilder stage_md_sb(BufferedDisk& d, MdSbBuilder builder = {}) {
     return builder;
 }
 
+// The default set_uuid baked into MdSbBuilder, as a boost::uuids::uuid. Tests that stage
+// legs with the builder's defaults should pass this value as the volume uuid to make_md_*
+// factories so MdDisk's verification succeeds.
+inline boost::uuids::uuid const& default_md_uuid() {
+    static boost::uuids::uuid const u{
+        {0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf}};
+    return u;
+}
+
 // Fill a region with a deterministic byte pattern so cross-translation tests can verify
 // that ublkpp reads the same bytes md wrote.
 inline void fill_pattern(uint8_t* p, size_t len, uint64_t seed) {

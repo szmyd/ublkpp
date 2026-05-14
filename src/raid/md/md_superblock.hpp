@@ -30,13 +30,15 @@ struct __attribute__((__packed__)) SuperBlock {
     } header;                    // 34 bytes
     struct {
         uint64_t data_offset;      // BE64. bytes (md sectors << 9)
-        uint32_t md_chunk_size;    // BE32. bytes
+        uint32_t md_chunk_size;    // BE32. bytes (0 for md raid 1)
         uint16_t raid_disks;       // BE16
         uint16_t dev_role;         // BE16. this leg's md dev_role[N]
-        uint8_t layout_near;       // 2
+        uint8_t layout_near;       // near=2 for md raid 10; 0 for md raid 1
         uint8_t layout_far;        // 0
         uint8_t layout_far_offset; // 0
-        uint8_t _pad0;
+        uint8_t md_level;          // 1 or 10. Was _pad0 in MdDisk SB v1; legacy v1 arrays
+                                   // read 0 here and are treated as level 10 (the only
+                                   // level v1 ever accepted).
         uint64_t events_at_import; // BE64. diagnostic
     } fields;                      // 32 bytes
     uint8_t _reserved[k_page_size - sizeof(header) - sizeof(fields)];

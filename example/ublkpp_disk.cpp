@@ -25,6 +25,16 @@ SISL_OPTION_GROUP(ublkpp_disk,
                    "<path>[,<path>,...]"),
                   (raid10, "", "raid10", "Devices for RAID10 device", ::cxxopts::value< std::vector< std::string > >(),
                    "<path>[,<path>,...]"),
+                  (md_raid1, "", "md_raid1",
+                   "Import a clean 2-disk md-raid array (md level 1, or a 2-leg near=2 md-raid 10; "
+                   "1.2 SB) as RAID1. After first attach the md superblock is overwritten; the "
+                   "array is no longer recognizable to mdadm.",
+                   ::cxxopts::value< std::vector< std::string > >(), "<leg_a>,<leg_b>"),
+                  (md_raid10, "", "md_raid10",
+                   "Import a clean md-raid 10 array (near=2 layout, 1.2 SB) as RAID10. "
+                   "Provide all 2N legs in any order; pairs are reconstructed from md dev_role. "
+                   "After first attach the md superblock is overwritten on each leg.",
+                   ::cxxopts::value< std::vector< std::string > >(), "<leg>[,<leg>,...]"),
                   (stripe_size, "", "stripe_size", "RAID-0 Stripe Size",
                    ::cxxopts::value< uint32_t >()->default_value("131072"), ""),
                   (device_id, "", "device_id", "Recover existing device",
@@ -107,6 +117,48 @@ Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > con
     return _run_target(id, std::move(dev));
 }
 
+// For md-import paths the leaf must already exist (it's an existing md leg); fall back
+// to fs_disk directly so a typo'd path fails loud rather than producing a missing-leg
+// placeholder that MdDisk would reject.
+static std::shared_ptr< ublkpp::ublk_disk > get_md_leaf(std::string const& path, std::string const& metrics_id) {
+    if (!std::filesystem::exists(path)) throw std::runtime_error(fmt::format("md leaf does not exist: {}", path));
+    return ublkpp::make_fs_disk(path, metrics_id);
+}
+
+Result create_md_raid1(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
+    if (layout.size() != 2) {
+        LOGERROR("--md_raid1 requires exactly 2 leg paths, got {}", layout.size())
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
+    auto dev = std::shared_ptr< ublkpp::ublk_disk >();
+    auto raid_uuid_str = boost::uuids::to_string(id);
+    try {
+        auto leg_a = get_md_leaf(layout[0], raid_uuid_str);
+        auto leg_b = get_md_leaf(layout[1], raid_uuid_str);
+        dev = ublkpp::md::make_md_raid1_disk(id, {std::move(leg_a), std::move(leg_b)}, raid_uuid_str);
+    } catch (std::runtime_error const& e) { LOGERROR("md-raid1 import failed: {}", e.what()) }
+    if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    return _run_target(id, std::move(dev));
+}
+
+Result create_md_raid10(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
+    if (layout.size() < 4 || (layout.size() & 1U) != 0) {
+        LOGERROR("--md_raid10 requires an even number of legs >= 4, got {}", layout.size())
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
+    auto dev = std::shared_ptr< ublkpp::ublk_disk >();
+    auto raid_uuid_str = boost::uuids::to_string(id);
+    try {
+        auto legs = std::vector< std::shared_ptr< ublkpp::ublk_disk > >();
+        legs.reserve(layout.size());
+        for (auto const& path : layout)
+            legs.push_back(get_md_leaf(path, raid_uuid_str));
+        dev = ublkpp::md::make_md_raid10_disk(id, std::move(legs), raid_uuid_str);
+    } catch (std::runtime_error const& e) { LOGERROR("md-raid10 import failed: {}", e.what()) }
+    if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+    return _run_target(id, std::move(dev));
+}
+
 Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
     if (1 > layout.size()) {
         LOGERROR("Zero mirrors in Array [uuid:{}]!", to_string(id))
@@ -162,6 +214,10 @@ int main(int argc, char* argv[]) {
         res = create_raid1(vol_id, SISL_OPTIONS["raid1"].as< std::vector< std::string > >());
     } else if (0 < SISL_OPTIONS["raid10"].count()) {
         res = create_raid10(vol_id, SISL_OPTIONS["raid10"].as< std::vector< std::string > >());
+    } else if (0 < SISL_OPTIONS["md_raid1"].count()) {
+        res = create_md_raid1(vol_id, SISL_OPTIONS["md_raid1"].as< std::vector< std::string > >());
+    } else if (0 < SISL_OPTIONS["md_raid10"].count()) {
+        res = create_md_raid10(vol_id, SISL_OPTIONS["md_raid10"].as< std::vector< std::string > >());
     } else
         std::cout << SISL_PARSER.help({}) << std::endl;
 

@@ -18,12 +18,13 @@ namespace ublkpp::md {
 struct DiscoveredTopology {
     boost::uuids::uuid set_uuid; // md array set_uuid
     uint64_t data_offset_bytes;  // md data_offset, in bytes (md sectors << 9)
-    uint32_t md_chunk_size;      // md chunksize, in bytes
+    uint32_t md_chunk_size;      // md chunksize, in bytes (0 for level 1)
     uint16_t raid_disks;         // md raid_disks
     uint16_t dev_role;           // md dev_role[N] for this leg
-    uint8_t layout_near;         // 2 (near=2 only)
+    uint8_t layout_near;         // md raid 10: 2 (near=2 only); md raid 1: 0
     uint8_t layout_far;          // 0
     uint8_t layout_far_offset;   // 0
+    uint8_t md_level;            // 1 or 10
     uint64_t events;             // md events counter at import time
 };
 
@@ -40,7 +41,12 @@ struct DiscoveredTopology {
 //   [data_offset_md, leaf_size)                user data, byte-identical to md
 class MdDisk : public ublk_disk {
 public:
-    explicit MdDisk(disk_handle leaf);
+    // `uuid` is the volume identity (== md array set_uuid by construction in production).
+    // On first import: the md SB's set_uuid on the leaf must equal `uuid` or the constructor
+    // throws. On reattach: the MdDisk-stamped SB's stored uuid must equal `uuid` or the
+    // constructor throws. This is the "don't consume this disk unless it belongs to the
+    // array you think it does" guard, mirroring how raid0 / raid1 use their SB uuids.
+    MdDisk(disk_handle leaf, boost::uuids::uuid const& uuid);
     ~MdDisk() override;
 
     DiscoveredTopology const& topology() const noexcept { return _topo; }
@@ -74,7 +80,7 @@ private:
     // Effective data-band size (= leaf_size - data_offset_md, possibly aligned-down).
     uint64_t _data_band_size{0};
 
-    void __probe_and_init();
+    void __probe_and_init(boost::uuids::uuid const& expected_uuid);
     void __populate_params();
     static uint64_t __compute_raid1_reserved(uint64_t presented_size, uint64_t max_sectors_bytes) noexcept;
 };
