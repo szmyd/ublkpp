@@ -43,8 +43,8 @@ TEST_F(AsyncRaid1Fixture, LargeDiscardDirtiesMultiplePages) {
 // Discard where async_iov returns 0 (synchronous inline completion) → task finishes
 // without suspending on co_await *state. RAID1 still awaits both tasks.
 TEST_F(AsyncRaid1Fixture, DiscardSyncCompletion) {
-    ON_CALL(*disk_a, submit_iov(_, _, _, _, _)).WillByDefault(Return(io_result{0}));
-    ON_CALL(*disk_b, submit_iov(_, _, _, _, _)).WillByDefault(Return(io_result{0}));
+    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(AnyNumber()).WillRepeatedly(Return(io_result{0}));
+    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(AnyNumber()).WillRepeatedly(Return(io_result{0}));
 
     auto res = mock->submit_io(0, UBLK_IO_OP_DISCARD, 0, 32 * Ki / 512, nullptr);
     ASSERT_TRUE(res);

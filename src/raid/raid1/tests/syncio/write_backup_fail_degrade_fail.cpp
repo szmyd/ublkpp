@@ -5,30 +5,35 @@
 #include "test_raid1_common.hpp"
 
 using ::testing::_;
-using ::testing::NiceMock;
+using ::testing::AnyNumber;
+using ::testing::StrictMock;
 
 TEST(Raid1, SyncIoWriteBackupFailDegradeFail) {
-    auto raw_a = std::make_shared< NiceMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
-    auto raw_b = std::make_shared< NiceMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .is_slot_b = true});
+    auto raw_a = std::make_shared< StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+    auto raw_b = std::make_shared< StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .is_slot_b = true});
 
     // Normal healthy superblock on both sides for init.
-    ON_CALL(*raw_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .WillByDefault([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             if (iov->iov_base) memcpy(iov->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });
-    ON_CALL(*raw_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .WillByDefault([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             if (iov->iov_base) {
                 memcpy(iov->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
                 static_cast< ublkpp::raid1::SuperBlock* >(iov->iov_base)->fields.device_b = 1;
             }
             return ublkpp::raid1::k_page_size;
         });
-    ON_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .WillByDefault([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
-    ON_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .WillByDefault([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
     raid_device.toggle_resync(false);

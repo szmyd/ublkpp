@@ -31,18 +31,26 @@ struct AsyncRaid0Fixture : public ::testing::Test {
     std::unique_ptr< ublkpp::MockUblksrv > mock;
 
     void SetUp() override {
+        using ::testing::AnyNumber;
+        using ::testing::StrictMock;
+
         TestParams const p{.capacity = k_disk_cap};
-        disk_a = std::make_shared< ::testing::NiceMock< ublkpp::AsyncTestDisk > >(p);
-        disk_b = std::make_shared< ::testing::NiceMock< ublkpp::AsyncTestDisk > >(p);
-        disk_c = std::make_shared< ::testing::NiceMock< ublkpp::AsyncTestDisk > >(p);
+        disk_a = std::make_shared< StrictMock< ublkpp::AsyncTestDisk > >(p);
+        disk_b = std::make_shared< StrictMock< ublkpp::AsyncTestDisk > >(p);
+        disk_c = std::make_shared< StrictMock< ublkpp::AsyncTestDisk > >(p);
         for (auto& d : {disk_a, disk_b, disk_c}) {
-            ON_CALL(*d, sync_iov(_, _, _, _))
-                .WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {
+            EXPECT_CALL(*d, prepare(_, _))
+                .Times(AnyNumber())
+                .WillRepeatedly(Return(ublkpp::ublk_disk::prepare_result{}));
+            ON_CALL(*d, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
+            EXPECT_CALL(*d, sync_iov(_, _, _, _))
+                .Times(AnyNumber())
+                .WillRepeatedly([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {
                     if (op == UBLK_IO_OP_READ && iovecs && iovecs->iov_base)
                         memset(iovecs->iov_base, 0, iovecs->iov_len);
                     return sizeof(ublkpp::raid0::SuperBlock);
                 });
-            ON_CALL(*d, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
+            EXPECT_CALL(*d, submit_iov(_, _, _, _, _)).Times(AnyNumber()).WillRepeatedly(make_async_iov_action());
         }
         raid = ublkpp::make_raid0_disk(boost::uuids::random_generator()(), k_stripe_size,
                                        std::vector< std::shared_ptr< ublk_disk > >{disk_a, disk_b, disk_c});

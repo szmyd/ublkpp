@@ -5,13 +5,14 @@
 
 #include "async_raid1_common.hpp"
 
-using ::testing::NiceMock;
+using ::testing::AnyNumber;
+using ::testing::StrictMock;
 
 TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
     TestParams const pa{.capacity = AsyncRaid1Fixture::k_disk_cap, .id = "DiskA", .is_slot_b = false};
     TestParams const pb{.capacity = AsyncRaid1Fixture::k_disk_cap, .id = "DiskB", .is_slot_b = true};
-    auto disk_a = std::make_shared< NiceMock< ublkpp::AsyncTestDisk > >(pa);
-    auto disk_b = std::make_shared< NiceMock< ublkpp::AsyncTestDisk > >(pb);
+    auto disk_a = std::make_shared< StrictMock< ublkpp::AsyncTestDisk > >(pa);
+    auto disk_b = std::make_shared< StrictMock< ublkpp::AsyncTestDisk > >(pb);
 
     // Degraded superblock on disk_a: route=DEVA, unclean → __init_bitmap_and_degraded_route marks
     // bitmap fully dirty. Backup is reachable but has stale data.
@@ -27,11 +28,12 @@ TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
                    .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = htobe64(2)}},
         .superbitmap_reserved = {0x00}};
 
-    ON_CALL(*disk_a, prepare(_, _)).WillByDefault(Return(ublkpp::ublk_disk::prepare_result{}));
-    ON_CALL(*disk_b, prepare(_, _)).WillByDefault(Return(ublkpp::ublk_disk::prepare_result{}));
+    EXPECT_CALL(*disk_a, prepare(_, _)).Times(AnyNumber()).WillRepeatedly(Return(ublkpp::ublk_disk::prepare_result{}));
+    EXPECT_CALL(*disk_b, prepare(_, _)).Times(AnyNumber()).WillRepeatedly(Return(ublkpp::ublk_disk::prepare_result{}));
 
-    ON_CALL(*disk_a, sync_iov(_, _, _, _))
-        .WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t off) -> io_result {
+    EXPECT_CALL(*disk_a, sync_iov(_, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t op, iovec* iovecs, uint32_t, off_t off) -> io_result {
             if (op == UBLK_IO_OP_READ) {
                 // Non-SB reads fail: prevents resync from cleaning dirty regions before the test.
                 if (off != 0) return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -39,17 +41,19 @@ TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
             }
             return static_cast< int >(iovecs->iov_len);
         });
-    ON_CALL(*disk_b, sync_iov(_, _, _, _)).WillByDefault([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {
-        if (op == UBLK_IO_OP_READ && iovecs && iovecs->iov_base) {
-            memcpy(iovecs->iov_base, &async_raid1_superblock, ublkpp::raid1::k_page_size);
-            static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
-            static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.bitmap.age = htobe64(1);
-        }
-        return static_cast< int >(iovecs->iov_len);
-    });
+    EXPECT_CALL(*disk_b, sync_iov(_, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t op, iovec* iovecs, uint32_t, off_t) -> io_result {
+            if (op == UBLK_IO_OP_READ && iovecs && iovecs->iov_base) {
+                memcpy(iovecs->iov_base, &async_raid1_superblock, ublkpp::raid1::k_page_size);
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.bitmap.age = htobe64(1);
+            }
+            return static_cast< int >(iovecs->iov_len);
+        });
 
-    ON_CALL(*disk_a, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
-    ON_CALL(*disk_b, submit_iov(_, _, _, _, _)).WillByDefault(make_async_iov_action());
+    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(AnyNumber()).WillRepeatedly(make_async_iov_action());
+    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(AnyNumber()).WillRepeatedly(make_async_iov_action());
 
     auto raid = std::make_shared< ublkpp::raid1::Raid1Disk >(
         boost::uuids::string_generator()(std::string(AsyncRaid1Fixture::k_uuid)), disk_a, disk_b);
@@ -62,7 +66,7 @@ TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
     // Run in a fresh thread to isolate the thread_local read-route cursor from other tests.
     std::thread([&] {
         // Active device is called once; backup must not be touched (it has stale data).
-        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
+        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
         EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(0);
 
         auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);

@@ -49,7 +49,7 @@ static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
 
 #define CREATE_DISK_F(params, no_read, fail_read, no_write, fail_write)                                                \
     [] {                                                                                                               \
-        auto device = std::make_shared< ublkpp::TestDisk >((params));                                                  \
+        auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >((params));                         \
         if (!no_read) { EXPECT_SB_OP(UBLK_IO_OP_READ, device, fail_read) }                                             \
         if (!no_write && !fail_read) { EXPECT_SB_OP(UBLK_IO_OP_WRITE, device, fail_write) }                            \
         return device;                                                                                                 \
