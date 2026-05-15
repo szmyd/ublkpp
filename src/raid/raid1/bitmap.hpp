@@ -82,7 +82,8 @@ public:
     // Tuple of form [page*, page_offset, size_consumed (max len)]
     void dirty_region(uint64_t addr, uint64_t len);
     std::tuple< word_t*, uint32_t, uint32_t > clean_region(uint64_t addr, uint32_t len) noexcept;
-    std::pair< uint64_t, uint32_t > next_dirty() noexcept;
+    std::pair< uint64_t, uint32_t > next_dirty_after(uint64_t min_lba = 0) noexcept;
+    std::pair< uint64_t, uint32_t > next_dirty() noexcept { return next_dirty_after(0); }
 
     // Each bit in the BITMAP represents a single "Chunk" of size chunk_size
     static std::tuple< uint32_t, uint32_t, uint32_t, uint32_t, uint64_t >

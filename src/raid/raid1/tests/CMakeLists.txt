@@ -12,6 +12,7 @@ list(APPEND RAID1_TEST_SRCS
 add_subdirectory (asyncio)
 add_subdirectory (bitmap)
 add_subdirectory (concurrency)
+add_subdirectory (region_tracker)
 add_subdirectory (failures)
 add_subdirectory (misc)
 add_subdirectory (retry)
