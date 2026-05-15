@@ -156,8 +156,9 @@ TEST_F(AsyncRaid1Fixture, ResyncCleansMultipleRegions) {
 TEST_F(AsyncRaid1Fixture, ResyncReadFailurePreservesDirty) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
 
-    ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
-        .WillByDefault([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
@@ -174,8 +175,9 @@ TEST_F(AsyncRaid1Fixture, ResyncReadFailurePreservesDirty) {
 TEST_F(AsyncRaid1Fixture, ResyncWriteFailurePreservesDirty) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
 
-    ON_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ge((off_t)raid->reserved_size())))
-        .WillByDefault([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 
@@ -245,8 +247,9 @@ TEST_F(AsyncRaid1Fixture, ResyncLaunchWhileRunningIsNoop) {
     ASSERT_GT(raid->replica_states().bytes_to_sync, 0u);
 
     std::atomic_bool resync_started{false};
-    ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
-        .WillByDefault([&resync_started](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .Times(AnyNumber())
+        .WillRepeatedly([&resync_started](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             resync_started.store(true);
             std::this_thread::sleep_for(50ms); // hold ACTIVE long enough for extra calls
             return static_cast< int >(iov->iov_len);
@@ -289,8 +292,9 @@ TEST_F(AsyncRaid1Fixture, ResyncStopTerminatesWithoutDeadlock) {
 
     std::atomic_bool resync_started{false};
     std::atomic_bool unblock_reads{false};
-    ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
-        .WillByDefault([&](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .Times(AnyNumber())
+        .WillRepeatedly([&](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             resync_started.store(true);
             while (!unblock_reads.load(std::memory_order_acquire))
                 std::this_thread::sleep_for(1ms);
@@ -332,8 +336,9 @@ TEST_F(AsyncRaid1Fixture, ResyncBlockedByOutstandingWrites) {
 
     // Slow sync_iov reads on disk_a to make resync measurable (gives time to submit write).
     std::atomic_bool resync_started{false};
-    ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
-        .WillByDefault([&resync_started](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
+        .Times(AnyNumber())
+        .WillRepeatedly([&resync_started](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             resync_started = true;
             std::this_thread::sleep_for(20ms);
             return static_cast< int >(iov->iov_len);

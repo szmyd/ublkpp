@@ -12,8 +12,8 @@ using ::testing::Return;
 // Test crash during multi-page batch write
 TEST(Raid1BitmapCrash, CrashDuringBatchWrite) {
     // Limit max_io to 8 KiB = 2 pages max per batch
-    auto device =
-        std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 16 * ublkpp::Gi, .max_io = 8 * ublkpp::Ki});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(
+        TestParams{.capacity = 16 * ublkpp::Gi, .max_io = 8 * ublkpp::Ki});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -43,7 +43,8 @@ TEST(Raid1BitmapCrash, CrashDuringBatchWrite) {
 
 // Test partial write in the middle of batching
 TEST(Raid1BitmapCrash, PartialBatchWrite) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 16 * ublkpp::Gi});
+    auto device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 16 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -77,7 +78,7 @@ TEST(Raid1BitmapCrash, RecoveryAfterFailedSync) {
     // This simulates the full shutdown/reboot cycle
 
     // Setup: Device with initial bitmap
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf1 = make_test_superbitmap();
     auto bitmap1 = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf1.get());
 
@@ -104,7 +105,7 @@ TEST(Raid1BitmapCrash, RecoveryAfterFailedSync) {
 // Test that batch size respects device limits
 TEST(Raid1BitmapCrash, BatchSizeWithDeviceLimits) {
     // Device with very small max_io
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{
         .capacity = 16 * ublkpp::Gi,
         .max_io = 8 * ublkpp::Ki // 8 KiB = 2 pages max
     });
@@ -129,7 +130,7 @@ TEST(Raid1BitmapCrash, BatchSizeWithDeviceLimits) {
 
 // Test failure in the middle batch (first succeeds, middle fails, last not attempted)
 TEST(Raid1BitmapCrash, FailureInMiddleBatch) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{
         .capacity = 32 * ublkpp::Gi,
         .max_io = 8 * ublkpp::Ki // Max 2 pages per batch
     });
@@ -163,7 +164,7 @@ TEST(Raid1BitmapCrash, FailureInMiddleBatch) {
 
 // Test sync_to with offset parameter (for SuperBlock)
 TEST(Raid1BitmapCrash, SyncToWithOffset) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -187,7 +188,8 @@ TEST(Raid1BitmapCrash, SyncToWithOffset) {
 
 // Test that consecutive page detection works correctly
 TEST(Raid1BitmapCrash, ConsecutivePageDetection) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 16 * ublkpp::Gi});
+    auto device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 16 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 

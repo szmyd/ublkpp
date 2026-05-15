@@ -82,7 +82,7 @@ TEST_F(AsyncRaid1Fixture, UnavailReadReroutes) {
         // Read 1: last_read=DEVA → next = DEVB. disk_b succeeds normally.
         {
             EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(0);
-            EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+            EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
             auto res = mock->submit_io(1, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
             ASSERT_TRUE(res);
             auto c = mock->inject_cqe(1, 4 * Ki);
@@ -92,7 +92,7 @@ TEST_F(AsyncRaid1Fixture, UnavailReadReroutes) {
         // Read 2: last_read=DEVB → round-robin gives DEVA, but UNAVAIL → reroutes to DEVB.
         {
             EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(0);
-            EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+            EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
             auto res = mock->submit_io(2, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
             ASSERT_TRUE(res);
             auto c = mock->inject_cqe(2, 4 * Ki);
