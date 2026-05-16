@@ -277,8 +277,13 @@ Raid1Disk::~Raid1Disk() {
             RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
         }
     }
-    if (!state.is_degraded)
-        write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
+    if (!state.is_degraded) {
+        if (auto res =
+                write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
+            !res) {
+            RLOGW("Could not stamp clean superblock on device, [uuid:{}]: {}", _str_uuid, res.error().message())
+        }
+    }
 }
 
 Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
@@ -344,8 +349,12 @@ bool Raid1Disk::__swap_device(std::string const& outgoing_device_id, std::shared
     }
     // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
     // later when we become clean; so let's be optimistic!
-    write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a,
-                     _read_route_cache.load(std::memory_order_acquire));
+    if (auto sync_res = write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a,
+                                         _read_route_cache.load(std::memory_order_acquire));
+        !sync_res) {
+        RLOGW("Could not stamp superblock on new device, could revert [uuid:{}]: {}", _str_uuid,
+              sync_res.error().message())
+    }
 
     // Dirty entire bitmap if this is a new device
     if (outgoing_dev->new_device) _dirty_bitmap->dirty_region(0, capacity());
@@ -565,9 +574,9 @@ std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > Raid1Dis
     }
 }
 
-io_result Raid1Disk::__become_clean() {
+void Raid1Disk::__become_clean() {
     auto const state = __capture_route_state();
-    if (read_route::EITHER == state.route) return 0;
+    if (read_route::EITHER == state.route) return;
 
     RLOGI("Device becoming clean [{}] [uuid:{}] ", *state.backup_dev->disk, _str_uuid)
 
@@ -589,7 +598,6 @@ io_result Raid1Disk::__become_clean() {
     // Avoid checking DirtyBitmap going forward on reads/writes
     auto old_route = state.route;
     _read_route_cache.compare_exchange_strong(old_route, read_route::EITHER);
-    return 0;
 }
 
 // See the comment above __swap_device for the CAS-based mutual exclusion between this function

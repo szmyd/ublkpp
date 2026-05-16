@@ -4,6 +4,7 @@
 #include <exec/inline_scheduler.hpp>
 #include <exec/task.hpp>
 #include <stdexec/execution.hpp>
+#include <latch>
 #include <thread>
 
 #include <boost/uuid/uuid_io.hpp>
@@ -137,7 +138,7 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
     co_await qs->scope.on_empty();
 }
 
-static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
+static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, std::latch* queue_sem) {
     auto qs = std::make_unique< ublkpp_queue_state >(target.get());
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
@@ -147,7 +148,7 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
                                       IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
 
     // Wake up ::start() thread
-    sem_post(queue_sem);
+    queue_sem->count_down();
     target.reset();
 
     // If queue initialization failed, exit
@@ -223,11 +224,10 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     }
 
     // Setup Queues
-    sem_t queue_sem;
-    sem_init(&queue_sem, 0, 0);
+    auto queue_wait = std::latch(dinfo->nr_hw_queues);
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
         tgt->queue_handlers.push_back(sisl::named_thread(fmt::format("q_{}_{}", tgt->dev_data->dev_id, i),
-                                                         ublksrv_queue_handler, tgt, i, &queue_sem));
+                                                         ublksrv_queue_handler, tgt, i, &queue_wait));
     }
     auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
@@ -237,10 +237,7 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     auto dev_ptr = tgt->device.get();
     auto const dev_id = tgt->dev_data->dev_id;
     tgt.reset();
-
-    // Wait for Queues to start
-    for (auto i = 0; i < dinfo->nr_hw_queues; ++i)
-        sem_wait(&queue_sem);
+    queue_wait.wait();
 
     // Start processing I/Os
     if (!recovery) {
