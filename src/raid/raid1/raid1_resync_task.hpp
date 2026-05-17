@@ -140,9 +140,6 @@ class Raid1ResyncTask {
     // the suspended async_iov coroutine. After this call, slot.task->done() is true.
     void __process_cqe(io_uring_cqe* cqe) noexcept;
 
-    // Drains all immediately-available CQEs from the resync ring.
-    void drain_cqes() noexcept;
-
     // Returns true if any slot is not FREE (i.e. there is I/O in flight).
     [[nodiscard]] bool has_in_flight() const noexcept;
 
@@ -186,6 +183,10 @@ public:
 
     // Generic method to move Resync StateMachine to STOPPING
     void stop() noexcept;
+
+    // Drains all pending CQEs from the resync ring and delivers each to its waiting coroutine.
+    // Used by the dispatch-path test in place of run_resync_queue_loop.
+    void drain_cqes() noexcept;
 
     void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.track(lba, len); }
 

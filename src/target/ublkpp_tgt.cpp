@@ -41,7 +41,8 @@ namespace ublkpp {
 ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d) :
         volume_uuid(vol_id), device(std::move(d)), metrics(UblkIOMetrics(to_string(vol_id))) {
     io_uring_params p{};
-    p.flags = IORING_SETUP_COOP_TASKRUN;
+    // SINGLE_ISSUER: run_resync_queue_loop is the sole submitter; avoids per-submit kernel locking.
+    p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
     // Depth: enough for all concurrent resync slots across any RAID1 pair (k_resync_ring_depth = 16);
     // use 64 so the target doesn't need to import RAID1 internals and has room for future growth.
     if (io_uring_queue_init_params(64, &_resync_ring, &p) == 0) {
@@ -49,7 +50,9 @@ ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_p
         _resync_queue.ring_ptr = &_resync_ring;
         _resync_queue.q_depth = 64;
     } else {
-        RLOGW("Target resync ring init failed ({}); resync tasks will fall back to per-pair rings", strerror(errno))
+        RLOGW("Target resync ring init failed ({}); resync tasks will use the synchronous thread path with per-pair "
+              "rings",
+              strerror(errno))
     }
 }
 
@@ -159,8 +162,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 // _resync_ring instead of the ublksrv per-queue ring. All RAID1 resync coroutines for this volume
 // run as exec::task<void> coroutines spawned into `scope` via the ResyncDispatcher.
 //
-// Pending launches arrive via dispatch.pending (posted by I/O threads calling launch()). The loop
-// drains them each tick and calls scope.spawn(on(inline_scheduler, factory())). The coroutines
+// Pending launches arrive via dispatch.drain() (factories posted by I/O threads calling launch()).
+// The loop drains them each tick and calls scope.spawn(on(inline_scheduler, factory())). The coroutines
 // co_await disk_task/hot_task, which encode cqe_state* into SQE user_data; when the CQE arrives
 // here, we resume the waiting coroutine via cqe_state._waiter.resume(), same as run_queue_loop.
 //
@@ -175,11 +178,7 @@ static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scop
     std::vector< std::function< exec::task< void >() > > to_spawn;
     while (!stop.load(std::memory_order_acquire)) {
         // Drain pending launches posted by I/O-queue threads via Raid1ResyncTask::launch().
-        // Swap under the lock so I/O threads are not blocked while coroutines start up.
-        {
-            auto lk = std::scoped_lock(dispatch.mu);
-            to_spawn.swap(dispatch.pending);
-        }
+        dispatch.drain(to_spawn);
         for (auto& f : to_spawn)
             scope.spawn(stdexec::on(exec::inline_scheduler{}, f()));
         to_spawn.clear();
@@ -187,7 +186,11 @@ static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scop
         // Submit any pending SQEs from resync coroutines and wait for CQEs (or 500 µs timeout).
         io_uring_cqe* cqe{};
         auto ts = k_resync_ts;
-        io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
+        auto const ret = io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
+        if (ret < 0 && ret != -ETIME && ret != -EINTR) {
+            RLOGW("resync ring: io_uring_submit_and_wait_timeout returned unexpected error ({})", strerror(-ret))
+        }
+        if (ret == -EINTR) continue;
 
         unsigned head{};
         int count{};
@@ -461,7 +464,7 @@ static int init_queue(const struct ublksrv_queue* q, void**) {
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
     // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
     ublk_rings rings{q, qs->tgt->_resync_ring_valid ? &qs->tgt->_resync_queue : nullptr,
-                     qs->tgt->_resync_ring_valid ? static_cast< void* >(&qs->tgt->_resync_dispatch) : nullptr};
+                     qs->tgt->_resync_ring_valid ? &qs->tgt->_resync_dispatch : nullptr};
     auto const prep = device->prepare(&rings, 0);
     if (!prep.fds.empty()) return -1;
     // async_io is placement-new'd into ublksrv-calloc'd bytes; _pool is pre-reserved to the SQE

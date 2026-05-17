@@ -7,6 +7,10 @@
 #include <thread>
 #include <vector>
 
+#include <exec/async_scope.hpp>
+#include <exec/inline_scheduler.hpp>
+#include <stdexec/execution.hpp>
+
 extern "C" {
 #include <fcntl.h>
 #include <unistd.h>
@@ -29,6 +33,18 @@ static constexpr uint32_t k_data_offset = 2 * k_page_size;
 static constexpr uint32_t k_chunk_size = 32 * Ki;
 
 namespace {
+
+// RAII guard that removes a file path on destruction. Prevents temp file leaks when a test
+// exits early via ASSERT_* (which throws, skipping any cleanup at the end of the test body).
+struct ScopedTempFile {
+    explicit ScopedTempFile(std::string p) noexcept : path(std::move(p)) {}
+    ~ScopedTempFile() {
+        if (!path.empty()) std::filesystem::remove(path);
+    }
+    ScopedTempFile(ScopedTempFile const&) = delete;
+    ScopedTempFile& operator=(ScopedTempFile const&) = delete;
+    std::string path;
+};
 
 // Creates a temporary file pre-populated with a valid superblock at offset 0. Caller owns cleanup.
 std::pair< std::string, int > make_resync_test_file(bool is_device_b = false) {
@@ -68,6 +84,8 @@ TEST(AsyncResyncIoUring, BasicCopy) {
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0) << "Failed to create clean temp file";
     ASSERT_GE(dirty_raw_fd, 0) << "Failed to create dirty temp file";
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
 
     // Pre-fill the data region of the clean mirror with a recognisable byte pattern.
     constexpr uint8_t k_pattern = 0xCA;
@@ -104,9 +122,6 @@ TEST(AsyncResyncIoUring, BasicCopy) {
     ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual.data(), k_chunk_size, k_data_offset));
     close(verify_fd);
     EXPECT_EQ(source, actual) << "io_uring resync must produce byte-identical data on dirty mirror";
-
-    std::filesystem::remove(clean_path);
-    std::filesystem::remove(dirty_path);
 }
 
 // Verify that stop() returns promptly while the resync task is actively copying via io_uring.
@@ -117,6 +132,8 @@ TEST(AsyncResyncIoUring, StopResponsive) {
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0);
     ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
     close(clean_raw_fd);
     close(dirty_raw_fd);
 
@@ -144,9 +161,6 @@ TEST(AsyncResyncIoUring, StopResponsive) {
     auto const elapsed = std::chrono::steady_clock::now() - before;
 
     EXPECT_LT(elapsed, 1000ms) << "stop() must return promptly; io_uring submit_and_wait_timeout provides the wakeup";
-
-    std::filesystem::remove(clean_path);
-    std::filesystem::remove(dirty_path);
 }
 
 // Verify that per-region conflict tracking (Phase 1) works correctly with the io_uring copy path.
@@ -159,6 +173,8 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0);
     ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
 
     // Fill both chunks of the clean mirror with distinct patterns.
     constexpr uint8_t k_pat0 = 0xAA;
@@ -226,8 +242,6 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
     }
 
     task.stop();
-    std::filesystem::remove(clean_path);
-    std::filesystem::remove(dirty_path);
 }
 
 // Verify that all dirty chunks are copied correctly when several are dirty simultaneously.
@@ -239,6 +253,8 @@ TEST(AsyncResyncIoUring, MultipleChunkCopy) {
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0);
     ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
 
     constexpr size_t k_num_chunks = 4;
     constexpr std::array< uint8_t, k_num_chunks > k_patterns{0x11, 0x22, 0x33, 0x44};
@@ -278,9 +294,6 @@ TEST(AsyncResyncIoUring, MultipleChunkCopy) {
         EXPECT_EQ(expected, actual) << "Chunk " << i << " has wrong pattern after resync";
     }
     close(verify_fd);
-
-    std::filesystem::remove(clean_path);
-    std::filesystem::remove(dirty_path);
 }
 
 // Verify that the complete() callback fires exactly once after the io_uring resync path
@@ -291,6 +304,8 @@ TEST(AsyncResyncIoUring, CompleteCallbackFires) {
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0);
     ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
     close(clean_raw_fd);
     close(dirty_raw_fd);
 
@@ -321,8 +336,6 @@ TEST(AsyncResyncIoUring, CompleteCallbackFires) {
     EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean when complete() fires";
 
     task.stop();
-    std::filesystem::remove(clean_path);
-    std::filesystem::remove(dirty_path);
 }
 
 // Verify the io_uring ring lifecycle across a stop+relaunch cycle. The ring is per-RAID1-pair
@@ -333,6 +346,8 @@ TEST(AsyncResyncIoUring, StopAndRelaunch) {
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0);
     ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
 
     constexpr uint8_t k_pattern = 0xCD;
     std::vector< uint8_t > source(k_chunk_size, k_pattern);
@@ -372,9 +387,99 @@ TEST(AsyncResyncIoUring, StopAndRelaunch) {
     ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual.data(), k_chunk_size, k_data_offset));
     close(verify_fd);
     EXPECT_EQ(source, actual) << "Data must be correct after stop+relaunch resync cycle";
+}
 
-    std::filesystem::remove(clean_path);
-    std::filesystem::remove(dirty_path);
+// Verify the coroutine dispatch path (launch() with ResyncDispatcher) copies data correctly,
+// and that a stop() + relaunch cycle reuses the ring cleanly for a second resync pass.
+// This is the only test exercising __run_coro() and drain_cqes() together with real file I/O.
+TEST(AsyncResyncIoUring, DispatchPathStopAndRelaunch) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
+
+    constexpr uint8_t k_pattern = 0xEF;
+    std::vector< uint8_t > source(k_chunk_size, k_pattern);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pwrite(clean_raw_fd, source.data(), k_chunk_size, k_data_offset));
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+
+    // Dedicated io_uring ring for the dispatch path (no SINGLE_ISSUER: CQE drain thread submits
+    // while the coroutine may still be adding SQEs during the handoff window).
+    io_uring ring{};
+    ASSERT_EQ(0, io_uring_queue_init(k_resync_ring_depth * 2, &ring, 0));
+    ublksrv_queue test_q{};
+    test_q.ring_ptr = &ring;
+    test_q.q_depth = k_resync_ring_depth;
+
+    // Runs one coroutine cycle to natural completion via the dispatch path:
+    // 1. Launches the task with the shared ring + a fresh dispatcher.
+    // 2. Drains the factory from the dispatcher.
+    // 3. Starts a CQE drain thread (submits ring + delivers CQEs to the suspended coroutine).
+    // 4. Runs the coroutine to completion on the calling thread via stdexec::sync_wait.
+    auto run_one_cycle = [&](std::function< void() > complete_cb) {
+        ResyncDispatcher dispatch;
+        task.launch(test_uuid, mirror_clean, mirror_dirty, std::move(complete_cb), &test_q, &dispatch);
+
+        std::vector< std::function< exec::task< void >() > > factories;
+        dispatch.drain(factories);
+        ASSERT_EQ(1u, factories.size()) << "dispatch must have exactly one pending factory";
+
+        std::atomic< bool > cqe_stop{false};
+        std::thread cqe_thread([&]() {
+            while (!cqe_stop.load(std::memory_order_acquire)) {
+                io_uring_cqe* cqe{};
+                __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 1'000'000};
+                io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
+                task.drain_cqes();
+            }
+        });
+
+        // Run the coroutine on the calling thread; CQE thread delivers completions.
+        exec::async_scope scope;
+        scope.spawn(stdexec::on(exec::inline_scheduler{}, factories[0]()));
+        stdexec::sync_wait(scope.on_empty());
+
+        cqe_stop.store(true, std::memory_order_release);
+        cqe_thread.join();
+    };
+
+    // First cycle: dirty one chunk, run to completion.
+    bitmap->dirty_region(0, k_chunk_size);
+    run_one_cycle([] {});
+    task.stop(); // state already IDLE; no-op except cleanup
+
+    // Second cycle: re-dirty and run again, verifying the ring and state are reusable.
+    bitmap->dirty_region(0, k_chunk_size);
+    std::atomic< bool > second_complete{false};
+    run_one_cycle([&] { second_complete.store(true, std::memory_order_release); });
+    task.stop();
+
+    EXPECT_TRUE(second_complete.load()) << "complete() must fire after dispatch-path resync";
+    EXPECT_EQ(0u, bitmap->dirty_pages()) << "Bitmap must be clean after second dispatch-path cycle";
+
+    std::vector< uint8_t > actual(k_chunk_size, 0);
+    int verify_fd = open(dirty_path.c_str(), O_RDONLY);
+    ASSERT_GE(verify_fd, 0);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual.data(), k_chunk_size, k_data_offset));
+    close(verify_fd);
+    EXPECT_EQ(source, actual) << "Data must match after dispatch-path resync";
+
+    io_uring_queue_exit(&ring);
 }
 
 // Verify stop() returns promptly when the dirty mirror becomes unavail DURING an active resync
@@ -405,14 +510,10 @@ TEST(AsyncResyncIoUring, StopDuringRunUnavail) {
         .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    // Async WRITE calls to dirty mirror (via async_iov → submit_iov): always fail.
-    // This triggers dirty_mirror->unavail inside __run() and puts the task into the
-    // unavail sleep loop where it checks STOPPING every resync_delay ticks.
-    EXPECT_CALL(*device_dirty, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
-        .Times(::testing::AnyNumber())
-        .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) -> ublkpp::io_result {
-            return std::unexpected(std::make_error_condition(std::errc::io_error));
-        });
+    // All sync_iov calls after the superblock read fail (the mock returns error for all
+    // subsequent calls). In __run(), the sync_iov WRITE to the dirty mirror fails, which
+    // triggers dirty_mirror->unavail and puts the task into the unavail sleep loop where
+    // it checks STOPPING every resync_delay ticks.
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_clean = std::make_shared< MirrorDevice >(uuid, device_clean);

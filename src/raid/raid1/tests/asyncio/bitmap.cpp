@@ -156,6 +156,7 @@ TEST_F(AsyncRaid1Fixture, ResyncCleansMultipleRegions) {
 TEST_F(AsyncRaid1Fixture, ResyncReadFailurePreservesDirty) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
 
+    // Resync reads in the thread path use sync_iov directly; fail all reads at data addresses.
     ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
         .WillByDefault([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -174,6 +175,7 @@ TEST_F(AsyncRaid1Fixture, ResyncReadFailurePreservesDirty) {
 TEST_F(AsyncRaid1Fixture, ResyncWriteFailurePreservesDirty) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
 
+    // Resync writes in the thread path use sync_iov directly; fail all writes at data addresses.
     ON_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ge((off_t)raid->reserved_size())))
         .WillByDefault([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -245,10 +247,12 @@ TEST_F(AsyncRaid1Fixture, ResyncLaunchWhileRunningIsNoop) {
     ASSERT_GT(raid->replica_states().bytes_to_sync, 0u);
 
     std::atomic_bool resync_started{false};
+    // Resync reads in the thread path use sync_iov; slow reads to keep state ACTIVE long enough
+    // for the extra toggle_resync(true) calls to hit the EARLY_EXIT arm.
     ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
         .WillByDefault([&resync_started](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             resync_started.store(true);
-            std::this_thread::sleep_for(50ms); // hold ACTIVE long enough for extra calls
+            std::this_thread::sleep_for(50ms);
             return static_cast< int >(iov->iov_len);
         });
 
@@ -272,10 +276,8 @@ TEST_F(AsyncRaid1Fixture, ResyncLaunchWhileRunningIsNoop) {
 }
 
 // Calling toggle_resync(false) while a resync is mid-I/O must terminate without deadlock.
-// stop() sees state=ACTIVE and returns RETRY_WITH_SLEEP; once I/O finishes and resync
-// completes naturally, stop() detects IDLE (not joinable) and returns.
-// The SLEEPING→RETRY arm in stop() requires resync_delay > 0 to be reachable; see LCOV_EXCL_LINE
-// annotation in raid1_resync_task.cpp.
+// stop() sees state=ACTIVE and returns RETRY; once I/O finishes and resync completes naturally,
+// stop() detects IDLE (not joinable) and returns.
 TEST_F(AsyncRaid1Fixture, ResyncStopTerminatesWithoutDeadlock) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
     for (int tag = 1; tag <= 2; ++tag) {
@@ -289,6 +291,7 @@ TEST_F(AsyncRaid1Fixture, ResyncStopTerminatesWithoutDeadlock) {
 
     std::atomic_bool resync_started{false};
     std::atomic_bool unblock_reads{false};
+    // Resync reads in the thread path use sync_iov; block reads until unblock_reads is set.
     ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
         .WillByDefault([&](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             resync_started.store(true);
@@ -331,6 +334,7 @@ TEST_F(AsyncRaid1Fixture, ResyncBlockedByOutstandingWrites) {
     ASSERT_EQ(raid->replica_states().bytes_to_sync, 3 * 32 * Ki);
 
     // Slow sync_iov reads on disk_a to make resync measurable (gives time to submit write).
+    // Normal IO slots use inject_cqe and are not affected by this mock.
     std::atomic_bool resync_started{false};
     ON_CALL(*disk_a, sync_iov(UBLK_IO_OP_READ, _, _, testing::Ge((off_t)raid->reserved_size())))
         .WillByDefault([&resync_started](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {

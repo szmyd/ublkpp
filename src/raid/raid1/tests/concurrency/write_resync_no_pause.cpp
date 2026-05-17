@@ -29,24 +29,23 @@ TEST(Raid1Concurrency, UnrelatedWriteDoesNotBlockResync) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
-    // Phase 3: resync copies go through async_iov → submit_iov (not sync_iov).
-    // Count submit_iov calls on device_a (the clean mirror) to confirm reads happened.
+    // Thread path: resync copies go through sync_iov READ on device_a (clean mirror).
+    // Count sync_iov READ calls to confirm reads happened.
     std::atomic< int > resync_reads{0};
-    EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&resync_reads](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
-                                        uint64_t) -> ublkpp::io_result {
+        .WillRepeatedly([&resync_reads](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
             resync_reads.fetch_add(1, std::memory_order_relaxed);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return 0; // sync completion
+            return static_cast< ssize_t >(iovecs->iov_len);
         });
-    // Bitmap-page writes from clean_region still go through sync_iov on the clean mirror.
+    // Bitmap-page writes from clean_region go through sync_iov WRITE on the clean mirror.
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
-    // device_b (dirty mirror): superblock read on construction + probe reads → sync_iov.
+    // device_b (dirty mirror): superblock read on construction + sync_iov for writes and probes.
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
@@ -75,7 +74,7 @@ TEST(Raid1Concurrency, UnrelatedWriteDoesNotBlockResync) {
     EXPECT_TRUE(wait_for_bitmap_clean(bitmap, 2000ms))
         << "Resync must complete even with an unrelated write held in-flight";
 
-    EXPECT_GE(resync_reads.load(), 1) << "Resync must have performed at least one async read";
+    EXPECT_GE(resync_reads.load(), 1) << "Resync must have performed at least one sync read";
 
     // Release the in-flight write now that resync has finished
     task.dequeue_write(k_unrelated_lba, io_size);
@@ -89,13 +88,12 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
     std::atomic< int > resync_reads{0};
-    EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&resync_reads](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
-                                        uint64_t) -> ublkpp::io_result {
+        .WillRepeatedly([&resync_reads](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
             resync_reads.fetch_add(1, std::memory_order_relaxed);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return 0;
+            return static_cast< ssize_t >(iovecs->iov_len);
         });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
@@ -128,8 +126,7 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     while (task.yield_count() < 2)
         std::this_thread::sleep_for(1ms);
 
-    EXPECT_EQ(0, resync_reads.load())
-        << "Resync must not submit reads for the conflicting region while write is in-flight";
+    EXPECT_EQ(0, resync_reads.load()) << "Resync must not read the conflicting region while write is in-flight";
     EXPECT_GT(bitmap->dirty_pages(), 0U) << "Bitmap must remain dirty while conflicting write is in-flight";
 
     // Dequeue the write — resync can now proceed
@@ -144,37 +141,39 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
 // Verify that Phase 2 (post-copy conflict check) detects a write that arrives AFTER Phase 1
 // passes but BEFORE clean_region is called, and correctly keeps the bitmap dirty.
 //
-// In Phase 3, Phase 2 runs after the async READ completes (before the WRITE is started).
-// The injection window is: hold the READ via submit_iov mock, register the write, then
-// release. Phase 2 checks overlaps() = true → skips WRITE → slot freed → bitmap stays dirty.
+// Thread path: Phase 2 runs after the sync READ returns (before the sync WRITE is started).
+// The injection window is: hold the READ via sync_iov mock, register the write, then
+// release. Phase 2 checks overlaps() = true → skips WRITE → bitmap stays dirty.
 // After the write is dequeued, the next sweep copies successfully.
+//
+// Note: this test exercises the mock-sync READ path, not the real async-CQE path. The
+// async CQE path (coroutine-dispatch with run_resync_queue_loop) is covered in
+// async_resync_iouring.cpp. Both paths share the same Phase 1 / Phase 2 logic.
 TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
-    // copy_read_started: fired inside the blocked submit_iov (Phase 1 has passed, READ in progress)
+    // copy_read_started: fired inside the blocked sync_iov READ (Phase 1 has passed, READ in progress)
     // write_registered:  main signals this to unblock the READ so Phase 2 can run
     std::promise< void > copy_read_started;
     std::promise< void > write_registered;
     auto write_registered_future = write_registered.get_future();
 
-    // Block the first async READ from the clean mirror (device_a) so we can register a write
+    // Block the first sync READ from the clean mirror (device_a) so we can register a write
     // in the window between Phase 1 (already passed) and Phase 2 (runs after READ completes).
-    EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillOnce([&, fut = std::move(write_registered_future)](ublksrv_queue const*, ublk_io_data const*,
-                                                                iovec* iovecs, uint32_t,
-                                                                uint64_t) mutable -> ublkpp::io_result {
+        .WillOnce([&, fut = std::move(write_registered_future)](uint8_t, iovec* iovecs, uint32_t,
+                                                                off_t) mutable -> ublkpp::io_result {
             copy_read_started.set_value();
             fut.wait(); // hold until test thread registers the write
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return 0; // sync completion — coroutine returns without hitting a real CQE
+            return static_cast< ssize_t >(iovecs->iov_len);
         })
-        .WillRepeatedly(
-            [](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t, uint64_t) -> ublkpp::io_result {
-                if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-                return 0;
-            });
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+            return static_cast< ssize_t >(iovecs->iov_len);
+        });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
@@ -195,7 +194,7 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
 
-    // Start resync — Phase 1 sees no write registered, starts async READ which blocks
+    // Start resync — Phase 1 sees no write registered, starts sync READ which blocks
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
 
     // Wait until we are between Phase 1 and Phase 2 (READ is executing, blocked)
@@ -226,7 +225,7 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
 // making overlaps() return false. The shadow completion log in RegionTracker catches this.
 //
 // Sequence:
-//   Phase 1 check: no write in-flight, resync begins async READ (submit_iov blocks)
+//   Phase 1 check: no write in-flight, resync begins sync READ (blocks in mock)
 //   [test thread: enqueue_write then dequeue_write — write fully completes, slot freed]
 //   [test thread unblocks the READ]
 //   Phase 2 checks completed_since(), detects the shadow entry → skips WRITE
@@ -239,22 +238,20 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     std::promise< void > write_fully_done;
     auto write_fully_done_future = write_fully_done.get_future();
 
-    // Block the first async READ from the clean mirror so we can inject a fully-completed write.
-    EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+    // Block the first sync READ from the clean mirror so we can inject a fully-completed write.
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillOnce([&, fut = std::move(write_fully_done_future)](ublksrv_queue const*, ublk_io_data const*,
-                                                                iovec* iovecs, uint32_t,
-                                                                uint64_t) mutable -> ublkpp::io_result {
+        .WillOnce([&, fut = std::move(write_fully_done_future)](uint8_t, iovec* iovecs, uint32_t,
+                                                                off_t) mutable -> ublkpp::io_result {
             read_started.set_value();
             fut.wait(); // wait until test thread completes the write
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return 0;
+            return static_cast< ssize_t >(iovecs->iov_len);
         })
-        .WillRepeatedly(
-            [](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t, uint64_t) -> ublkpp::io_result {
-                if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-                return 0;
-            });
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+            return static_cast< ssize_t >(iovecs->iov_len);
+        });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
@@ -275,7 +272,7 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
 
-    // Start resync — Phase 1 sees no write, begins the async READ which blocks
+    // Start resync — Phase 1 sees no write, begins the sync READ which blocks
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
     read_started.get_future().wait();
 
@@ -302,25 +299,24 @@ TEST(Raid1Concurrency, MultiChunkDirtyRun_PartialSkip) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
-    // Track which LBAs resync actually reads (via submit_iov on the clean mirror).
+    // Track which LBAs resync actually reads (via sync_iov READ on the clean mirror).
     std::atomic< int > reads_chunk0{0};
     std::atomic< int > reads_chunk1{0};
 
     constexpr uint32_t io_size = 32 * Ki;
     auto const k_offset = Bitmap::page_size(); // _offset used by Raid1ResyncTask
 
-    EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
-                            uint64_t addr) -> ublkpp::io_result {
+        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> ublkpp::io_result {
             // Recover the logical LBA by subtracting the reserved bitmap area offset.
-            auto const logical = addr - k_offset;
+            auto const logical = static_cast< uint64_t >(addr) - k_offset;
             if (logical < io_size)
                 reads_chunk0.fetch_add(1, std::memory_order_relaxed);
             else if (logical >= io_size && logical < 2 * io_size)
                 reads_chunk1.fetch_add(1, std::memory_order_relaxed);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return 0;
+            return static_cast< ssize_t >(iovecs->iov_len);
         });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
