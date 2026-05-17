@@ -25,7 +25,6 @@ extern "C" {
 #include "lib/common.hpp"
 #include "lib/logging.hpp"
 #include "metrics/ublk_fsdisk_metrics.hpp"
-#include "target/ublkpp_tgt_impl.hpp"
 
 namespace ublkpp {
 

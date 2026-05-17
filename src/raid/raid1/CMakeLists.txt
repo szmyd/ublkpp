@@ -13,6 +13,7 @@ target_link_libraries(raid1
     isa-l::isa-l
     sisl::cache
     ublksrv::ublksrv
+    STDEXEC::stdexec
 )
 
 if ((DEFINED ENABLE_TESTS) AND (${ENABLE_TESTS}))
