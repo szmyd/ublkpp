@@ -405,7 +405,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
 
                 auto t = clean_mirror->disk->async_iov(_resync_queue, &slot.fake_data, &slot.slot_iov, 1,
                                                        cursor_lba + _offset);
-                slot.task = std::move(t).start();
+                slot.task.emplace(std::move(t).start());
                 slot.phase = ResyncSlot::Phase::READ_PENDING;
 
                 any_copy = true;
@@ -467,7 +467,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
 
                 auto write_t = dirty_mirror->disk->async_iov(_resync_queue, &slot.fake_data, &slot.slot_iov, 1,
                                                              slot.lba + _offset);
-                slot.task = std::move(write_t).start();
+                slot.task.emplace(std::move(write_t).start());
                 slot.phase = ResyncSlot::Phase::WRITE_PENDING;
 
             } else if (slot.phase == ResyncSlot::Phase::WRITE_PENDING && slot.task && slot.task->done()) {
@@ -646,7 +646,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
 
                 auto t = clean_mirror->disk->async_iov(_resync_queue, &slot.fake_data, &slot.slot_iov, 1,
                                                        cursor_lba + _offset);
-                slot.task = std::move(t).start();
+                slot.task.emplace(std::move(t).start());
                 slot.phase = ResyncSlot::Phase::READ_PENDING;
 
                 any_copy = true;
@@ -709,7 +709,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
 
                 auto write_t = dirty_mirror->disk->async_iov(_resync_queue, &slot.fake_data, &slot.slot_iov, 1,
                                                              slot.lba + _offset);
-                slot.task = std::move(write_t).start();
+                slot.task.emplace(std::move(write_t).start());
                 slot.phase = ResyncSlot::Phase::WRITE_PENDING;
 
             } else if (slot.phase == ResyncSlot::Phase::WRITE_PENDING && slot.task->done()) {
