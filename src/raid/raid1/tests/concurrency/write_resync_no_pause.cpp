@@ -35,7 +35,7 @@ TEST(Raid1Concurrency, UnrelatedWriteDoesNotBlockResync) {
     EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([&resync_reads](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
-                                       uint64_t) -> ublkpp::io_result {
+                                        uint64_t) -> ublkpp::io_result {
             resync_reads.fetch_add(1, std::memory_order_relaxed);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return 0; // sync completion
@@ -92,7 +92,7 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([&resync_reads](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
-                                       uint64_t) -> ublkpp::io_result {
+                                        uint64_t) -> ublkpp::io_result {
             resync_reads.fetch_add(1, std::memory_order_relaxed);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return 0;
@@ -128,7 +128,8 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     while (task.yield_count() < 2)
         std::this_thread::sleep_for(1ms);
 
-    EXPECT_EQ(0, resync_reads.load()) << "Resync must not submit reads for the conflicting region while write is in-flight";
+    EXPECT_EQ(0, resync_reads.load())
+        << "Resync must not submit reads for the conflicting region while write is in-flight";
     EXPECT_GT(bitmap->dirty_pages(), 0U) << "Bitmap must remain dirty while conflicting write is in-flight";
 
     // Dequeue the write — resync can now proceed
@@ -169,11 +170,11 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return 0; // sync completion — coroutine returns without hitting a real CQE
         })
-        .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
-                           uint64_t) -> ublkpp::io_result {
-            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return 0;
-        });
+        .WillRepeatedly(
+            [](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t, uint64_t) -> ublkpp::io_result {
+                if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+                return 0;
+            });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
@@ -249,11 +250,11 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return 0;
         })
-        .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
-                           uint64_t) -> ublkpp::io_result {
-            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return 0;
-        });
+        .WillRepeatedly(
+            [](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t, uint64_t) -> ublkpp::io_result {
+                if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+                return 0;
+            });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
@@ -306,7 +307,7 @@ TEST(Raid1Concurrency, MultiChunkDirtyRun_PartialSkip) {
     std::atomic< int > reads_chunk1{0};
 
     constexpr uint32_t io_size = 32 * Ki;
-    constexpr uint64_t k_offset = Bitmap::page_size(); // _offset used by Raid1ResyncTask
+    auto const k_offset = Bitmap::page_size(); // _offset used by Raid1ResyncTask
 
     EXPECT_CALL(*device_a, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
         .Times(::testing::AnyNumber())
