@@ -159,10 +159,16 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     std::promise< void > write_registered;
     auto write_registered_future = write_registered.get_future();
 
-    // Block the first sync READ from the clean mirror (device_a) so we can register a write
+    // Block the first resync READ from the clean mirror (device_a) so we can register a write
     // in the window between Phase 1 (already passed) and Phase 2 (runs after READ completes).
+    // First call is the superblock read during MirrorDevice construction — handle it separately
+    // so the blocking WillOnce fires on the actual resync READ, not the constructor READ.
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return static_cast< ssize_t >(iovecs->iov_len);
+        })
         .WillOnce([&, fut = std::move(write_registered_future)](uint8_t, iovec* iovecs, uint32_t,
                                                                 off_t) mutable -> ublkpp::io_result {
             copy_read_started.set_value();
@@ -238,9 +244,15 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     std::promise< void > write_fully_done;
     auto write_fully_done_future = write_fully_done.get_future();
 
-    // Block the first sync READ from the clean mirror so we can inject a fully-completed write.
+    // Block the first resync READ from the clean mirror so we can inject a fully-completed write.
+    // First call is the superblock read during MirrorDevice construction — handle it separately
+    // so the blocking WillOnce fires on the actual resync READ, not the constructor READ.
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return static_cast< ssize_t >(iovecs->iov_len);
+        })
         .WillOnce([&, fut = std::move(write_fully_done_future)](uint8_t, iovec* iovecs, uint32_t,
                                                                 off_t) mutable -> ublkpp::io_result {
             read_started.set_value();
