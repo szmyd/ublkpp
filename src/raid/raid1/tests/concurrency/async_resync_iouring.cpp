@@ -432,7 +432,7 @@ TEST(AsyncResyncIoUring, DispatchPathStopAndRelaunch) {
     // 3. Starts a CQE drain thread (submits ring + delivers CQEs to the suspended coroutine).
     // 4. Runs the coroutine to completion on the calling thread via stdexec::sync_wait.
     auto run_one_cycle = [&](std::function< void() > complete_cb) {
-        ResyncDispatcher dispatch;
+        ublkpp::ResyncDispatcher dispatch;
         task.launch(test_uuid, mirror_clean, mirror_dirty, std::move(complete_cb), &test_q, &dispatch);
 
         std::vector< std::function< exec::task< void >() > > factories;
