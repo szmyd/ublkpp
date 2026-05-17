@@ -41,7 +41,7 @@ public:
     }
     std::string id() const noexcept override { return my_id; }
 
-    MOCK_METHOD(prepare_result, prepare, (ublksrv_queue const*, int const), (override));
+    MOCK_METHOD(prepare_result, prepare, (ublk_rings const*, int const), (override));
     MOCK_METHOD(void, probe_tick, (ublksrv_queue const*), (noexcept, override));
 
     MOCK_METHOD(io_result, submit_iov, (ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t));

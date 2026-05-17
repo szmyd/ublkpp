@@ -11,12 +11,12 @@ TEST(Raid1, OpenDevices) {
     auto device_b = CREATE_DISK_B(TestParams{.capacity = Gi});
 
     // Each device should be subsequently opened and return a set with their sole FD.
-    EXPECT_CALL(*device_a, prepare(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
+    EXPECT_CALL(*device_a, prepare(_, _)).Times(1).WillOnce([](ublkpp::ublk_rings const*, int const fd_off) {
         EXPECT_EQ(start_idx, fd_off);
         // Return 2 FDs here, maybe it's another RAID1 device?
         return ublkpp::ublk_disk::prepare_result{.fds = {INT_MAX - 2, INT_MAX - 3}};
     });
-    EXPECT_CALL(*device_b, prepare(_, _)).Times(1).WillOnce([](ublksrv_queue const*, int const fd_off) {
+    EXPECT_CALL(*device_b, prepare(_, _)).Times(1).WillOnce([](ublkpp::ublk_rings const*, int const fd_off) {
         // Device A took 2 uring offsets
         EXPECT_EQ(start_idx + 2, fd_off);
         return ublkpp::ublk_disk::prepare_result{.fds = {INT_MAX - 1}};
