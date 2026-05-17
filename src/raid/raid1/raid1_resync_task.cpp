@@ -284,10 +284,10 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
     RLOGD("Resync coroutine started for [uuid:{}]", uuid)
 
     static auto const unavail_delay = std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
-    static auto const resync_tick = std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >());
 
     // Helper: submit a 500 µs timeout SQE to the resync ring and co_await it.
     // Allows the resync loop to continue processing CQEs for other coroutines while we wait.
+    // Falls back to std::this_thread::yield() if the SQ is temporarily full.
     auto sleep_tick = [this]() -> exec::task< void > {
         constexpr __kernel_timespec k_tick{.tv_sec = 0, .tv_nsec = 500'000};
         if (auto* sqe = next_sqe(_resync_queue)) {
@@ -296,6 +296,8 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
             io_uring_prep_timeout(sqe, &ts, 0, 0);
             io_uring_sqe_set_data64(sqe, reinterpret_cast< uint64_t >(&tick) | k_target_bit);
             co_await tick;
+        } else {
+            std::this_thread::yield();
         }
     };
 

@@ -172,14 +172,17 @@ static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scop
     // 500 µs tick: responsive to STOPPING and pending launches, while not burning CPU.
     constexpr __kernel_timespec k_resync_ts{.tv_sec = 0, .tv_nsec = 500'000};
 
+    std::vector< std::function< exec::task< void >() > > to_spawn;
     while (!stop.load(std::memory_order_acquire)) {
         // Drain pending launches posted by I/O-queue threads via Raid1ResyncTask::launch().
+        // Swap under the lock so I/O threads are not blocked while coroutines start up.
         {
             auto lk = std::scoped_lock(dispatch.mu);
-            for (auto& f : dispatch.pending)
-                scope.spawn(stdexec::on(exec::inline_scheduler{}, f()));
-            dispatch.pending.clear();
+            to_spawn.swap(dispatch.pending);
         }
+        for (auto& f : to_spawn)
+            scope.spawn(stdexec::on(exec::inline_scheduler{}, f()));
+        to_spawn.clear();
 
         // Submit any pending SQEs from resync coroutines and wait for CQEs (or 500 µs timeout).
         io_uring_cqe* cqe{};
