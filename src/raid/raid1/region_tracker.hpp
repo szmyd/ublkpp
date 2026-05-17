@@ -180,7 +180,7 @@ private:
     // set within L1D on all server-class microarchitectures.
     //
     // Sized to 4× the main slot count so the ring overflows only when more than
-    // 4×qdepth writes complete during a single __copy_region() call.
+    // 4×qdepth writes complete during a single async copy slot's READ window.
     struct ShadowEntry {
         std::atomic< uint64_t > lba{k_free};
         std::atomic< uint32_t > len{0};

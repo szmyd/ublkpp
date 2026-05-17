@@ -59,9 +59,10 @@ bool wait_for_bitmap_clean(std::shared_ptr< Bitmap > const& bitmap, std::chrono:
 
 } // namespace
 
-// Verify that the io_uring linked-SQE path copies data correctly when both mirror disks
-// expose real backing fds (via FSDisk::backend_fd()). This is the fundamental Phase 2 check:
-// data written to the clean mirror must appear byte-for-byte on the dirty mirror after resync.
+// Verify the async resync path copies data correctly when both mirror disks are backed by
+// real files. Phase 3 uses async_iov() on the per-RAID1-pair resync ring (k_resync_slots
+// concurrent slots); data written to the clean mirror must appear byte-for-byte on the dirty
+// mirror after resync completes.
 TEST(AsyncResyncIoUring, BasicCopy) {
     auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
@@ -78,8 +79,8 @@ TEST(AsyncResyncIoUring, BasicCopy) {
     auto disk_clean = ublkpp::make_fs_disk(clean_path);
     auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
 
-    // io_uring path requires both disks to expose valid fds.
-    ASSERT_GE(disk_clean->backend_fd(), 0) << "FSDisk must expose backing fd for io_uring resync";
+    // Sanity-check that both disks are real FSDisk instances (backend_fd >= 0).
+    ASSERT_GE(disk_clean->backend_fd(), 0) << "FSDisk must expose a valid backing fd";
     ASSERT_GE(disk_dirty->backend_fd(), 0);
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
@@ -229,59 +230,6 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
     std::filesystem::remove(dirty_path);
 }
 
-// Verify the sync_iov fallback is used when backend_fd() returns -1 (TestDisk default).
-// Guards the __run() dispatch branch: if either mirror returns -1 from backend_fd(), the
-// task must use sync_iov rather than io_uring and still complete the resync correctly.
-// If the dispatch condition is broken (io_uring attempted with fd=-1), io_uring returns
-// -EBADF, __copy_region_async returns error, unavail is set, and wait_for_bitmap_clean times out.
-TEST(AsyncResyncIoUring, FallbackWhenNoFd) {
-    auto device_clean = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskClean"});
-    auto device_dirty =
-        std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskDirty", .is_slot_b = true});
-
-    std::atomic< int > sync_reads{0};
-    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .Times(::testing::AnyNumber())
-        .WillRepeatedly([&sync_reads](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
-            sync_reads.fetch_add(1, std::memory_order_relaxed);
-            if (iovecs->iov_base) memset(iovecs->iov_base, 0, iovecs->iov_len);
-            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-        });
-    // The resync task flushes cleared bitmap pages to the clean mirror (clean_region() →
-    // sync_iov WRITE at the bitmap page address, which is < k_data_offset). Data-region
-    // writes must never go to the clean mirror; assert the offset is within metadata.
-    EXPECT_CALL(*device_clean, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(::testing::AnyNumber())
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> ublkpp::io_result {
-            EXPECT_LT(static_cast< uint64_t >(addr), static_cast< uint64_t >(k_data_offset))
-                << "Only bitmap-page writes allowed to clean mirror; data-region write is a bug";
-            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-        });
-    EXPECT_CALL(*device_dirty, sync_iov(::testing::_, _, _, _))
-        .Times(::testing::AnyNumber())
-        .WillRepeatedly(sync_iov_zero_on_read());
-
-    auto uuid = boost::uuids::string_generator()(test_uuid);
-    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, device_clean);
-    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, device_dirty);
-    // Exclude the superblock READ issued by the MirrorDevice constructors.
-    sync_reads.store(0, std::memory_order_relaxed);
-
-    auto superbitmap_buf = make_test_superbitmap();
-    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
-    bitmap->dirty_region(0, k_chunk_size);
-
-    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
-    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
-
-    EXPECT_TRUE(wait_for_bitmap_clean(bitmap))
-        << "Sync fallback (backend_fd==-1) must complete resync and clean the bitmap";
-    task.stop();
-
-    EXPECT_GE(sync_reads.load(), 1)
-        << "sync_iov READ must have been called — confirms fallback path was taken, not io_uring";
-}
-
 // Verify that all dirty chunks are copied correctly when several are dirty simultaneously.
 // BasicCopy tests one chunk; this test uses four distinct byte patterns to catch address
 // arithmetic errors (wrong _offset or chunk stride) and buffer-reuse bugs across multiple
@@ -377,9 +325,9 @@ TEST(AsyncResyncIoUring, CompleteCallbackFires) {
     std::filesystem::remove(dirty_path);
 }
 
-// Verify the io_uring ring lifecycle across a stop+relaunch cycle. The ring is created per
-// launch and destroyed on stop; this test confirms the second launch creates a fresh ring,
-// resync completes, and data on the dirty mirror is correct after the interrupted first run.
+// Verify the io_uring ring lifecycle across a stop+relaunch cycle. The ring is per-RAID1-pair
+// (persistent across launches); this test confirms that after stop+relaunch the ring is
+// reused cleanly, resync completes, and data on the dirty mirror is correct.
 TEST(AsyncResyncIoUring, StopAndRelaunch) {
     auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
@@ -404,7 +352,7 @@ TEST(AsyncResyncIoUring, StopAndRelaunch) {
 
     Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
 
-    // First launch: dirty one chunk and stop after the first sweep; destroys the ring.
+    // First launch: dirty one chunk and stop after the first sweep.
     bitmap->dirty_region(0, k_chunk_size);
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
     while (task.yield_count() < 1)
@@ -412,7 +360,7 @@ TEST(AsyncResyncIoUring, StopAndRelaunch) {
     task.stop();
 
     // Second launch: re-dirty (stop may have partially cleaned) and run to completion.
-    // A fresh ring must be initialised; the second resync must produce correct data.
+    // The per-RAID1-pair ring is reused; the second resync must produce correct data.
     bitmap->dirty_region(0, k_chunk_size);
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
     EXPECT_TRUE(wait_for_bitmap_clean(bitmap)) << "Second resync must complete after stop+relaunch";
@@ -448,13 +396,21 @@ TEST(AsyncResyncIoUring, StopDuringRunUnavail) {
         .WillRepeatedly(sync_iov_zero_on_read());
 
     // First call: superblock read during MirrorDevice construction — must succeed.
-    // All subsequent calls (copy writes + probe reads): fail to keep the mirror unavail.
+    // Subsequent sync_iov calls (probe reads after unavail is set): fail.
     EXPECT_CALL(*device_dirty, sync_iov(::testing::_, _, _, _))
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
             if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return static_cast< int >(iovecs->iov_len);
         })
         .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        });
+    // Async WRITE calls to dirty mirror (via async_iov → submit_iov): always fail.
+    // This triggers dirty_mirror->unavail inside __run() and puts the task into the
+    // unavail sleep loop where it checks STOPPING every resync_delay ticks.
+    EXPECT_CALL(*device_dirty, submit_iov(::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](ublksrv_queue const*, ublk_io_data const*, iovec*, uint32_t, uint64_t) -> ublkpp::io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
 

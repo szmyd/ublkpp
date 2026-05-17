@@ -17,6 +17,17 @@ struct ublksrv_queue;
 
 namespace ublkpp {
 
+// Pair of queues passed to prepare(). io_q carries the per-thread I/O ring for normal
+// block I/O; resync_q carries the target-level resync ring shared across all RAID1 pairs.
+// resync_q is null when prepare() is called outside a ublkpp_tgt context (tests, mock).
+// resync_dispatch is an opaque pointer to ublkpp::ResyncDispatcher (defined in
+// src/lib/resync_dispatch.hpp); null in standalone/test context.
+struct ublk_rings {
+    ublksrv_queue const* io_q{nullptr}; // null on probe-only calls (q == nullptr behaviour)
+    ublksrv_queue* resync_q{nullptr};   // null in standalone / test context
+    void* resync_dispatch{nullptr};     // ResyncDispatcher* in ublkpp_tgt context; null in tests
+};
+
 namespace detail {
 // Forward declaration only. The actual accessor is a static member of this struct, defined in
 // src/lib/internal/ublkpp_int.hpp (not installed) and used exclusively by ublksrv handshake
@@ -92,9 +103,7 @@ public:
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    // Returns the raw backing file descriptor for use by out-of-band io_uring rings (e.g. the
-    // resync task's dedicated ring). Returns -1 for composite disks and test mocks that have
-    // no single underlying fd; callers fall back to sync_iov in that case.
+    // Returns the raw backing file descriptor. Returns -1 for composite disks and virtual disks.
     virtual int backend_fd() const noexcept { return -1; }
 
     // Returned by prepare(). Carries the file descriptors to register in the queue's io_uring
@@ -110,8 +119,10 @@ public:
     // io_uring fixed-file table (kernel assigns indices starting at iouring_device_start) and the
     // SQE ceiling for pre-reserving the per-tag cqe_state pool. Composite drivers propagate to
     // children, concatenating fds and combining max_sqes_per_io.
+    // rings == nullptr (or rings->io_q == nullptr) is a probe-only call: collect SQE ceiling
+    // without triggering per-queue side-effects (e.g. Raid1 resync enable).
     // Default: no FDs, 1 SQE (subclasses that submit 0 or >1 SQEs per I/O must override).
-    virtual prepare_result prepare(ublksrv_queue const* /*q*/, int const /*iouring_device_start*/) { return {}; }
+    virtual prepare_result prepare(ublk_rings const* /*rings*/, int const /*iouring_device_start*/) { return {}; }
 
     // Called by run_queue_loop when a probe timeout CQE fires. Probes ALL mirrors on every tick,
     // not only unavail ones; so silent healthy-to-failed transitions are detected within

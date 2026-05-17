@@ -66,7 +66,7 @@ public:
 
     int backend_fd() const noexcept override { return _fd; }
 
-    prepare_result prepare(ublksrv_queue const*, int const) override;
+    prepare_result prepare(ublk_rings const*, int const) override;
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
@@ -166,7 +166,7 @@ FSDisk::~FSDisk() {
 //    return {.fds = {dup(_fd)}, .max_sqes_per_io = 1};
 //}
 
-FSDisk::prepare_result FSDisk::prepare(ublksrv_queue const*, int const) {
+FSDisk::prepare_result FSDisk::prepare(ublk_rings const*, int const) {
     return {.max_sqes_per_io = 1}; // READ/WRITE submit 1 SQE; FLUSH and block-DISCARD submit 0
 }
 

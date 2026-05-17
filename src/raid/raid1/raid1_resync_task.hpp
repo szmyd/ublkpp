@@ -3,14 +3,22 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <future>
+#include <optional>
 #include <sys/uio.h>
 #include <thread>
+#include <vector>
 
+#include <exec/task.hpp>
 #include <liburing.h>
+#include <ublksrv.h>
 
+#include "lib/resync_dispatch.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
 #include "region_tracker.hpp"
+#include "ublkpp/lib/cqe_state.hpp"
+#include "ublkpp/lib/disk_task.hpp"
 #include "ublkpp/raid.hpp"
 
 namespace ublkpp::raid1 {
@@ -18,8 +26,10 @@ namespace ublkpp::raid1 {
 using namespace std::chrono_literals;
 constexpr auto k_state_spin_time = 50us;
 constexpr uint32_t k_default_slot_count = 256;
-// Depth of the dedicated resync io_uring ring: 2 SQEs per linked READ→WRITE pair + headroom.
-constexpr uint32_t k_resync_ring_depth = 4;
+// Number of concurrent async I/O slots in the target-level resync ring.
+constexpr uint32_t k_resync_slots = 8;
+// Ring depth: 2× slots provides headroom for READ and WRITE SQEs in flight simultaneously.
+constexpr uint32_t k_resync_ring_depth = k_resync_slots * 2;
 
 class Bitmap;
 class MirrorDevice;
@@ -42,6 +52,21 @@ enum class transition_action : uint8_t {
 struct transition_result {
     resync_state next_state; // State to expect on next retry
     transition_action action;
+};
+
+// One in-flight async copy slot. Each slot tracks a single READ→WRITE resync operation via the
+// target-level resync ring. The fake_iod/fake_data fields let us call disk->async_iov() directly
+// without a real ublksrv_queue; only ring_ptr is accessed by next_sqe() and async_iov().
+struct ResyncSlot {
+    async_io io{};              // per-slot cqe_state pool (reserved for 1 state per phase)
+    ublksrv_io_desc fake_iod{}; // op_flags set to READ or WRITE before each async_iov call
+    ublk_io_data fake_data{};   // fake_data.iod = &fake_iod; fake_data.private_data = &io
+    iovec slot_iov{};           // iov_base points into _slot_buf_base; iov_len set per chunk
+    std::optional< hot_task< int > > task{};
+    uint64_t lba{0};
+    uint32_t len{0};
+    uint64_t gen_before{0}; // RegionTracker generation snapshot for Phase 2 check
+    enum class Phase : uint8_t { FREE, READ_PENDING, WRITE_PENDING } phase{Phase::FREE};
 };
 
 class Raid1ResyncTask {
@@ -71,6 +96,25 @@ class Raid1ResyncTask {
     // unrelated regions proceed without any global pause.
     RegionTracker _region_tracker;
 
+    // Fallback ring + queue used when no target-level queue is provided to launch().
+    // Lazily initialized by __ensure_ring() on the first _start() entry if _resync_queue is null.
+    io_uring _own_ring{};
+    ublksrv_queue _own_queue{};
+    // Active queue for this resync task. Points to _own_queue (standalone/test fallback) or to a
+    // target-level queue forwarded through Raid1Disk::toggle_resync → launch(). null until
+    // first launch(); __ensure_ring() initializes it.
+    ublksrv_queue* _resync_queue{nullptr};
+    // Non-null in ublkpp_tgt context: launch() posts the resync coroutine factory here so the
+    // per-volume run_resync_queue_loop can spawn it into the target's exec::async_scope.
+    ResyncDispatcher* _resync_dispatch{nullptr};
+    void* _slot_buf_base{nullptr}; // aligned buffer pool: k_resync_slots × _max_size bytes
+    std::vector< ResyncSlot > _slots;
+
+    // done_promise/done_future: signaled by __run_coro() on exit so stop() can block until the
+    // coroutine has fully wound down (analogous to thread join() in the fallback path).
+    std::promise< void > _done_promise;
+    std::future< void > _done_future;
+
     std::mutex _launch_lock;
     std::thread _resync_task;
 
@@ -81,15 +125,31 @@ class Raid1ResyncTask {
         return _state.compare_exchange_weak(expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
     }
 
-    resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov, io_uring* ring, int clean_fd,
-                       int dirty_fd) noexcept;
+    resync_state __run(auto& clean_mirror, auto& dirty_mirror) noexcept;
 
-    // Submits a linked READ_FIXED → WRITE_FIXED pair to the dedicated resync ring and waits
-    // for both CQEs. The kernel executes the write immediately after the read without a
-    // userspace round-trip. buf must be the buffer registered at index 0 via
-    // io_uring_register_buffers.
-    io_result __copy_region_async(io_uring& ring, int clean_fd, int dirty_fd, void* buf, uint32_t len,
-                                  uint64_t addr) noexcept;
+    // Coroutine version of _start() + __run(). Used by the dispatch (coroutine) path when a
+    // ResyncDispatcher is available: run_resync_queue_loop spawns this into its async_scope and
+    // drives CQEs from the shared _resync_ring. On exit, transitions state to IDLE and signals
+    // _done_promise so stop() can return.
+    exec::task< void > __run_coro(std::shared_ptr< MirrorDevice > clean_mirror,
+                                  std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() > complete,
+                                  std::string uuid);
+
+    // Drives a CQE to the waiting cqe_state coroutine. Extracts the cqe_state* from
+    // user_data (bit 63 tag + pointer), writes the result, marks it ready, and resumes
+    // the suspended async_iov coroutine. After this call, slot.task->done() is true.
+    void __process_cqe(io_uring_cqe* cqe) noexcept;
+
+    // Drains all immediately-available CQEs from the resync ring.
+    void drain_cqes() noexcept;
+
+    // Returns true if any slot is not FREE (i.e. there is I/O in flight).
+    [[nodiscard]] bool has_in_flight() const noexcept;
+
+    // Ensures _resync_queue is set. If launch() already set it (production path), this is a no-op.
+    // Otherwise creates _own_ring/_own_queue for standalone/test use.
+    // Returns false if ring creation fails; _start() aborts the resync in that case.
+    [[nodiscard]] bool __ensure_ring() noexcept;
 
     // Generic state transition helper - reduces duplication across launch/stop.
     // noinline: gcov attributes inlined template instructions to the call-site line numbers
@@ -117,8 +177,12 @@ public:
 
     void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
 
+    // resync_q: target-level queue forwarded from Raid1Disk::toggle_resync (null in tests → __ensure_ring fallback).
+    // dispatch: if non-null, use the coroutine dispatch path (run_resync_queue_loop drives the ring);
+    //           if null, fall back to the standalone thread path (__ensure_ring + _start()).
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
-                std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
+                std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete,
+                ublksrv_queue* resync_q = nullptr, ResyncDispatcher* dispatch = nullptr);
 
     // Generic method to move Resync StateMachine to STOPPING
     void stop() noexcept;

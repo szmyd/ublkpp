@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "ublkpp/raid.hpp"
+#include "lib/resync_dispatch.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
 
@@ -52,6 +53,11 @@ class Raid1Disk : public ublk_disk {
 
     // Counts prepare() calls; used to enable resync on the first queue init.
     std::atomic_uint16_t _nr_hw_queues{0};
+
+    // Target-level resync queue and coroutine dispatcher injected via prepare(ublk_rings*).
+    // Both written once on the first queue init; null in standalone/test context.
+    ublksrv_queue* _resync_queue{nullptr};
+    ResyncDispatcher* _resync_dispatch{nullptr};
 
     // Shared read/write routing helpers used by both async_iov and sync_iov.
     // Returns {primary_dev, failover_dev}. failover_dev is nullopt when the backup holds stale
@@ -130,7 +136,7 @@ public:
     /// UBlkDisk Interface Overrides
     /// ============================
     std::string id() const noexcept override { return "RAID1"; }
-    prepare_result prepare(ublksrv_queue const* q, int const iouring_device) override;
+    prepare_result prepare(ublk_rings const* rings, int const iouring_device) override;
     void probe_tick(ublksrv_queue const* q) noexcept override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,

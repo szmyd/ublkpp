@@ -3,9 +3,14 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <thread>
 
 #include <boost/uuid/uuid.hpp>
+#include <exec/async_scope.hpp>
+#include <liburing.h>
+#include <ublksrv.h>
 
+#include "lib/resync_dispatch.hpp"
 #include "metrics/ublk_io_metrics.hpp"
 
 struct ublksrv_ctrl_dev;
@@ -32,6 +37,20 @@ struct ublkpp_tgt_impl {
 
     // == Metrics ==
     UblkIOMetrics metrics;
+
+    // == Resync ring + coroutine loop ==
+    // One io_uring ring and one dedicated thread per volume drive all RAID1 resync coroutines.
+    // The ring is initialized in the constructor. run_resync_queue_loop runs on _resync_handler,
+    // processes CQEs from _resync_ring, and spawns RAID1 resync coroutines into _resync_scope.
+    // Torn down in destroy(): device.reset() drains all coroutines, then we signal the loop to
+    // stop and join the thread before exiting the ring.
+    io_uring _resync_ring{};
+    ublksrv_queue _resync_queue{};
+    bool _resync_ring_valid{false};
+    ResyncDispatcher _resync_dispatch; // I/O threads post pending launches here
+    exec::async_scope _resync_scope;   // tracks all active resync coroutines
+    std::thread _resync_handler;       // drives _resync_ring for this volume
+    std::atomic< bool > _resync_loop_stop{false};
 
     // == ======= ==
     // Owned by us

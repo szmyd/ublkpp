@@ -54,7 +54,7 @@ public:
     uint32_t stripe_size() const noexcept { return _stripe_size; }
 
     std::string id() const noexcept override { return "RAID0"; }
-    prepare_result prepare(ublksrv_queue const*, int const iouring_device) override;
+    prepare_result prepare(ublk_rings const*, int const iouring_device) override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;
@@ -138,7 +138,7 @@ static inline size_t stripes_for_io(size_t io_size, size_t stripe_size, size_t n
     return std::min((io_size + stripe_size - 1) / stripe_size + 1, nr_stripes);
 }
 
-Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
+Raid0Disk::prepare_result Raid0Disk::prepare(ublk_rings const* rings, int const iouring_device_start) {
     prepare_result result;
     result.max_sqes_per_io = 0;
     // At most k stripes are active concurrently per max-size I/O. Each active stripe dispatches
@@ -147,7 +147,7 @@ Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const i
     auto const k = stripes_for_io(max_tx(), _stripe_size, _stripe_array.size());
     size_t counted = 0;
     for (auto& stripe : _stripe_array) {
-        auto child = stripe->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
+        auto child = stripe->disk->prepare(rings, iouring_device_start + static_cast< int >(result.fds.size()));
         result.fds.insert(result.fds.end(), child.fds.begin(), child.fds.end());
         if (counted++ < k) result.max_sqes_per_io += child.max_sqes_per_io;
     }

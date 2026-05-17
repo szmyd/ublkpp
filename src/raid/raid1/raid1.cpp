@@ -12,7 +12,6 @@
 #include "raid1_impl.hpp"
 #include "raid1_resync_task.hpp"
 #include "lib/logging.hpp"
-#include "target/ublkpp_tgt_impl.hpp"
 #include "metrics/ublk_raid_metrics.hpp"
 
 SISL_OPTION_GROUP(raid1,
@@ -281,19 +280,24 @@ Raid1Disk::~Raid1Disk() {
         write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
-Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
+Raid1Disk::prepare_result Raid1Disk::prepare(ublk_rings const* rings, int const iouring_device_start) {
     // Called once per queue thread before I/O begins; count queues for multi-queue idle tracking.
-    // When q is null (called from init_tgt purely for the SQE ceiling), skip the side effects:
-    // no FDs to collect and no queue-count increment.
-    auto result = _device_a->disk->prepare(q, iouring_device_start);
-    auto b = _device_b->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
+    // When rings is null or rings->io_q is null (probe-only from init_tgt for the SQE ceiling),
+    // skip the side effects: no FDs to collect and no queue-count increment.
+    auto result = _device_a->disk->prepare(rings, iouring_device_start);
+    auto b = _device_b->disk->prepare(rings, iouring_device_start + static_cast< int >(result.fds.size()));
     result.fds.insert(result.fds.end(), b.fds.begin(), b.fds.end());
     // Writes fan out to both mirrors concurrently; both SQE sets land in the same pool simultaneously.
     // Failover reads are sequential (max of the two), but write is the worst case.
     result.max_sqes_per_io += b.max_sqes_per_io;
 
-    // Enable resync only on the first real queue init (q != nullptr guards the probe-only call).
-    if (q && _nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) toggle_resync(true);
+    // Enable resync only on the first real queue init (io_q != null guards the probe-only call).
+    auto const q = rings ? rings->io_q : nullptr;
+    if (q && _nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) {
+        _resync_queue = rings->resync_q;
+        _resync_dispatch = static_cast< ResyncDispatcher* >(rings->resync_dispatch);
+        toggle_resync(true);
+    }
 
     return result;
 }
@@ -859,7 +863,9 @@ void Raid1Disk::toggle_resync(bool t) {
     if (t) {
         auto const state = __capture_route_state();
         if (read_route::EITHER != state.route && !state.backup_dev->disk->is_missing()) {
-            _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); });
+            _resync_task->launch(
+                _str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); }, _resync_queue,
+                _resync_dispatch);
         }
     } else
         _resync_task->stop();
