@@ -295,6 +295,78 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     task.stop();
 }
 
+// Verify that the skip_from hint carries across outer-loop iterations.
+//
+// Setup: two SEPARATE dirty regions A at [0, 32Ki) and B at [64Ki, 96Ki) with a clean
+// gap at [32Ki, 64Ki). An in-flight write covers all of A (Phase-1 conflict).
+//
+// Without skip_from: every sweep rebuilds the cursor from next_dirty() which finds A, skips
+// it entirely (any_copy == false), yields, and repeats — never finding B.
+// With skip_from: the first skip() call exhausts A and sets skip_from = 32Ki. The outer
+// loop saves resync_skip_from = 32Ki. On the next sweep, ResyncCursor starts from
+// next_dirty_after(32Ki) which skips past A and finds B. B is copied while A is still held.
+TEST(Raid1Concurrency, SkipFromHintAllowsCopyingBeyondConflict) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
+
+    constexpr uint32_t io_size = 32 * Ki;
+    auto const k_offset = Bitmap::page_size();
+
+    std::atomic< int > reads_region_a{0};
+    std::atomic< int > reads_region_b{0};
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> ublkpp::io_result {
+            auto const logical = static_cast< uint64_t >(addr) - k_offset;
+            if (logical < io_size)
+                reads_region_a.fetch_add(1, std::memory_order_relaxed);
+            else if (logical >= 2 * io_size && logical < 3 * io_size)
+                reads_region_b.fetch_add(1, std::memory_order_relaxed);
+            if (iovecs->iov_base) memset(iovecs->iov_base, 0xBB, iovecs->iov_len);
+            return static_cast< ssize_t >(iovecs->iov_len);
+        });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
+    auto mirror_b = std::make_shared< MirrorDevice >(uuid, device_b);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(Gi, io_size, 4 * Ki, superbitmap_buf.get());
+    // Two separate dirty regions with a clean gap between them.
+    bitmap->dirty_region(0, io_size);           // Region A: one chunk at LBA 0
+    bitmap->dirty_region(2 * io_size, io_size); // Region B: one chunk at LBA 64Ki (gap at 32Ki..64Ki)
+
+    Raid1ResyncTask task{bitmap, k_offset, io_size, io_size};
+
+    // Hold region A in-flight: Phase 1 will skip it every sweep and set skip_from = io_size.
+    // The hint must carry across the outer loop so region B is found on the next sweep.
+    task.enqueue_write(0, io_size);
+    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+
+    // Wait for region B to be read while region A is still held.
+    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (reads_region_b.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    EXPECT_EQ(0, reads_region_a.load()) << "Region A must not be read while its write is in-flight (Phase 1 conflict)";
+    EXPECT_GE(reads_region_b.load(), 1) << "Region B must be copied via skip_from hint despite A being held";
+
+    // Release A: resync can now copy it and the bitmap clears.
+    task.dequeue_write(0, io_size);
+    EXPECT_TRUE(wait_for_bitmap_clean(bitmap, 5000ms)) << "Bitmap must become clean after releasing region A";
+
+    task.stop();
+}
+
 // Verify the core improvement: when a dirty run spans multiple chunks and only chunk 0
 // conflicts with an in-flight write, resync skips chunk 0 and copies chunk 1 in the same pass.
 // This is the key behaviour that distinguishes per-region tracking from the old global pause.

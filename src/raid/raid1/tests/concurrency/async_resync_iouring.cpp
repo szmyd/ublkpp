@@ -478,6 +478,92 @@ TEST(AsyncResyncIoUring, DispatchPathStopAndRelaunch) {
     io_uring_queue_exit(&ring);
 }
 
+// Verify the D5 fix: when all dirty chunks are Phase-1-conflicting, the coroutine path
+// yields via co_await sleep_tick() rather than spinning tight at memory speed.
+//
+// Setup: one dirty chunk at LBA 0, held by an in-flight write (Phase-1 conflict). Every
+// submit-loop iteration: Phase 1 skips the chunk → no tasks submitted, no in-flight →
+// the D5 branch fires → co_await sleep_tick() submits a 500 µs timeout SQE and suspends.
+// The drive loop delivers the timeout CQE, the coroutine resumes, __yield() increments
+// yield_count, and the outer loop repeats.
+//
+// The test verifies that yield_count advances at least 3 times while the conflict is held,
+// proving each outer-loop iteration suspends (sleep_tick fires) rather than tight-spinning.
+// After the write is released, the chunk is copied and the bitmap clears.
+TEST(AsyncResyncIoUring, DispatchPathSleepWhenAllChunksConflict) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_chunk_size);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    ResyncWriteGuard write_guard{task, 0, k_chunk_size}; // hold chunk 0: every sweep Phase-1-skips it
+
+    io_uring ring{};
+    ASSERT_EQ(0, io_uring_queue_init(k_resync_ring_depth * 2, &ring, 0));
+    ublksrv_queue test_q{};
+    test_q.ring_ptr = &ring;
+    test_q.q_depth = k_resync_ring_depth;
+
+    ublkpp::ResyncDispatcher dispatch;
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {}, &test_q, &dispatch);
+
+    std::vector< std::function< exec::task< void >() > > factories;
+    dispatch.drain(factories);
+    ASSERT_EQ(1u, factories.size());
+
+    std::atomic< bool > coro_done{false};
+    auto wrapped = [&, inner = std::move(factories[0])]() -> exec::task< void > {
+        co_await inner();
+        coro_done.store(true, std::memory_order_release);
+    };
+
+    exec::async_scope scope;
+    scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
+
+    // Drive until yield_count reaches 3. Each iteration suspends on a 500 µs timeout SQE;
+    // 3 sweeps take ≥ 1.5 ms. Allow up to 5 s for CI scheduling jitter.
+    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (task.yield_count() < 3 && std::chrono::steady_clock::now() < deadline) {
+        io_uring_cqe* cqe{};
+        __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 2'000'000};
+        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
+        task.drain_cqes();
+    }
+    ASSERT_GE(task.yield_count(), 3U)
+        << "Coroutine must yield at least 3 times via sleep_tick when all chunks conflict (D5 fix)";
+
+    // Release the conflict and run to completion so the coroutine exits cleanly.
+    write_guard.release();
+    while (!coro_done.load(std::memory_order_acquire)) {
+        io_uring_cqe* cqe{};
+        __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 2'000'000};
+        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
+        task.drain_cqes();
+    }
+    stdexec::sync_wait(scope.on_empty());
+    task.stop();
+
+    EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after the conflict is released";
+
+    io_uring_queue_exit(&ring);
+}
+
 // Verify stop() returns promptly when the dirty mirror becomes unavail DURING an active resync
 // sweep — i.e. the __run() unavail sleep loop, not _start()'s pre-ACTIVE unavail check.
 //

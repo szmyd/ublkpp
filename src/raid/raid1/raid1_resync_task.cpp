@@ -6,63 +6,49 @@
 #include "lib/logging.hpp"
 #include "bitmap.hpp"
 #include "raid1_impl.hpp"
+#include "resync_cursor.hpp"
 
 namespace ublkpp::raid1 {
 
-// Cursor state for the resync copy loop, shared between __run() and __run_coro().
-// Encapsulates dirty-chunk navigation, progress tracking, and the skip-hint that prevents
-// low-LBA regions from starving higher ones under sustained write pressure.
-struct ResyncCursor {
-    uint64_t lba;
-    uint32_t sz;
-    uint64_t skip_from{0}; // hint for next sweep if this sweep made no progress
-    bool any_copy{false};  // true if any chunk was attempted in the current dirty region
+ResyncCursor::ResyncCursor(Bitmap& bm, uint64_t hint) noexcept {
+    auto [l, s] = hint > 0 ? bm.next_dirty_after(hint) : bm.next_dirty();
+    if (s == 0 && hint > 0) std::tie(l, s) = bm.next_dirty();
+    lba = l;
+    sz = s;
+}
 
-    ResyncCursor(Bitmap& bm, uint64_t hint) noexcept {
-        auto [l, s] = hint > 0 ? bm.next_dirty_after(hint) : bm.next_dirty();
-        if (s == 0 && hint > 0) std::tie(l, s) = bm.next_dirty();
-        lba = l;
-        sz = s;
-    }
-
-    uint32_t chunk_len(uint32_t max_sz) const noexcept { return std::min(sz, max_sz); }
-
-    // Skip a Phase-1-conflicting chunk. Returns true if the caller must break the inner loop.
-    bool skip(uint32_t len, Bitmap& bm) noexcept {
-        sz -= len;
-        lba += len;
-        if (sz == 0) {
-            if (!any_copy) {
-                skip_from = lba;
-                return true;
-            }
-            std::tie(lba, sz) = bm.next_dirty();
-            any_copy = false;
+bool ResyncCursor::skip(uint32_t len, Bitmap& bm) noexcept {
+    sz -= len;
+    lba += len;
+    if (sz == 0) {
+        if (!any_copy) {
+            skip_from = lba;
+            return true;
         }
-        return false;
+        std::tie(lba, sz) = bm.next_dirty();
+        any_copy = false;
     }
+    return false;
+}
 
-    // Skip a chunk already covered by an in-flight slot (coroutine path only).
-    void skip_inflight(uint32_t len, Bitmap& bm) noexcept {
-        sz -= len;
-        lba += len;
-        if (sz == 0) {
-            std::tie(lba, sz) = bm.next_dirty();
-            any_copy = false;
-        }
+void ResyncCursor::skip_inflight(uint32_t len, Bitmap& bm) noexcept {
+    sz -= len;
+    lba += len;
+    if (sz == 0) {
+        std::tie(lba, sz) = bm.next_dirty();
+        any_copy = false;
     }
+}
 
-    // Advance after a successfully submitted or completed copy (or after a Phase-2 skip).
-    void advance(uint32_t len, Bitmap& bm) noexcept {
-        any_copy = true;
-        sz -= len;
-        lba += len;
-        if (sz == 0) {
-            std::tie(lba, sz) = bm.next_dirty();
-            any_copy = false;
-        }
+void ResyncCursor::advance(uint32_t len, Bitmap& bm) noexcept {
+    any_copy = true;
+    sz -= len;
+    lba += len;
+    if (sz == 0) {
+        std::tie(lba, sz) = bm.next_dirty();
+        any_copy = false;
     }
-};
+}
 
 Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size,
                                  uint32_t max_io, uint32_t slot_count, uint32_t chunk_size,
