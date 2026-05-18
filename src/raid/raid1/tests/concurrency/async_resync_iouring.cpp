@@ -624,10 +624,19 @@ TEST(AsyncResyncIoUring, DispatchPathPhase2Conflict) {
     };
 
     exec::async_scope scope;
+    // inline_scheduler runs the coroutine synchronously until its first co_await.
+    // By the time spawn() returns, Phase 1 has already passed and the READ SQE is in the ring.
     scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
 
-    // Drive until the coroutine has submitted the READ SQE and is waiting (yield_count > 0
-    // means the outer loop has iterated once, which only happens after READ submission).
+    // Register the conflict NOW — after Phase 1 (which passed without a guard) but before
+    // the READ CQE is delivered. Phase 2 runs when the READ CQE arrives via drain_cqes()
+    // and will see the guard via overlaps(), skipping the WRITE and keeping the bitmap dirty.
+    ResyncWriteGuard write_guard{task, 0, k_chunk_size};
+
+    // Drive until Phase 2 has fired and the coroutine has completed one full outer-loop
+    // iteration (yield_count > 0). After Phase 2 skips the WRITE, the coroutine has no
+    // in-flight tasks and no new READs to submit (cursor exhausted), so it calls sleep_tick()
+    // then __yield() — that is when yield_count increments.
     auto const deadline = std::chrono::steady_clock::now() + 5000ms;
     while (task.yield_count() == 0 && std::chrono::steady_clock::now() < deadline) {
         io_uring_cqe* cqe{};
@@ -637,11 +646,11 @@ TEST(AsyncResyncIoUring, DispatchPathPhase2Conflict) {
         task.drain_cqes();
     }
     ASSERT_GT(task.yield_count(), 0U) << "Coroutine must have iterated at least once";
+    EXPECT_GT(bitmap->dirty_pages(), 0U) << "Phase 2 conflict must keep bitmap dirty";
 
-    // Register a write conflict mid-flight. Phase 2 in the drain loop will see this.
-    ResyncWriteGuard write_guard{task, 0, k_chunk_size};
-
-    // Drive to completion — Phase 2 skips the WRITE; bitmap stays dirty (chunk 0 still held).
+    // Release the guard and drive to natural completion. The coroutine is currently
+    // Phase-1-blocked (guard held); releasing lets it retry, copy the chunk, and exit.
+    write_guard.release();
     while (!coro_done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
         io_uring_cqe* cqe{};
         auto ts = ublkpp::raid1::k_resync_tick;
@@ -649,38 +658,21 @@ TEST(AsyncResyncIoUring, DispatchPathPhase2Conflict) {
         io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
         task.drain_cqes();
     }
+    ASSERT_TRUE(coro_done.load(std::memory_order_acquire)) << "Coroutine must complete after guard released";
     stdexec::sync_wait(scope.on_empty());
     task.stop();
 
-    EXPECT_GT(bitmap->dirty_pages(), 0U) << "Phase 2 conflict must keep bitmap dirty";
+    EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after conflict resolved";
 
-    // Release the write and run a second cycle — the chunk should now be copied.
-    write_guard.release();
-    bitmap->dirty_region(0, k_chunk_size); // re-dirty if Phase 2 advanced the cursor past it
-
-    ublkpp::ResyncDispatcher dispatch2;
-    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {}, &test_q, &dispatch2);
-    dispatch2.drain(factories);
-    ASSERT_EQ(1u, factories.size());
-
-    std::atomic< bool > coro2_done{false};
-    auto wrapped2 = [&, inner = std::move(factories[0])]() -> exec::task< void > {
-        co_await inner();
-        coro2_done.store(true, std::memory_order_release);
-    };
-    exec::async_scope scope2;
-    scope2.spawn(stdexec::on(exec::inline_scheduler{}, wrapped2()));
-    while (!coro2_done.load(std::memory_order_acquire)) {
-        io_uring_cqe* cqe{};
-        auto ts = ublkpp::raid1::k_resync_tick;
-        ts.tv_nsec *= 2;
-        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
-        task.drain_cqes();
+    // Verify the chunk was actually copied to the dirty mirror.
+    {
+        std::vector< uint8_t > actual(k_chunk_size, 0);
+        int verify_fd = open(dirty_path.c_str(), O_RDONLY);
+        ASSERT_GE(verify_fd, 0);
+        ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual.data(), k_chunk_size, k_data_offset));
+        close(verify_fd);
+        EXPECT_EQ(source, actual) << "Chunk must be correctly copied after conflict resolved";
     }
-    stdexec::sync_wait(scope2.on_empty());
-    task.stop();
-
-    EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after conflict is released";
 
     io_uring_queue_exit(&ring);
 }
