@@ -200,14 +200,13 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
     ResyncWriteGuard write_guard{task, 0, k_chunk_size};
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
 
-    // Wait until resync has completed at least two sweeps (chunk 1 must have been copied by then).
+    // Wait until chunk 1 is clean and chunk 0 is still dirty. dirty_pages() == 1 is a
+    // deterministic signal that chunk 1's WRITE has committed and clean_region() has run —
+    // safer than yield_count >= 2 which races the write flush on slow CI runners.
     auto const deadline = std::chrono::steady_clock::now() + 5000ms;
-    while (task.yield_count() < 2 && std::chrono::steady_clock::now() < deadline)
+    while (bitmap->dirty_pages() != 1 && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(1ms);
-    ASSERT_GE(task.yield_count(), 2U) << "Resync must have swept at least twice within the timeout";
-
-    // chunk 1 must be clean; chunk 0 still dirty.
-    EXPECT_GT(bitmap->dirty_pages(), 0U) << "Bitmap must remain dirty while chunk 0 write is held";
+    ASSERT_EQ(1U, bitmap->dirty_pages()) << "chunk 1 must be clean, chunk 0 still dirty within timeout";
 
     // Verify chunk 1 was copied correctly.
     {
@@ -563,6 +562,125 @@ TEST(AsyncResyncIoUring, DispatchPathSleepWhenAllChunksConflict) {
     task.stop();
 
     EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after the conflict is released";
+
+    io_uring_queue_exit(&ring);
+}
+
+// Verify the coroutine-path Phase 2 conflict detection: a write registered AFTER the READ SQE
+// is submitted (but before the READ CQE is delivered) must keep the bitmap dirty. This covers
+// the __phase2_conflict() call inside the __run_coro() drain loop — the only Phase 2 coverage
+// that actually exercises the async I/O path (write_resync_no_pause.cpp covers __run() only).
+//
+// Sequence:
+//   1. Dirty one chunk. Launch resync on the dispatch path.
+//   2. Drive the ring until the READ SQE fires (yield_count advances past 0).
+//   3. Register an enqueue_write() conflict for that chunk while the READ is in-flight.
+//   4. Drive to completion — Phase 2 sees the conflict, skips the WRITE, bitmap stays dirty.
+//   5. Release the write conflict. Run a second cycle — chunk is copied and bitmap clears.
+TEST(AsyncResyncIoUring, DispatchPathPhase2Conflict) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
+
+    constexpr uint8_t k_pattern = 0xCD;
+    std::vector< uint8_t > source(k_chunk_size, k_pattern);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pwrite(clean_raw_fd, source.data(), k_chunk_size, k_data_offset));
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_chunk_size);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+
+    io_uring ring{};
+    ASSERT_EQ(0, io_uring_queue_init(k_resync_ring_depth * 2, &ring, 0));
+    ublksrv_queue test_q{};
+    test_q.ring_ptr = &ring;
+    test_q.q_depth = k_resync_ring_depth;
+
+    ublkpp::ResyncDispatcher dispatch;
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {}, &test_q, &dispatch);
+
+    std::vector< std::function< exec::task< void >() > > factories;
+    dispatch.drain(factories);
+    ASSERT_EQ(1u, factories.size());
+
+    std::atomic< bool > coro_done{false};
+    auto wrapped = [&, inner = std::move(factories[0])]() -> exec::task< void > {
+        co_await inner();
+        coro_done.store(true, std::memory_order_release);
+    };
+
+    exec::async_scope scope;
+    scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
+
+    // Drive until the coroutine has submitted the READ SQE and is waiting (yield_count > 0
+    // means the outer loop has iterated once, which only happens after READ submission).
+    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (task.yield_count() == 0 && std::chrono::steady_clock::now() < deadline) {
+        io_uring_cqe* cqe{};
+        auto ts = ublkpp::raid1::k_resync_tick;
+        ts.tv_nsec *= 2;
+        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
+        task.drain_cqes();
+    }
+    ASSERT_GT(task.yield_count(), 0U) << "Coroutine must have iterated at least once";
+
+    // Register a write conflict mid-flight. Phase 2 in the drain loop will see this.
+    ResyncWriteGuard write_guard{task, 0, k_chunk_size};
+
+    // Drive to completion — Phase 2 skips the WRITE; bitmap stays dirty (chunk 0 still held).
+    while (!coro_done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+        io_uring_cqe* cqe{};
+        auto ts = ublkpp::raid1::k_resync_tick;
+        ts.tv_nsec *= 2;
+        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
+        task.drain_cqes();
+    }
+    stdexec::sync_wait(scope.on_empty());
+    task.stop();
+
+    EXPECT_GT(bitmap->dirty_pages(), 0U) << "Phase 2 conflict must keep bitmap dirty";
+
+    // Release the write and run a second cycle — the chunk should now be copied.
+    write_guard.release();
+    bitmap->dirty_region(0, k_chunk_size); // re-dirty if Phase 2 advanced the cursor past it
+
+    ublkpp::ResyncDispatcher dispatch2;
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {}, &test_q, &dispatch2);
+    dispatch2.drain(factories);
+    ASSERT_EQ(1u, factories.size());
+
+    std::atomic< bool > coro2_done{false};
+    auto wrapped2 = [&, inner = std::move(factories[0])]() -> exec::task< void > {
+        co_await inner();
+        coro2_done.store(true, std::memory_order_release);
+    };
+    exec::async_scope scope2;
+    scope2.spawn(stdexec::on(exec::inline_scheduler{}, wrapped2()));
+    while (!coro2_done.load(std::memory_order_acquire)) {
+        io_uring_cqe* cqe{};
+        auto ts = ublkpp::raid1::k_resync_tick;
+        ts.tv_nsec *= 2;
+        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
+        task.drain_cqes();
+    }
+    stdexec::sync_wait(scope2.on_empty());
+    task.stop();
+
+    EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after conflict is released";
 
     io_uring_queue_exit(&ring);
 }

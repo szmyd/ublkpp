@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `backend_fd()` virtual method added to `ublk_disk`; `FSDisk` overrides to return its
   backing fd. Composite and virtual disks return -1 (informational only; no fallback path).
 - Standalone thread path (`__run()`) retained for test contexts without a live dispatcher.
+- Fixes: short-read/write detection in all three I/O paths (data previously silently lost);
+  `_done_promise.set_value()` now fires before `complete()` to close a latent deadlock;
+  `_launch_lock` held across `_done_future.wait()` to close a data race; `_resync_queue`/
+  `_resync_dispatch` made atomic; ring depth +1 for sleep_tick SQE; unified 500µs tick
+  constant; linear STOPPING drain with short-write check; per-sweep yield in thread path.
 
 ## 0.31.0 raid1: replace global PAUSE with lock-free per-region write tracker
 - Replace global `PAUSE` state with `RegionTracker`: a lock-free flat slot array that tracks
@@ -27,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `resync_skip_from` cursor + `next_dirty_after()`: prevents low-LBA dirty runs from starving
   higher-LBA runs under sustained write pressure.
 - Remove `PAUSE` state, `__pause()`, and `sisl::atomic_status_counter`; replace with plain
-  `std::atomic<resync_state>` (3 states: IDLE, ACTIVE, STOPPING; SLEEPING removed in 0.32.0).
+  `std::atomic<resync_state>` (3 states: IDLE, ACTIVE, STOPPING).
 - `copies_left` budget consumed only by actual copy attempts; Phase 1 skips are free.
 
 ## 0.30.0 refactor: async coroutine I/O, public API 1.0.0 uplift, and RAID1 hardening

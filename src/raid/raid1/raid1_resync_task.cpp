@@ -486,8 +486,9 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                 auto const read_res = slot.task->result();
                 slot.task.reset();
 
-                if (read_res < 0) {
-                    RLOGE("Resync async read failed: {} [lba:{:#0x} len:{}]", strerror(-read_res), slot.lba, slot.len)
+                if (read_res != static_cast< int >(slot.len)) {
+                    auto const msg = read_res < 0 ? strerror(-read_res) : "short read";
+                    RLOGE("Resync async read failed: {} [lba:{:#0x} len:{} got:{}]", msg, slot.lba, slot.len, read_res)
                     clean_mirror->unavail.test_and_set(std::memory_order_release);
                     slot.phase = ResyncSlot::Phase::FREE;
                     continue;
@@ -511,8 +512,10 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                 auto const write_res = slot.task->result();
                 slot.task.reset();
 
-                if (write_res < 0) {
-                    RLOGE("Resync async write failed: {} [lba:{:#0x} len:{}]", strerror(-write_res), slot.lba, slot.len)
+                if (write_res != static_cast< int >(slot.len)) {
+                    auto const msg = write_res < 0 ? strerror(-write_res) : "short write";
+                    RLOGE("Resync async write failed: {} [lba:{:#0x} len:{} got:{}]", msg, slot.lba, slot.len,
+                          write_res)
                     dirty_mirror->unavail.test_and_set(std::memory_order_release);
                 } else {
                     clean_region(slot.lba, slot.len, *clean_mirror);
@@ -644,8 +647,9 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
             DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean_mirror->disk, cursor.lba + _offset, iov_len)
             auto read_res = clean_mirror->disk->sync_iov(UBLK_IO_OP_READ, &slot.slot_iov, 1,
                                                          static_cast< off_t >(cursor.lba + _offset));
-            if (!read_res) {
-                RLOGE("Resync read failed: {} [lba:{:#0x} len:{}]", read_res.error().message(), cursor.lba, iov_len)
+            if (!read_res || read_res.value() != iov_len) {
+                auto const msg = !read_res ? read_res.error().message() : "short read";
+                RLOGE("Resync read failed: {} [lba:{:#0x} len:{}]", msg, cursor.lba, iov_len)
                 clean_mirror->unavail.test_and_set(std::memory_order_release);
                 break;
             }
@@ -660,8 +664,9 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
             DLOGT("WRITE {} : [lba:{:#0x}|len:{:#0x}]", *dirty_mirror->disk, cursor.lba + _offset, iov_len)
             auto write_res = dirty_mirror->disk->sync_iov(UBLK_IO_OP_WRITE, &slot.slot_iov, 1,
                                                           static_cast< off_t >(cursor.lba + _offset));
-            if (!write_res) {
-                RLOGE("Resync write failed: {} [lba:{:#0x} len:{}]", write_res.error().message(), cursor.lba, iov_len)
+            if (!write_res || write_res.value() != iov_len) {
+                auto const msg = !write_res ? write_res.error().message() : "short write";
+                RLOGE("Resync write failed: {} [lba:{:#0x} len:{}]", msg, cursor.lba, iov_len)
                 dirty_mirror->unavail.test_and_set(std::memory_order_release);
             } else {
                 clean_region(cursor.lba, iov_len, *clean_mirror);
@@ -706,11 +711,12 @@ void Raid1ResyncTask::stop() noexcept {
     });
 
     if (_resync_dispatch) {
-        // Coroutine path: release the lock before waiting so that if the complete() callback
-        // calls stop() it can acquire _launch_lock without deadlocking. NOTE: complete() must
-        // not itself call _done_future.wait() — concurrent waits on std::future are UB.
-        lg.unlock();
+        // Hold _launch_lock across the wait: _done_promise.set_value() fires BEFORE complete()
+        // runs (see __run_coro teardown), so complete() cannot unblock until stop() has returned
+        // and released the lock — no deadlock. Holding the lock prevents a concurrent launch()
+        // from resetting _done_promise/_done_future while wait() is reading the shared state.
         if (_done_future.valid()) _done_future.wait();
+        lg.unlock();
     } else {
         // Thread path: release the lock before joining so that _start() (running on the resync
         // thread) can acquire _launch_lock for any last-minute state operations without deadlocking.

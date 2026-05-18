@@ -55,9 +55,10 @@ class Raid1Disk : public ublk_disk {
     std::atomic_uint16_t _nr_hw_queues{0};
 
     // Target-level resync queue and coroutine dispatcher injected via prepare(ublk_rings*).
-    // Both written once on the first queue init; null in standalone/test context.
-    ublksrv_queue* _resync_queue{nullptr};
-    ResyncDispatcher* _resync_dispatch{nullptr};
+    // Written once on the first queue init; may be read concurrently by toggle_resync().
+    // Atomic pointers provide the necessary synchronization without a lock.
+    std::atomic< ublksrv_queue* > _resync_queue{nullptr};
+    std::atomic< ResyncDispatcher* > _resync_dispatch{nullptr};
 
     // Shared read/write routing helpers used by both async_iov and sync_iov.
     // Returns {primary_dev, failover_dev}. failover_dev is nullopt when the backup holds stale
