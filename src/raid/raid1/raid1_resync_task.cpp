@@ -9,6 +9,61 @@
 
 namespace ublkpp::raid1 {
 
+// Cursor state for the resync copy loop, shared between __run() and __run_coro().
+// Encapsulates dirty-chunk navigation, progress tracking, and the skip-hint that prevents
+// low-LBA regions from starving higher ones under sustained write pressure.
+struct ResyncCursor {
+    uint64_t lba;
+    uint32_t sz;
+    uint64_t skip_from{0}; // hint for next sweep if this sweep made no progress
+    bool any_copy{false};  // true if any chunk was attempted in the current dirty region
+
+    ResyncCursor(Bitmap& bm, uint64_t hint) noexcept {
+        auto [l, s] = hint > 0 ? bm.next_dirty_after(hint) : bm.next_dirty();
+        if (s == 0 && hint > 0) std::tie(l, s) = bm.next_dirty();
+        lba = l;
+        sz = s;
+    }
+
+    uint32_t chunk_len(uint32_t max_sz) const noexcept { return std::min(sz, max_sz); }
+
+    // Skip a Phase-1-conflicting chunk. Returns true if the caller must break the inner loop.
+    bool skip(uint32_t len, Bitmap& bm) noexcept {
+        sz -= len;
+        lba += len;
+        if (sz == 0) {
+            if (!any_copy) {
+                skip_from = lba;
+                return true;
+            }
+            std::tie(lba, sz) = bm.next_dirty();
+            any_copy = false;
+        }
+        return false;
+    }
+
+    // Skip a chunk already covered by an in-flight slot (coroutine path only).
+    void skip_inflight(uint32_t len, Bitmap& bm) noexcept {
+        sz -= len;
+        lba += len;
+        if (sz == 0) {
+            std::tie(lba, sz) = bm.next_dirty();
+            any_copy = false;
+        }
+    }
+
+    // Advance after a successfully submitted or completed copy (or after a Phase-2 skip).
+    void advance(uint32_t len, Bitmap& bm) noexcept {
+        any_copy = true;
+        sz -= len;
+        lba += len;
+        if (sz == 0) {
+            std::tie(lba, sz) = bm.next_dirty();
+            any_copy = false;
+        }
+    }
+};
+
 Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size,
                                  uint32_t max_io, uint32_t slot_count, uint32_t chunk_size,
                                  std::shared_ptr< ublkpp::UblkRaidMetrics > metrics) :
@@ -362,84 +417,63 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         }
         consecutive_unavail = 0;
 
-        auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
-
-        auto [cursor_lba, cursor_sz] =
-            resync_skip_from > 0 ? _dirty_bitmap->next_dirty_after(resync_skip_from) : _dirty_bitmap->next_dirty();
-        if (0 == cursor_sz && resync_skip_from > 0) std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-        resync_skip_from = 0;
-
-        bool any_copy = false;
+        ResyncCursor cursor{*_dirty_bitmap, resync_skip_from};
         bool submitted_any = false; // true if at least one READ was enqueued this sweep
 
-        // Submit loop: push async READ tasks into free slots (identical logic to __run()).
+        // Submit loop: fill free slots with async READ tasks. The natural throttle is slot
+        // exhaustion (k_resync_slots = 8); no copies_left budget is needed here.
         if (cur_state != resync_state::STOPPING && !dirty_mirror->unavail.test(std::memory_order_acquire)) {
             for (auto& slot : _slots) {
-                if (copies_left == 0) break;
                 if (slot.phase != ResyncSlot::Phase::FREE) continue;
-                if (cursor_sz == 0) break;
+                if (cursor.sz == 0) break;
 
-                auto const iov_len = std::min(cursor_sz, _max_size);
+                auto const iov_len = cursor.chunk_len(_max_size);
 
-                if (_region_tracker.overlaps(cursor_lba, iov_len)) {
-                    cursor_sz -= iov_len;
-                    cursor_lba += iov_len;
-                    if (0 == cursor_sz) {
-                        if (!any_copy) {
-                            resync_skip_from = cursor_lba;
-                            break;
-                        }
-                        std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-                        any_copy = false;
-                    }
+                // Snapshot BEFORE Phase 1 so Phase 2 can detect writes completing during the READ.
+                auto const gen_before = _region_tracker.snapshot_gen();
+
+                // Phase 1: skip if an in-flight write overlaps this chunk.
+                if (_region_tracker.overlaps(cursor.lba, iov_len)) {
+                    if (cursor.skip(iov_len, *_dirty_bitmap)) break;
                     continue;
                 }
 
+                // Skip chunks already covered by another in-flight slot.
                 {
                     bool already_in_flight = false;
-                    auto const chunk_end = cursor_lba + iov_len;
+                    auto const chunk_end = cursor.lba + iov_len;
                     for (auto const& s : _slots) {
                         if (s.phase == ResyncSlot::Phase::FREE) continue;
-                        if (cursor_lba < s.lba + s.len && chunk_end > s.lba) {
+                        if (cursor.lba < s.lba + s.len && chunk_end > s.lba) {
                             already_in_flight = true;
                             break;
                         }
                     }
                     if (already_in_flight) {
-                        cursor_sz -= iov_len;
-                        cursor_lba += iov_len;
-                        if (0 == cursor_sz) {
-                            std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-                            any_copy = false;
-                        }
+                        cursor.skip_inflight(iov_len, *_dirty_bitmap);
                         continue;
                     }
                 }
 
-                slot.gen_before = _region_tracker.snapshot_gen();
-                slot.lba = cursor_lba;
+                slot.gen_before = gen_before;
+                slot.lba = cursor.lba;
                 slot.len = iov_len;
                 slot.slot_iov.iov_len = iov_len;
                 slot.io._pool.clear();
                 slot.fake_iod.op_flags = UBLK_IO_OP_READ;
-                DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean_mirror->disk, cursor_lba + _offset, iov_len)
+                DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean_mirror->disk, cursor.lba + _offset, iov_len)
 
                 auto t = clean_mirror->disk->async_iov(_resync_queue, &slot.fake_data, &slot.slot_iov, 1,
-                                                       cursor_lba + _offset);
+                                                       cursor.lba + _offset);
                 slot.task.emplace(std::move(t).start());
                 slot.phase = ResyncSlot::Phase::READ_PENDING;
 
                 submitted_any = true;
-                any_copy = true;
-                --copies_left;
-                cursor_sz -= iov_len;
-                cursor_lba += iov_len;
-                if (0 == cursor_sz) {
-                    std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-                    any_copy = false;
-                }
+                cursor.advance(iov_len, *_dirty_bitmap);
             }
         }
+
+        resync_skip_from = cursor.skip_from;
 
         // Instead of io_uring_submit_and_wait_timeout: co_await the first non-done in-flight slot.
         // The centralized run_resync_queue_loop handles CQE delivery and resumes slot.task's
@@ -608,82 +642,56 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
         consecutive_unavail = 0;
 
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
+        ResyncCursor cursor{*_dirty_bitmap, resync_skip_from};
 
-        auto [cursor_lba, cursor_sz] =
-            resync_skip_from > 0 ? _dirty_bitmap->next_dirty_after(resync_skip_from) : _dirty_bitmap->next_dirty();
-        if (0 == cursor_sz && resync_skip_from > 0) std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-        resync_skip_from = 0;
-
-        bool any_copy = false;
-
-        while (cursor_sz > 0 && copies_left > 0 && cur_state != resync_state::STOPPING &&
+        while (cursor.sz > 0 && copies_left > 0 && cur_state != resync_state::STOPPING &&
                !dirty_mirror->unavail.test(std::memory_order_acquire)) {
-            auto const iov_len = std::min(cursor_sz, _max_size);
+            auto const iov_len = cursor.chunk_len(_max_size);
 
-            // Snapshot generation BEFORE Phase 1 so that any write completing between Phase 1
-            // and the READ is visible to the Phase 2 completed_since() check.
+            // Snapshot BEFORE Phase 1: a write completing between Phase 1 and the READ is
+            // visible to Phase 2's completed_since() scan even if its slot is already free.
             auto const gen_before = _region_tracker.snapshot_gen();
 
             // Phase 1: skip if an in-flight write overlaps this chunk.
-            if (_region_tracker.overlaps(cursor_lba, iov_len)) {
-                cursor_sz -= iov_len;
-                cursor_lba += iov_len;
-                if (0 == cursor_sz) {
-                    if (!any_copy) {
-                        resync_skip_from = cursor_lba;
-                        break;
-                    }
-                    std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-                    any_copy = false;
-                }
+            if (_region_tracker.overlaps(cursor.lba, iov_len)) {
+                if (cursor.skip(iov_len, *_dirty_bitmap)) break;
                 continue;
             }
-            slot.slot_iov.iov_len = iov_len;
 
-            DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean_mirror->disk, cursor_lba + _offset, iov_len)
+            slot.slot_iov.iov_len = iov_len;
+            DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean_mirror->disk, cursor.lba + _offset, iov_len)
             auto read_res = clean_mirror->disk->sync_iov(UBLK_IO_OP_READ, &slot.slot_iov, 1,
-                                                         static_cast< off_t >(cursor_lba + _offset));
+                                                         static_cast< off_t >(cursor.lba + _offset));
             if (!read_res) {
-                RLOGE("Resync read failed: {} [lba:{:#0x} len:{}]", read_res.error().message(), cursor_lba, iov_len)
+                RLOGE("Resync read failed: {} [lba:{:#0x} len:{}]", read_res.error().message(), cursor.lba, iov_len)
                 clean_mirror->unavail.test_and_set(std::memory_order_release);
                 break;
             }
 
             // Phase 2: post-copy conflict check.
-            if (_region_tracker.overlaps(cursor_lba, iov_len) ||
-                _region_tracker.completed_since(cursor_lba, iov_len, gen_before)) {
-                cursor_sz -= iov_len;
-                cursor_lba += iov_len;
-                any_copy = true;
+            if (_region_tracker.overlaps(cursor.lba, iov_len) ||
+                _region_tracker.completed_since(cursor.lba, iov_len, gen_before)) {
+                cursor.advance(iov_len, *_dirty_bitmap);
                 --copies_left;
-                if (0 == cursor_sz) {
-                    std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-                    any_copy = false;
-                }
                 continue;
             }
 
-            DLOGT("WRITE {} : [lba:{:#0x}|len:{:#0x}]", *dirty_mirror->disk, cursor_lba + _offset, iov_len)
+            DLOGT("WRITE {} : [lba:{:#0x}|len:{:#0x}]", *dirty_mirror->disk, cursor.lba + _offset, iov_len)
             auto write_res = dirty_mirror->disk->sync_iov(UBLK_IO_OP_WRITE, &slot.slot_iov, 1,
-                                                          static_cast< off_t >(cursor_lba + _offset));
+                                                          static_cast< off_t >(cursor.lba + _offset));
             if (!write_res) {
-                RLOGE("Resync write failed: {} [lba:{:#0x} len:{}]", write_res.error().message(), cursor_lba, iov_len)
+                RLOGE("Resync write failed: {} [lba:{:#0x} len:{}]", write_res.error().message(), cursor.lba, iov_len)
                 dirty_mirror->unavail.test_and_set(std::memory_order_release);
             } else {
-                clean_region(cursor_lba, iov_len, *clean_mirror);
+                clean_region(cursor.lba, iov_len, *clean_mirror);
                 if (_metrics) { _metrics->record_resync_progress(iov_len); } // GCOVR_EXCL_BR_LINE
             }
 
-            any_copy = true;
+            cursor.advance(iov_len, *_dirty_bitmap);
             --copies_left;
-            cursor_sz -= iov_len;
-            cursor_lba += iov_len;
-            if (0 == cursor_sz) {
-                std::tie(cursor_lba, cursor_sz) = _dirty_bitmap->next_dirty();
-                any_copy = false;
-            }
         }
 
+        resync_skip_from = cursor.skip_from;
         if (cur_state = __yield(); resync_state::STOPPING == cur_state) break;
         nr_pages = _dirty_bitmap->dirty_pages();
         if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
