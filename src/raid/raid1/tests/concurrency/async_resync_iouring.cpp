@@ -200,19 +200,23 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
     ResyncWriteGuard write_guard{task, 0, k_chunk_size};
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
 
-    // Wait until chunk 1 is clean and chunk 0 is still dirty. dirty_pages() == 1 is a
-    // deterministic signal that chunk 1's WRITE has committed and clean_region() has run —
-    // safer than yield_count >= 2 which races the write flush on slow CI runners.
+    // Wait until chunk 1's specific region is clean. dirty_pages() counts whole bitmap pages
+    // (each covers 1 GiB), so it stays at 1 for our sub-GiB test file until ALL chunks are
+    // clean — the wrong signal. is_dirty() checks the exact LBA range.
     auto const deadline = std::chrono::steady_clock::now() + 5000ms;
-    while (bitmap->dirty_pages() != 1 && std::chrono::steady_clock::now() < deadline)
+    while (bitmap->is_dirty(k_chunk_size, k_chunk_size) && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(1ms);
-    ASSERT_EQ(1U, bitmap->dirty_pages()) << "chunk 1 must be clean, chunk 0 still dirty within timeout";
+    ASSERT_FALSE(bitmap->is_dirty(k_chunk_size, k_chunk_size)) << "chunk 1 must be clean within timeout";
+    ASSERT_TRUE(bitmap->is_dirty(0, k_chunk_size)) << "chunk 0 must still be dirty while write is held";
 
     // Verify chunk 1 was copied correctly.
     {
         std::vector< uint8_t > actual1(k_chunk_size, 0);
         int verify_fd = open(dirty_path.c_str(), O_RDONLY);
         ASSERT_GE(verify_fd, 0);
+        // Drop page cache so a subsequent buffered pread sees O_DIRECT-written data on
+        // non-overlayfs systems where FSDisk enables O_DIRECT. No-op hint on overlayfs.
+        posix_fadvise(verify_fd, k_data_offset + k_chunk_size, k_chunk_size, POSIX_FADV_DONTNEED);
         ASSERT_EQ(static_cast< ssize_t >(k_chunk_size),
                   pread(verify_fd, actual1.data(), k_chunk_size, k_data_offset + k_chunk_size));
         close(verify_fd);
@@ -228,6 +232,7 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
         std::vector< uint8_t > actual0(k_chunk_size, 0);
         int verify_fd = open(dirty_path.c_str(), O_RDONLY);
         ASSERT_GE(verify_fd, 0);
+        posix_fadvise(verify_fd, k_data_offset, k_chunk_size, POSIX_FADV_DONTNEED);
         ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual0.data(), k_chunk_size, k_data_offset));
         close(verify_fd);
         EXPECT_EQ(chunk0_data, actual0) << "chunk 0 must be correctly copied after the write is released";
