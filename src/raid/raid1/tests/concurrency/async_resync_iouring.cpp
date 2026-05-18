@@ -145,9 +145,10 @@ TEST(AsyncResyncIoUring, StopResponsive) {
     auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
 
     auto superbitmap_buf = make_test_superbitmap();
-    // Dirty all chunks so resync has work to do when stop() fires.
+    // Dirty only complete chunks to stay within file capacity (Bitmap rounds up to chunk boundaries).
     auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
-    bitmap->dirty_region(0, k_test_file_size - k_data_offset);
+    auto const k_dirty_chunks = (k_test_file_size - k_data_offset) / k_chunk_size;
+    bitmap->dirty_region(0, k_dirty_chunks * k_chunk_size);
 
     Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
