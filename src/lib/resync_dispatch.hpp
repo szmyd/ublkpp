@@ -6,6 +6,8 @@
 #include <mutex>
 #include <vector>
 
+#include <sisl/logging/logging.h>
+
 namespace ublkpp {
 
 // Thread-safe queue of pending RAID1 resync coroutine factories. I/O-queue threads
@@ -20,6 +22,8 @@ struct ResyncDispatcher {
     // Atomically swap all pending factories into `out` under the lock so the caller can
     // spawn them without holding the lock. `out` is expected to be empty on entry.
     void drain(std::vector< std::function< exec::task< void >() > >& out) {
+        DEBUG_ASSERT(out.empty(),
+                     "ResyncDispatcher::drain: out is non-empty; pending factories would be silently dropped");
         auto lk = std::scoped_lock(_mu);
         out.swap(_pending);
     }

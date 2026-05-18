@@ -13,15 +13,6 @@
 using namespace std::chrono_literals;
 using namespace ublkpp::raid1;
 
-static bool wait_for_bitmap_clean(std::shared_ptr< Bitmap > const& bitmap, std::chrono::milliseconds timeout = 2000ms) {
-    auto const deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (0 == bitmap->dirty_pages()) return true;
-        std::this_thread::sleep_for(1ms);
-    }
-    return false;
-}
-
 // Verify that a write to an unrelated LBA does not block resync of a different dirty region.
 // Old mechanism: ANY write paused ALL resync.
 // New mechanism: only conflicting LBA ranges are skipped.

@@ -9,6 +9,7 @@
 #include <ublksrv.h>
 
 #include "ublkpp/raid.hpp"
+#include "raid/raid1/bitmap.hpp"
 #include "raid/raid1/raid1_impl.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
 #include "tests/test_disk.hpp"
@@ -112,6 +113,19 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
     do {                                                                                                               \
         std::thread([&]() { __VA_ARGS__ }).join();                                                                     \
     } while (0)
+
+// Poll until the bitmap has no dirty pages, or the timeout elapses.
+// Returns true if the bitmap is clean before the timeout.
+inline bool wait_for_bitmap_clean(std::shared_ptr< ublkpp::raid1::Bitmap > const& bitmap,
+                                  std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+    using namespace std::chrono_literals;
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (0 == bitmap->dirty_pages()) return true;
+        std::this_thread::sleep_for(1ms);
+    }
+    return false;
+}
 
 // Helper function to wait for both devices to become clean
 // Returns true if both devices are clean, false if timeout

@@ -64,15 +64,6 @@ std::pair< std::string, int > make_resync_test_file(bool is_device_b = false) {
     return {std::string(path), fd};
 }
 
-bool wait_for_bitmap_clean(std::shared_ptr< Bitmap > const& bitmap, std::chrono::milliseconds timeout = 5000ms) {
-    auto const deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (0 == bitmap->dirty_pages()) return true;
-        std::this_thread::sleep_for(1ms);
-    }
-    return false;
-}
-
 } // namespace
 
 // Verify the async resync path copies data correctly when both mirror disks are backed by
@@ -419,19 +410,19 @@ TEST(AsyncResyncIoUring, DispatchPathStopAndRelaunch) {
 
     Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
 
-    // Dedicated io_uring ring for the dispatch path (no SINGLE_ISSUER: CQE drain thread submits
-    // while the coroutine may still be adding SQEs during the handoff window).
+    // Dedicated io_uring ring for the dispatch path. Single-threaded CQE delivery (no separate
+    // cqe_thread) means SINGLE_ISSUER is safe here; use 0 flags for simplicity.
     io_uring ring{};
     ASSERT_EQ(0, io_uring_queue_init(k_resync_ring_depth * 2, &ring, 0));
     ublksrv_queue test_q{};
     test_q.ring_ptr = &ring;
     test_q.q_depth = k_resync_ring_depth;
 
-    // Runs one coroutine cycle to natural completion via the dispatch path:
-    // 1. Launches the task with the shared ring + a fresh dispatcher.
-    // 2. Drains the factory from the dispatcher.
-    // 3. Starts a CQE drain thread (submits ring + delivers CQEs to the suspended coroutine).
-    // 4. Runs the coroutine to completion on the calling thread via stdexec::sync_wait.
+    // Runs one coroutine cycle to natural completion via the dispatch path.
+    // CQE delivery and coroutine execution both happen on THIS thread: with inline_scheduler,
+    // drain_cqes() → h.resume() resumes the coroutine synchronously, eliminating the TSAN
+    // race that a separate CQE delivery thread would introduce (concurrent writes to cqe_state
+    // while the coroutine constructs a new cqe_state at the same address after _pool.clear()).
     auto run_one_cycle = [&](std::function< void() > complete_cb) {
         ublkpp::ResyncDispatcher dispatch;
         task.launch(test_uuid, mirror_clean, mirror_dirty, std::move(complete_cb), &test_q, &dispatch);
@@ -440,23 +431,27 @@ TEST(AsyncResyncIoUring, DispatchPathStopAndRelaunch) {
         dispatch.drain(factories);
         ASSERT_EQ(1u, factories.size()) << "dispatch must have exactly one pending factory";
 
-        std::atomic< bool > cqe_stop{false};
-        std::thread cqe_thread([&]() {
-            while (!cqe_stop.load(std::memory_order_acquire)) {
-                io_uring_cqe* cqe{};
-                __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 1'000'000};
-                io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
-                task.drain_cqes();
-            }
-        });
+        // Wrap the factory to signal completion when the coroutine body returns.
+        std::atomic< bool > coro_done{false};
+        auto wrapped = [&, inner = std::move(factories[0])]() -> exec::task< void > {
+            co_await inner();
+            coro_done.store(true, std::memory_order_release);
+        };
 
-        // Run the coroutine on the calling thread; CQE thread delivers completions.
         exec::async_scope scope;
-        scope.spawn(stdexec::on(exec::inline_scheduler{}, factories[0]()));
-        stdexec::sync_wait(scope.on_empty());
+        scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
 
-        cqe_stop.store(true, std::memory_order_release);
-        cqe_thread.join();
+        // Drive the resync ring and coroutine from THIS thread until the coroutine exits.
+        // io_uring_submit_and_wait_timeout flushes pending SQEs and waits up to 1 ms for a
+        // CQE; drain_cqes() then delivers all ready CQEs, resuming the coroutine inline.
+        while (!coro_done.load(std::memory_order_acquire)) {
+            io_uring_cqe* cqe{};
+            __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 1'000'000};
+            io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
+            task.drain_cqes();
+        }
+
+        stdexec::sync_wait(scope.on_empty()); // scope is already empty; completes immediately
     };
 
     // First cycle: dirty one chunk, run to completion.

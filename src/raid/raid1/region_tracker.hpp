@@ -39,6 +39,7 @@ public:
     // both chunk_idx and chunk_count — no transitional window.
     // Scan starts from chunk_idx % size to distribute hot-slot pressure across threads.
     void track(uint64_t lba, uint32_t len) noexcept {
+        DEBUG_ASSERT(len > 0, "RegionTracker::track called with len=0 — zero-length writes are not valid");
         auto const packed = pack(lba, len);
         auto const start = (lba / _chunk_size) % _slots.size();
         while (true) {
@@ -90,7 +91,9 @@ public:
                 // forbids concurrent writes to the same LBA in production. Write seq=0 for the
                 // already-claimed shadow gen (conservative: completed_since() returns true), then
                 // continue scanning for the second slot holding the same packed value.
-                _shadow[gen % _shadow.size()].seq.store(0, std::memory_order_release);
+                // Do not write seq here: leaving it unpublished (seq != gen+1) causes
+                // completed_since() to return true conservatively — which is correct.
+                // Writing seq=0 would be ambiguous when gen+1 == 0 (UINT64_MAX wrap).
                 continue;
             }
 
@@ -98,6 +101,9 @@ public:
             _shadow[idx].lba.store(lba, std::memory_order_relaxed);
             _shadow[idx].len.store(len, std::memory_order_relaxed);
             // Release publish: completed_since() acquires on seq before reading lba/len.
+            // gen+1 == 0 would collide with the initial seq=0 sentinel; assert it never wraps.
+            // At 1M IOPS this counter saturates in ~584,000 years.
+            RELEASE_ASSERT(gen + 1 != 0, "RegionTracker shadow head wrapped at UINT64_MAX — unreachable in practice");
             _shadow[idx].seq.store(gen + 1, std::memory_order_release);
             return;
         }
@@ -110,6 +116,7 @@ public:
     // Returns true if any in-flight write overlaps [lba, lba+len).
     // Single atomic load per slot — no transitional windows, no special-casing.
     [[nodiscard]] bool overlaps(uint64_t lba, uint32_t len) const noexcept {
+        DEBUG_ASSERT(len > 0, "RegionTracker::overlaps called with len=0 — zero-length queries always return false");
         auto const q_start = lba / _chunk_size;
         auto const q_end = (lba + len + _chunk_size - 1) / _chunk_size; // exclusive, rounded up
         for (auto const& slot : _slots) {
@@ -194,8 +201,9 @@ private:
         // so volumes requiring chunk_idx >= 2^32 would silently truncate and produce false
         // negatives (resync proceeds through a conflicting range). At the default 32 KiB
         // chunk_size the limit is ~128 TiB.
-        DEBUG_ASSERT(chunk_idx < (1ULL << 32),
-                     "RegionTracker: chunk_idx overflow — volume too large for RegionTracker slot encoding");
+        RELEASE_ASSERT(chunk_idx < (1ULL << 32),
+                       "RegionTracker: chunk_idx overflow — volume too large for RegionTracker slot encoding; "
+                       "at 32 KiB chunk_size the limit is ~128 TiB");
         // Use ceiling to compute end chunk: a sub-chunk write (len < chunk_size) must occupy
         // at least 1 chunk; a write spanning a chunk boundary occupies 2+. Floor division
         // would give chunk_count=0 for sub-chunk writes, making overlaps() return false even

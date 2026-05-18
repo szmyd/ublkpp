@@ -39,22 +39,28 @@ using namespace std::chrono_literals;
 namespace ublkpp {
 
 ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d) :
-        volume_uuid(vol_id), device(std::move(d)), metrics(UblkIOMetrics(to_string(vol_id))) {
-    io_uring_params p{};
-    // SINGLE_ISSUER: run_resync_queue_loop is the sole submitter; avoids per-submit kernel locking.
-    p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
-    // Depth: enough for all concurrent resync slots across any RAID1 pair (k_resync_ring_depth = 16);
-    // use 64 so the target doesn't need to import RAID1 internals and has room for future growth.
-    if (io_uring_queue_init_params(64, &_resync_ring, &p) == 0) {
-        _resync_ring_valid = true;
-        _resync_queue.ring_ptr = &_resync_ring;
-        _resync_queue.q_depth = 64;
-    } else {
-        RLOGW("Target resync ring init failed ({}); resync tasks will use the synchronous thread path with per-pair "
-              "rings",
-              strerror(errno))
-    }
-}
+        volume_uuid(vol_id),
+        device(std::move(d)),
+        metrics(UblkIOMetrics(to_string(vol_id))),
+        // Initialize the resync ring here so _resync_ring_valid can be const.
+        // _resync_ring and _resync_queue are declared before _resync_ring_valid and are
+        // zero-initialized before this lambda runs; the lambda mutates them if init succeeds.
+        _resync_ring_valid([this] {
+            io_uring_params p{};
+            // SINGLE_ISSUER: run_resync_queue_loop is the sole submitter; avoids per-submit kernel locking.
+            p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
+            // Depth: enough for all concurrent resync slots across any RAID1 pair (k_resync_ring_depth = 16);
+            // use 64 so the target doesn't need to import RAID1 internals and has room for future growth.
+            if (io_uring_queue_init_params(64, &_resync_ring, &p) != 0) {
+                RLOGW("Target resync ring init failed ({}); resync tasks will use the synchronous thread path with "
+                      "per-pair rings",
+                      strerror(errno))
+                return false;
+            }
+            _resync_queue.ring_ptr = &_resync_ring;
+            _resync_queue.q_depth = 64;
+            return true;
+        }()) {}
 
 static std::mutex _map_lock;
 static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt_impl > > _init_map;
@@ -202,6 +208,12 @@ static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scop
                     state->_result_ready = true;
                     if (auto h = std::exchange(state->_waiter, {})) h.resume();
                 }
+                // null state == probe-style timeout SQE (k_target_bit set, no cqe_state*); expected.
+            } else {
+                // Non-target CQEs should never appear on the dedicated resync ring.
+                DLOGE("run_resync_queue_loop: unexpected non-target CQE (user_data={:#x} res={}); "
+                      "resync ring may be shared with other submitters",
+                      cqe->user_data, cqe->res)
             }
             ++count;
         }
@@ -578,13 +590,13 @@ void ublkpp_tgt_impl::destroy() {
     device.reset();
 
     // Signal the resync loop to stop (it will exit after the next 500 µs tick) and join.
+    // By this point device.reset() has completed, meaning all Raid1ResyncTask destructors ran
+    // and each called stop() which waited on _done_future; the scope must be empty.
+    RELEASE_ASSERT(!_resync_loop_stop.load(std::memory_order_relaxed), "destroy() called twice");
     _resync_loop_stop.store(true, std::memory_order_release);
     if (_resync_handler.joinable()) _resync_handler.join();
 
-    if (_resync_ring_valid) {
-        io_uring_queue_exit(&_resync_ring);
-        _resync_ring_valid = false;
-    }
+    if (_resync_ring_valid) io_uring_queue_exit(&_resync_ring);
 
     // Delete the ublk control object (ublkc must be closed!)
     if (device_added) {

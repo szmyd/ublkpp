@@ -28,6 +28,10 @@ Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint6
         return;
     }
 
+    // Reserve before resize so that all slot addresses are stable after construction:
+    // fake_data.private_data = &s.io stores a pointer into the vector element, which would
+    // dangle if a later push_back triggered reallocation.
+    _slots.reserve(k_resync_slots);
     _slots.resize(k_resync_slots);
     auto* base = static_cast< char* >(_slot_buf_base);
     for (uint32_t i = 0; i < k_resync_slots; ++i) {
@@ -292,8 +296,8 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
     // Helper: submit a 500 µs timeout SQE to the resync ring and co_await it.
     // Allows the resync loop to continue processing CQEs for other coroutines while we wait.
     // Falls back to std::this_thread::yield() if the SQ is temporarily full.
-    // ts and tick live in this coroutine's frame, which is pinned for the duration of
-    // co_await sleep_tick(). Their addresses baked into the SQE user_data remain valid.
+    // ts and tick live in sleep_tick's own coroutine frame, which is heap-pinned for the
+    // duration of co_await sleep_tick(). Their addresses baked into the SQE user_data remain valid.
     auto sleep_tick = [this]() -> exec::task< void > {
         constexpr __kernel_timespec k_tick{.tv_sec = 0, .tv_nsec = 500'000};
         if (auto* sqe = next_sqe(_resync_queue)) {
@@ -302,8 +306,10 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
             io_uring_prep_timeout(sqe, &ts, 0, 0);
             io_uring_sqe_set_data64(sqe, reinterpret_cast< uint64_t >(&tick) | k_target_bit);
             co_await tick;
+        } else {
+            // SQ full: yield to let the caller drain CQEs and free SQ entries.
+            std::this_thread::yield();
         }
-        // SQ full: just return without suspending; the next tick opportunity will retry.
     };
 
     // -- Metrics (same as _start()) --
@@ -497,7 +503,12 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                 for (auto& slot : _slots) {
                     if (slot.phase != ResyncSlot::Phase::FREE && slot.task) {
                         co_await *slot.task; // await_ready() fast-paths already-done tasks
+                        auto const res = slot.task->result();
                         slot.task.reset();
+                        // A WRITE that completed successfully must be marked clean so the bitmap
+                        // reflects actual mirror state, even if the overall resync was stopped.
+                        if (slot.phase == ResyncSlot::Phase::WRITE_PENDING && res >= 0)
+                            clean_region(slot.lba, slot.len, *clean_mirror);
                         slot.phase = ResyncSlot::Phase::FREE;
                         break;
                     }
@@ -528,13 +539,15 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         for (auto s = resync_state::STOPPING; !__cas_state(s, resync_state::IDLE) && s == resync_state::STOPPING;) {}
     } else {
         DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync coroutine stopped in unexpected state");
-        if (0 == _dirty_bitmap->dirty_pages()) complete();
         RLOGD("Resync coroutine finished for [uuid:{}] to: {}", uuid, *dirty_mirror->disk)
         for (auto s = resync_state::ACTIVE; !__cas_state(s, resync_state::IDLE) && s == resync_state::ACTIVE;) {}
     }
 
-    // Signal stop() (or ~Raid1ResyncTask) that the coroutine has fully wound down.
+    // Signal stop() before invoking complete(): if complete() calls stop(), stop() calls
+    // _done_future.wait() which must return immediately to avoid deadlock. State is already
+    // IDLE above, so stop() will also find IDLE and skip the ACTIVE→STOPPING transition.
     _done_promise.set_value();
+    if (cur_state != resync_state::STOPPING && 0 == _dirty_bitmap->dirty_pages()) complete();
 }
 
 // Thread-path copy loop: uses synchronous I/O (sync_iov) so tests that mock sync_iov

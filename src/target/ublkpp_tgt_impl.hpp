@@ -46,7 +46,7 @@ struct ublkpp_tgt_impl {
     // stop and join the thread before exiting the ring.
     io_uring _resync_ring{};
     ublksrv_queue _resync_queue{};
-    bool _resync_ring_valid{false};
+    const bool _resync_ring_valid;     // initialized in constructor; true iff _resync_ring is usable
     ResyncDispatcher _resync_dispatch; // I/O threads post pending launches here
     exec::async_scope _resync_scope;   // tracks all active resync coroutines
     std::thread _resync_handler;       // drives _resync_ring for this volume
