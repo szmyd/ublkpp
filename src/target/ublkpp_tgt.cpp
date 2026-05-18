@@ -185,8 +185,11 @@ static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scop
     while (!stop.load(std::memory_order_acquire)) {
         // Drain pending launches posted by I/O-queue threads via Raid1ResyncTask::launch().
         dispatch.drain(to_spawn);
-        for (auto& f : to_spawn)
-            scope.spawn(stdexec::on(exec::inline_scheduler{}, f()));
+        for (auto& f : to_spawn) {
+            try {
+                scope.spawn(stdexec::on(exec::inline_scheduler{}, f()));
+            } catch (...) { DLOGE("run_resync_queue_loop: scope.spawn threw; resync task dropped") }
+        }
         to_spawn.clear();
 
         // Submit any pending SQEs from resync coroutines and wait for CQEs (or 500 µs timeout).

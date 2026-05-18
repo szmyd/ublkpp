@@ -149,6 +149,11 @@ class Raid1ResyncTask {
     // Returns false if ring creation fails; _start() aborts the resync in that case.
     [[nodiscard]] bool __ensure_ring() noexcept;
 
+    // Phase 2 conflict check: returns true if a write that overlaps [lba, lba+len) is either
+    // still in-flight (overlaps) or completed after gen_before was snapshotted (completed_since).
+    // Call snapshot_gen() BEFORE the Phase 1 check and the async read; pass the result here.
+    [[nodiscard]] bool __phase2_conflict(uint64_t lba, uint32_t len, uint64_t gen_before) const noexcept;
+
     // Generic state transition helper - reduces duplication across launch/stop.
     // noinline: gcov attributes inlined template instructions to the call-site line numbers
     // rather than to the template body, making the entire retry loop appear uncovered.

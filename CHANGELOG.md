@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SLEEPING` state removed. `stop()` CASes `ACTIVE→STOPPING` directly; the 500 µs
   `sleep_tick()` coroutine in the copy loop provides the natural yield/check point.
 - `backend_fd()` virtual method added to `ublk_disk`; `FSDisk` overrides to return its
-  backing fd. Non-FSDisk disks (composites, mocks) return -1 and fall back to `sync_iov`.
+  backing fd. Composite and virtual disks return -1 (informational only; no fallback path).
 - Standalone thread path (`__run()`) retained for test contexts without a live dispatcher.
 
 ## 0.31.0 raid1: replace global PAUSE with lock-free per-region write tracker

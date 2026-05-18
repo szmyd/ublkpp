@@ -147,7 +147,7 @@ public:
     [[nodiscard]] bool completed_since(uint64_t lba, uint32_t len, uint64_t gen_before) const noexcept {
         auto const head_now = _shadow_head.load(std::memory_order_acquire);
         if (head_now == gen_before) return false;
-        if (head_now - gen_before > _shadow.size()) return true; // overflow: be conservative
+        if (head_now - gen_before >= _shadow.size()) return true; // overflow: be conservative
         for (uint64_t i = gen_before; i < head_now; ++i) {
             auto const idx = i % _shadow.size();
             // If seq != i+1 the producer hasn't published lba/len yet. We don't know the range,

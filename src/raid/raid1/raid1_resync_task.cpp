@@ -235,24 +235,16 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
                              ublksrv_queue* resync_q, ResyncDispatcher* dispatch) {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
 
-    // First we must become IDLE
-    auto transitioned =
-        __transition_to(resync_state::IDLE, resync_state::IDLE, [](resync_state state) -> transition_result {
-            switch (state) {
-            case resync_state::IDLE: // LCOV_EXCL_LINE -- CAS(IDLE→IDLE) succeeds if state==IDLE; handler never called
-                                     // with IDLE
-                return {state, transition_action::SUCCESS}; // LCOV_EXCL_LINE
-            case resync_state::ACTIVE:
-                return {state, transition_action::EARLY_EXIT};
-            case resync_state::STOPPING: // LCOV_EXCL_LINE -- transient; not deterministically catchable
-                return {resync_state::IDLE, transition_action::RETRY_WITH_SLEEP}; // LCOV_EXCL_LINE
-            }
-            std::unreachable();
-        });
-
-    if (!transitioned) {
-        RLOGD("Resync Task aborted for [uuid:{}] - already running", str_uuid)
-        return;
+    // First we must be IDLE. ACTIVE means already running; STOPPING is transient (stop() will
+    // drive it back to IDLE), so we spin until it clears.
+    while (true) {
+        auto state = __load_state();
+        if (state == resync_state::ACTIVE) {
+            RLOGD("Resync Task aborted for [uuid:{}] - already running", str_uuid)
+            return;
+        }
+        if (state == resync_state::IDLE) break;
+        std::this_thread::sleep_for(k_state_spin_time);
     }
 
     // Update queue/dispatch only after confirming we will actually launch; avoids mutating
@@ -340,7 +332,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
     // Falls back to std::this_thread::yield() if the SQ is temporarily full.
     // ts and tick live in sleep_tick's own coroutine frame, which is heap-pinned for the
     // duration of co_await sleep_tick(). Their addresses baked into the SQE user_data remain valid.
-    auto sleep_tick = [this]() -> exec::task< void > {
+    auto sleep_tick = [this]() -> disk_task< int > {
         constexpr __kernel_timespec k_tick{.tv_sec = 0, .tv_nsec = 500'000};
         if (auto* sqe = next_sqe(_resync_queue)) {
             cqe_state tick{};
@@ -352,6 +344,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
             // SQ full: yield to let the caller drain CQEs and free SQ entries.
             std::this_thread::yield();
         }
+        co_return 0;
     };
 
     // -- Metrics (same as _start()) --
@@ -501,8 +494,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                     continue;
                 }
 
-                if (_region_tracker.overlaps(slot.lba, slot.len) ||
-                    _region_tracker.completed_since(slot.lba, slot.len, slot.gen_before)) {
+                if (__phase2_conflict(slot.lba, slot.len, slot.gen_before)) {
                     slot.phase = ResyncSlot::Phase::FREE;
                     continue;
                 }
@@ -578,11 +570,17 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         for (auto s = resync_state::ACTIVE; !__cas_state(s, resync_state::IDLE) && s == resync_state::ACTIVE;) {}
     }
 
-    // Signal stop() before invoking complete(): if complete() calls stop(), stop() calls
-    // _done_future.wait() which must return immediately to avoid deadlock. State is already
-    // IDLE above, so stop() will also find IDLE and skip the ACTIVE→STOPPING transition.
-    _done_promise.set_value();
+    // Invoke complete() before signalling stop(): complete() may trigger device-level cleanup
+    // (e.g. marking the volume clean), and stop() unblocks _done_future.wait() which can
+    // allow ~Raid1Disk to run concurrently. State is already IDLE above, so any re-entrant
+    // stop() call finds IDLE and skips the ACTIVE→STOPPING transition; _done_future.wait()
+    // returns immediately because _done_promise.set_value() fires right after.
     if (cur_state != resync_state::STOPPING && 0 == _dirty_bitmap->dirty_pages()) complete();
+    _done_promise.set_value();
+}
+
+bool Raid1ResyncTask::__phase2_conflict(uint64_t lba, uint32_t len, uint64_t gen_before) const noexcept {
+    return _region_tracker.overlaps(lba, len) || _region_tracker.completed_since(lba, len, gen_before);
 }
 
 // Thread-path copy loop: uses synchronous I/O (sync_iov) so tests that mock sync_iov
@@ -655,8 +653,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
             }
 
             // Phase 2: post-copy conflict check.
-            if (_region_tracker.overlaps(cursor.lba, iov_len) ||
-                _region_tracker.completed_since(cursor.lba, iov_len, gen_before)) {
+            if (__phase2_conflict(cursor.lba, iov_len, gen_before)) {
                 cursor.advance(iov_len, *_dirty_bitmap);
                 --copies_left;
                 continue;
@@ -678,6 +675,9 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
         }
 
         resync_skip_from = cursor.skip_from;
+        // If every chunk in this sweep was Phase-1 conflicting (skip_from set, no copies made),
+        // sleep before yielding to avoid busy-spinning while the blocking writes complete.
+        if (cursor.skip_from > 0) std::this_thread::sleep_for(avail_delay);
         if (cur_state = __yield(); resync_state::STOPPING == cur_state) break;
         nr_pages = _dirty_bitmap->dirty_pages();
         if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
@@ -713,6 +713,9 @@ void Raid1ResyncTask::stop() noexcept {
         lg.unlock();
         if (_done_future.valid()) _done_future.wait();
     } else {
+        // Thread path: release the lock before joining so that _start() (running on the resync
+        // thread) can acquire _launch_lock for any last-minute state operations without deadlocking.
+        lg.unlock();
         if (_resync_task.joinable()) _resync_task.join();
     }
 
