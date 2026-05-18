@@ -4,20 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.32.0 feat(raid1): async resync via dedicated io_uring ring
-- Replace blocking `preadv2`/`pwritev2` resync copies with a per-launch `io_uring` ring
-  submitting linked `READ_FIXED → WRITE_FIXED` SQE pairs. The kernel chains the write
-  immediately after the read with a single `io_uring_enter()` syscall; no userspace
-  round-trip between the two operations. Expected throughput improvement: 10×–40× over
-  the previous synchronous path.
-- Fixed buffer registration (`io_uring_register_buffers`) pins the resync buffer at ring
-  init, eliminating per-I/O memory-pinning overhead (~2–10 µs/op).
+## 0.32.0 feat(raid1): async resync via coroutine dispatch + per-region conflict tracking
+- Replace blocking `preadv2`/`pwritev2` resync copies with async `io_uring` I/O using
+  standard `readv`/`writev` SQEs via `async_iov()`. Up to `k_resync_slots` (8) READ→WRITE
+  operations are pipelined concurrently per resync pass.
+- Coroutine dispatch path: a dedicated per-volume `io_uring` ring and handler thread drive
+  RAID1 resync coroutines via `ResyncDispatcher` → `run_resync_queue_loop` → `exec::async_scope`.
+  The coroutine suspends at `co_await` on each async I/O and resumes when the CQE is delivered.
 - `SLEEPING` state removed. `stop()` CASes `ACTIVE→STOPPING` directly; the 500 µs
-  `submit_and_wait_timeout` in the copy loop provides the natural yield/check point.
+  `sleep_tick()` coroutine in the copy loop provides the natural yield/check point.
 - `backend_fd()` virtual method added to `ublk_disk`; `FSDisk` overrides to return its
   backing fd. Non-FSDisk disks (composites, mocks) return -1 and fall back to `sync_iov`.
-- Per-launch ring lifecycle: ring created in `_start()`, destroyed after `__run()` returns,
-  ensuring a clean ring on each launch/stop/relaunch cycle.
+- Standalone thread path (`__run()`) retained for test contexts without a live dispatcher.
 
 ## 0.31.0 raid1: replace global PAUSE with lock-free per-region write tracker
 - Replace global `PAUSE` state with `RegionTracker`: a lock-free flat slot array that tracks

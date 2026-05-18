@@ -55,7 +55,7 @@ Raid1ResyncTask::~Raid1ResyncTask() noexcept {
     } else {
         if (_resync_task.joinable()) _resync_task.join();
     }
-    if (_resync_queue == &_own_queue) io_uring_queue_exit(&_own_ring);
+    if (_own_ring_initialized) io_uring_queue_exit(&_own_ring);
     free(_slot_buf_base);
     _slot_buf_base = nullptr;
 }
@@ -95,6 +95,7 @@ bool Raid1ResyncTask::__ensure_ring() noexcept {
     _own_queue.ring_ptr = &_own_ring;
     _own_queue.q_depth = k_resync_ring_depth;
     _resync_queue = &_own_queue;
+    _own_ring_initialized = true;
     return true;
 }
 
@@ -324,6 +325,14 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
 
     // -- Main loop --
     auto cur_state = resync_state::ACTIVE;
+
+    if (_slots.empty()) { // LCOV_EXCL_START -- posix_memalign failure; not injectable in tests
+        RLOGE("No resync slots; aborting coroutine resync for [uuid:{}]", uuid)
+        for (auto s = resync_state::ACTIVE; !__cas_state(s, resync_state::IDLE) && s == resync_state::ACTIVE;) {}
+        _done_promise.set_value();
+        co_return;
+    } // LCOV_EXCL_STOP
+
     uint32_t consecutive_unavail = 0;
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
@@ -343,7 +352,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                 if (cur_state == resync_state::STOPPING) break;
                 co_await sleep_tick();
             }
-            _yield_count.fetch_add(1, std::memory_order_relaxed);
+            _yield_count.fetch_add(1, std::memory_order_release);
             cur_state = __load_state();
             if (cur_state == resync_state::STOPPING) break;
             probe_mirror(*dirty_mirror, _offset);
@@ -361,6 +370,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         resync_skip_from = 0;
 
         bool any_copy = false;
+        bool submitted_any = false; // true if at least one READ was enqueued this sweep
 
         // Submit loop: push async READ tasks into free slots (identical logic to __run()).
         if (cur_state != resync_state::STOPPING && !dirty_mirror->unavail.test(std::memory_order_acquire)) {
@@ -419,6 +429,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                 slot.task.emplace(std::move(t).start());
                 slot.phase = ResyncSlot::Phase::READ_PENDING;
 
+                submitted_any = true;
                 any_copy = true;
                 --copies_left;
                 cursor_sz -= iov_len;
@@ -450,6 +461,10 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                         break;
                     }
                 }
+            } else if (!submitted_any) {
+                // No new tasks submitted and no in-flight tasks: every dirty chunk overlaps an
+                // active write. Yield via sleep_tick() to avoid busy-spinning at memory speed.
+                co_await sleep_tick();
             }
         }
 
@@ -461,7 +476,7 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
 
                 if (read_res < 0) {
                     RLOGE("Resync async read failed: {} [lba:{:#0x} len:{}]", strerror(-read_res), slot.lba, slot.len)
-                    dirty_mirror->unavail.test_and_set(std::memory_order_release);
+                    clean_mirror->unavail.test_and_set(std::memory_order_release);
                     slot.phase = ResyncSlot::Phase::FREE;
                     continue;
                 }
@@ -583,7 +598,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
                 }
                 if (resync_state::STOPPING != cur_state) cur_state = __load_state();
             }
-            _yield_count.fetch_add(1, std::memory_order_relaxed);
+            _yield_count.fetch_add(1, std::memory_order_release);
             if (resync_state::STOPPING == cur_state) break;
             probe_mirror(*dirty_mirror, _offset);
             nr_pages = _dirty_bitmap->dirty_pages();
@@ -605,6 +620,10 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
                !dirty_mirror->unavail.test(std::memory_order_acquire)) {
             auto const iov_len = std::min(cursor_sz, _max_size);
 
+            // Snapshot generation BEFORE Phase 1 so that any write completing between Phase 1
+            // and the READ is visible to the Phase 2 completed_since() check.
+            auto const gen_before = _region_tracker.snapshot_gen();
+
             // Phase 1: skip if an in-flight write overlaps this chunk.
             if (_region_tracker.overlaps(cursor_lba, iov_len)) {
                 cursor_sz -= iov_len;
@@ -619,8 +638,6 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
                 }
                 continue;
             }
-
-            auto const gen_before = _region_tracker.snapshot_gen();
             slot.slot_iov.iov_len = iov_len;
 
             DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean_mirror->disk, cursor_lba + _offset, iov_len)
@@ -628,7 +645,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
                                                          static_cast< off_t >(cursor_lba + _offset));
             if (!read_res) {
                 RLOGE("Resync read failed: {} [lba:{:#0x} len:{}]", read_res.error().message(), cursor_lba, iov_len)
-                dirty_mirror->unavail.test_and_set(std::memory_order_release);
+                clean_mirror->unavail.test_and_set(std::memory_order_release);
                 break;
             }
 
@@ -716,7 +733,7 @@ void Raid1ResyncTask::stop() noexcept {
 // No sleep — the io_uring submit_and_wait_timeout in the async copy loop provides natural I/O
 // backpressure.
 resync_state Raid1ResyncTask::__yield() noexcept {
-    _yield_count.fetch_add(1, std::memory_order_relaxed);
+    _yield_count.fetch_add(1, std::memory_order_release);
     return __load_state();
 }
 

@@ -17,18 +17,15 @@ struct ublksrv_queue;
 
 namespace ublkpp {
 
-// Forward declaration: full definition in src/lib/resync_dispatch.hpp (internal).
-// Public callers only store or null-check this pointer; the full type is not needed here.
-struct ResyncDispatcher;
-
 // Pair of queues passed to prepare(). io_q carries the per-thread I/O ring for normal
 // block I/O; resync_q carries the target-level resync ring shared across all RAID1 pairs.
 // resync_q is null when prepare() is called outside a ublkpp_tgt context (tests, mock).
-// resync_dispatch points to the per-volume ResyncDispatcher; null in standalone/test context.
+// resync_dispatch is an opaque pointer to the internal ResyncDispatcher (ublkpp_tgt context
+// only); null in standalone/test context. Internal RAID1 code casts it to ResyncDispatcher*.
 struct ublk_rings {
-    ublksrv_queue const* io_q{nullptr};         // null on probe-only calls (q == nullptr behaviour)
-    ublksrv_queue* resync_q{nullptr};           // null in standalone / test context
-    ResyncDispatcher* resync_dispatch{nullptr}; // null in standalone / test context
+    ublksrv_queue const* io_q{nullptr}; // null on probe-only calls (q == nullptr behaviour)
+    ublksrv_queue* resync_q{nullptr};   // null in standalone / test context
+    void* resync_dispatch{nullptr};     // null in standalone / test context
 };
 
 namespace detail {

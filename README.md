@@ -113,11 +113,11 @@ ublkpp/
 - SuperBitmap optimization for fast initialization
 
 **Resync Features:**
-- Background resync with per-region I/O coordination via dedicated `io_uring` ring
-- Linked `READ_FIXED → WRITE_FIXED` SQE pairs: kernel chains write after read with one syscall
+- Async resync via coroutine dispatch: dedicated per-volume `io_uring` ring with up to 8 concurrent READ→WRITE slots
+- Coroutine-based pipelining: `async_iov()` suspends at each `co_await` and resumes on CQE delivery
 - Lock-free write tracking: resync yields only for chunks that conflict with an in-flight write
 - Two-phase conflict check with shadow completion log to close the mid-copy race window
-- Sync I/O fallback for disks without a direct backing fd (composites, test mocks)
+- Sync I/O fallback for test contexts without a live dispatcher
 - Configurable delay intervals
 
 ### RAID10 (Stripe of Mirrors)

@@ -100,6 +100,7 @@ class Raid1ResyncTask {
     // Lazily initialized by __ensure_ring() on the first _start() entry if _resync_queue is null.
     io_uring _own_ring{};
     ublksrv_queue _own_queue{};
+    bool _own_ring_initialized{false}; // true iff __ensure_ring() created _own_ring
     // Active queue for this resync task. Points to _own_queue (standalone/test fallback) or to a
     // target-level queue forwarded through Raid1Disk::toggle_resync → launch(). null until
     // first launch(); __ensure_ring() initializes it.
@@ -177,6 +178,9 @@ public:
     // resync_q: target-level queue forwarded from Raid1Disk::toggle_resync (null in tests → __ensure_ring fallback).
     // dispatch: if non-null, use the coroutine dispatch path (run_resync_queue_loop drives the ring);
     //           if null, fall back to the standalone thread path (__ensure_ring + _start()).
+    // complete: called when resync finishes naturally (not when stopped). Must not call stop() —
+    //           stop() waits on _done_future which is signaled *before* complete() runs; a stop()
+    //           call from inside complete() would deadlock on _done_future.wait().
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete,
                 ublksrv_queue* resync_q = nullptr, ResyncDispatcher* dispatch = nullptr);

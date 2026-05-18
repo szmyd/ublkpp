@@ -239,7 +239,7 @@ TEST(AsyncResyncIoUring, ConflictIntegration) {
 // Verify that all dirty chunks are copied correctly when several are dirty simultaneously.
 // BasicCopy tests one chunk; this test uses four distinct byte patterns to catch address
 // arithmetic errors (wrong _offset or chunk stride) and buffer-reuse bugs across multiple
-// sequential io_uring READ_FIXED → WRITE_FIXED pairs using the same registered buffer.
+// concurrent async_iov READ→WRITE slot pairs.
 TEST(AsyncResyncIoUring, MultipleChunkCopy) {
     auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
@@ -532,6 +532,7 @@ TEST(AsyncResyncIoUring, StopDuringRunUnavail) {
     auto const elapsed = std::chrono::steady_clock::now() - before;
 
     // The __run() unavail loop checks STOPPING every resync_delay (default 300 µs).
-    // stop() must complete well within avail_delay (default 5 s). Use 10 s for CI margin.
-    EXPECT_LT(elapsed, 10000ms) << "stop() must complete promptly from within the __run() unavail loop";
+    // stop() must complete within a handful of ticks; 50 ms catches regressions while
+    // providing enough margin for even the slowest CI runners.
+    EXPECT_LT(elapsed, 50ms) << "stop() must complete promptly from within the __run() unavail loop";
 }

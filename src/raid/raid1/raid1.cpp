@@ -295,7 +295,7 @@ Raid1Disk::prepare_result Raid1Disk::prepare(ublk_rings const* rings, int const 
     auto const q = rings ? rings->io_q : nullptr;
     if (q && _nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) {
         _resync_queue = rings->resync_q;
-        _resync_dispatch = rings->resync_dispatch;
+        _resync_dispatch = static_cast< ResyncDispatcher* >(rings->resync_dispatch);
         toggle_resync(true);
     }
 
