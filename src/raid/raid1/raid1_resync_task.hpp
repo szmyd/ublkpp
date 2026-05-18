@@ -28,8 +28,9 @@ constexpr auto k_state_spin_time = 50us;
 constexpr uint32_t k_default_slot_count = 256;
 // Number of concurrent async I/O slots in the target-level resync ring.
 constexpr uint32_t k_resync_slots = 8;
-// Ring depth: 2× slots provides headroom for READ and WRITE SQEs in flight simultaneously.
-constexpr uint32_t k_resync_ring_depth = k_resync_slots * 2;
+// Ring depth: 2× slots for simultaneous READ+WRITE SQEs, +1 reserved for the sleep_tick timeout
+// SQE so it always has a free SQ entry even when all data slots are full.
+constexpr uint32_t k_resync_ring_depth = k_resync_slots * 2 + 1;
 
 class Bitmap;
 class MirrorDevice;
@@ -183,9 +184,8 @@ public:
     // resync_q: target-level queue forwarded from Raid1Disk::toggle_resync (null in tests → __ensure_ring fallback).
     // dispatch: if non-null, use the coroutine dispatch path (run_resync_queue_loop drives the ring);
     //           if null, fall back to the standalone thread path (__ensure_ring + _start()).
-    // complete: called when resync finishes naturally (not when stopped). Must not call stop() —
-    //           stop() waits on _done_future which is signaled *before* complete() runs; a stop()
-    //           call from inside complete() would deadlock on _done_future.wait().
+    // complete: called when resync finishes naturally (not when stopped). _done_future is
+    //           signaled before complete() runs, so a stop() call from inside complete() is safe.
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete,
                 ublksrv_queue* resync_q = nullptr, ResyncDispatcher* dispatch = nullptr);

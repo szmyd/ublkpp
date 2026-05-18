@@ -18,6 +18,7 @@
 #include "lib/common.hpp"
 #include <ublkpp/lib/cqe_state.hpp>
 #include "ublkpp_tgt_impl.hpp"
+#include "raid/raid1/resync_constants.hpp"
 
 namespace ublkpp::detail {
 struct params_access {
@@ -49,7 +50,7 @@ ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_p
             io_uring_params p{};
             // SINGLE_ISSUER: run_resync_queue_loop is the sole submitter; avoids per-submit kernel locking.
             p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
-            // Depth: enough for all concurrent resync slots across any RAID1 pair (k_resync_ring_depth = 16);
+            // Depth: enough for all concurrent resync slots across any RAID1 pair (k_resync_ring_depth = 17);
             // use 64 so the target doesn't need to import RAID1 internals and has room for future growth.
             if (io_uring_queue_init_params(64, &_resync_ring, &p) != 0) {
                 RLOGW("Target resync ring init failed ({}); resync tasks will use the synchronous thread path with "
@@ -179,7 +180,7 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scope& scope, std::atomic< bool >& stop,
                                                 ResyncDispatcher& dispatch) {
     // 500 µs tick: responsive to STOPPING and pending launches, while not burning CPU.
-    constexpr __kernel_timespec k_resync_ts{.tv_sec = 0, .tv_nsec = 500'000};
+    // Shared with sleep_tick() in the coroutine path — see raid1/resync_constants.hpp.
 
     std::vector< std::function< exec::task< void >() > > to_spawn;
     while (!stop.load(std::memory_order_acquire)) {
@@ -194,7 +195,7 @@ static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scop
 
         // Submit any pending SQEs from resync coroutines and wait for CQEs (or 500 µs timeout).
         io_uring_cqe* cqe{};
-        auto ts = k_resync_ts;
+        auto ts = ublkpp::raid1::k_resync_tick;
         auto const ret = io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
         if (ret < 0 && ret != -ETIME && ret != -EINTR) {
             RLOGW("resync ring: io_uring_submit_and_wait_timeout returned unexpected error ({})", strerror(-ret))

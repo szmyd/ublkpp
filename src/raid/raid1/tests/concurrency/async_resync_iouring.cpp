@@ -21,6 +21,7 @@ extern "C" {
 #include "raid/raid1/bitmap.hpp"
 #include "raid/raid1/raid1_impl.hpp"
 #include "raid/raid1/raid1_resync_task.hpp"
+#include "raid/raid1/resync_constants.hpp"
 #include "ublkpp/drivers.hpp"
 
 using namespace std::chrono_literals;
@@ -442,11 +443,11 @@ TEST(AsyncResyncIoUring, DispatchPathStopAndRelaunch) {
         scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
 
         // Drive the resync ring and coroutine from THIS thread until the coroutine exits.
-        // io_uring_submit_and_wait_timeout flushes pending SQEs and waits up to 1 ms for a
-        // CQE; drain_cqes() then delivers all ready CQEs, resuming the coroutine inline.
+        // Wait up to 2 ticks per iteration so sleep_tick() CQEs always arrive before timeout.
         while (!coro_done.load(std::memory_order_acquire)) {
             io_uring_cqe* cqe{};
-            __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 1'000'000};
+            auto ts = ublkpp::raid1::k_resync_tick;
+            ts.tv_nsec *= 2;
             io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
             task.drain_cqes();
         }
@@ -541,7 +542,8 @@ TEST(AsyncResyncIoUring, DispatchPathSleepWhenAllChunksConflict) {
     auto const deadline = std::chrono::steady_clock::now() + 5000ms;
     while (task.yield_count() < 3 && std::chrono::steady_clock::now() < deadline) {
         io_uring_cqe* cqe{};
-        __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 2'000'000};
+        auto ts = ublkpp::raid1::k_resync_tick;
+        ts.tv_nsec *= 2;
         io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
         task.drain_cqes();
     }
@@ -552,7 +554,8 @@ TEST(AsyncResyncIoUring, DispatchPathSleepWhenAllChunksConflict) {
     write_guard.release();
     while (!coro_done.load(std::memory_order_acquire)) {
         io_uring_cqe* cqe{};
-        __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 2'000'000};
+        auto ts = ublkpp::raid1::k_resync_tick;
+        ts.tv_nsec *= 2;
         io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
         task.drain_cqes();
     }

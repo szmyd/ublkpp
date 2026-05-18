@@ -6,6 +6,7 @@
 #include "lib/logging.hpp"
 #include "bitmap.hpp"
 #include "raid1_impl.hpp"
+#include "resync_constants.hpp"
 #include "resync_cursor.hpp"
 
 namespace ublkpp::raid1 {
@@ -329,20 +330,18 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
 
     // Helper: submit a 500 µs timeout SQE to the resync ring and co_await it.
     // Allows the resync loop to continue processing CQEs for other coroutines while we wait.
-    // Falls back to std::this_thread::yield() if the SQ is temporarily full.
     // ts and tick live in sleep_tick's own coroutine frame, which is heap-pinned for the
     // duration of co_await sleep_tick(). Their addresses baked into the SQE user_data remain valid.
     auto sleep_tick = [this]() -> disk_task< int > {
-        constexpr __kernel_timespec k_tick{.tv_sec = 0, .tv_nsec = 500'000};
+        // k_resync_ring_depth = k_resync_slots*2+1 guarantees one free SQ entry here.
+        // If next_sqe() somehow returns nullptr (bug elsewhere), skip the sleep and let the
+        // outer loop retry on the next submit_and_wait_timeout cycle — no yield, no spin.
         if (auto* sqe = next_sqe(_resync_queue)) {
             cqe_state tick{};
-            auto ts = k_tick;
+            auto ts = k_resync_tick;
             io_uring_prep_timeout(sqe, &ts, 0, 0);
             io_uring_sqe_set_data64(sqe, reinterpret_cast< uint64_t >(&tick) | k_target_bit);
             co_await tick;
-        } else {
-            // SQ full: yield to let the caller drain CQEs and free SQ entries.
-            std::this_thread::yield();
         }
         co_return 0;
     };
@@ -526,19 +525,18 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         // Check STOPPING. Drain in-flight slots by co_await-ing each remaining task, so the
         // shared ring is clean for the next launch() (ring is owned by ublkpp_tgt_impl).
         if (cur_state = __yield(); cur_state == resync_state::STOPPING) {
+            // Drain all in-flight slots in one linear pass. has_in_flight() fast-path avoids
+            // the scan when no slots are active. A short write (res != slot.len) leaves the
+            // region dirty so the next launch re-copies it rather than silently losing data.
             while (has_in_flight()) {
                 for (auto& slot : _slots) {
-                    if (slot.phase != ResyncSlot::Phase::FREE && slot.task) {
-                        co_await *slot.task; // await_ready() fast-paths already-done tasks
-                        auto const res = slot.task->result();
-                        slot.task.reset();
-                        // A WRITE that completed successfully must be marked clean so the bitmap
-                        // reflects actual mirror state, even if the overall resync was stopped.
-                        if (slot.phase == ResyncSlot::Phase::WRITE_PENDING && res >= 0)
-                            clean_region(slot.lba, slot.len, *clean_mirror);
-                        slot.phase = ResyncSlot::Phase::FREE;
-                        break;
-                    }
+                    if (slot.phase == ResyncSlot::Phase::FREE || !slot.task) continue;
+                    co_await *slot.task; // await_ready() fast-paths already-done tasks
+                    auto const res = slot.task->result();
+                    slot.task.reset();
+                    if (slot.phase == ResyncSlot::Phase::WRITE_PENDING && res == static_cast< int >(slot.len))
+                        clean_region(slot.lba, slot.len, *clean_mirror);
+                    slot.phase = ResyncSlot::Phase::FREE;
                 }
             }
             break;
@@ -570,13 +568,12 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         for (auto s = resync_state::ACTIVE; !__cas_state(s, resync_state::IDLE) && s == resync_state::ACTIVE;) {}
     }
 
-    // Invoke complete() before signalling stop(): complete() may trigger device-level cleanup
-    // (e.g. marking the volume clean), and stop() unblocks _done_future.wait() which can
-    // allow ~Raid1Disk to run concurrently. State is already IDLE above, so any re-entrant
-    // stop() call finds IDLE and skips the ACTIVE→STOPPING transition; _done_future.wait()
-    // returns immediately because _done_promise.set_value() fires right after.
-    if (cur_state != resync_state::STOPPING && 0 == _dirty_bitmap->dirty_pages()) complete();
+    // Signal stop() before invoking complete(). complete() may call stop() (e.g. __become_clean
+    // triggers device-level cleanup that tears down the resync task). If set_value() fired after
+    // complete(), that stop() would block on _done_future.wait() forever — deadlock. With
+    // set_value() first, stop() unblocks immediately regardless of what complete() does.
     _done_promise.set_value();
+    if (cur_state != resync_state::STOPPING && 0 == _dirty_bitmap->dirty_pages()) complete();
 }
 
 bool Raid1ResyncTask::__phase2_conflict(uint64_t lba, uint32_t len, uint64_t gen_before) const noexcept {
@@ -626,6 +623,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
         consecutive_unavail = 0;
 
         auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
+        auto const copies_budget = copies_left;
         ResyncCursor cursor{*_dirty_bitmap, resync_skip_from};
 
         while (cursor.sz > 0 && copies_left > 0 && cur_state != resync_state::STOPPING &&
@@ -675,9 +673,10 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noex
         }
 
         resync_skip_from = cursor.skip_from;
-        // If every chunk in this sweep was Phase-1 conflicting (skip_from set, no copies made),
-        // sleep before yielding to avoid busy-spinning while the blocking writes complete.
-        if (cursor.skip_from > 0) std::this_thread::sleep_for(avail_delay);
+        // The coroutine path yields at co_await; the thread path needs explicit throttling.
+        // Sleep when any copies were attempted (to yield the core between sweeps) or when all
+        // chunks were Phase-1 conflicting (to avoid busy-spinning while writes complete).
+        if (copies_left < copies_budget || cursor.skip_from > 0) std::this_thread::sleep_for(avail_delay);
         if (cur_state = __yield(); resync_state::STOPPING == cur_state) break;
         nr_pages = _dirty_bitmap->dirty_pages();
         if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
