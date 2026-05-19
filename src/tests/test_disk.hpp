@@ -50,7 +50,7 @@ public:
 
     // Synchronous adapter: delegates to the submit_iov mock and returns immediately.
     // Tests exercise business logic (Phase 1/2 conflict, skip_from, bitmap updates);
-    // actual io_uring mechanics are tested separately via FsDisk-backed integration tests.
+    // actual io_uring mechanics are tested separately via async_resync_iouring.cpp.
     disk_task< int > async_iov(ublksrv_queue const*, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override {
         auto res = submit_iov(nullptr, data, iovecs, nr_vecs, addr);

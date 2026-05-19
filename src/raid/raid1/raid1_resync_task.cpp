@@ -123,10 +123,10 @@ bool Raid1ResyncTask::__ensure_ring() noexcept {
     if (_resync_queue) return true;
     io_uring_params p{};
     p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
-    if (io_uring_queue_init_params(k_resync_ring_depth, &_own_ring, &p) != 0) {
+    if (io_uring_queue_init_params(k_resync_ring_depth, &_own_ring, &p) != 0) { // LCOV_EXCL_START
         RLOGE("Resync io_uring ring init failed ({}); RAID1 resync will not run until next launch", strerror(errno))
         return false;
-    }
+    } // LCOV_EXCL_STOP
     _own_queue.ring_ptr = &_own_ring;
     _own_queue.q_depth = k_resync_ring_depth;
     _resync_queue = &_own_queue;
@@ -275,8 +275,8 @@ void Raid1ResyncTask::clean_region(uint64_t addr, uint32_t len, MirrorDevice& cl
 
 void Raid1ResyncTask::__process_cqe(io_uring_cqe* cqe) noexcept {
     auto const ud = cqe->user_data;
-    auto const res = cqe->res; // read before cqe_seen — the slot may be reused after
-    io_uring_cqe_seen(_resync_queue->ring_ptr, cqe);
+    auto const res = cqe->res;                       // ud and res must both be read before cqe_seen —
+    io_uring_cqe_seen(_resync_queue->ring_ptr, cqe); // after this, the kernel may reuse the CQE buffer
     if (!(ud & k_target_bit)) return;
     auto* state = reinterpret_cast< cqe_state* >(ud & ~k_target_bit);
     if (!state) return;
@@ -438,6 +438,12 @@ resync_state Raid1ResyncTask::_run_resync_loop(std::shared_ptr< MirrorDevice >& 
                 auto const write_res = slot.task->result();
                 slot.task.reset();
 
+                if (write_res == -EAGAIN) {
+                    // Ring was full when async_iov tried to submit — transient, not a device fault.
+                    // Reset to FREE; the submit loop will retry this chunk next sweep.
+                    slot.phase = ResyncSlot::Phase::FREE;
+                    continue;
+                }
                 if (write_res != static_cast< int >(slot.len)) {
                     auto const msg = write_res < 0 ? strerror(-write_res) : "short write";
                     RLOGE("Resync async write failed: {} [lba:{:#0x} len:{} got:{}]", msg, slot.lba, slot.len,
@@ -524,8 +530,8 @@ void Raid1ResyncTask::stop() noexcept {
         std::unreachable();
     });
 
-    // Release the lock before joining so that _start() (running on the resync thread) can
-    // acquire _launch_lock for any last-minute state operations without deadlocking.
+    // Unlock before joining: _start() does not acquire _launch_lock, but holding it for the
+    // full join duration (up to 30 s in the STOPPING drain) would block concurrent launch() callers.
     lg.unlock();
     if (_resync_task.joinable()) _resync_task.join();
 

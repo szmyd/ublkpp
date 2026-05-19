@@ -140,7 +140,8 @@ TEST(AsyncResyncIoUring, StopResponsive) {
     Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
 
-    // Give resync one sweep to start before calling stop().
+    // Wait for at least one complete sweep — ensures the resync thread is actively in the
+    // polling loop when stop() is called.
     while (task.yield_count() < 1)
         std::this_thread::sleep_for(1ms);
 
@@ -432,4 +433,211 @@ TEST(AsyncResyncIoUring, SleepWhenAllChunksConflict) {
     task.stop();
 
     EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after the conflict is released";
+}
+
+// Verify that a READ failure on the clean mirror marks it unavailable and leaves the bitmap
+// dirty. Truncating the clean mirror to k_data_offset bytes causes preadv at that offset to
+// return 0 (short read); the resync loop must detect this, mark clean_mirror->unavail, and NOT
+// mark the region clean.
+TEST(AsyncResyncIoUring, ReadFailureMarksMirrorUnavail) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+    ASSERT_GE(disk_clean->backend_fd(), 0);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_chunk_size);
+
+    // Truncate clean mirror to exactly k_data_offset bytes — preadv at k_data_offset returns 0
+    // (past EOF), triggering the short-read failure path in _run_resync_loop().
+    ASSERT_EQ(0, ftruncate(disk_clean->backend_fd(), static_cast< off_t >(k_data_offset)));
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+
+    // Wait for clean_mirror->unavail to be set (the short-read failure path sets it).
+    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (!mirror_clean->unavail.test(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    EXPECT_TRUE(mirror_clean->unavail.test(std::memory_order_acquire))
+        << "Short read must mark clean_mirror unavailable";
+    EXPECT_GT(bitmap->dirty_pages(), 0U) << "Bitmap must stay dirty after a read failure";
+
+    task.stop();
+}
+
+// Verify that a WRITE failure on the dirty mirror marks it unavailable and leaves the bitmap
+// dirty. Replacing the dirty mirror fd with /dev/full causes pwritev to return -ENOSPC;
+// the resync loop must detect this, mark dirty_mirror->unavail, and NOT clean the region.
+TEST(AsyncResyncIoUring, WriteFailureMarksDirtyMirrorUnavail) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
+
+    // Write a recognisable pattern to the data region of the clean mirror.
+    std::vector< uint8_t > src(k_chunk_size, 0xAB);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pwrite(clean_raw_fd, src.data(), k_chunk_size, k_data_offset));
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+    ASSERT_GE(disk_dirty->backend_fd(), 0);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, k_chunk_size);
+
+    // Replace the dirty mirror's backing fd with /dev/full. Writes return ENOSPC, reads return
+    // zeros. The resync READ from clean_mirror succeeds; the WRITE to dirty_mirror fails.
+    int full_fd = open("/dev/full", O_RDWR);
+    ASSERT_GE(full_fd, 0) << "/dev/full must be available on Linux";
+    ASSERT_EQ(0, dup2(full_fd, disk_dirty->backend_fd()));
+    close(full_fd);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+
+    // Wait for dirty_mirror->unavail to be set (the ENOSPC write-failure path sets it).
+    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (!mirror_dirty->unavail.test(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    EXPECT_TRUE(mirror_dirty->unavail.test(std::memory_order_acquire))
+        << "ENOSPC write must mark dirty_mirror unavailable";
+    EXPECT_GT(bitmap->dirty_pages(), 0U) << "Bitmap must stay dirty after a write failure";
+
+    task.stop();
+}
+
+// Verify that stop() does not deadlock or hang when called immediately after launch(), before
+// the resync thread has completed any sweep. This exercises the STOPPING drain path
+// (has_in_flight() loop + 30 s watchdog) that StopResponsive does not reach because it waits
+// for yield_count >= 1 (all SQEs from that sweep already completed). Bound at 2 s to tolerate
+// worst-case io_uring drain latency under CI scheduling pressure.
+TEST(AsyncResyncIoUring, StopMidFlight) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    // Dirty all available chunks to maximise the chance that SQEs are in flight when stop() fires.
+    auto const k_dirty_chunks = (k_test_file_size - k_data_offset) / k_chunk_size;
+    bitmap->dirty_region(0, k_dirty_chunks * k_chunk_size);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+
+    // Call stop() without sleeping — the resync thread may be anywhere in its first sweep.
+    auto const before = std::chrono::steady_clock::now();
+    task.stop();
+    auto const elapsed = std::chrono::steady_clock::now() - before;
+
+    EXPECT_LT(elapsed, 2000ms) << "stop() must return promptly even when called mid-sweep";
+}
+
+// Verify Phase 2 conflict detection on the real io_uring path: a write registered after the
+// READ SQE is submitted (but before the WRITE SQE fires) must keep the bitmap dirty.
+// Two chunks are dirtied. Chunk 0 is held by a Phase-1 guard so resync copies chunk 1 first.
+// After chunk 1 is clean, the guard is released; a new conflict on chunk 0 is registered
+// immediately. The resync loop sees the conflict via Phase 2, keeps chunk 0 dirty, then copies
+// it after the conflict is released.
+TEST(AsyncResyncIoUring, Phase2Conflict_IoUring) {
+    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
+    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
+    ASSERT_GE(clean_raw_fd, 0);
+    ASSERT_GE(dirty_raw_fd, 0);
+    ScopedTempFile clean_guard{clean_path};
+    ScopedTempFile dirty_guard{dirty_path};
+
+    constexpr uint8_t k_pat0 = 0xC0;
+    constexpr uint8_t k_pat1 = 0xC1;
+    std::vector< uint8_t > chunk0(k_chunk_size, k_pat0);
+    std::vector< uint8_t > chunk1(k_chunk_size, k_pat1);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pwrite(clean_raw_fd, chunk0.data(), k_chunk_size, k_data_offset));
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size),
+              pwrite(clean_raw_fd, chunk1.data(), k_chunk_size, k_data_offset + k_chunk_size));
+    close(clean_raw_fd);
+    close(dirty_raw_fd);
+
+    auto disk_clean = ublkpp::make_fs_disk(clean_path);
+    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
+    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
+    bitmap->dirty_region(0, 2 * k_chunk_size);
+
+    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
+
+    // Phase-1 guard on chunk 0: resync skips it and copies chunk 1 first.
+    ResyncWriteGuard phase1_guard{task, 0, k_chunk_size};
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
+
+    // Wait for chunk 1 to be copied (bitmap no longer dirty for chunk 1).
+    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (bitmap->is_dirty(k_chunk_size, k_chunk_size) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    ASSERT_FALSE(bitmap->is_dirty(k_chunk_size, k_chunk_size)) << "chunk 1 must be copied while chunk 0 is held";
+
+    // Register a new write conflict on chunk 0, then release the Phase-1 guard. The resync
+    // thread will see Phase 1 clear but Phase 2 conflict (the new guard), keep chunk 0 dirty,
+    // and retry on the next sweep.
+    ResyncWriteGuard phase2_guard{task, 0, k_chunk_size};
+    phase1_guard.release();
+
+    // Confirm chunk 0 stays dirty while the Phase-2 guard is held.
+    std::this_thread::sleep_for(5ms); // give resync a few ticks to attempt chunk 0
+    EXPECT_TRUE(bitmap->is_dirty(0, k_chunk_size)) << "chunk 0 must stay dirty while Phase-2 conflict is held";
+
+    // Release the Phase-2 guard — resync can now copy chunk 0 and the bitmap clears.
+    phase2_guard.release();
+    EXPECT_TRUE(wait_for_bitmap_clean(bitmap)) << "Bitmap must become clean after Phase-2 conflict released";
+    task.stop();
+
+    // Verify chunk 0 was correctly copied.
+    std::vector< uint8_t > actual0(k_chunk_size, 0);
+    int verify_fd = open(dirty_path.c_str(), O_RDONLY);
+    ASSERT_GE(verify_fd, 0);
+    posix_fadvise(verify_fd, k_data_offset, k_chunk_size, POSIX_FADV_DONTNEED);
+    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual0.data(), k_chunk_size, k_data_offset));
+    close(verify_fd);
+    EXPECT_EQ(chunk0, actual0) << "chunk 0 must be correctly copied after Phase-2 conflict released";
 }

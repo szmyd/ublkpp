@@ -1,26 +1,24 @@
-# Changelog
+#Changelog
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.32.0 feat(raid1): async resync via coroutine dispatch + per-region conflict tracking
+## 0.32.0 refactor(raid1): direct-thread resync loop + async io_uring copy pipeline
 - Replace blocking `preadv2`/`pwritev2` resync copies with async `io_uring` I/O using
   standard `readv`/`writev` SQEs via `async_iov()`. Up to `k_resync_slots` (8) READ→WRITE
   operations are pipelined concurrently per resync pass.
-- Coroutine dispatch path: a dedicated per-volume `io_uring` ring and handler thread drive
-  RAID1 resync coroutines via `ResyncDispatcher` → `run_resync_queue_loop` → `exec::async_scope`.
-  The coroutine suspends at `co_await` on each async I/O and resumes when the CQE is delivered.
+- Each `Raid1ResyncTask` owns its own `io_uring` ring (`COOP_TASKRUN | SINGLE_ISSUER`) and
+  drives it directly from its dedicated resync thread via `io_uring_submit_and_wait_timeout`
+  + `drain_cqes()`. No shared target-level ring, no `ResyncDispatcher`, no `exec::async_scope`.
 - `SLEEPING` state removed. `stop()` CASes `ACTIVE→STOPPING` directly; the 500 µs
-  `sleep_tick()` coroutine in the copy loop provides the natural yield/check point.
-- `backend_fd()` virtual method added to `ublk_disk`; `FSDisk` overrides to return its
+  `io_uring_submit_and_wait_timeout` timeout in `_run_resync_loop()` provides the natural
+  yield/wakeup point so `stop()` returns within one tick.
+- `backend_fd()` virtual method added to `ublk_disk`; `FsDisk` overrides to return its
   backing fd. Composite and virtual disks return -1 (informational only; no fallback path).
-- Standalone thread path (`__run()`) retained for test contexts without a live dispatcher.
-- Fixes: short-read/write detection in all three I/O paths (data previously silently lost);
-  `_done_promise.set_value()` now fires before `complete()` to close a latent deadlock;
-  `_launch_lock` held across `_done_future.wait()` to close a data race; `_resync_queue`/
-  `_resync_dispatch` made atomic; ring depth +1 for sleep_tick SQE; unified 500µs tick
-  constant; linear STOPPING drain with short-write check; per-sweep yield in thread path.
+- `ublk_rings` simplified to carry only `io_q`; target no longer manages a resync ring.
+- Fixes: short-read/write detection; unified 500 µs tick constant; linear STOPPING drain
+  with in-flight polling; per-sweep `yield_count` increment for test observability.
 
 ## 0.31.0 raid1: replace global PAUSE with lock-free per-region write tracker
 - Replace global `PAUSE` state with `RegionTracker`: a lock-free flat slot array that tracks

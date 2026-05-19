@@ -45,11 +45,9 @@ MockUblksrv::MockUblksrv(std::shared_ptr< ublk_disk > disk, int q_depth, int nr_
 
     // Simulate init_queue: call prepare once per queue thread so the disk can count queues
     // and perform per-queue initialization (e.g. Raid1Disk sets _nr_hw_queues and enables resync).
-    // resync_q is nullptr — mock has no target-level resync ring; Raid1ResyncTask falls back to its
-    // own per-pair ring via __ensure_ring().
     size_t max_sqes_per_io = 1;
     for (int qi = 0; qi < nr_queues; ++qi) {
-        ublk_rings rings{&_queues[qi], nullptr};
+        ublk_rings rings{&_queues[qi]};
         auto const prep = _disk->prepare(&rings, _dev.tgt.nr_fds);
         for (auto const fd : prep.fds) {
             if (_dev.tgt.nr_fds < UBLKSRV_TGT_MAX_FDS) _dev.tgt.fds[_dev.tgt.nr_fds++] = fd;

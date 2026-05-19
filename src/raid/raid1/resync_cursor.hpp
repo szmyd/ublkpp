@@ -8,7 +8,7 @@ namespace ublkpp::raid1 {
 
 class Bitmap;
 
-// Cursor state for the resync copy loop, shared between __run() and __run_coro().
+// Cursor state for the resync copy loop (_run_resync_loop).
 // Encapsulates dirty-chunk navigation, progress tracking, and the skip-hint that prevents
 // low-LBA regions from starving higher ones under sustained write pressure.
 struct ResyncCursor {
@@ -24,7 +24,7 @@ struct ResyncCursor {
     // Skip a Phase-1-conflicting chunk. Returns true if the caller must break the inner loop.
     bool skip(uint32_t len, Bitmap& bm) noexcept;
 
-    // Skip a chunk already covered by an in-flight slot (coroutine path only).
+    // Skip a chunk already covered by an in-flight slot.
     void skip_inflight(uint32_t len, Bitmap& bm) noexcept;
 
     // Advance after a successfully submitted or completed copy (or after a Phase-2 skip).

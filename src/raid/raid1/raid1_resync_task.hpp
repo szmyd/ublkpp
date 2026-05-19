@@ -25,8 +25,8 @@ constexpr auto k_state_spin_time = 50us;
 constexpr uint32_t k_default_slot_count = 256;
 // Number of concurrent async I/O slots in the resync ring.
 constexpr uint32_t k_resync_slots = 8;
-// Ring depth: 2× slots for simultaneous READ+WRITE SQEs, +1 reserved for the sleep_tick timeout
-// SQE so it always has a free SQ entry even when all data slots are full.
+// Ring depth: 2× slots for simultaneous READ+WRITE SQEs, +1 headroom so next_sqe() never
+// triggers an unwanted auto-submit between iterations.
 constexpr uint32_t k_resync_ring_depth = k_resync_slots * 2 + 1;
 
 class Bitmap;
@@ -67,6 +67,11 @@ struct ResyncSlot {
     enum class Phase : uint8_t { FREE, READ_PENDING, WRITE_PENDING } phase{Phase::FREE};
 };
 
+// Thread model: _run_resync_loop(), drain_cqes(), and all ResyncSlot state are owned
+// exclusively by the resync thread spawned in launch(). RegionTracker (enqueue/dequeue_write)
+// is lock-free and safe to call from any I/O queue thread concurrently. For nr_hw_queues > 1,
+// prepare() is called from multiple queue threads but toggle_resync(true) fires only on the
+// first call — Raid1Disk's _nr_hw_queues atomic ensures this.
 class Raid1ResyncTask {
 
     // Global counter for active resyncs across all RAID1 devices
@@ -101,6 +106,7 @@ class Raid1ResyncTask {
     bool _own_ring_initialized{false}; // true iff __ensure_ring() created _own_ring
     // Active queue for this resync task. Points to _own_queue (standalone/test fallback).
     // null until first launch(); __ensure_ring() initializes it.
+    // Only touched on the resync thread (SINGLE_ISSUER); no atomic needed.
     ublksrv_queue* _resync_queue{nullptr};
     void* _slot_buf_base{nullptr}; // aligned buffer pool: k_resync_slots × _max_size bytes
     std::vector< ResyncSlot > _slots;
@@ -149,9 +155,15 @@ class Raid1ResyncTask {
     void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
                 std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
 
+    // Drains all pending CQEs from the resync ring and delivers each to its waiting coroutine.
+    // Must only be called on the resync thread (SINGLE_ISSUER constraint).
+    void drain_cqes() noexcept;
+
     // Increments _yield_count (so tests can observe sweep completion) and returns the current
     // state. No sleep, no state transition — the io_uring submit_and_wait_timeout call in the
     // copy loop provides natural I/O backpressure.
+    // Incremented at the END of each outer-loop sweep, after all CQEs for this iteration
+    // have been processed.
     resync_state __yield() noexcept;
 
 public:
@@ -174,9 +186,6 @@ public:
 
     // Generic method to move Resync StateMachine to STOPPING
     void stop() noexcept;
-
-    // Drains all pending CQEs from the resync ring and delivers each to its waiting coroutine.
-    void drain_cqes() noexcept;
 
     void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.track(lba, len); }
 
