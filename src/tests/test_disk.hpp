@@ -61,6 +61,23 @@ public:
 class AsyncTestDisk : public TestDisk {
 public:
     explicit AsyncTestDisk(TestParams const& p) : TestDisk(p) {}
+
+    // Async override that drives the cqe_state machinery.
+    // • Normal IO slots (_tag >= 0): allocates a cqe_state and suspends; inject_cqe()
+    //   delivers the result, which unblocks the RAID1 write coroutine.
+    // • Resync slots (_tag == -1): calls sync_iov() directly and marks the state
+    //   ready immediately so the resync coroutine completes without suspending.
+    disk_task< int > async_iov(ublksrv_queue const*, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
+                               uint64_t addr) override {
+        auto* io = reinterpret_cast< async_io* >(data->private_data);
+        auto [state, _unused] = build_cqe_state_data(data);
+        if (io->_tag == -1) {
+            auto res = sync_iov(ublksrv_get_op(data->iod), iovecs, nr_vecs, static_cast< off_t >(addr));
+            state->_result = res ? static_cast< int >(res.value()) : -static_cast< int >(res.error().value());
+            state->_result_ready = true;
+        }
+        co_return co_await *state;
+    }
 };
 
 }; // namespace ublkpp

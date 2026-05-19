@@ -132,6 +132,9 @@ public:
     std::string id() const noexcept override { return "RAID1"; }
     prepare_result prepare(ublk_rings const* rings, int const iouring_device) override;
     void probe_tick(ublksrv_queue const* q) noexcept override;
+    void resync_tick(ublksrv_queue const* q) noexcept override;
+    void resync_drain(ublksrv_queue const* q) noexcept override;
+    uint64_t io_poll_timeout_ns() const noexcept override;
 
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;

@@ -98,9 +98,6 @@ public:
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    // Returns the raw backing file descriptor. Returns -1 for composite disks and virtual disks.
-    virtual int backend_fd() const noexcept { return -1; }
-
     // Returned by prepare(). Carries the file descriptors to register in the queue's io_uring
     // fixed-file table and the maximum number of SQEs this disk may submit for a single user I/O.
     // The target uses max_sqes_per_io to pre-reserve async_io::_pool at queue-init time so that
@@ -125,6 +122,22 @@ public:
     // is_degraded: the resync task owns health monitoring in that state.
     // Composite drivers propagate to children. Default: no-op.
     virtual void probe_tick(ublksrv_queue const* /*q*/) noexcept {}
+
+    // Called by run_queue_loop after every CQE batch on queue thread 0. Performs one
+    // non-blocking resync sweep: submits pending SQEs, peeks CQEs, fills new slots.
+    // Must only be called on queue thread 0 (SINGLE_ISSUER constraint on resync ring).
+    // Default: no-op.
+    virtual void resync_tick(ublksrv_queue const* /*q*/) noexcept {}
+
+    // Called once by run_queue_loop on queue thread 0 after the queue is done (post
+    // scope.on_empty()). Synchronously drains any in-flight resync SQEs so that the
+    // ring can be safely torn down. Default: no-op.
+    virtual void resync_drain(ublksrv_queue const* /*q*/) noexcept {}
+
+    // io_uring timeout for run_queue_loop's submit_and_wait_timeout. Returns 20 s when idle,
+    // 500 µs when resync is active (to keep the resync pipeline responsive).
+    // Default: 20 s.
+    virtual uint64_t io_poll_timeout_ns() const noexcept { return 20ULL * 1'000'000'000; }
 };
 
 inline auto format_as(ublk_disk const& device) {

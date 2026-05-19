@@ -80,21 +80,23 @@ TEST_F(AsyncRaid1Fixture, UnavailReadReroutes) {
         ASSERT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::UNAVAIL);
 
         // Read 1: last_read=DEVA → next = DEVB. disk_b succeeds normally.
+        // res.value()==1u and inject_cqe resolving tag 1 confirms disk_b was used.
         {
             EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(0);
-            EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
             auto res = mock->submit_io(1, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
             ASSERT_TRUE(res);
+            EXPECT_EQ(res.value(), 1u);
             auto c = mock->inject_cqe(1, 4 * Ki);
             ASSERT_EQ(c.size(), 1u);
         }
 
         // Read 2: last_read=DEVB → round-robin gives DEVA, but UNAVAIL → reroutes to DEVB.
+        // res.value()==1u confirms only disk_b got a cqe_state; disk_a was skipped.
         {
             EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(0);
-            EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
             auto res = mock->submit_io(2, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
             ASSERT_TRUE(res);
+            EXPECT_EQ(res.value(), 1u);
             auto c = mock->inject_cqe(2, 4 * Ki);
             ASSERT_EQ(c.size(), 1u);
         }

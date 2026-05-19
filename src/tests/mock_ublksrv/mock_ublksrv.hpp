@@ -54,6 +54,11 @@ public:
     // Per-tag sector-aligned I/O buffer (max_io_size = DEF_BUF_SIZE bytes).
     void* io_buf(int tag);
 
+    // Drive one resync sweep on queue thread 0. Calls ublk_disk::resync_tick() which
+    // dispatches to Raid1Disk::resync_tick() → Raid1ResyncTask::tick(). No-op for
+    // disks that do not override resync_tick().
+    void resync_tick() { _disk->resync_tick(&_queues[0]); }
+
     int q_depth() const noexcept { return _q_depth; }
     int nr_queues() const noexcept { return static_cast< int >(_queues.size()); }
     ublksrv_queue const* queue(int q_id = 0) const noexcept { return &_queues[q_id]; }

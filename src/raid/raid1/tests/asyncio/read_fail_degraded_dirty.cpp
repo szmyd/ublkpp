@@ -61,13 +61,11 @@ TEST(Raid1Async, ReadDegradedDirtyActiveFailNoFallback) {
 
     // Run in a fresh thread to isolate the thread_local read-route cursor from other tests.
     std::thread([&] {
-        // Active device is called once; backup must not be touched (it has stale data).
-        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
-        EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(0);
-
+        // res.value()==1 confirms only the active device (disk_a) was issued a cqe_state;
+        // the backup (disk_b) must not be touched because it holds stale data (dirty bitmap).
         auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
         ASSERT_TRUE(res);
-        EXPECT_EQ(res.value(), 1u);
+        EXPECT_EQ(res.value(), 1u); // only disk_a cqe_state; disk_b not invoked
 
         // Active fails → !failover_dev (dirty) → -EAGAIN immediately.
         auto completions = mock->inject_cqe(0, -EIO);

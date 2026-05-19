@@ -854,6 +854,20 @@ void Raid1Disk::probe_tick(ublksrv_queue const*) noexcept {
         RLOGD("Idle probe: device unavailable: {}", *state.backup_dev->disk)
 }
 
+void Raid1Disk::resync_tick(ublksrv_queue const* q) noexcept {
+    if (q->q_id != 0) return;
+    _resync_task->tick();
+}
+
+void Raid1Disk::resync_drain(ublksrv_queue const* q) noexcept {
+    if (q->q_id != 0) return;
+    _resync_task->drain();
+}
+
+uint64_t Raid1Disk::io_poll_timeout_ns() const noexcept {
+    return _resync_task->is_active() ? 500'000ULL : 20ULL * 1'000'000'000;
+}
+
 void Raid1Disk::toggle_resync(bool t) {
     _resync_enabled.store(t, std::memory_order_relaxed);
     if (t) {
@@ -861,8 +875,12 @@ void Raid1Disk::toggle_resync(bool t) {
         if (read_route::EITHER != state.route && !state.backup_dev->disk->is_missing()) {
             _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); });
         }
-    } else
+    } else {
         _resync_task->stop();
+        _resync_task->drain(); // synchronous STOPPING→IDLE; safe since toggle_resync is not called
+                               // concurrently with tick() (both run on the queue thread in production,
+                               // and tests have no concurrent tick() when calling toggle_resync).
+    }
 }
 
 namespace {

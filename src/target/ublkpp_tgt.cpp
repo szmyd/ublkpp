@@ -93,12 +93,18 @@ static void submit_probe_timeout(ublksrv_queue const* q) {
 // completes synchronously via its fast path.
 static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_state* qs) {
     auto* ring = q->ring_ptr;
-    // clang-format off
-    struct __kernel_timespec ts{.tv_sec = k_io_idle_secs, .tv_nsec = 0};
-    // clang-format on
+    auto* device = qs->tgt->device.get();
     bool queue_done = false;
 
     while (!queue_done) {
+        // Timeout driven by device: 500 µs when resync is active, 20 s when idle.
+        auto const timeout_ns = device->io_poll_timeout_ns();
+        // clang-format off
+        struct __kernel_timespec ts{
+            .tv_sec  = static_cast< long >(timeout_ns / 1'000'000'000),
+            .tv_nsec = static_cast< long >(timeout_ns % 1'000'000'000)
+        };
+        // clang-format on
         io_uring_cqe* cqe{};
         auto const ret = io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
 
@@ -114,7 +120,7 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     // is_idle=false and preventing the probe from re-arming on subsequent fires.
                     ++probe_count;
                     if (cqe->res == -ETIME) {
-                        qs->tgt->device->probe_tick(q);
+                        device->probe_tick(q);
                         if (qs->is_idle) submit_probe_timeout(q);
                     }
                 } else {
@@ -135,11 +141,15 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
             ++count;
         }
         io_uring_cq_advance(ring, count);
+        // Drive one resync sweep after every CQE batch (queue thread 0 only; gated inside).
+        device->resync_tick(q);
         ublksrv_queue_update_idle(q, ret, count - probe_count);
         queue_done = ublksrv_queue_is_done(q);
     }
 
     co_await qs->scope.on_empty();
+    // Final resync drain: ensure all in-flight resync SQEs complete before this thread exits.
+    device->resync_drain(q);
 }
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
@@ -376,7 +386,6 @@ static void idle_transition(ublksrv_queue const* q, bool enter) {
 
 static int init_queue(const struct ublksrv_queue* q, void**) {
     TLOGD("Init Queue")
-    auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
     auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
     // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.

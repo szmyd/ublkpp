@@ -5,7 +5,6 @@
 #include <functional>
 #include <optional>
 #include <sys/uio.h>
-#include <thread>
 #include <vector>
 
 #include <liburing.h>
@@ -25,8 +24,9 @@ constexpr auto k_state_spin_time = 50us;
 constexpr uint32_t k_default_slot_count = 256;
 // Number of concurrent async I/O slots in the resync ring.
 constexpr uint32_t k_resync_slots = 8;
-// Ring depth: 2× slots for simultaneous READ+WRITE SQEs, +1 headroom so next_sqe() never
-// triggers an unwanted auto-submit between iterations.
+// Ring depth: each slot issues at most 1 SQE at a time (READ, WRITE, and bitmap-flush are
+// sequential within the merged coroutine). k_resync_slots active SQEs + k_resync_slots headroom
+// for the next batch + 1 for the STOPPING cancel-all SQE.
 constexpr uint32_t k_resync_ring_depth = k_resync_slots * 2 + 1;
 
 class Bitmap;
@@ -52,26 +52,32 @@ struct transition_result {
     transition_action action;
 };
 
-// One in-flight async copy slot. Each slot tracks a single READ→WRITE resync operation via the
-// resync ring. The fake_iod/fake_data fields let us call disk->async_iov() directly without a
-// real ublksrv_queue; only ring_ptr is accessed by next_sqe() and async_iov().
+// One in-flight async copy slot. Each slot holds a single merged coroutine that performs
+// the full READ → Phase-2-check → WRITE → bitmap-flush sequence. The fake_iod/fake_data
+// fields let async_iov() be called directly without a real ublksrv_queue; only ring_ptr is
+// accessed by next_sqe() and async_iov(). A slot is free when !task || task->done().
 struct ResyncSlot {
-    async_io io{};              // per-slot cqe_state pool (reserved for 1 state per phase)
-    ublksrv_io_desc fake_iod{}; // op_flags set to READ or WRITE before each async_iov call
+    async_io io{};              // per-slot cqe_state pool (capacity 1; cleared before each async_iov)
+    ublksrv_io_desc fake_iod{}; // op_flags set to READ, WRITE, or WRITE (bitmap) inside the coroutine
     ublk_io_data fake_data{};   // fake_data.iod = &fake_iod; fake_data.private_data = &io
     iovec slot_iov{};           // iov_base points into _slot_buf_base; iov_len set per chunk
     std::optional< hot_task< int > > task{};
     uint64_t lba{0};
     uint32_t len{0};
     uint64_t gen_before{0}; // RegionTracker generation snapshot for Phase 2 check
-    enum class Phase : uint8_t { FREE, READ_PENDING, WRITE_PENDING } phase{Phase::FREE};
 };
 
-// Thread model: _run_resync_loop(), drain_cqes(), and all ResyncSlot state are owned
-// exclusively by the resync thread spawned in launch(). RegionTracker (enqueue/dequeue_write)
-// is lock-free and safe to call from any I/O queue thread concurrently. For nr_hw_queues > 1,
+// Thread model: tick(), drain_cqes(), and all ResyncSlot state are owned exclusively by I/O
+// queue thread 0 (via Raid1Disk::resync_tick()). RegionTracker (enqueue/dequeue_write) is
+// lock-free and safe to call from any I/O queue thread concurrently. For nr_hw_queues > 1,
 // prepare() is called from multiple queue threads but toggle_resync(true) fires only on the
 // first call — Raid1Disk's _nr_hw_queues atomic ensures this.
+//
+// Lifecycle: launch() initialises session state and CASes IDLE→ACTIVE. Queue thread 0 calls
+// tick() after every CQE batch; each tick() does one non-blocking sweep (submit pending SQEs,
+// peek available CQEs, fill new slots). When stop() CASes ACTIVE→STOPPING, the next tick()
+// submits IORING_ASYNC_CANCEL_ANY and drains until all slots are free, then CASes STOPPING→IDLE.
+// drain() provides a synchronous fallback for the final cleanup in run_queue_loop's exit path.
 class Raid1ResyncTask {
 
     // Global counter for active resyncs across all RAID1 devices
@@ -99,20 +105,30 @@ class Raid1ResyncTask {
     // unrelated regions proceed without any global pause.
     RegionTracker _region_tracker;
 
-    // Fallback ring + queue used when no target-level queue is provided to launch().
-    // Lazily initialized by __ensure_ring() on the first _start() entry if _resync_queue is null.
+    // Private io_uring ring owned exclusively by queue thread 0 (SINGLE_ISSUER).
+    // Lazily initialized by __ensure_ring() on first launch().
     io_uring _own_ring{};
     ublksrv_queue _own_queue{};
     bool _own_ring_initialized{false}; // true iff __ensure_ring() created _own_ring
-    // Active queue for this resync task. Points to _own_queue (standalone/test fallback).
+    // Active queue for this resync task. Points to _own_queue.
     // null until first launch(); __ensure_ring() initializes it.
-    // Only touched on the resync thread (SINGLE_ISSUER); no atomic needed.
+    // Only touched on queue thread 0 (SINGLE_ISSUER); no atomic needed.
     ublksrv_queue* _resync_queue{nullptr};
     void* _slot_buf_base{nullptr}; // aligned buffer pool: k_resync_slots × _max_size bytes
     std::vector< ResyncSlot > _slots;
 
-    std::mutex _launch_lock;
-    std::thread _resync_task;
+    // Per-session state: valid when ACTIVE or STOPPING; reset to defaults on transition to IDLE.
+    std::shared_ptr< MirrorDevice > _clean_mirror;
+    std::shared_ptr< MirrorDevice > _dirty_mirror;
+    std::function< void() > _complete_cb;
+    std::string _session_uuid;
+    uint64_t _resync_skip_from{0};
+    uint32_t _consecutive_unavail{0};
+    uint32_t _nr_pages{0};
+    bool _cancel_submitted{false}; // true once IORING_ASYNC_CANCEL_ANY was submitted in STOPPING
+    uint64_t _initial_resync_size{0};
+    std::chrono::steady_clock::time_point _resync_start{};
+    std::chrono::steady_clock::time_point _next_probe_time{};
 
     // State access helpers
     resync_state __load_state() const noexcept { return _state.load(std::memory_order_acquire); }
@@ -121,24 +137,22 @@ class Raid1ResyncTask {
         return _state.compare_exchange_weak(expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
     }
 
-    // Async copy loop: drives _resync_queue directly on the calling thread using
-    // io_uring_submit_and_wait_timeout + drain_cqes(). Each slot holds a hot_task<int>
-    // started from async_iov(); done() is polled each sweep after drain_cqes() resumes the
-    // underlying disk_task coroutine. Returns the state at exit (ACTIVE = clean finish,
-    // STOPPING = stop() was called).
-    resync_state _run_resync_loop(std::shared_ptr< MirrorDevice >& clean_mirror,
-                                  std::shared_ptr< MirrorDevice >& dirty_mirror) noexcept;
+    // Per-slot merged coroutine: READ → Phase-2-check (sync) → WRITE → async-bitmap-flush.
+    // Handles -EAGAIN (ring full) and -ECANCELED (cancel-all during STOPPING) by returning
+    // immediately without marking mirrors unavailable. All error/unavail logic is here;
+    // the drain loop only needs to poll done() and reset the slot.
+    disk_task< int > __resync_slot_coro(ResyncSlot& slot, MirrorDevice& clean, MirrorDevice& dirty) noexcept;
 
     // Drives a CQE to the waiting cqe_state coroutine. Extracts the cqe_state* from
     // user_data (bit 63 tag + pointer), writes the result, marks it ready, and resumes
     // the suspended async_iov coroutine. After this call, slot.task->done() is true.
     void __process_cqe(io_uring_cqe* cqe) noexcept;
 
-    // Returns true if any slot is not FREE (i.e. there is I/O in flight).
+    // Returns true if any slot has an in-flight (not-yet-done) task.
     [[nodiscard]] bool has_in_flight() const noexcept;
 
-    // Ensures _resync_queue is set. Creates _own_ring/_own_queue for standalone/test use.
-    // Returns false if ring creation fails; _start() aborts the resync in that case.
+    // Ensures _resync_queue is set. Creates _own_ring/_own_queue (COOP_TASKRUN | SINGLE_ISSUER).
+    // Returns false if ring creation fails; launch() aborts the resync in that case.
     [[nodiscard]] bool __ensure_ring() noexcept;
 
     // Phase 2 conflict check: returns true if a write that overlaps [lba, lba+len) is either
@@ -152,19 +166,25 @@ class Raid1ResyncTask {
     template < typename StateHandler >
     [[gnu::noinline]] bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
 
-    void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
-
     // Drains all pending CQEs from the resync ring and delivers each to its waiting coroutine.
-    // Must only be called on the resync thread (SINGLE_ISSUER constraint).
+    // Must only be called on queue thread 0 (SINGLE_ISSUER constraint).
     void drain_cqes() noexcept;
 
     // Increments _yield_count (so tests can observe sweep completion) and returns the current
-    // state. No sleep, no state transition — the io_uring submit_and_wait_timeout call in the
-    // copy loop provides natural I/O backpressure.
-    // Incremented at the END of each outer-loop sweep, after all CQEs for this iteration
+    // state. No sleep, no state transition — the queue thread's submit_and_wait_timeout call
+    // provides natural I/O backpressure.
+    // Incremented at the END of each tick() sweep, after all CQEs for this iteration
     // have been processed.
     resync_state __yield() noexcept;
+
+    // Record resync-complete metrics and CAS state back to IDLE.
+    // Called once when bitmap is clean (ACTIVE→IDLE) or after STOPPING drain completes.
+    void __finish_session(resync_state final_state) noexcept;
+
+    // Synchronous STOPPING drain: submit cancel-all, loop until all in-flight SQEs resolve,
+    // then __finish_session(STOPPING). Safe to call when queue thread 0 is the sole accessor
+    // of _own_ring (during drain() or the destructor's fallback path).
+    void __drain_stopping() noexcept;
 
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
@@ -178,14 +198,32 @@ public:
 
     void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
 
-    // Spawns the resync thread. The thread creates its own io_uring ring via __ensure_ring()
-    // and runs _run_resync_loop() to completion or until stop() is called.
-    // complete: called when resync finishes naturally (not when stopped).
+    // Initialises session state and CASes IDLE→ACTIVE. Returns immediately; the actual I/O
+    // is driven by successive tick() calls on queue thread 0. No-op if already ACTIVE.
+    // complete: called when resync finishes naturally (bitmap clean); not called on stop().
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
-    // Generic method to move Resync StateMachine to STOPPING
+    // CASes ACTIVE→STOPPING (non-blocking). The next tick() call will submit
+    // IORING_ASYNC_CANCEL_ANY and drain all in-flight SQEs before transitioning to IDLE.
+    // Callers that need a synchronous stop must use drain() instead, or poll is_active().
     void stop() noexcept;
+
+    // Performs one non-blocking resync sweep: submits pending SQEs to the resync ring, peeks
+    // available CQEs, fills new copy slots. Must be called only on queue thread 0 (SINGLE_ISSUER).
+    // No-op when IDLE. When STOPPING: cancels in-flight SQEs and, once drained, transitions to IDLE.
+    void tick() noexcept;
+
+    // Synchronous drain: if ACTIVE, CASes to STOPPING first; then loops until all in-flight
+    // SQEs complete and transitions to IDLE. Called by run_queue_loop's exit path (queue thread 0)
+    // and by the destructor fallback (after queue threads have joined).
+    void drain() noexcept;
+
+    // Returns true when a resync session is in progress (state == ACTIVE).
+    bool is_active() const noexcept { return __load_state() == resync_state::ACTIVE; }
+
+    // Returns true when no resync session is in progress (state == IDLE).
+    bool is_idle() const noexcept { return __load_state() == resync_state::IDLE; }
 
     void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.track(lba, len); }
 
