@@ -6,39 +6,34 @@
 #include <sys/uio.h>
 #include <thread>
 
+extern "C" {
+#include <liburing.h>
+}
+
 #include "metrics/ublk_raid_metrics.hpp"
 #include "raid1_superblock.hpp"
 #include "region_tracker.hpp"
+#include "resync_constants.hpp"
 #include "ublkpp/raid.hpp"
 
 namespace ublkpp::raid1 {
 
 using namespace std::chrono_literals;
-constexpr auto k_state_spin_time = 50us;
 constexpr uint32_t k_default_slot_count = 256;
 
 class Bitmap;
 class MirrorDevice;
 
-// State transitions:
-//   IDLE → ACTIVE (launch())
-//   ACTIVE ⟷ SLEEPING (yield for I/O)
-//   any → STOPPING (shutdown requested)
-//   STOPPING → IDLE (shutdown complete)
-ENUM(resync_state, uint32_t, IDLE = 0, ACTIVE = 1, SLEEPING = 2, STOPPING = 3);
-
-// State transition actions for __transition_to helper
-enum class transition_action : uint8_t {
-    RETRY,            // Continue CAS loop immediately
-    RETRY_WITH_SLEEP, // Sleep k_state_spin_time then retry
-    SUCCESS,          // Exit loop (CAS succeeded or found target state)
-    EARLY_EXIT        // Exit caller function immediately
-};
-
-// Result from state transition handler callback
-struct transition_result {
-    resync_state next_state; // State to expect on next retry
-    transition_action action;
+// One async copy operation in flight: READ from clean → WRITE to dirty.
+// Only used when both disks support prep_iov_sqe(); otherwise sync_iov is used directly.
+struct ResyncSlot {
+    enum class Phase : uint8_t { FREE, READ_PENDING, WRITE_PENDING };
+    Phase phase{Phase::FREE};
+    uint64_t lba{0};
+    uint32_t len{0};
+    uint64_t gen_before{0}; // RegionTracker generation snapshot before the READ SQE was submitted
+    void* buf{nullptr};     // posix_memalign'd I/O buffer; owned by the slot
+    iovec iov{};
 };
 
 class Raid1ResyncTask {
@@ -46,50 +41,68 @@ class Raid1ResyncTask {
     // Global counter for active resyncs across all RAID1 devices
     static inline std::atomic_uint32_t s_active_resyncs{0};
 
-    // Number of times __yield() has been called; used by tests to wait for at least one sweep
+    // Number of times a resync sweep has yielded; tests poll this to wait for ≥1 sweep
     // without relying on wall-clock timing.
     std::atomic< uint64_t > _yield_count{0};
 
     std::shared_ptr< raid1::Bitmap > const _dirty_bitmap;
     std::shared_ptr< ublkpp::UblkRaidMetrics > const _metrics;
 
-    // The smallest I/O both devices support (RAID logical block size)
+    // Smallest I/O both devices support (alignment for posix_memalign).
     uint32_t const _io_size;
-    // The largest I/O both devices support
+    // Largest I/O both devices support (max chunk size per copy op).
     uint32_t const _max_size;
-    // This is the offset we should copy the disks @ to avoid writing on the BITMAP itself.
+    // Byte offset added to every logical address before issuing I/O; skips the on-disk bitmap.
     uint64_t const _offset;
 
-    std::atomic< resync_state > _state{resync_state::IDLE};
-    static_assert(std::atomic< resync_state >::is_always_lock_free);
-
-    // Tracks the LBA range of each in-flight write. Resync checks for overlap before
-    // and after each copy so it only skips regions that actually conflict with a write;
-    // unrelated regions proceed without any global pause.
     RegionTracker _region_tracker;
 
+    // Protects _resync_task.joinable() check in launch() against concurrent callers.
     std::mutex _launch_lock;
     std::thread _resync_task;
 
-    // State access helpers
-    resync_state __load_state() const noexcept { return _state.load(std::memory_order_acquire); }
+    // Set to true by stop() to request the resync thread to exit.
+    std::atomic< bool > _stop{false};
 
-    bool __cas_state(resync_state& expected, resync_state desired) noexcept {
-        return _state.compare_exchange_weak(expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
-    }
+    // io_uring ring used by the async path; owned exclusively by the resync thread.
+    io_uring _ring{};
+    bool _ring_initialized{false};
 
-    resync_state __run(auto& clean_mirror, auto& dirty_mirror, iovec* iov) noexcept;
+    // Fixed-size slot array for the async pipeline.
+    std::array< ResyncSlot, k_resync_slots > _slots{};
+    uint32_t _in_flight{0}; // count of READ_PENDING + WRITE_PENDING slots
 
-    // Generic state transition helper - reduces duplication across launch/stop.
-    // noinline: gcov attributes inlined template instructions to the call-site line numbers
-    // rather than to the template body, making the entire retry loop appear uncovered.
-    template < typename StateHandler >
-    [[gnu::noinline]] bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
+    // ── Private helpers ───────────────────────────────────────────────────────────────────────
+    void _run(std::shared_ptr< MirrorDevice > clean, std::shared_ptr< MirrorDevice > dirty,
+              std::function< void() > complete);
 
-    void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete);
+    // Initialise the io_uring ring and per-slot buffers.
+    // Returns true if both disks support prep_iov_sqe() and the ring was set up successfully.
+    // On any failure the ring is left uninitialized and the sync fallback is used.
+    bool _init_ring(ublk_disk& clean_disk, ublk_disk& dirty_disk) noexcept;
 
-    resync_state __yield(std::chrono::microseconds const yield_for, std::chrono::microseconds const spin_time) noexcept;
+    // Async (io_uring) copy loop.  Called when _init_ring() returns true.
+    void _run_uring(MirrorDevice& clean, MirrorDevice& dirty);
+
+    // Fills free async slots with READ SQEs for the next dirty chunks starting at cursor.
+    // cursor_{lba,sz,skip_from} are updated in place as slots are filled.
+    void _fill_slots(MirrorDevice& clean, uint64_t& cursor_lba, uint32_t& cursor_sz,
+                     uint64_t& cursor_skip_from) noexcept;
+
+    // Harvests all available CQEs; submits WRITE SQEs for completed READs and calls
+    // clean_region() for completed WRITEs that pass the Phase-2 check.
+    void _process_cqes(MirrorDevice& clean, MirrorDevice& dirty) noexcept;
+
+    // Submits a cancel-all SQE, drains all CQEs to zero, then calls io_uring_queue_exit().
+    void _drain_and_exit() noexcept;
+
+    // Synchronous (sync_iov) copy loop.  Used as fallback when prep_iov_sqe() is unavailable
+    // (e.g. TestDisk, composite disks).  Behaves identically to the old __run() but without
+    // the SLEEPING/STOPPING state machine — stop() is detected via _stop.load() checks.
+    void _run_sync(MirrorDevice& clean, MirrorDevice& dirty);
+
+    // Sleeps for `dur`, checking _stop every 500µs. Returns false if _stop was set.
+    bool _sleep_check_stop(std::chrono::microseconds dur) noexcept;
 
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
@@ -103,18 +116,18 @@ public:
 
     void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
 
+    // Spawn a background resync thread if none is running. No-op if one is already active.
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);
 
-    // Generic method to move Resync StateMachine to STOPPING
+    // Signal the resync thread to stop and block until it exits.
     void stop() noexcept;
 
     void enqueue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.track(lba, len); }
 
     void dequeue_write(uint64_t lba, uint32_t len) noexcept { _region_tracker.untrack(lba, len); }
 
-    // Number of times __yield() has been called. Tests poll this to wait for at least one
-    // resync sweep without relying on wall-clock timing.
+    // Number of completed sweeps. Tests poll this to wait for ≥N sweeps without wall-clock guessing.
     uint64_t yield_count() const noexcept { return _yield_count.load(std::memory_order_acquire); }
 };
 

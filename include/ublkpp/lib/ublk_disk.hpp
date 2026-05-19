@@ -11,6 +11,7 @@
 #include "disk_task.hpp"
 #include <ublkpp/lib/ublk_params.hpp>
 
+struct io_uring;
 struct iovec;
 struct ublk_io_data;
 struct ublksrv_queue;
@@ -90,6 +91,18 @@ public:
     virtual io_result sync_iov(uint8_t /*op*/, iovec* /*iovecs*/, uint32_t /*nr_vecs*/, off_t /*addr*/) noexcept {
         RELEASE_ASSERT(_is_missing, "sync_iov() called on a non-missing ublk_disk that did not override");
         return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
+
+    // Prepares a scatter-gather read or write SQE on the caller's io_uring ring.
+    // op:        UBLK_IO_OP_READ or UBLK_IO_OP_WRITE
+    // user_data: stored in sqe->user_data for CQE routing by the caller.
+    // Returns true if a SQE was successfully prepared; false if this disk does not
+    // support io_uring submission (e.g. composite disks, test doubles) or no SQE
+    // slot was available in the ring. The caller must fall back to sync_iov when false.
+    // Default: returns false (safe no-op for missing-disk and non-leaf implementations).
+    virtual bool prep_iov_sqe(io_uring* /*ring*/, uint8_t /*op*/, iovec const* /*iovs*/, uint32_t /*nr*/,
+                              uint64_t /*addr*/, uint64_t /*user_data*/) noexcept {
+        return false;
     }
 
     // Returned by prepare(). Carries the file descriptors to register in the queue's io_uring

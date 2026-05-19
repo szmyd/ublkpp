@@ -2,6 +2,7 @@
 
 extern "C" {
 #include <fcntl.h>
+#include <liburing.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -68,6 +69,8 @@ public:
     disk_task< int > async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override;
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t offset) noexcept override;
+    bool prep_iov_sqe(io_uring* ring, uint8_t op, iovec const* iovs, uint32_t nr, uint64_t addr,
+                      uint64_t user_data) noexcept override;
 
 private:
     std::pair< io_result, cqe_state* > handle_discard(ublksrv_queue const* q, ublk_io_data const* data, uint32_t len,
@@ -250,6 +253,22 @@ std::pair< io_result, cqe_state* > FSDisk::handle_discard(ublksrv_queue const* q
     }
     DLOGE("ioctl BLKDISCARD on {} returned error: {}", _path.native(), strerror(errno))
     return {std::unexpected(std::make_error_condition(static_cast< std::errc >(errno))), nullptr};
+}
+
+bool FSDisk::prep_iov_sqe(io_uring* ring, uint8_t op, iovec const* iovs, uint32_t nr, uint64_t addr,
+                          uint64_t user_data) noexcept {
+    // Only use io_uring for direct I/O. Buffered io_uring has ordering issues on kernel ≤ 5.4
+    // and is not supported on overlayfs (common in CI Docker environments).
+    if (!_direct_io) return false;
+    auto* sqe = io_uring_get_sqe(ring);
+    if (!sqe) [[unlikely]]
+        return false;
+    if (op == UBLK_IO_OP_READ)
+        io_uring_prep_readv(sqe, _fd, const_cast< iovec* >(iovs), nr, static_cast< off_t >(addr));
+    else
+        io_uring_prep_writev(sqe, _fd, const_cast< iovec* >(iovs), nr, static_cast< off_t >(addr));
+    io_uring_sqe_set_data64(sqe, user_data);
+    return true;
 }
 
 io_result FSDisk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept {
