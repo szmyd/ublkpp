@@ -868,6 +868,10 @@ uint64_t Raid1Disk::io_poll_timeout_ns() const noexcept {
     return _resync_task->is_active() ? 500'000ULL : 20ULL * 1'000'000'000;
 }
 
+bool Raid1Disk::is_active() const noexcept { return _resync_task->is_active(); }
+
+bool Raid1Disk::is_idle() const noexcept { return _resync_task->is_idle(); }
+
 void Raid1Disk::toggle_resync(bool t) {
     _resync_enabled.store(t, std::memory_order_relaxed);
     if (t) {

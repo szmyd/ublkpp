@@ -124,6 +124,8 @@ public:
     raid1::array_state replica_states() const noexcept;
     uint64_t reserved_size() const noexcept { return _reserved_size; }
     void toggle_resync(bool t);
+    bool is_active() const noexcept;
+    bool is_idle() const noexcept;
     std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > replicas() const noexcept;
     /// =============
 
