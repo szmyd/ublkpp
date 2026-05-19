@@ -262,9 +262,10 @@ TEST_F(AsyncRaid1Fixture, ResyncLaunchWhileRunningIsNoop) {
 }
 
 // Calling toggle_resync(false) while a resync is active must terminate without deadlock.
-// stop() CASes ACTIVE → STOPPING; drain() then completes all in-flight slots synchronously
-// and transitions to IDLE. With the tick-based approach there is no background thread that
-// could cause a join() deadlock.
+// toggle_resync(false) calls stop() (ACTIVE→STOPPING) then spins on is_idle(), relying on
+// the queue thread's tick() to drive the STOPPING drain. In production tick() runs on
+// queue thread 0; in this test we drive it from a separate thread while toggle_resync(false)
+// spins, mirroring the production call pattern.
 TEST_F(AsyncRaid1Fixture, ResyncStopTerminatesWithoutDeadlock) {
     degrade_via_backup_fail(mock.get(), 0, 0, 32 * Ki / 512);
     for (int tag = 1; tag <= 2; ++tag) {
@@ -276,9 +277,16 @@ TEST_F(AsyncRaid1Fixture, ResyncStopTerminatesWithoutDeadlock) {
     }
     ASSERT_EQ(raid->replica_states().bytes_to_sync, 3 * 32 * Ki);
 
-    raid->toggle_resync(true);  // IDLE → ACTIVE (no ticks driven yet, no SQEs in-flight)
-    raid->toggle_resync(false); // stop() + drain(): must not deadlock
-    // After drain() the task must be IDLE; dirty regions persist since no ticks ran.
+    raid->toggle_resync(true); // IDLE → ACTIVE (no ticks, no SQEs in-flight)
+
+    // toggle_resync(false) spins until is_idle(); drive tick() from a sibling thread so
+    // the STOPPING→IDLE transition happens without deadlock.
+    std::thread toggle_thread([this] { raid->toggle_resync(false); });
+    while (!raid->is_idle())
+        mock->resync_tick(); // STOPPING path: has_in_flight()=false → drains → IDLE
+    toggle_thread.join();
+
+    // Dirty regions persist; no ticks ran on the ACTIVE path so no data was copied.
     EXPECT_TRUE(raid->is_idle());
     EXPECT_GT(raid->replica_states().bytes_to_sync, 0u);
 }

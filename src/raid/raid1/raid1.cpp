@@ -865,7 +865,10 @@ void Raid1Disk::resync_drain(ublksrv_queue const* q) noexcept {
 }
 
 uint64_t Raid1Disk::io_poll_timeout_ns() const noexcept {
-    return _resync_task->is_active() ? 500'000ULL : 20ULL * 1'000'000'000;
+    // Return tight poll interval whenever resync is enabled, not only when ACTIVE: this
+    // ensures tick() is called at the normal rate even during transient IDLE windows
+    // between sessions (e.g., after a dirty region is dirtied but before launch() fires).
+    return _resync_enabled.load(std::memory_order_relaxed) ? 500'000ULL : 20ULL * 1'000'000'000;
 }
 
 bool Raid1Disk::is_active() const noexcept { return _resync_task->is_active(); }
@@ -881,9 +884,11 @@ void Raid1Disk::toggle_resync(bool t) {
         }
     } else {
         _resync_task->stop();
-        _resync_task->drain(); // synchronous STOPPING→IDLE; safe since toggle_resync is not called
-                               // concurrently with tick() (both run on the queue thread in production,
-                               // and tests have no concurrent tick() when calling toggle_resync).
+        // Spin until queue thread 0's tick() drives STOPPING→IDLE. Calling drain() here
+        // would access the io_uring ring from the management thread (e.g., swap_device)
+        // while tick() might be mid-sweep on queue thread 0, violating SINGLE_ISSUER.
+        while (!_resync_task->is_idle())
+            std::this_thread::sleep_for(k_state_spin_time);
     }
 }
 

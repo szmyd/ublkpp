@@ -42,25 +42,6 @@ struct ScopedTempFile {
     std::string path;
 };
 
-// Drives Raid1ResyncTask::tick() on a background thread, replacing the dedicated resync
-// thread that was eliminated in D1/D4. Keep alive for the full duration of a test; destructor
-// waits for the task to reach IDLE before joining, ensuring any STOPPING drain completes.
-struct TickDriver {
-    std::atomic< bool > _done{false};
-    std::thread _t;
-    explicit TickDriver(Raid1ResyncTask& task) :
-            _t([this, &task] {
-                while (!_done.load(std::memory_order_acquire) || !task.is_idle()) {
-                    task.tick();
-                    if (task.is_idle()) std::this_thread::sleep_for(std::chrono::microseconds(100));
-                }
-            }) {}
-    ~TickDriver() {
-        _done.store(true, std::memory_order_release);
-        _t.join();
-    }
-};
-
 // Test-only disk wrapper that delegates reads to an inner disk but fails all writes with
 // -ENOSPC. Used to inject write failures without relying on fd manipulation.
 class FailWritesDisk : public ublkpp::ublk_disk {
@@ -317,6 +298,8 @@ TEST(AsyncResyncIoUring, MultipleChunkCopy) {
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
 
     EXPECT_TRUE(wait_for_bitmap_clean(bitmap)) << "All dirty chunks must be resynced";
+    // Assert that at least 2 slots were in-flight concurrently, confirming async pipelining.
+    EXPECT_GE(task.peak_in_flight(), 2u) << "Expected >= 2 concurrent in-flight slots (async pipelining)";
     task.stop();
 
     // Verify each chunk has the correct distinct pattern on the dirty mirror.
@@ -607,7 +590,14 @@ TEST(AsyncResyncIoUring, StopMidFlight) {
     TickDriver task_driver{task};
     task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
 
-    // Call stop() without sleeping — tick() may be anywhere in its first sweep.
+    // Spin until the TickDriver has started at least one in-flight slot so that stop()
+    // genuinely exercises the mid-flight STOPPING drain path, not just an empty-slot drain.
+    auto const in_flight_deadline = std::chrono::steady_clock::now() + 5000ms;
+    while (task.peak_in_flight() == 0 && std::chrono::steady_clock::now() < in_flight_deadline)
+        std::this_thread::sleep_for(1ms);
+    ASSERT_GT(task.peak_in_flight(), 0u) << "Expected at least one in-flight slot before stop()";
+
+    // stop() CASes ACTIVE→STOPPING and returns immediately; TickDriver drives the drain.
     auto const before = std::chrono::steady_clock::now();
     task.stop();
     auto const elapsed = std::chrono::steady_clock::now() - before;
@@ -615,13 +605,14 @@ TEST(AsyncResyncIoUring, StopMidFlight) {
     EXPECT_LT(elapsed, 2000ms) << "stop() must return promptly even when called mid-sweep";
 }
 
-// Verify Phase 2 conflict detection on the real io_uring path: a write registered after the
-// READ SQE is submitted (but before the WRITE SQE fires) must keep the bitmap dirty.
-// Two chunks are dirtied. Chunk 0 is held by a Phase-1 guard so resync copies chunk 1 first.
-// After chunk 1 is clean, the guard is released; a new conflict on chunk 0 is registered
-// immediately. The resync loop sees the conflict via Phase 2, keeps chunk 0 dirty, then copies
-// it after the conflict is released.
-TEST(AsyncResyncIoUring, Phase2Conflict_IoUring) {
+// Verify that a write conflict registered AFTER chunk 1 is copied still blocks chunk 0 via
+// Phase 1 (not Phase 2): at the time resync attempts chunk 0, the new write guard is already
+// registered so overlaps() returns true in the Phase-1 check. Genuine Phase-2 testing (write
+// arrives and fully completes during the async READ window) is covered by
+// Phase2ConflictDetectedAfterCopy and Phase2CompletedWriteDetected in write_resync_no_pause.cpp;
+// reproducing that race reliably on a real io_uring path would require blocking SQE callbacks,
+// which are not available in the fs-backed FsDisk path.
+TEST(AsyncResyncIoUring, Phase1StillBlocksAfterConflictArrives) {
     auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0);

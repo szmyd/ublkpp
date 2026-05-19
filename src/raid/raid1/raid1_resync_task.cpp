@@ -142,6 +142,11 @@ bool Raid1ResyncTask::has_in_flight() const noexcept {
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                              std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
+    if (_slots.empty()) { // LCOV_EXCL_START
+        RLOGE("Resync slots not initialized; resync unavailable for [uuid:{}]", str_uuid)
+        return;
+    } // LCOV_EXCL_STOP
+
     // If already running, don't re-launch.
     auto state = __load_state();
     if (state == resync_state::ACTIVE) {
@@ -159,8 +164,10 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
         return;                                                                         // LCOV_EXCL_LINE
     }
 
-    // Initialise per-session state before CASing to ACTIVE so that tick() always sees
-    // consistent session fields (no partial-initialisation window on the queue thread).
+    // Initialise session fields BEFORE the CAS. The acq_rel CAS releases these writes so
+    // that any tick() that loads ACTIVE with acquire also sees the completed field writes.
+    // This prevents a TSAN data race that would occur if we CASed first and then wrote:
+    // tick() could load ACTIVE between the CAS and the field writes.
     _clean_mirror = std::move(clean_mirror);
     _dirty_mirror = std::move(dirty_mirror);
     _complete_cb = std::move(complete);
@@ -168,6 +175,7 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
     _resync_skip_from = 0;
     _consecutive_unavail = 0;
     _cancel_submitted = false;
+    _peak_in_flight.store(0, std::memory_order_relaxed);
     _nr_pages = _dirty_bitmap->dirty_pages();
     _initial_resync_size = _dirty_bitmap->dirty_data_est();
     _resync_start = std::chrono::steady_clock::now();
@@ -238,7 +246,8 @@ disk_task< int > Raid1ResyncTask::__resync_slot_coro(ResyncSlot& slot, MirrorDev
     DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean.disk, slot.lba + _offset, slot.len)
     auto const rres =
         co_await clean.disk->async_iov(_resync_queue, &slot.fake_data, &slot.slot_iov, 1, slot.lba + _offset);
-    if (rres == -EAGAIN || rres == -ECANCELED) co_return rres;
+    if (rres == -ECANCELED) co_return rres;
+    if (rres == -EAGAIN) co_return rres; // LCOV_EXCL_LINE -- ring-full is not triggered in tests
     if (rres != static_cast< int >(slot.len)) {
         RLOGE("Resync async read failed: {} [lba:{:#0x} len:{} got:{}]", rres < 0 ? strerror(-rres) : "short read",
               slot.lba, slot.len, rres)
@@ -255,7 +264,8 @@ disk_task< int > Raid1ResyncTask::__resync_slot_coro(ResyncSlot& slot, MirrorDev
     DLOGT("WRITE {} : [lba:{:#0x}|len:{:#0x}]", *dirty.disk, slot.lba + _offset, slot.len)
     auto const wres =
         co_await dirty.disk->async_iov(_resync_queue, &slot.fake_data, &slot.slot_iov, 1, slot.lba + _offset);
-    if (wres == -EAGAIN || wres == -ECANCELED) co_return wres;
+    if (wres == -ECANCELED) co_return wres;
+    if (wres == -EAGAIN) co_return wres; // LCOV_EXCL_LINE -- ring-full is not triggered in tests
     if (wres != static_cast< int >(slot.len)) {
         RLOGE("Resync async write failed: {} [lba:{:#0x} len:{} got:{}]", wres < 0 ? strerror(-wres) : "short write",
               slot.lba, slot.len, wres)
@@ -324,8 +334,11 @@ void Raid1ResyncTask::__drain_stopping() noexcept {
     if (!_cancel_submitted && has_in_flight()) {
         if (auto* sqe = io_uring_get_sqe(ring)) {
             io_uring_prep_cancel(sqe, static_cast< void* >(nullptr), IORING_ASYNC_CANCEL_ANY);
-            io_uring_submit(ring);
-            _cancel_submitted = true;
+            sqe->user_data = 0; // prevent __process_cqe from dispatching the cancel CQE
+            if (io_uring_submit(ring) >= 0) _cancel_submitted = true;
+            // on submit failure, retry next sweep
+        } else {
+            RLOGW("Resync STOPPING: SQ full; cancel-all deferred")
         }
     }
 
@@ -334,12 +347,15 @@ void Raid1ResyncTask::__drain_stopping() noexcept {
     while (has_in_flight()) {
         if (std::chrono::steady_clock::now() >= drain_deadline) {
             RLOGE("Resync STOPPING drain watchdog fired; forcibly clearing in-flight slots")
-            // Discard any available CQEs so __process_cqe never touches freed frames.
-            {
-                io_uring_cqe* cqe{};
-                while (io_uring_peek_cqe(ring, &cqe) == 0 && cqe)
-                    io_uring_cqe_seen(ring, cqe);
-            }
+            // Clear cqe_state pools so __process_cqe cannot resume stale coroutine handles
+            // if a CQE arrives after the slot frames are destroyed.
+            for (auto& slot : _slots)
+                slot.io._pool.clear();
+            // Tear down the ring: guarantees no further CQEs can be delivered.
+            io_uring_queue_exit(&_own_ring);
+            _own_ring_initialized = false;
+            _resync_queue = nullptr;
+            // Safe to destroy frames now: ring is gone, no _waiter references live.
             for (auto& slot : _slots)
                 slot.task.reset();
             break;
@@ -357,6 +373,42 @@ void Raid1ResyncTask::__drain_stopping() noexcept {
     __finish_session(resync_state::STOPPING);
 }
 
+// Non-blocking single-sweep drain for tick()'s STOPPING path. Submits cancel-all once,
+// flushes COOP_TASKRUN task_work via submit_and_wait_timeout(zero), peeks CQEs, reaps
+// done slots. Calls __finish_session only when all slots are free; otherwise returns so
+// the queue thread can service other I/O before the next tick() call.
+void Raid1ResyncTask::__drain_stopping_nonblocking() noexcept {
+    if (!_own_ring_initialized) {
+        __finish_session(resync_state::STOPPING);
+        return;
+    }
+    auto* ring = _resync_queue->ring_ptr;
+
+    if (!_cancel_submitted && has_in_flight()) {
+        if (auto* sqe = io_uring_get_sqe(ring)) {
+            io_uring_prep_cancel(sqe, static_cast< void* >(nullptr), IORING_ASYNC_CANCEL_ANY);
+            sqe->user_data = 0;
+            if (io_uring_submit(ring) >= 0) _cancel_submitted = true;
+        } else {
+            RLOGW("Resync STOPPING: SQ full; cancel-all deferred")
+        }
+    }
+
+    // Single non-blocking sweep: flush task_work and process any available CQEs.
+    {
+        struct __kernel_timespec zero_ts{0, 0};
+        io_uring_cqe* cqe{};
+        io_uring_submit_and_wait_timeout(ring, &cqe, 0, &zero_ts, nullptr);
+        drain_cqes();
+    }
+    for (auto& slot : _slots) {
+        if (slot.task && slot.task->done()) slot.task.reset();
+    }
+
+    if (!has_in_flight()) __finish_session(resync_state::STOPPING);
+    // else: tick() will be called again; another sweep will follow
+}
+
 // One non-blocking resync sweep. Called by queue thread 0 after every CQE batch.
 // ACTIVE path: fill available slots, submit SQEs, peek CQEs, reap done slots. When the bitmap
 // is clean, transitions ACTIVE→IDLE. STOPPING path: delegates to __drain_stopping().
@@ -367,7 +419,7 @@ void Raid1ResyncTask::tick() noexcept {
     auto* ring = _resync_queue->ring_ptr;
 
     if (cur_state == resync_state::STOPPING) {
-        __drain_stopping();
+        __drain_stopping_nonblocking();
         return;
     }
 
@@ -440,11 +492,34 @@ void Raid1ResyncTask::tick() noexcept {
     }
     _resync_skip_from = cursor.skip_from;
 
-    // Submit pending SQEs (from coroutine start()) and peek available CQEs (non-blocking).
-    // drain_cqes() delivers each CQE to the waiting coroutine via cqe_state._waiter.resume();
-    // the coroutine advances internally (Phase-2, WRITE, bitmap-flush) and re-suspends or completes.
-    io_uring_submit(ring);
-    drain_cqes();
+    // Track peak concurrency after slot filling (atomic — readable from test threads).
+    {
+        uint32_t cur_in_flight = 0;
+        for (auto const& slot : _slots)
+            if (slot.task && !slot.task->done()) ++cur_in_flight;
+        auto peak = _peak_in_flight.load(std::memory_order_relaxed);
+        while (cur_in_flight > peak &&
+               !_peak_in_flight.compare_exchange_weak(peak, cur_in_flight, std::memory_order_relaxed))
+            ;
+    }
+
+    // Submit pending SQEs and flush COOP_TASKRUN task_work so CQEs are visible to
+    // the subsequent drain_cqes() peek. io_uring_submit_and_wait_timeout with nr_wait=0
+    // and timeout={0,0} returns immediately but triggers task_work delivery — unlike
+    // io_uring_peek_cqe which does not flush task_work under IORING_SETUP_COOP_TASKRUN.
+    {
+        struct __kernel_timespec zero_ts{0, 0};
+        io_uring_cqe* cqe{};
+        int const submit_res = io_uring_submit_and_wait_timeout(ring, &cqe, 0, &zero_ts, nullptr);
+        if (submit_res < 0) { // LCOV_EXCL_START
+            RLOGE("Resync io_uring_submit_and_wait_timeout failed: {}; stopping", strerror(-submit_res))
+            auto active = resync_state::ACTIVE;
+            __cas_state(active, resync_state::STOPPING);
+            __drain_stopping_nonblocking();
+            return;
+        } // LCOV_EXCL_STOP
+        drain_cqes();
+    }
 
     // Reap: reset slots whose full coroutine sequence has completed.
     for (auto& slot : _slots) {
@@ -476,7 +551,7 @@ void Raid1ResyncTask::stop() noexcept {
         case resync_state::STOPPING:
             return {state, transition_action::SUCCESS};
         case resync_state::ACTIVE:
-            return {state, transition_action::RETRY};
+            return {state, transition_action::RETRY_WITH_SLEEP};
         }
         std::unreachable();
     });

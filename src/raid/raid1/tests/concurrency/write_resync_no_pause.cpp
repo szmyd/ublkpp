@@ -62,6 +62,7 @@ TEST(Raid1Concurrency, UnrelatedWriteDoesNotBlockResync) {
 
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+    TickDriver task_driver{task};
 
     // Register a write to a non-overlapping LBA (512 MiB away from dirty LBA 0) and hold it
     // in-flight. With per-region tracking, resync must copy LBA 0 despite this write.
@@ -117,6 +118,7 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
 
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+    TickDriver task_driver{task};
 
     // Register a write overlapping LBA 0 (the dirty region) and hold it in-flight
     task.enqueue_write(0, io_size);
@@ -191,6 +193,7 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
 
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+    TickDriver task_driver{task};
 
     // Start resync — Phase 1 sees no write registered, starts async READ which blocks
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
@@ -262,6 +265,7 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
 
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+    TickDriver task_driver{task};
 
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
     read_started.get_future().wait();
@@ -325,6 +329,7 @@ TEST(Raid1Concurrency, SkipFromHintAllowsCopyingBeyondConflict) {
     bitmap->dirty_region(2 * io_size, io_size); // Region B: one chunk at LBA 64Ki (gap at 32Ki..64Ki)
 
     Raid1ResyncTask task{bitmap, k_offset, io_size, io_size};
+    TickDriver task_driver{task};
 
     // Hold region A in-flight: Phase 1 will skip it every sweep and set skip_from = io_size.
     task.enqueue_write(0, io_size);
@@ -389,6 +394,7 @@ TEST(Raid1Concurrency, MultiChunkDirtyRun_PartialSkip) {
     bitmap->dirty_region(0, 2 * io_size);
 
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+    TickDriver task_driver{task};
 
     // Hold chunk 0 in-flight — resync must skip it but still copy chunk 1
     task.enqueue_write(0, io_size);

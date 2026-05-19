@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <thread>
 #include <gmock/gmock.h>
@@ -11,6 +13,7 @@
 #include "ublkpp/raid.hpp"
 #include "raid/raid1/bitmap.hpp"
 #include "raid/raid1/raid1_impl.hpp"
+#include "raid/raid1/raid1_resync_task.hpp"
 #include "raid/raid1/raid1_superblock.hpp"
 #include "tests/test_disk.hpp"
 
@@ -126,6 +129,27 @@ inline bool wait_for_bitmap_clean(std::shared_ptr< ublkpp::raid1::Bitmap > const
     }
     return false;
 }
+
+// Drives Raid1ResyncTask::tick() on a background thread. Replaces the old dedicated
+// resync thread. Keep alive for the full duration of a test; the destructor sets _done
+// and joins, waiting for the task to reach IDLE so any STOPPING drain completes.
+struct TickDriver {
+    std::atomic< bool > _done{false};
+    std::thread _t;
+    explicit TickDriver(ublkpp::raid1::Raid1ResyncTask& task) :
+            _t([this, &task] {
+                while (!_done.load(std::memory_order_acquire) || !task.is_idle()) {
+                    task.tick();
+                    if (task.is_idle()) std::this_thread::sleep_for(std::chrono::microseconds(100));
+                }
+            }) {}
+    ~TickDriver() {
+        _done.store(true, std::memory_order_release);
+        _t.join();
+    }
+    TickDriver(TickDriver const&) = delete;
+    TickDriver& operator=(TickDriver const&) = delete;
+};
 
 // Helper function to wait for both devices to become clean
 // Returns true if both devices are clean, false if timeout

@@ -65,6 +65,8 @@ struct ResyncSlot {
     uint64_t lba{0};
     uint32_t len{0};
     uint64_t gen_before{0}; // RegionTracker generation snapshot for Phase 2 check
+
+    bool is_free() const noexcept { return !task || task->done(); }
 };
 
 // Thread model: tick(), drain_cqes(), and all ResyncSlot state are owned exclusively by I/O
@@ -86,6 +88,10 @@ class Raid1ResyncTask {
     // Number of times __yield() has been called; used by tests to wait for at least one sweep
     // without relying on wall-clock timing.
     std::atomic< uint64_t > _yield_count{0};
+
+    // Peak number of concurrently in-flight slots observed across all tick() sweeps.
+    // Updated atomically after each slot-fill loop; used by tests to verify concurrency.
+    std::atomic< uint32_t > _peak_in_flight{0};
 
     std::shared_ptr< raid1::Bitmap > const _dirty_bitmap;
     std::shared_ptr< ublkpp::UblkRaidMetrics > const _metrics;
@@ -148,8 +154,10 @@ class Raid1ResyncTask {
     // the suspended async_iov coroutine. After this call, slot.task->done() is true.
     void __process_cqe(io_uring_cqe* cqe) noexcept;
 
-    // Returns true if any slot has an in-flight (not-yet-done) task.
-    [[nodiscard]] bool has_in_flight() const noexcept;
+    // Non-blocking STOPPING sweep: submit cancel-all (once), flush task_work, reap done
+    // slots. Calls __finish_session(STOPPING) only when all slots are free. Called from
+    // tick() STOPPING path so queue thread 0 never blocks more than one tick at a time.
+    void __drain_stopping_nonblocking() noexcept;
 
     // Ensures _resync_queue is set. Creates _own_ring/_own_queue (COOP_TASKRUN | SINGLE_ISSUER).
     // Returns false if ring creation fails; launch() aborts the resync in that case.
@@ -232,6 +240,14 @@ public:
     // Number of times __yield() has been called. Tests poll this to wait for at least one
     // resync sweep without relying on wall-clock timing.
     uint64_t yield_count() const noexcept { return _yield_count.load(std::memory_order_acquire); }
+
+    // Returns true if any slot currently has an in-flight (not-yet-done) coroutine.
+    // Must be called from queue thread 0 only (non-atomic access to slot state).
+    [[nodiscard]] bool has_in_flight() const noexcept;
+
+    // Peak number of concurrently in-flight slots observed since launch(). Atomic — safe
+    // to call from any thread for test observability.
+    uint32_t peak_in_flight() const noexcept { return _peak_in_flight.load(std::memory_order_acquire); }
 };
 
 // RAII guard that calls enqueue_write() on construction and dequeue_write() on destruction.

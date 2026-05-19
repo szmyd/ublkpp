@@ -4,16 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.32.0 refactor(raid1): direct-thread resync loop + async io_uring copy pipeline
+## 0.32.0 refactor(raid1): tick-based resync + async io_uring copy pipeline
 - Replace blocking `preadv2`/`pwritev2` resync copies with async `io_uring` I/O using
   standard `readv`/`writev` SQEs via `async_iov()`. Up to `k_resync_slots` (8) READ→WRITE
   operations are pipelined concurrently per resync pass.
 - Each `Raid1ResyncTask` owns its own `io_uring` ring (`COOP_TASKRUN | SINGLE_ISSUER`) and
-  drives it directly from its dedicated resync thread via `io_uring_submit_and_wait_timeout`
-  + `drain_cqes()`. No shared target-level ring, no `ResyncDispatcher`, no `exec::async_scope`.
-- `SLEEPING` state removed. `stop()` CASes `ACTIVE→STOPPING` directly; the 500 µs
-  `io_uring_submit_and_wait_timeout` timeout in `_run_resync_loop()` provides the natural
-  yield/wakeup point so `stop()` returns within one tick.
+  drives it from queue thread 0 via `resync_tick()` — no dedicated resync thread.
+  No shared target-level ring, no `ResyncDispatcher`, no `exec::async_scope`.
+- `SLEEPING` state removed. `stop()` CASes `ACTIVE→STOPPING` non-blocking; the next
+  `tick()` call on queue thread 0 submits `IORING_ASYNC_CANCEL_ANY` and drains in-flight
+  slots before transitioning to `IDLE`.
 - `backend_fd()` virtual method added to `ublk_disk`; `FsDisk` overrides to return its
   backing fd. Composite and virtual disks return -1 (informational only; no fallback path).
 - `ublk_rings` simplified to carry only `io_q`; target no longer manages a resync ring.
