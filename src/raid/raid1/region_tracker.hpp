@@ -88,12 +88,14 @@ public:
                                                      std::memory_order_relaxed)) {
                 // CAS failure here means the same packed value occupied two slots simultaneously
                 // (duplicate-LBA tracking). This is a test-only scenario — block-device ordering
-                // forbids concurrent writes to the same LBA in production. Write seq=0 for the
-                // already-claimed shadow gen (conservative: completed_since() returns true), then
-                // continue scanning for the second slot holding the same packed value.
-                // Do not write seq here: leaving it unpublished (seq != gen+1) causes
-                // completed_since() to return true conservatively — which is correct.
-                // Writing seq=0 would be ambiguous when gen+1 == 0 (UINT64_MAX wrap).
+                // forbids concurrent writes to the same LBA in production.
+                //
+                // A shadow generation index was already claimed (fetch_add above) but we did not
+                // find the matching slot to free, so we leave that shadow slot unpublished
+                // (seq remains 0 ≠ gen+1). completed_since() interprets an unpublished entry as
+                // conservative-true — which is safe. Each CAS failure wastes one shadow slot,
+                // slightly reducing effective shadow ring capacity; at test call rates this is
+                // negligible. In production this path is unreachable by block-device ordering.
                 continue;
             }
 
@@ -182,9 +184,10 @@ private:
     static_assert(std::atomic< uint64_t >::is_always_lock_free);
 
     // Shadow completion log: records recently completed writes for Phase 2 detection.
-    // Not cache-line padded — slots (16 KiB) + padded shadow (32 KiB) would exceed L1D
-    // on 32 KiB cores; keeping shadow entries dense (24 bytes) holds the combined working
-    // set within L1D on all server-class microarchitectures.
+    // Not cache-line padded — shadow entries are 24 bytes (uint64_t + uint32_t + uint64_t,
+    // with 4 bytes of alignment padding). With 4×256=1024 entries at 24 bytes = 24 KiB
+    // and 256 padded Slots at 64 bytes = 16 KiB, total working set is ~40 KiB. This may
+    // spill from L1D on CPUs with 32 KiB L1D; fits on 48 KiB+ L1D cores.
     //
     // Sized to 4× the main slot count so the ring overflows only when more than
     // 4×qdepth writes complete during a single async copy slot's READ window.

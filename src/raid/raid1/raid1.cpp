@@ -293,11 +293,7 @@ Raid1Disk::prepare_result Raid1Disk::prepare(ublk_rings const* rings, int const 
 
     // Enable resync only on the first real queue init (io_q != null guards the probe-only call).
     auto const q = rings ? rings->io_q : nullptr;
-    if (q && _nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) {
-        _resync_queue.store(rings->resync_q, std::memory_order_release);
-        _resync_dispatch.store(rings->resync_dispatch, std::memory_order_release);
-        toggle_resync(true);
-    }
+    if (q && _nr_hw_queues.fetch_add(1, std::memory_order_acq_rel) == 0) { toggle_resync(true); }
 
     return result;
 }
@@ -863,9 +859,7 @@ void Raid1Disk::toggle_resync(bool t) {
     if (t) {
         auto const state = __capture_route_state();
         if (read_route::EITHER != state.route && !state.backup_dev->disk->is_missing()) {
-            _resync_task->launch(
-                _str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); },
-                _resync_queue.load(std::memory_order_acquire), _resync_dispatch.load(std::memory_order_acquire));
+            _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); });
         }
     } else
         _resync_task->stop();

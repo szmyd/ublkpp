@@ -79,24 +79,17 @@ Raid1ResyncTask::Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint6
     for (uint32_t i = 0; i < k_resync_slots; ++i) {
         auto& s = _slots[i];
         s.io._pool.reserve(1);
-        s.fake_data.tag = static_cast< int >(i);
+        s.fake_data.tag = -1; // service-loop convention: tag -1 means no ublksrv slot
         s.fake_data.iod = &s.fake_iod;
         s.fake_data.private_data = &s.io;
         s.slot_iov.iov_base = base + static_cast< size_t >(i) * _max_size;
         s.slot_iov.iov_len = _max_size;
     }
-    // Ring not initialized here — launch() (production) or __ensure_ring() (tests) does it.
+    // Ring not initialized here — __ensure_ring() does it on first launch.
 }
 
 Raid1ResyncTask::~Raid1ResyncTask() noexcept {
-    if (_resync_dispatch) {
-        // Coroutine path: stop() should have been called (and future waited) before we get here.
-        // As a safety net, wait once more so we never destroy the resync ring while a coroutine
-        // is still in flight.
-        if (_done_future.valid()) _done_future.wait();
-    } else {
-        if (_resync_task.joinable()) _resync_task.join();
-    }
+    if (_resync_task.joinable()) _resync_task.join();
     if (_own_ring_initialized) io_uring_queue_exit(&_own_ring);
     free(_slot_buf_base);
     _slot_buf_base = nullptr;
@@ -131,7 +124,7 @@ bool Raid1ResyncTask::__ensure_ring() noexcept {
     io_uring_params p{};
     p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
     if (io_uring_queue_init_params(k_resync_ring_depth, &_own_ring, &p) != 0) {
-        RLOGW("Resync io_uring ring init failed ({}); resync unavailable", strerror(errno))
+        RLOGE("Resync io_uring ring init failed ({}); RAID1 resync will not run until next launch", strerror(errno))
         return false;
     }
     _own_queue.ring_ptr = &_own_ring;
@@ -196,7 +189,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             _metrics->record_active_resyncs(active_count);
         } // LCOV_EXCL_STOP
 
-        cur_state = __run(clean_mirror, dirty_mirror);
+        cur_state = _run_resync_loop(clean_mirror, dirty_mirror);
 
         if (_metrics) { // GCOVR_EXCL_BR_LINE
             // LCOV_EXCL_START -- UblkRaidMetrics requires prometheus registry; not constructible in unit tests
@@ -232,8 +225,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
-                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete,
-                             ublksrv_queue* resync_q, ResyncDispatcher* dispatch) {
+                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
 
     // First we must be IDLE. ACTIVE means already running; STOPPING is transient (stop() will
@@ -248,35 +240,15 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
         std::this_thread::sleep_for(k_state_spin_time);
     }
 
-    // Update queue/dispatch only after confirming we will actually launch; avoids mutating
-    // fields that an in-flight thread or coroutine may be reading on a concurrent early-exit.
-    if (resync_q) _resync_queue = resync_q;
-    _resync_dispatch = dispatch;
+    // The previous resync thread may still be joinable even though state is IDLE — there is a
+    // window between _start() setting state to IDLE and the thread actually returning.
+    // Assigning to a joinable std::thread calls std::terminate(), so join here first.
+    if (_resync_task.joinable()) _resync_task.join();
 
-    if (dispatch) {
-        // Coroutine dispatch path: transition to ACTIVE here (not inside __run_coro), reset the
-        // done signal, then post the coroutine factory to run_resync_queue_loop.
-        auto idle = resync_state::IDLE;
-        const auto ok = __cas_state(idle, resync_state::ACTIVE);
-        RELEASE_ASSERT(ok, "IDLE→ACTIVE CAS failed despite holding _launch_lock");
-        _done_promise = std::promise< void >{};
-        _done_future = _done_promise.get_future();
-        dispatch->submit([this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
-                          compl_cb = std::move(complete)]() mutable {
-            return __run_coro(std::move(clean), std::move(dirty), std::move(compl_cb), std::move(uuid));
-        });
-    } else {
-        // Thread fallback (standalone / test context): unchanged thread spawn path.
-        // The previous resync thread may still be joinable even though state is IDLE — there is a
-        // window between _start() setting state to IDLE and the thread actually returning.
-        // Assigning to a joinable std::thread calls std::terminate(), so join here first.
-        if (_resync_task.joinable()) _resync_task.join();
-
-        _resync_task = sisl::named_thread(
-            fmt::format("r_{}", str_uuid.substr(0, 13)),
-            [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
-             compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
-    }
+    _resync_task = sisl::named_thread(
+        fmt::format("r_{}", str_uuid.substr(0, 13)),
+        [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
+         compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
 }
 
 void Raid1ResyncTask::clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {
@@ -313,64 +285,28 @@ void Raid1ResyncTask::__process_cqe(io_uring_cqe* cqe) noexcept {
     if (auto h = std::exchange(state->_waiter, {})) h.resume(); // exchange zeroes handle before resume
 }
 
-// Coroutine version of _start() + __run(). Spawned by run_resync_queue_loop into its
-// exec::async_scope; the centralized loop drives the resync io_uring ring and resumes
-// coroutines via cqe_state._waiter.resume(). This coroutine never calls
-// io_uring_submit_and_wait_timeout directly — that is the loop's job.
-//
-// Unavail delay: instead of std::this_thread::sleep_for, we submit 500 µs io_uring timeout
-// SQEs and co_await them so the resync loop thread can continue processing other coroutines.
-// CQE dispatch for these timeouts uses the same cqe_state mechanism as regular I/O CQEs.
-exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > clean_mirror,
-                                               std::shared_ptr< MirrorDevice > dirty_mirror,
-                                               std::function< void() > complete, std::string uuid) {
-    RLOGD("Resync coroutine started for [uuid:{}]", uuid)
+bool Raid1ResyncTask::__phase2_conflict(uint64_t lba, uint32_t len, uint64_t gen_before) const noexcept {
+    return _region_tracker.overlaps(lba, len) || _region_tracker.completed_since(lba, len, gen_before);
+}
 
+// Async copy loop: drives _resync_queue directly on the calling thread (the dedicated resync
+// thread spawned by launch()). Each slot holds a hot_task<int> started from async_iov();
+// io_uring_submit_and_wait_timeout submits pending SQEs and waits for a CQE (or 500 µs tick);
+// drain_cqes() then delivers each CQE to the waiting disk_task coroutine via _waiter.resume(),
+// making hot_task::done() true. The drain loop polls done() to advance READ→WRITE state machines.
+//
+// Per-region tracking (Phase 1 + Phase 2) is identical to the removed __run_coro path.
+resync_state Raid1ResyncTask::_run_resync_loop(std::shared_ptr< MirrorDevice >& clean_mirror,
+                                               std::shared_ptr< MirrorDevice >& dirty_mirror) noexcept {
     static auto const unavail_delay = std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
 
-    // Helper: submit a 500 µs timeout SQE to the resync ring and co_await it.
-    // Allows the resync loop to continue processing CQEs for other coroutines while we wait.
-    // ts and tick live in sleep_tick's own coroutine frame, which is heap-pinned for the
-    // duration of co_await sleep_tick(). Their addresses baked into the SQE user_data remain valid.
-    auto sleep_tick = [this]() -> disk_task< int > {
-        // k_resync_ring_depth = k_resync_slots*2+1 guarantees one free SQ entry here.
-        // If next_sqe() somehow returns nullptr (bug elsewhere), skip the sleep and let the
-        // outer loop retry on the next submit_and_wait_timeout cycle — no yield, no spin.
-        if (auto* sqe = next_sqe(_resync_queue)) {
-            cqe_state tick{};
-            auto ts = k_resync_tick;
-            io_uring_prep_timeout(sqe, &ts, 0, 0);
-            io_uring_sqe_set_data64(sqe, reinterpret_cast< uint64_t >(&tick) | k_target_bit);
-            co_await tick;
-        }
-        co_return 0;
-    };
-
-    // -- Metrics (same as _start()) --
-    auto const initial_resync_size = _dirty_bitmap->dirty_data_est();
-    auto const resync_start = std::chrono::steady_clock::now();
-    if (_metrics) { // GCOVR_EXCL_BR_LINE
-        // LCOV_EXCL_START
-        auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
-        _metrics->record_resync_start();
-        _metrics->record_active_resyncs(active_count);
-    } // LCOV_EXCL_STOP
-
-    // -- Main loop --
     auto cur_state = resync_state::ACTIVE;
-
-    if (_slots.empty()) { // LCOV_EXCL_START -- posix_memalign failure; not injectable in tests
-        RLOGE("No resync slots; aborting coroutine resync for [uuid:{}]", uuid)
-        for (auto s = resync_state::ACTIVE; !__cas_state(s, resync_state::IDLE) && s == resync_state::ACTIVE;) {}
-        _done_promise.set_value();
-        co_return;
-    } // LCOV_EXCL_STOP
-
     uint32_t consecutive_unavail = 0;
     auto nr_pages = _dirty_bitmap->dirty_pages();
     if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
 
     uint64_t resync_skip_from = 0;
+    auto* ring = _resync_queue->ring_ptr;
 
     while (0 < nr_pages) {
         // Handle unavail: sleep in 500 µs ticks (non-blocking) with STOPPING check each tick.
@@ -383,7 +319,10 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
             while (std::chrono::steady_clock::now() < unavail_end) {
                 cur_state = __load_state();
                 if (cur_state == resync_state::STOPPING) break;
-                co_await sleep_tick();
+                io_uring_cqe* cqe{};
+                auto ts = k_resync_tick;
+                io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
+                drain_cqes();
             }
             _yield_count.fetch_add(1, std::memory_order_release);
             cur_state = __load_state();
@@ -396,7 +335,6 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         consecutive_unavail = 0;
 
         ResyncCursor cursor{*_dirty_bitmap, resync_skip_from};
-        bool submitted_any = false; // true if at least one READ was enqueued this sweep
 
         // Submit loop: fill free slots with async READ tasks. The natural throttle is slot
         // exhaustion (k_resync_slots = 8); no copies_left budget is needed here.
@@ -446,46 +384,34 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
                 slot.task.emplace(std::move(t).start());
                 slot.phase = ResyncSlot::Phase::READ_PENDING;
 
-                submitted_any = true;
                 cursor.advance(iov_len, *_dirty_bitmap);
             }
         }
 
         resync_skip_from = cursor.skip_from;
 
-        // Instead of io_uring_submit_and_wait_timeout: co_await the first non-done in-flight slot.
-        // The centralized run_resync_queue_loop handles CQE delivery and resumes slot.task's
-        // disk_task coroutine via cqe_state._waiter.resume() → symmetric transfer back here.
-        // Slots that complete "in background" (while we await another) have done()==true on the
-        // next sweep; await_ready() short-circuits them without suspending.
+        // Submit pending SQEs from async_iov().start() calls and wait for at least one CQE
+        // (or 500 µs timeout). drain_cqes() delivers each completed CQE to the waiting
+        // disk_task coroutine via cqe_state._waiter.resume(), making hot_task::done() true.
         {
-            bool needs_wait = false;
-            for (auto const& s : _slots) {
-                if (s.phase != ResyncSlot::Phase::FREE && s.task && !s.task->done()) {
-                    needs_wait = true;
-                    break;
-                }
-            }
-            if (needs_wait) {
-                for (auto& slot : _slots) {
-                    if (slot.phase != ResyncSlot::Phase::FREE && slot.task && !slot.task->done()) {
-                        co_await *slot.task; // suspends until this slot's CQE is dispatched
-                        break;
-                    }
-                }
-            } else if (!submitted_any) {
-                // No new tasks submitted and no in-flight tasks: every dirty chunk overlaps an
-                // active write. Yield via sleep_tick() to avoid busy-spinning at memory speed.
-                co_await sleep_tick();
-            }
+            io_uring_cqe* cqe{};
+            auto ts = k_resync_tick;
+            io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
+            drain_cqes();
         }
 
-        // Drain loop: advance slot state machines for tasks that have completed (identical to __run()).
+        // Drain loop: advance slot state machines for tasks that have completed.
         for (auto& slot : _slots) {
             if (slot.phase == ResyncSlot::Phase::READ_PENDING && slot.task && slot.task->done()) {
                 auto const read_res = slot.task->result();
                 slot.task.reset();
 
+                if (read_res == -EAGAIN) {
+                    // Ring was full when async_iov tried to submit — no SQE was sent, no data
+                    // read. Reset to FREE and let the submit loop retry this chunk next sweep.
+                    slot.phase = ResyncSlot::Phase::FREE;
+                    continue;
+                }
                 if (read_res != static_cast< int >(slot.len)) {
                     auto const msg = read_res < 0 ? strerror(-read_res) : "short read";
                     RLOGE("Resync async read failed: {} [lba:{:#0x} len:{} got:{}]", msg, slot.lba, slot.len, read_res)
@@ -525,20 +451,47 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
             }
         }
 
-        // Check STOPPING. Drain in-flight slots by co_await-ing each remaining task, so the
-        // shared ring is clean for the next launch() (ring is owned by ublkpp_tgt_impl).
+        // Check STOPPING. Drain in-flight slots by polling done() after each
+        // io_uring_submit_and_wait_timeout + drain_cqes() tick.
+        //
+        // C2 invariant: no Phase 2 re-check here. Any host write that arrived after our
+        // Phase 2 check also writes both mirrors, so the dirty mirror will eventually be
+        // correct even if we don't re-copy. Skipping Phase 2 on STOPPING is intentional.
+        //
+        // E1 watchdog: arm a wall-clock deadline so a hung kernel cannot stall stop()
+        // indefinitely.
         if (cur_state = __yield(); cur_state == resync_state::STOPPING) {
-            // Drain all in-flight slots in one linear pass. has_in_flight() fast-path avoids
-            // the scan when no slots are active. A short write (res != slot.len) leaves the
-            // region dirty so the next launch re-copies it rather than silently losing data.
+            auto const drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (has_in_flight()) {
+                if (std::chrono::steady_clock::now() >= drain_deadline) {
+                    RLOGE("Resync STOPPING drain watchdog fired; forcibly freeing in-flight slots to unblock stop()")
+                    for (auto& slot : _slots) {
+                        if (slot.phase == ResyncSlot::Phase::FREE) continue;
+                        slot.task.reset();
+                        slot.phase = ResyncSlot::Phase::FREE;
+                    }
+                    break;
+                }
+                {
+                    io_uring_cqe* cqe{};
+                    auto ts = k_resync_tick;
+                    io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
+                    drain_cqes();
+                }
                 for (auto& slot : _slots) {
                     if (slot.phase == ResyncSlot::Phase::FREE || !slot.task) continue;
-                    co_await *slot.task; // await_ready() fast-paths already-done tasks
+                    if (!slot.task->done()) continue;
                     auto const res = slot.task->result();
                     slot.task.reset();
-                    if (slot.phase == ResyncSlot::Phase::WRITE_PENDING && res == static_cast< int >(slot.len))
-                        clean_region(slot.lba, slot.len, *clean_mirror);
+                    if (slot.phase == ResyncSlot::Phase::WRITE_PENDING) {
+                        if (res == static_cast< int >(slot.len))
+                            clean_region(slot.lba, slot.len, *clean_mirror);
+                        else // E6: mirror write failed; mark unavail so next launch probes first
+                            dirty_mirror->unavail.test_and_set(std::memory_order_release);
+                    } else if (slot.phase == ResyncSlot::Phase::READ_PENDING && res != static_cast< int >(slot.len)) {
+                        // E7: read from clean mirror failed; mark unavail
+                        clean_mirror->unavail.test_and_set(std::memory_order_release);
+                    }
                     slot.phase = ResyncSlot::Phase::FREE;
                 }
             }
@@ -549,157 +502,18 @@ exec::task< void > Raid1ResyncTask::__run_coro(std::shared_ptr< MirrorDevice > c
         if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
     }
 
-    // -- Metrics teardown (same as _start()) --
-    if (_metrics) { // GCOVR_EXCL_BR_LINE
-        // LCOV_EXCL_START
-        auto const final_count = s_active_resyncs.fetch_sub(1, std::memory_order_relaxed) - 1;
-        auto const resync_end = std::chrono::steady_clock::now();
-        auto const duration_seconds =
-            std::chrono::duration_cast< std::chrono::seconds >(resync_end - resync_start).count();
-        if (duration_seconds > 0) { _metrics->record_resync_complete(duration_seconds); }
-        _metrics->record_last_resync_size(initial_resync_size);
-        _metrics->record_active_resyncs(final_count);
-    } // LCOV_EXCL_STOP
-
-    // -- State transition and completion callback --
-    if (cur_state == resync_state::STOPPING) {
-        RLOGI("Resync coroutine stopped for [uuid:{}] to: {}", uuid, *dirty_mirror->disk)
-        for (auto s = resync_state::STOPPING; !__cas_state(s, resync_state::IDLE) && s == resync_state::STOPPING;) {}
-    } else {
-        DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync coroutine stopped in unexpected state");
-        RLOGD("Resync coroutine finished for [uuid:{}] to: {}", uuid, *dirty_mirror->disk)
-        for (auto s = resync_state::ACTIVE; !__cas_state(s, resync_state::IDLE) && s == resync_state::ACTIVE;) {}
-    }
-
-    // Signal stop() before invoking complete(). complete() may call stop() (e.g. __become_clean
-    // triggers device-level cleanup that tears down the resync task). If set_value() fired after
-    // complete(), that stop() would block on _done_future.wait() forever — deadlock. With
-    // set_value() first, stop() unblocks immediately regardless of what complete() does.
-    _done_promise.set_value();
-    if (cur_state != resync_state::STOPPING && 0 == _dirty_bitmap->dirty_pages()) complete();
-}
-
-bool Raid1ResyncTask::__phase2_conflict(uint64_t lba, uint32_t len, uint64_t gen_before) const noexcept {
-    return _region_tracker.overlaps(lba, len) || _region_tracker.completed_since(lba, len, gen_before);
-}
-
-// Thread-path copy loop: uses synchronous I/O (sync_iov) so tests that mock sync_iov
-// work without a live io_uring ring. The coroutine path (__run_coro) uses async_iov
-// driven by run_resync_queue_loop. Per-region tracking (Phase 1 + Phase 2) is identical.
-resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror) noexcept {
-    static auto const unavail_delay = std::chrono::seconds(SISL_OPTIONS["avail_delay"].as< uint32_t >());
-    static auto const avail_delay = std::chrono::microseconds(SISL_OPTIONS["resync_delay"].as< uint32_t >());
-
-    auto cur_state = resync_state::ACTIVE;
-    uint32_t consecutive_unavail = 0;
-
-    auto nr_pages = _dirty_bitmap->dirty_pages();
-    if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
-
-    uint64_t resync_skip_from = 0;
-    auto& slot = _slots[0]; // one copy at a time; slot 0's buffer is the transfer buffer
-
-    while (0 < nr_pages) {
-        if (dirty_mirror->unavail.test(std::memory_order_acquire)) {
-            if (++consecutive_unavail % 10 == 0) {
-                RLOGW("Resync blocked: dirty mirror unreachable for ~{}s (probe reads failing) [{}]",
-                      consecutive_unavail * SISL_OPTIONS["avail_delay"].as< uint32_t >(), *dirty_mirror->disk)
-            }
-            {
-                auto const unavail_end = std::chrono::steady_clock::now() + unavail_delay;
-                while (std::chrono::steady_clock::now() < unavail_end) {
-                    if (resync_state::STOPPING == __load_state()) {
-                        cur_state = resync_state::STOPPING;
-                        break;
-                    }
-                    std::this_thread::sleep_for(avail_delay);
-                }
-                if (resync_state::STOPPING != cur_state) cur_state = __load_state();
-            }
-            _yield_count.fetch_add(1, std::memory_order_release);
-            if (resync_state::STOPPING == cur_state) break;
-            probe_mirror(*dirty_mirror, _offset);
-            nr_pages = _dirty_bitmap->dirty_pages();
-            if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
-            continue;
-        }
-        consecutive_unavail = 0;
-
-        auto copies_left = ((std::min(32U, SISL_OPTIONS["resync_level"].as< uint32_t >()) * 100U) / 32U) * 5U;
-        auto const copies_budget = copies_left;
-        ResyncCursor cursor{*_dirty_bitmap, resync_skip_from};
-
-        while (cursor.sz > 0 && copies_left > 0 && cur_state != resync_state::STOPPING &&
-               !dirty_mirror->unavail.test(std::memory_order_acquire)) {
-            auto const iov_len = cursor.chunk_len(_max_size);
-
-            // Snapshot BEFORE Phase 1: a write completing between Phase 1 and the READ is
-            // visible to Phase 2's completed_since() scan even if its slot is already free.
-            auto const gen_before = _region_tracker.snapshot_gen();
-
-            // Phase 1: skip if an in-flight write overlaps this chunk.
-            if (_region_tracker.overlaps(cursor.lba, iov_len)) {
-                if (cursor.skip(iov_len, *_dirty_bitmap)) break;
-                continue;
-            }
-
-            slot.slot_iov.iov_len = iov_len;
-            DLOGT("READ {} : [lba:{:#0x}|len:{:#0x}]", *clean_mirror->disk, cursor.lba + _offset, iov_len)
-            auto read_res = clean_mirror->disk->sync_iov(UBLK_IO_OP_READ, &slot.slot_iov, 1,
-                                                         static_cast< off_t >(cursor.lba + _offset));
-            if (!read_res || read_res.value() != iov_len) {
-                auto const msg = !read_res ? read_res.error().message() : "short read";
-                RLOGE("Resync read failed: {} [lba:{:#0x} len:{}]", msg, cursor.lba, iov_len)
-                clean_mirror->unavail.test_and_set(std::memory_order_release);
-                break;
-            }
-
-            // Phase 2: post-copy conflict check.
-            if (__phase2_conflict(cursor.lba, iov_len, gen_before)) {
-                cursor.advance(iov_len, *_dirty_bitmap);
-                --copies_left;
-                continue;
-            }
-
-            DLOGT("WRITE {} : [lba:{:#0x}|len:{:#0x}]", *dirty_mirror->disk, cursor.lba + _offset, iov_len)
-            auto write_res = dirty_mirror->disk->sync_iov(UBLK_IO_OP_WRITE, &slot.slot_iov, 1,
-                                                          static_cast< off_t >(cursor.lba + _offset));
-            if (!write_res || write_res.value() != iov_len) {
-                auto const msg = !write_res ? write_res.error().message() : "short write";
-                RLOGE("Resync write failed: {} [lba:{:#0x} len:{}]", msg, cursor.lba, iov_len)
-                dirty_mirror->unavail.test_and_set(std::memory_order_release);
-            } else {
-                clean_region(cursor.lba, iov_len, *clean_mirror);
-                if (_metrics) { _metrics->record_resync_progress(iov_len); } // GCOVR_EXCL_BR_LINE
-            }
-
-            cursor.advance(iov_len, *_dirty_bitmap);
-            --copies_left;
-        }
-
-        resync_skip_from = cursor.skip_from;
-        // The coroutine path yields at co_await; the thread path needs explicit throttling.
-        // Sleep when any copies were attempted (to yield the core between sweeps) or when all
-        // chunks were Phase-1 conflicting (to avoid busy-spinning while writes complete).
-        if (copies_left < copies_budget || cursor.skip_from > 0) std::this_thread::sleep_for(avail_delay);
-        if (cur_state = __yield(); resync_state::STOPPING == cur_state) break;
-        nr_pages = _dirty_bitmap->dirty_pages();
-        if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
-    }
     return cur_state;
 }
 
 // Abort any on-going resync task by moving to STOPPING and waiting for completion.
-// Thread path: join the resync thread. Coroutine path: wait on _done_future (the coroutine
-// observes STOPPING on the next __yield() / tick, drains in-flight slots, and sets the promise).
 void Raid1ResyncTask::stop() noexcept {
     auto lg = std::unique_lock< std::mutex >(_launch_lock);
     __transition_to(resync_state::ACTIVE, resync_state::STOPPING, [this](resync_state state) -> transition_result {
         switch (state) {
         case resync_state::IDLE: {
-            // Dispatch path: IDLE means the coroutine already finished naturally
-            // (ACTIVE→IDLE) before stop() arrived. Nothing to wait for.
-            if (!_resync_dispatch && _resync_task.joinable()) return {state, transition_action::RETRY_WITH_SLEEP};
+            // IDLE means the thread already finished naturally before stop() arrived.
+            // If it's still joinable, spin until the thread exits and sets its state.
+            if (_resync_task.joinable()) return {state, transition_action::RETRY_WITH_SLEEP};
             [[fallthrough]];
         }
         case resync_state::STOPPING:
@@ -710,19 +524,10 @@ void Raid1ResyncTask::stop() noexcept {
         std::unreachable();
     });
 
-    if (_resync_dispatch) {
-        // Hold _launch_lock across the wait: _done_promise.set_value() fires BEFORE complete()
-        // runs (see __run_coro teardown), so complete() cannot unblock until stop() has returned
-        // and released the lock — no deadlock. Holding the lock prevents a concurrent launch()
-        // from resetting _done_promise/_done_future while wait() is reading the shared state.
-        if (_done_future.valid()) _done_future.wait();
-        lg.unlock();
-    } else {
-        // Thread path: release the lock before joining so that _start() (running on the resync
-        // thread) can acquire _launch_lock for any last-minute state operations without deadlocking.
-        lg.unlock();
-        if (_resync_task.joinable()) _resync_task.join();
-    }
+    // Release the lock before joining so that _start() (running on the resync thread) can
+    // acquire _launch_lock for any last-minute state operations without deadlocking.
+    lg.unlock();
+    if (_resync_task.joinable()) _resync_task.join();
 
     // If the resync completed naturally (ACTIVE→IDLE) before our CAS set STOPPING, the state
     // was never cleared from STOPPING. Reset it so launch() isn't stuck.
@@ -754,7 +559,6 @@ bool Raid1ResyncTask::probe_mirror(MirrorDevice& mirror, uint64_t reserved_size)
 }
 
 // Processes all pending CQEs from the resync ring, delivering each to its waiting coroutine.
-// Called by the dispatch-path test's CQE drain thread instead of run_resync_queue_loop.
 void Raid1ResyncTask::drain_cqes() noexcept {
     if (!_resync_queue) return;
     io_uring_cqe* cqe = nullptr;

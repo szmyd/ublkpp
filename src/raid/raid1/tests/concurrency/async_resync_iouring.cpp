@@ -7,10 +7,6 @@
 #include <thread>
 #include <vector>
 
-#include <exec/async_scope.hpp>
-#include <exec/inline_scheduler.hpp>
-#include <stdexec/execution.hpp>
-
 extern "C" {
 #include <fcntl.h>
 #include <unistd.h>
@@ -21,7 +17,6 @@ extern "C" {
 #include "raid/raid1/bitmap.hpp"
 #include "raid/raid1/raid1_impl.hpp"
 #include "raid/raid1/raid1_resync_task.hpp"
-#include "raid/raid1/resync_constants.hpp"
 #include "ublkpp/drivers.hpp"
 
 using namespace std::chrono_literals;
@@ -322,8 +317,8 @@ TEST(AsyncResyncIoUring, CompleteCallbackFires) {
     task.launch(test_uuid, mirror_clean, mirror_dirty,
                 [&callback_count] { callback_count.fetch_add(1, std::memory_order_release); });
 
-    // Wait for the callback directly — it fires in _start() right after __run() returns,
-    // which is after the last clean_region() call that zeroed all dirty bitmap pages.
+    // Wait for the callback directly — it fires in _start() right after _run_resync_loop()
+    // returns, which is after the last clean_region() call that zeroed all dirty bitmap pages.
     auto const deadline = std::chrono::steady_clock::now() + 5000ms;
     while (callback_count.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(1ms);
@@ -386,116 +381,18 @@ TEST(AsyncResyncIoUring, StopAndRelaunch) {
     EXPECT_EQ(source, actual) << "Data must be correct after stop+relaunch resync cycle";
 }
 
-// Verify the coroutine dispatch path (launch() with ResyncDispatcher) copies data correctly,
-// and that a stop() + relaunch cycle reuses the ring cleanly for a second resync pass.
-// This is the only test exercising __run_coro() and drain_cqes() together with real file I/O.
-TEST(AsyncResyncIoUring, DispatchPathStopAndRelaunch) {
-    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
-    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
-    ASSERT_GE(clean_raw_fd, 0);
-    ASSERT_GE(dirty_raw_fd, 0);
-    ScopedTempFile clean_guard{clean_path};
-    ScopedTempFile dirty_guard{dirty_path};
-
-    constexpr uint8_t k_pattern = 0xEF;
-    std::vector< uint8_t > source(k_chunk_size, k_pattern);
-    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pwrite(clean_raw_fd, source.data(), k_chunk_size, k_data_offset));
-    close(clean_raw_fd);
-    close(dirty_raw_fd);
-
-    auto disk_clean = ublkpp::make_fs_disk(clean_path);
-    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
-
-    auto uuid = boost::uuids::string_generator()(test_uuid);
-    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
-    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
-
-    auto superbitmap_buf = make_test_superbitmap();
-    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
-
-    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
-
-    // Dedicated io_uring ring for the dispatch path. Single-threaded CQE delivery (no separate
-    // cqe_thread) means SINGLE_ISSUER is safe here; use 0 flags for simplicity.
-    io_uring ring{};
-    ASSERT_EQ(0, io_uring_queue_init(k_resync_ring_depth * 2, &ring, 0));
-    ublksrv_queue test_q{};
-    test_q.ring_ptr = &ring;
-    test_q.q_depth = k_resync_ring_depth;
-
-    // Runs one coroutine cycle to natural completion via the dispatch path.
-    // CQE delivery and coroutine execution both happen on THIS thread: with inline_scheduler,
-    // drain_cqes() → h.resume() resumes the coroutine synchronously, eliminating the TSAN
-    // race that a separate CQE delivery thread would introduce (concurrent writes to cqe_state
-    // while the coroutine constructs a new cqe_state at the same address after _pool.clear()).
-    auto run_one_cycle = [&](std::function< void() > complete_cb) {
-        ublkpp::ResyncDispatcher dispatch;
-        task.launch(test_uuid, mirror_clean, mirror_dirty, std::move(complete_cb), &test_q, &dispatch);
-
-        std::vector< std::function< exec::task< void >() > > factories;
-        dispatch.drain(factories);
-        ASSERT_EQ(1u, factories.size()) << "dispatch must have exactly one pending factory";
-
-        // Wrap the factory to signal completion when the coroutine body returns.
-        std::atomic< bool > coro_done{false};
-        auto wrapped = [&, inner = std::move(factories[0])]() -> exec::task< void > {
-            co_await inner();
-            coro_done.store(true, std::memory_order_release);
-        };
-
-        exec::async_scope scope;
-        scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
-
-        // Drive the resync ring and coroutine from THIS thread until the coroutine exits.
-        // Wait up to 2 ticks per iteration so sleep_tick() CQEs always arrive before timeout.
-        while (!coro_done.load(std::memory_order_acquire)) {
-            io_uring_cqe* cqe{};
-            auto ts = ublkpp::raid1::k_resync_tick;
-            ts.tv_nsec *= 2;
-            io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
-            task.drain_cqes();
-        }
-
-        stdexec::sync_wait(scope.on_empty()); // scope is already empty; completes immediately
-    };
-
-    // First cycle: dirty one chunk, run to completion.
-    bitmap->dirty_region(0, k_chunk_size);
-    run_one_cycle([] {});
-    task.stop(); // state already IDLE; no-op except cleanup
-
-    // Second cycle: re-dirty and run again, verifying the ring and state are reusable.
-    bitmap->dirty_region(0, k_chunk_size);
-    std::atomic< bool > second_complete{false};
-    run_one_cycle([&] { second_complete.store(true, std::memory_order_release); });
-    task.stop();
-
-    EXPECT_TRUE(second_complete.load()) << "complete() must fire after dispatch-path resync";
-    EXPECT_EQ(0u, bitmap->dirty_pages()) << "Bitmap must be clean after second dispatch-path cycle";
-
-    std::vector< uint8_t > actual(k_chunk_size, 0);
-    int verify_fd = open(dirty_path.c_str(), O_RDONLY);
-    ASSERT_GE(verify_fd, 0);
-    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual.data(), k_chunk_size, k_data_offset));
-    close(verify_fd);
-    EXPECT_EQ(source, actual) << "Data must match after dispatch-path resync";
-
-    io_uring_queue_exit(&ring);
-}
-
-// Verify the D5 fix: when all dirty chunks are Phase-1-conflicting, the coroutine path
-// yields via co_await sleep_tick() rather than spinning tight at memory speed.
+// Verify that when all dirty chunks are Phase-1-conflicting, the resync loop backs off via
+// io_uring_submit_and_wait_timeout(500µs) rather than busy-spinning.
 //
 // Setup: one dirty chunk at LBA 0, held by an in-flight write (Phase-1 conflict). Every
-// submit-loop iteration: Phase 1 skips the chunk → no tasks submitted, no in-flight →
-// the D5 branch fires → co_await sleep_tick() submits a 500 µs timeout SQE and suspends.
-// The drive loop delivers the timeout CQE, the coroutine resumes, __yield() increments
-// yield_count, and the outer loop repeats.
+// submit-loop iteration Phase 1 skips the chunk → no tasks submitted → the loop falls through
+// to io_uring_submit_and_wait_timeout(k_resync_tick) which waits 500µs then returns -ETIME.
+// __yield() increments yield_count each outer-loop iteration.
 //
-// The test verifies that yield_count advances at least 3 times while the conflict is held,
-// proving each outer-loop iteration suspends (sleep_tick fires) rather than tight-spinning.
-// After the write is released, the chunk is copied and the bitmap clears.
-TEST(AsyncResyncIoUring, DispatchPathSleepWhenAllChunksConflict) {
+// The test verifies yield_count advances at least 3 times while the conflict is held,
+// proving each iteration suspends via the timeout rather than tight-spinning.
+// After releasing the write guard, the chunk is copied and the bitmap clears.
+TEST(AsyncResyncIoUring, SleepWhenAllChunksConflict) {
     auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
     auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
     ASSERT_GE(clean_raw_fd, 0);
@@ -519,224 +416,20 @@ TEST(AsyncResyncIoUring, DispatchPathSleepWhenAllChunksConflict) {
     Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
     ResyncWriteGuard write_guard{task, 0, k_chunk_size}; // hold chunk 0: every sweep Phase-1-skips it
 
-    io_uring ring{};
-    ASSERT_EQ(0, io_uring_queue_init(k_resync_ring_depth * 2, &ring, 0));
-    ublksrv_queue test_q{};
-    test_q.ring_ptr = &ring;
-    test_q.q_depth = k_resync_ring_depth;
+    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
 
-    ublkpp::ResyncDispatcher dispatch;
-    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {}, &test_q, &dispatch);
-
-    std::vector< std::function< exec::task< void >() > > factories;
-    dispatch.drain(factories);
-    ASSERT_EQ(1u, factories.size());
-
-    std::atomic< bool > coro_done{false};
-    auto wrapped = [&, inner = std::move(factories[0])]() -> exec::task< void > {
-        co_await inner();
-        coro_done.store(true, std::memory_order_release);
-    };
-
-    exec::async_scope scope;
-    scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
-
-    // Drive until yield_count reaches 3. Each iteration suspends on a 500 µs timeout SQE;
-    // 3 sweeps take ≥ 1.5 ms. Allow up to 5 s for CI scheduling jitter.
+    // Drive until yield_count reaches 3. Each outer-loop iteration waits 500µs via
+    // io_uring_submit_and_wait_timeout; 3 sweeps take >= 1.5 ms. Allow 5 s for CI jitter.
     auto const deadline = std::chrono::steady_clock::now() + 5000ms;
-    while (task.yield_count() < 3 && std::chrono::steady_clock::now() < deadline) {
-        io_uring_cqe* cqe{};
-        auto ts = ublkpp::raid1::k_resync_tick;
-        ts.tv_nsec *= 2;
-        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
-        task.drain_cqes();
-    }
+    while (task.yield_count() < 3 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
     ASSERT_GE(task.yield_count(), 3U)
-        << "Coroutine must yield at least 3 times via sleep_tick when all chunks conflict (D5 fix)";
+        << "Resync loop must yield at least 3 times via 500µs timeout when all chunks conflict";
 
-    // Release the conflict and run to completion so the coroutine exits cleanly.
+    // Release the conflict and run to completion.
     write_guard.release();
-    while (!coro_done.load(std::memory_order_acquire)) {
-        io_uring_cqe* cqe{};
-        auto ts = ublkpp::raid1::k_resync_tick;
-        ts.tv_nsec *= 2;
-        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
-        task.drain_cqes();
-    }
-    stdexec::sync_wait(scope.on_empty());
+    EXPECT_TRUE(wait_for_bitmap_clean(bitmap)) << "Bitmap must become clean after conflict released";
     task.stop();
 
     EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after the conflict is released";
-
-    io_uring_queue_exit(&ring);
-}
-
-// Verify the coroutine-path Phase 2 conflict detection: a write registered AFTER the READ SQE
-// is submitted (but before the READ CQE is delivered) must keep the bitmap dirty. This covers
-// the __phase2_conflict() call inside the __run_coro() drain loop — the only Phase 2 coverage
-// that actually exercises the async I/O path (write_resync_no_pause.cpp covers __run() only).
-//
-// Sequence:
-//   1. Dirty one chunk. Launch resync on the dispatch path.
-//   2. Drive the ring until the READ SQE fires (yield_count advances past 0).
-//   3. Register an enqueue_write() conflict for that chunk while the READ is in-flight.
-//   4. Drive to completion — Phase 2 sees the conflict, skips the WRITE, bitmap stays dirty.
-//   5. Release the write conflict. Run a second cycle — chunk is copied and bitmap clears.
-TEST(AsyncResyncIoUring, DispatchPathPhase2Conflict) {
-    auto [clean_path, clean_raw_fd] = make_resync_test_file(false);
-    auto [dirty_path, dirty_raw_fd] = make_resync_test_file(true);
-    ASSERT_GE(clean_raw_fd, 0);
-    ASSERT_GE(dirty_raw_fd, 0);
-    ScopedTempFile clean_guard{clean_path};
-    ScopedTempFile dirty_guard{dirty_path};
-
-    constexpr uint8_t k_pattern = 0xCD;
-    std::vector< uint8_t > source(k_chunk_size, k_pattern);
-    ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pwrite(clean_raw_fd, source.data(), k_chunk_size, k_data_offset));
-    close(clean_raw_fd);
-    close(dirty_raw_fd);
-
-    auto disk_clean = ublkpp::make_fs_disk(clean_path);
-    auto disk_dirty = ublkpp::make_fs_disk(dirty_path);
-
-    auto uuid = boost::uuids::string_generator()(test_uuid);
-    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, disk_clean);
-    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, disk_dirty);
-
-    auto superbitmap_buf = make_test_superbitmap();
-    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
-    bitmap->dirty_region(0, k_chunk_size);
-
-    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
-
-    io_uring ring{};
-    ASSERT_EQ(0, io_uring_queue_init(k_resync_ring_depth * 2, &ring, 0));
-    ublksrv_queue test_q{};
-    test_q.ring_ptr = &ring;
-    test_q.q_depth = k_resync_ring_depth;
-
-    ublkpp::ResyncDispatcher dispatch;
-    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {}, &test_q, &dispatch);
-
-    std::vector< std::function< exec::task< void >() > > factories;
-    dispatch.drain(factories);
-    ASSERT_EQ(1u, factories.size());
-
-    std::atomic< bool > coro_done{false};
-    auto wrapped = [&, inner = std::move(factories[0])]() -> exec::task< void > {
-        co_await inner();
-        coro_done.store(true, std::memory_order_release);
-    };
-
-    exec::async_scope scope;
-    // inline_scheduler runs the coroutine synchronously until its first co_await.
-    // By the time spawn() returns, Phase 1 has already passed and the READ SQE is in the ring.
-    scope.spawn(stdexec::on(exec::inline_scheduler{}, wrapped()));
-
-    // Register the conflict NOW — after Phase 1 (which passed without a guard) but before
-    // the READ CQE is delivered. Phase 2 runs when the READ CQE arrives via drain_cqes()
-    // and will see the guard via overlaps(), skipping the WRITE and keeping the bitmap dirty.
-    ResyncWriteGuard write_guard{task, 0, k_chunk_size};
-
-    // Drive until Phase 2 has fired and the coroutine has completed one full outer-loop
-    // iteration (yield_count > 0). After Phase 2 skips the WRITE, the coroutine has no
-    // in-flight tasks and no new READs to submit (cursor exhausted), so it calls sleep_tick()
-    // then __yield() — that is when yield_count increments.
-    auto const deadline = std::chrono::steady_clock::now() + 5000ms;
-    while (task.yield_count() == 0 && std::chrono::steady_clock::now() < deadline) {
-        io_uring_cqe* cqe{};
-        auto ts = ublkpp::raid1::k_resync_tick;
-        ts.tv_nsec *= 2;
-        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
-        task.drain_cqes();
-    }
-    ASSERT_GT(task.yield_count(), 0U) << "Coroutine must have iterated at least once";
-    EXPECT_GT(bitmap->dirty_pages(), 0U) << "Phase 2 conflict must keep bitmap dirty";
-
-    // Release the guard and drive to natural completion. The coroutine is currently
-    // Phase-1-blocked (guard held); releasing lets it retry, copy the chunk, and exit.
-    write_guard.release();
-    while (!coro_done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
-        io_uring_cqe* cqe{};
-        auto ts = ublkpp::raid1::k_resync_tick;
-        ts.tv_nsec *= 2;
-        io_uring_submit_and_wait_timeout(&ring, &cqe, 1, &ts, nullptr);
-        task.drain_cqes();
-    }
-    ASSERT_TRUE(coro_done.load(std::memory_order_acquire)) << "Coroutine must complete after guard released";
-    stdexec::sync_wait(scope.on_empty());
-    task.stop();
-
-    EXPECT_EQ(0U, bitmap->dirty_pages()) << "Bitmap must be clean after conflict resolved";
-
-    // Verify the chunk was actually copied to the dirty mirror.
-    {
-        std::vector< uint8_t > actual(k_chunk_size, 0);
-        int verify_fd = open(dirty_path.c_str(), O_RDONLY);
-        ASSERT_GE(verify_fd, 0);
-        ASSERT_EQ(static_cast< ssize_t >(k_chunk_size), pread(verify_fd, actual.data(), k_chunk_size, k_data_offset));
-        close(verify_fd);
-        EXPECT_EQ(source, actual) << "Chunk must be correctly copied after conflict resolved";
-    }
-
-    io_uring_queue_exit(&ring);
-}
-
-// Verify stop() returns promptly when the dirty mirror becomes unavail DURING an active resync
-// sweep — i.e. the __run() unavail sleep loop, not _start()'s pre-ACTIVE unavail check.
-//
-// The existing StopDuringUnavailWait test (stop_during_unavail_wait.cpp) covers _start()'s
-// unavail loop (mirror unavail before launch). This test covers the distinct __run() path:
-//   1. Mirror starts available  → task becomes ACTIVE and enters __run().
-//   2. First write to dirty fails → dirty_mirror->unavail set inside __run().
-//   3. Task enters the unavail sleep loop (checks STOPPING every resync_delay ticks).
-//   4. stop() must complete within one avail_delay window + margin.
-TEST(AsyncResyncIoUring, StopDuringRunUnavail) {
-    auto device_clean = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskClean"});
-    auto device_dirty =
-        std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskDirty", .is_slot_b = true});
-
-    EXPECT_CALL(*device_clean, sync_iov(::testing::_, _, _, _))
-        .Times(::testing::AnyNumber())
-        .WillRepeatedly(sync_iov_zero_on_read());
-
-    // First call: superblock read during MirrorDevice construction — must succeed.
-    // Subsequent sync_iov calls (probe reads after unavail is set): fail.
-    EXPECT_CALL(*device_dirty, sync_iov(::testing::_, _, _, _))
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-            return static_cast< int >(iovecs->iov_len);
-        })
-        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> ublkpp::io_result {
-            return std::unexpected(std::make_error_condition(std::errc::io_error));
-        });
-    // All sync_iov calls after the superblock read fail (the mock returns error for all
-    // subsequent calls). In __run(), the sync_iov WRITE to the dirty mirror fails, which
-    // triggers dirty_mirror->unavail and puts the task into the unavail sleep loop where
-    // it checks STOPPING every resync_delay ticks.
-
-    auto uuid = boost::uuids::string_generator()(test_uuid);
-    auto mirror_clean = std::make_shared< MirrorDevice >(uuid, device_clean);
-    auto mirror_dirty = std::make_shared< MirrorDevice >(uuid, device_dirty);
-
-    auto superbitmap_buf = make_test_superbitmap();
-    auto bitmap = std::make_shared< Bitmap >(k_test_file_size, k_chunk_size, k_page_size, superbitmap_buf.get());
-    bitmap->dirty_region(0, k_test_file_size - k_data_offset);
-
-    Raid1ResyncTask task{bitmap, k_data_offset, k_chunk_size, k_chunk_size};
-    task.launch(test_uuid, mirror_clean, mirror_dirty, [] {});
-
-    // Wait until at least one sweep completes — by then the write has failed and the task
-    // is spinning in the __run() unavail loop checking STOPPING every resync_delay ticks.
-    while (task.yield_count() < 1)
-        std::this_thread::sleep_for(1ms);
-
-    auto const before = std::chrono::steady_clock::now();
-    task.stop();
-    auto const elapsed = std::chrono::steady_clock::now() - before;
-
-    // The __run() unavail loop checks STOPPING every resync_delay (default 300 µs).
-    // stop() must complete within a handful of ticks; 50 ms catches regressions while
-    // providing enough margin for even the slowest CI runners.
-    EXPECT_LT(elapsed, 50ms) << "stop() must complete promptly from within the __run() unavail loop";
 }

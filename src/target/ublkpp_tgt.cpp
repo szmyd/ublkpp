@@ -1,7 +1,6 @@
 #include "ublkpp/target.hpp"
 
 #include <exec/async_scope.hpp>
-#include <exec/inline_scheduler.hpp>
 #include <exec/task.hpp>
 #include <stdexec/execution.hpp>
 #include <thread>
@@ -18,7 +17,6 @@
 #include "lib/common.hpp"
 #include <ublkpp/lib/cqe_state.hpp>
 #include "ublkpp_tgt_impl.hpp"
-#include "raid/raid1/resync_constants.hpp"
 
 namespace ublkpp::detail {
 struct params_access {
@@ -40,28 +38,7 @@ using namespace std::chrono_literals;
 namespace ublkpp {
 
 ublkpp_tgt_impl::ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d) :
-        volume_uuid(vol_id),
-        device(std::move(d)),
-        metrics(UblkIOMetrics(to_string(vol_id))),
-        // Initialize the resync ring here so _resync_ring_valid can be const.
-        // _resync_ring and _resync_queue are declared before _resync_ring_valid and are
-        // zero-initialized before this lambda runs; the lambda mutates them if init succeeds.
-        _resync_ring_valid([this] {
-            io_uring_params p{};
-            // SINGLE_ISSUER: run_resync_queue_loop is the sole submitter; avoids per-submit kernel locking.
-            p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
-            // Depth: enough for all concurrent resync slots across any RAID1 pair (k_resync_ring_depth = 17);
-            // use 64 so the target doesn't need to import RAID1 internals and has room for future growth.
-            if (io_uring_queue_init_params(64, &_resync_ring, &p) != 0) {
-                RLOGW("Target resync ring init failed ({}); resync tasks will use the synchronous thread path with "
-                      "per-pair rings",
-                      strerror(errno))
-                return false;
-            }
-            _resync_queue.ring_ptr = &_resync_ring;
-            _resync_queue.q_depth = 64;
-            return true;
-        }()) {}
+        volume_uuid(vol_id), device(std::move(d)), metrics(UblkIOMetrics(to_string(vol_id))) {}
 
 static std::mutex _map_lock;
 static std::map< ublksrv_ctrl_dev const*, std::shared_ptr< ublkpp_tgt_impl > > _init_map;
@@ -165,68 +142,6 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
     co_await qs->scope.on_empty();
 }
 
-// CQE processing loop for the per-volume resync io_uring ring. Mirrors run_queue_loop but drives
-// _resync_ring instead of the ublksrv per-queue ring. All RAID1 resync coroutines for this volume
-// run as exec::task<void> coroutines spawned into `scope` via the ResyncDispatcher.
-//
-// Pending launches arrive via dispatch.drain() (factories posted by I/O threads calling launch()).
-// The loop drains them each tick and calls scope.spawn(on(inline_scheduler, factory())). The coroutines
-// co_await disk_task/hot_task, which encode cqe_state* into SQE user_data; when the CQE arrives
-// here, we resume the waiting coroutine via cqe_state._waiter.resume(), same as run_queue_loop.
-//
-// Stop condition: _resync_loop_stop is set by destroy() after device.reset() has joined all
-// resync coroutines. The while loop exits, then co_await scope.on_empty() completes immediately
-// (scope is already empty), and sync_wait returns.
-static exec::task< void > run_resync_queue_loop(io_uring* ring, exec::async_scope& scope, std::atomic< bool >& stop,
-                                                ResyncDispatcher& dispatch) {
-    // 500 µs tick: responsive to STOPPING and pending launches, while not burning CPU.
-    // Shared with sleep_tick() in the coroutine path — see raid1/resync_constants.hpp.
-
-    std::vector< std::function< exec::task< void >() > > to_spawn;
-    while (!stop.load(std::memory_order_acquire)) {
-        // Drain pending launches posted by I/O-queue threads via Raid1ResyncTask::launch().
-        dispatch.drain(to_spawn);
-        for (auto& f : to_spawn) {
-            try {
-                scope.spawn(stdexec::on(exec::inline_scheduler{}, f()));
-            } catch (...) { DLOGE("run_resync_queue_loop: scope.spawn threw; resync task dropped") }
-        }
-        to_spawn.clear();
-
-        // Submit any pending SQEs from resync coroutines and wait for CQEs (or 500 µs timeout).
-        io_uring_cqe* cqe{};
-        auto ts = ublkpp::raid1::k_resync_tick;
-        auto const ret = io_uring_submit_and_wait_timeout(ring, &cqe, 1, &ts, nullptr);
-        if (ret < 0 && ret != -ETIME && ret != -EINTR) {
-            RLOGW("resync ring: io_uring_submit_and_wait_timeout returned unexpected error ({})", strerror(-ret))
-        }
-        if (ret == -EINTR) continue;
-
-        unsigned head{};
-        int count{};
-        io_uring_for_each_cqe(ring, head, cqe) {
-            if (cqe->user_data & k_target_bit) {
-                auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
-                if (state) {
-                    state->_result = cqe->res;
-                    state->_result_ready = true;
-                    if (auto h = std::exchange(state->_waiter, {})) h.resume();
-                }
-                // null state == probe-style timeout SQE (k_target_bit set, no cqe_state*); expected.
-            } else {
-                // Non-target CQEs should never appear on the dedicated resync ring.
-                DLOGE("run_resync_queue_loop: unexpected non-target CQE (user_data={:#x} res={}); "
-                      "resync ring may be shared with other submitters",
-                      cqe->user_data, cqe->res)
-            }
-            ++count;
-        }
-        io_uring_cq_advance(ring, count);
-    }
-
-    co_await scope.on_empty();
-}
-
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
     auto qs = std::make_unique< ublkpp_queue_state >(target.get());
 
@@ -320,19 +235,6 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
                                                          ublksrv_queue_handler, tgt, i, &queue_sem));
     }
 
-    // Start the per-volume resync coroutine loop thread if the resync ring is available.
-    // Uses a raw pointer: the thread is joined in destroy() before ublkpp_tgt_impl is destroyed.
-    auto* tgt_raw = tgt.get();
-    auto const has_resync = tgt->_resync_ring_valid;
-    if (has_resync) {
-        tgt->_resync_handler =
-            sisl::named_thread(fmt::format("resync_{}", tgt->dev_data->dev_id), [tgt_raw, &queue_sem]() {
-                sem_post(&queue_sem);
-                stdexec::sync_wait(run_resync_queue_loop(&tgt_raw->_resync_ring, tgt_raw->_resync_scope,
-                                                         tgt_raw->_resync_loop_stop, tgt_raw->_resync_dispatch));
-            });
-    }
-
     auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
 
@@ -342,9 +244,8 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     auto const dev_id = tgt->dev_data->dev_id;
     tgt.reset();
 
-    // Wait for I/O queues (and the resync thread, if started) to be ready.
-    auto const wait_count = dinfo->nr_hw_queues + (has_resync ? 1 : 0);
-    for (auto i = 0; i < wait_count; ++i)
+    // Wait for I/O queues to be ready.
+    for (auto i = 0; i < dinfo->nr_hw_queues; ++i)
         sem_wait(&queue_sem);
 
     // Start processing I/Os
@@ -412,7 +313,7 @@ static int handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     // tag slot is permanently hung. No I/O was submitted so no data was committed;
     // EAGAIN is safe for the block layer to retry.
     try {
-        qs->scope.spawn(stdexec::on(exec::inline_scheduler{}, __handle_io_async(q, data)));
+        qs->scope.spawn(stdexec::on(stdexec::inline_scheduler{}, __handle_io_async(q, data)));
     } catch (...) { // LCOV_EXCL_START
         TLOGE("handle_io_async: scope.spawn threw; completing tag {} with EAGAIN", data->tag)
         ublksrv_complete_io(q, data->tag, -EAGAIN);
@@ -479,8 +380,7 @@ static int init_queue(const struct ublksrv_queue* q, void**) {
     auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     // All current disk types return no FDs from per-queue init; non-empty means the FDs would go
     // unregistered with io_uring and fixed-file I/O would crash — treat it as a fatal init failure.
-    ublk_rings rings{q, qs->tgt->_resync_ring_valid ? &qs->tgt->_resync_queue : nullptr,
-                     qs->tgt->_resync_ring_valid ? &qs->tgt->_resync_dispatch : nullptr};
+    ublk_rings rings{q};
     auto const prep = device->prepare(&rings, 0);
     if (!prep.fds.empty()) return -1;
     // async_io is placement-new'd into ublksrv-calloc'd bytes; _pool is pre-reserved to the SQE
@@ -588,19 +488,9 @@ void ublkpp_tgt_impl::destroy() {
         ublk_dev = nullptr;
     }
 
-    // De-allocate our devices now. For RAID-1, ~Raid1ResyncTask calls stop(), which waits for the
-    // resync coroutine to exit (future.wait()). After device.reset() all coroutines are done and
-    // the resync scope is empty, so we can safely signal the loop to stop and join the thread.
+    // De-allocate our devices now. For RAID-1, ~Raid1ResyncTask calls stop(), which joins the
+    // per-pair resync thread. After device.reset() all resync threads have exited.
     device.reset();
-
-    // Signal the resync loop to stop (it will exit after the next 500 µs tick) and join.
-    // By this point device.reset() has completed, meaning all Raid1ResyncTask destructors ran
-    // and each called stop() which waited on _done_future; the scope must be empty.
-    RELEASE_ASSERT(!_resync_loop_stop.load(std::memory_order_relaxed), "destroy() called twice");
-    _resync_loop_stop.store(true, std::memory_order_release);
-    if (_resync_handler.joinable()) _resync_handler.join();
-
-    if (_resync_ring_valid) io_uring_queue_exit(&_resync_ring);
 
     // Delete the ublk control object (ublkc must be closed!)
     if (device_added) {

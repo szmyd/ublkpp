@@ -47,6 +47,10 @@ namespace ublkpp {
 // addresses use <=48 bits, so bit 63 is always zero in any valid pointer; the OR
 // is safe and reversible with `& ~k_target_bit`.
 //
+// Assumption: valid heap pointer bit 63 is always 0 on x86_64 and non-PAC ARM64.
+// Incompatible with ARM64 Pointer Authentication (PAC) — revisit if PAC hardening is enabled.
+static_assert(sizeof(void*) == 8, "k_target_bit encoding requires 64-bit pointers");
+//
 // Probe timeout CQEs reuse k_target_bit with a null pointer (user_data == k_target_bit).
 // run_queue_loop checks state == nullptr after stripping the bit to distinguish them from
 // real I/O CQEs.

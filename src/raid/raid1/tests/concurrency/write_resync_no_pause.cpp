@@ -13,6 +13,14 @@
 using namespace std::chrono_literals;
 using namespace ublkpp::raid1;
 
+// Helper: returns the iov length as a successful io_result.
+static auto submit_iov_ok() {
+    return [](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t, uint64_t) -> ublkpp::io_result {
+        if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+        return static_cast< ssize_t >(iovecs->iov_len);
+    };
+}
+
 // Verify that a write to an unrelated LBA does not block resync of a different dirty region.
 // Old mechanism: ANY write paused ALL resync.
 // New mechanism: only conflicting LBA ranges are skipped.
@@ -20,26 +28,27 @@ TEST(Raid1Concurrency, UnrelatedWriteDoesNotBlockResync) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
-    // Thread path: resync copies go through sync_iov READ on device_a (clean mirror).
-    // Count sync_iov READ calls to confirm reads happened.
+    // Async path: data READs go through submit_iov on the clean mirror (device_a).
     std::atomic< int > resync_reads{0};
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&resync_reads](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+        .WillRepeatedly([&resync_reads](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
+                                        uint64_t) -> ublkpp::io_result {
             resync_reads.fetch_add(1, std::memory_order_relaxed);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return static_cast< ssize_t >(iovecs->iov_len);
         });
-    // Bitmap-page writes from clean_region go through sync_iov WRITE on the clean mirror.
+    // Bitmap-page writes from clean_region() still go through sync_iov WRITE on the clean mirror.
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
-    // device_b (dirty mirror): superblock read on construction + sync_iov for writes and probes.
+    // device_b (dirty mirror): superblock read on construction via sync_iov, data WRITEs via submit_iov.
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(::testing::AnyNumber()).WillRepeatedly(submit_iov_ok());
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
@@ -65,7 +74,7 @@ TEST(Raid1Concurrency, UnrelatedWriteDoesNotBlockResync) {
     EXPECT_TRUE(wait_for_bitmap_clean(bitmap, 2000ms))
         << "Resync must complete even with an unrelated write held in-flight";
 
-    EXPECT_GE(resync_reads.load(), 1) << "Resync must have performed at least one sync read";
+    EXPECT_GE(resync_reads.load(), 1) << "Resync must have performed at least one async read";
 
     // Release the in-flight write now that resync has finished
     task.dequeue_write(k_unrelated_lba, io_size);
@@ -79,9 +88,10 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
     std::atomic< int > resync_reads{0};
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&resync_reads](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
+        .WillRepeatedly([&resync_reads](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
+                                        uint64_t) -> ublkpp::io_result {
             resync_reads.fetch_add(1, std::memory_order_relaxed);
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return static_cast< ssize_t >(iovecs->iov_len);
@@ -94,6 +104,7 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(::testing::AnyNumber()).WillRepeatedly(submit_iov_ok());
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
@@ -132,45 +143,34 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
 // Verify that Phase 2 (post-copy conflict check) detects a write that arrives AFTER Phase 1
 // passes but BEFORE clean_region is called, and correctly keeps the bitmap dirty.
 //
-// Thread path: Phase 2 runs after the sync READ returns (before the sync WRITE is started).
-// The injection window is: hold the READ via sync_iov mock, register the write, then
-// release. Phase 2 checks overlaps() = true → skips WRITE → bitmap stays dirty.
-// After the write is dequeued, the next sweep copies successfully.
-//
-// Note: this test exercises the mock-sync READ path, not the real async-CQE path. The
-// async CQE path (coroutine-dispatch with run_resync_queue_loop) is covered in
-// async_resync_iouring.cpp. Both paths share the same Phase 1 / Phase 2 logic.
+// With the async path, Phase 2 runs in the drain loop after async_iov().start() returns.
+// The injection window: block submit_iov (READ) → resync thread is stuck inside start() →
+// test thread registers write → unblock → Phase 2 sees overlaps() = true → skips WRITE.
 TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
-    // copy_read_started: fired inside the blocked sync_iov READ (Phase 1 has passed, READ in progress)
-    // write_registered:  main signals this to unblock the READ so Phase 2 can run
     std::promise< void > copy_read_started;
     std::promise< void > write_registered;
     auto write_registered_future = write_registered.get_future();
 
-    // Block the first resync READ from the clean mirror (device_a) so we can register a write
-    // in the window between Phase 1 (already passed) and Phase 2 (runs after READ completes).
-    // First call is the superblock read during MirrorDevice construction — handle it separately
-    // so the blocking WillOnce fires on the actual resync READ, not the constructor READ.
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+    // Block the first data READ (via submit_iov) so we can register a write in the window
+    // between Phase 1 (already passed) and Phase 2 (runs after submit_iov returns).
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-            return static_cast< ssize_t >(iovecs->iov_len);
-        })
-        .WillOnce([&, fut = std::move(write_registered_future)](uint8_t, iovec* iovecs, uint32_t,
-                                                                off_t) mutable -> ublkpp::io_result {
+        .WillOnce([&, fut = std::move(write_registered_future)](ublksrv_queue const*, ublk_io_data const*,
+                                                                iovec* iovecs, uint32_t,
+                                                                uint64_t) mutable -> ublkpp::io_result {
             copy_read_started.set_value();
             fut.wait(); // hold until test thread registers the write
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return static_cast< ssize_t >(iovecs->iov_len);
         })
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return static_cast< ssize_t >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t, uint64_t) -> ublkpp::io_result {
+                if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+                return static_cast< ssize_t >(iovecs->iov_len);
+            });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
@@ -179,6 +179,7 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(::testing::AnyNumber()).WillRepeatedly(submit_iov_ok());
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
@@ -191,14 +192,13 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
 
-    // Start resync — Phase 1 sees no write registered, starts sync READ which blocks
+    // Start resync — Phase 1 sees no write registered, starts async READ which blocks
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
 
-    // Wait until we are between Phase 1 and Phase 2 (READ is executing, blocked)
+    // Wait until we are inside submit_iov (Phase 1 has passed, READ is executing)
     copy_read_started.get_future().wait();
 
-    // Register the write NOW — Phase 1 has already passed (slot was assigned without conflict).
-    // Phase 2 will run after the READ unblocks and see overlaps() = true.
+    // Register the write NOW — Phase 1 already passed, Phase 2 will detect via overlaps().
     task.enqueue_write(0, io_size);
 
     auto const yield_before = task.yield_count();
@@ -218,15 +218,7 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
 }
 
 // Verify that Phase 2 detects a write that arrived AND fully completed during the resync READ
-// window. This is the case where the slot was already freed (lba == k_free) before Phase 2 ran,
-// making overlaps() return false. The shadow completion log in RegionTracker catches this.
-//
-// Sequence:
-//   Phase 1 check: no write in-flight, resync begins sync READ (blocks in mock)
-//   [test thread: enqueue_write then dequeue_write — write fully completes, slot freed]
-//   [test thread unblocks the READ]
-//   Phase 2 checks completed_since(), detects the shadow entry → skips WRITE
-//   Bitmap stays dirty; next sweep retries; bitmap cleans
+// window. The shadow completion log in RegionTracker catches completed_since() cases.
 TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
@@ -235,26 +227,21 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     std::promise< void > write_fully_done;
     auto write_fully_done_future = write_fully_done.get_future();
 
-    // Block the first resync READ from the clean mirror so we can inject a fully-completed write.
-    // First call is the superblock read during MirrorDevice construction — handle it separately
-    // so the blocking WillOnce fires on the actual resync READ, not the constructor READ.
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
-            return static_cast< ssize_t >(iovecs->iov_len);
-        })
-        .WillOnce([&, fut = std::move(write_fully_done_future)](uint8_t, iovec* iovecs, uint32_t,
-                                                                off_t) mutable -> ublkpp::io_result {
+        .WillOnce([&, fut = std::move(write_fully_done_future)](ublksrv_queue const*, ublk_io_data const*,
+                                                                iovec* iovecs, uint32_t,
+                                                                uint64_t) mutable -> ublkpp::io_result {
             read_started.set_value();
             fut.wait(); // wait until test thread completes the write
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
             return static_cast< ssize_t >(iovecs->iov_len);
         })
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> ublkpp::io_result {
-            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
-            return static_cast< ssize_t >(iovecs->iov_len);
-        });
+        .WillRepeatedly(
+            [](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t, uint64_t) -> ublkpp::io_result {
+                if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+                return static_cast< ssize_t >(iovecs->iov_len);
+            });
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
@@ -263,6 +250,7 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(::testing::AnyNumber()).WillRepeatedly(submit_iov_ok());
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
@@ -275,13 +263,11 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     constexpr uint32_t io_size = 32 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
 
-    // Start resync — Phase 1 sees no write, begins the sync READ which blocks
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
     read_started.get_future().wait();
 
     // Enqueue AND dequeue the write while the READ is blocked: the write fully completes
-    // and the slot is freed (lba == k_free) before Phase 2 runs. overlaps() would return
-    // false, but completed_since() must detect the shadow log entry.
+    // and the slot is freed before Phase 2 runs. completed_since() must detect the shadow entry.
     task.enqueue_write(0, io_size);
     task.dequeue_write(0, io_size); // write fully completes, slot freed, shadow entry written
 
@@ -296,15 +282,6 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
 }
 
 // Verify that the skip_from hint carries across outer-loop iterations.
-//
-// Setup: two SEPARATE dirty regions A at [0, 32Ki) and B at [64Ki, 96Ki) with a clean
-// gap at [32Ki, 64Ki). An in-flight write covers all of A (Phase-1 conflict).
-//
-// Without skip_from: every sweep rebuilds the cursor from next_dirty() which finds A, skips
-// it entirely (any_copy == false), yields, and repeats — never finding B.
-// With skip_from: the first skip() call exhausts A and sets skip_from = 32Ki. The outer
-// loop saves resync_skip_from = 32Ki. On the next sweep, ResyncCursor starts from
-// next_dirty_after(32Ki) which skips past A and finds B. B is copied while A is still held.
 TEST(Raid1Concurrency, SkipFromHintAllowsCopyingBeyondConflict) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
@@ -315,10 +292,11 @@ TEST(Raid1Concurrency, SkipFromHintAllowsCopyingBeyondConflict) {
     std::atomic< int > reads_region_a{0};
     std::atomic< int > reads_region_b{0};
 
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> ublkpp::io_result {
-            auto const logical = static_cast< uint64_t >(addr) - k_offset;
+        .WillRepeatedly([&](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
+                            uint64_t addr) -> ublkpp::io_result {
+            auto const logical = addr - k_offset;
             if (logical < io_size)
                 reads_region_a.fetch_add(1, std::memory_order_relaxed);
             else if (logical >= 2 * io_size && logical < 3 * io_size)
@@ -334,6 +312,7 @@ TEST(Raid1Concurrency, SkipFromHintAllowsCopyingBeyondConflict) {
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(::testing::AnyNumber()).WillRepeatedly(submit_iov_ok());
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
@@ -348,7 +327,6 @@ TEST(Raid1Concurrency, SkipFromHintAllowsCopyingBeyondConflict) {
     Raid1ResyncTask task{bitmap, k_offset, io_size, io_size};
 
     // Hold region A in-flight: Phase 1 will skip it every sweep and set skip_from = io_size.
-    // The hint must carry across the outer loop so region B is found on the next sweep.
     task.enqueue_write(0, io_size);
     task.launch(test_uuid, mirror_a, mirror_b, [] {});
 
@@ -369,23 +347,21 @@ TEST(Raid1Concurrency, SkipFromHintAllowsCopyingBeyondConflict) {
 
 // Verify the core improvement: when a dirty run spans multiple chunks and only chunk 0
 // conflicts with an in-flight write, resync skips chunk 0 and copies chunk 1 in the same pass.
-// This is the key behaviour that distinguishes per-region tracking from the old global pause.
 TEST(Raid1Concurrency, MultiChunkDirtyRun_PartialSkip) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
 
-    // Track which LBAs resync actually reads (via sync_iov READ on the clean mirror).
     std::atomic< int > reads_chunk0{0};
     std::atomic< int > reads_chunk1{0};
 
     constexpr uint32_t io_size = 32 * Ki;
-    auto const k_offset = Bitmap::page_size(); // _offset used by Raid1ResyncTask
+    auto const k_offset = Bitmap::page_size();
 
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+    EXPECT_CALL(*device_a, submit_iov(_, _, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> ublkpp::io_result {
-            // Recover the logical LBA by subtracting the reserved bitmap area offset.
-            auto const logical = static_cast< uint64_t >(addr) - k_offset;
+        .WillRepeatedly([&](ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t,
+                            uint64_t addr) -> ublkpp::io_result {
+            auto const logical = addr - k_offset;
             if (logical < io_size)
                 reads_chunk0.fetch_add(1, std::memory_order_relaxed);
             else if (logical >= io_size && logical < 2 * io_size)
@@ -401,6 +377,7 @@ TEST(Raid1Concurrency, MultiChunkDirtyRun_PartialSkip) {
     EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
         .Times(::testing::AnyNumber())
         .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, submit_iov(_, _, _, _, _)).Times(::testing::AnyNumber()).WillRepeatedly(submit_iov_ok());
 
     auto uuid = boost::uuids::string_generator()(test_uuid);
     auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);

@@ -196,7 +196,7 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
 
         auto sqe = next_sqe(q);
         if (!sqe) [[unlikely]]
-            co_return -EBUSY;
+            co_return -EAGAIN; // ring full: transient, not a device error
         DEBUG_ASSERT_GE(capacity(), iovecs->iov_len + addr, "Access beyond device bounds!");
 
         if (UBLK_IO_OP_READ == op) {
