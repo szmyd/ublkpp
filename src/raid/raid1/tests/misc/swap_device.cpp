@@ -33,16 +33,16 @@ TEST(Raid1, SwapDeviceB) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size());                                 // Expect write to bitmap!
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);
+            EXPECT_LT(addr, raid_device.reserved_size());
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
-            return ublkpp::raid1::k_page_size;
-        })
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
@@ -104,16 +104,16 @@ TEST(Raid1, SwapDeviceA) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size());                                 // Expect write to bitmap!
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);
+            EXPECT_LT(addr, raid_device.reserved_size());
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
-            return ublkpp::raid1::k_page_size;
-        })
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
@@ -207,13 +207,15 @@ TEST(Raid1, SwapDeviceWhileIdle) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); // bitmap
             EXPECT_LT(addr, raid_device.reserved_size());
-            return ublkpp::raid1::k_page_size;
-        })
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
+        .Times(1)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
             EXPECT_EQ(0UL, addr); // superblock
             return ublkpp::raid1::k_page_size;

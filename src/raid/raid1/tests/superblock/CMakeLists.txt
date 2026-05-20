@@ -7,6 +7,7 @@ list(APPEND RAID1_TEST_SRCS
   superblock/missing_disk.cpp
   superblock/pick_super.cpp
   superblock/route_set.cpp
+  superblock/version_check.cpp
   superblock/wrong_uuid.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)

@@ -70,10 +70,12 @@ class Raid1Disk : public ublk_disk {
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
                        raid1::read_route const& cur_route);
 
-    // Constructor helpers
-    void __init_params(std::shared_ptr< ublk_disk > const& dev_a, std::shared_ptr< ublk_disk > const& dev_b);
+    // Constructor helpers. Order matters: __load_and_select_superblock must run first to
+    // populate _device_a/_device_b/_sb; __init_params then reads _sb->header.version to
+    // decide the user-data alignment policy.
     void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
                                       std::shared_ptr< ublk_disk > dev_b, std::string const& parent_id);
+    void __init_params();
     void __init_bitmap_and_degraded_route();
     void __become_active();
 

@@ -18,7 +18,7 @@ static void init_superblock(ublkpp::raid1::SuperBlock* sb, const boost::uuids::u
                             uint32_t chunk_size = 32 * ublkpp::Ki) {
     std::memset(sb, 0, sizeof(ublkpp::raid1::SuperBlock));
     std::memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
-    sb->header.version = htobe16(1);
+    sb->header.version = htobe16(2);
     std::memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
     sb->fields.clean_unmount = 1;
     sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::EITHER);

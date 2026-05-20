@@ -35,7 +35,7 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
 static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0305,
                                         0147, 072, 0310, 027, 0111, 0256, 033, 0144};
 
-constexpr auto SB_VERSION = 1;
+constexpr auto SB_VERSION = 2;
 
 static raid1::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid1::SuperBlock);
@@ -71,14 +71,15 @@ io_result write_superblock(ublk_disk& device, raid1::SuperBlock* sb, bool device
 }
 
 // Read and load the RAID1 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
-// the superblock to the current version. Otherwise migrate any changes needed after version discovery.
+// the superblock to the current version. Existing disks are returned as-is; __init_params reconstructs the correct
+// _reserved_size by branching on the version field.
 std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
-    auto sb = read_superblock(device);
+    auto sb = std::unique_ptr< raid1::SuperBlock, decltype(&free) >(read_superblock(device), free);
     if (!sb) return std::unexpected(std::make_error_condition(std::errc::io_error));
     bool was_new{false};
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        memset(sb, 0x00, raid1::k_page_size);
+        memset(sb.get(), 0x00, raid1::k_page_size);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
         sb->fields.clean_unmount = 1;
@@ -95,7 +96,6 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
     memcpy(read_uuid.data, sb->header.uuid, sizeof(sb->header.uuid));
     if (uuid != read_uuid) {
         RLOGE("Superblock did not have a matching UUID expected: {} read: {}", to_string(uuid), to_string(read_uuid))
-        free(sb);
         return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (chunk_size != be32toh(sb->fields.bitmap.chunk_size)) {
@@ -104,7 +104,12 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
 
-    if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
-    return std::make_pair(sb, was_new);
+    if (was_new) {
+        // Fresh device — stamp with current version.
+        sb->header.version = htobe16(SB_VERSION);
+    }
+    // Existing disks keep their on-disk version. __init_params branches on version to reconstruct
+    // the original _reserved_size formula (v1: capacity-proportional, v2+: fixed k_superbitmap_bits).
+    return std::make_pair(sb.release(), was_new);
 }
 } // namespace ublkpp::raid1
