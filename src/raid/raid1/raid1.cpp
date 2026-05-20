@@ -108,6 +108,7 @@ Raid1Disk::Raid1Disk(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk 
 }
 
 void Raid1Disk::__init_params() {
+    DEBUG_ASSERT(_sb, "__init_params called before __load_and_select_superblock populated _sb")
     RLOGI("Initializing RAID-1 [uuid:{}] from devices {} and {}", _str_uuid, _device_a->disk, _device_b->disk)
 
     _direct_io = true; // RAID-1 prefers DIO; downgraded below if any member doesn't support it

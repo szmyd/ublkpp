@@ -104,7 +104,18 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
               be32toh(sb->fields.bitmap.chunk_size), chunk_size, to_string(uuid))
     }
 
-    if (SB_VERSION > be16toh(sb->header.version)) { sb->header.version = htobe16(SB_VERSION); }
+    if (was_new) {
+        // Fresh device — stamp with current version.
+        sb->header.version = htobe16(SB_VERSION);
+    } else if (SB_VERSION > be16toh(sb->header.version)) {
+        // Existing disk with an older, incompatible on-disk layout. SB v2 changed _reserved_size
+        // from a capacity-proportional formula to a fixed k_superbitmap_bits constant — there is
+        // no safe in-place migration. The array must be re-created.
+        RLOGE("Incompatible SB version {} (current {}); array must be re-created", be16toh(sb->header.version),
+              SB_VERSION)
+        free(sb);
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
     return std::make_pair(sb, was_new);
 }
 } // namespace ublkpp::raid1

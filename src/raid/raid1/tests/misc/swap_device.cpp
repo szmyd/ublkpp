@@ -34,6 +34,7 @@ TEST(Raid1, SwapDeviceB) {
             return ublkpp::raid1::k_page_size;
         });
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_LT(addr, raid_device.reserved_size());
@@ -104,6 +105,7 @@ TEST(Raid1, SwapDeviceA) {
             return ublkpp::raid1::k_page_size;
         });
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_LT(addr, raid_device.reserved_size());
@@ -206,6 +208,7 @@ TEST(Raid1, SwapDeviceWhileIdle) {
             return ublkpp::raid1::k_page_size;
         });
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); // bitmap
             EXPECT_LT(addr, raid_device.reserved_size());

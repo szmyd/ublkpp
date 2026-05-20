@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.32.0 feat(raid1): SB v2 — fixed bitmap disk layout + tighter user-data alignment
+## [0.32.0] - 2026-05-20 feat(raid1): SB v2 — fixed bitmap disk layout + tighter user-data alignment
 - **Fixed on-disk bitmap layout**: every RAID1 disk now reserves exactly
   `sizeof(SuperBlock) + k_superbitmap_bits × k_page_size` (~125.6 MiB) regardless of capacity.
   On-disk layout is identical for all disk sizes; existing space between the last used bitmap page

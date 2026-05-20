@@ -98,9 +98,10 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     std::fill_n(iov.get(), max_pages, proto);
 
+    auto const bitmap_start = k_page_size; // offset 0 is the superblock; bitmap pages follow immediately after
     for (auto pg_idx = 0UL; k_superbitmap_bits > pg_idx;) {
         auto res = device->sync_iov(UBLK_IO_OP_WRITE, iov.get(), std::min(k_superbitmap_bits - pg_idx, max_pages),
-                                    k_page_size + (pg_idx * k_page_size));
+                                    bitmap_start + (pg_idx * k_page_size));
         if (!res) { throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message())); }
         pg_idx += max_pages;
     }
