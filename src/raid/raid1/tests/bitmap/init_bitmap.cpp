@@ -25,10 +25,12 @@ TEST(Raid1, InitBitmap) {
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(capacity, chunk_size, block_size, superbitmap_buf.get());
 
-    // init_to always writes k_superbitmap_bits pages regardless of disk capacity (fixed layout).
+    // init_to writes exactly _num_pages pages (capacity-derived); the reserved region is claimed
+    // by _reserved_size, not by pre-writing zeros beyond what the current capacity needs.
+    auto const page_width = static_cast< uint64_t >(chunk_size) * block_size * 8;
+    auto const num_pages = (capacity + page_width - 1) / page_width;
     auto const max_pages = device->max_tx() / ublkpp::raid1::Bitmap::page_size();
-    auto const num_writes =
-        ublkpp::raid1::k_superbitmap_bits / max_pages + ((0 == ublkpp::raid1::k_superbitmap_bits % max_pages) ? 0 : 1);
+    auto const num_writes = num_pages / max_pages + ((0 == num_pages % max_pages) ? 0 : 1);
 
     auto total_written = 0UL;
     EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
@@ -39,12 +41,11 @@ TEST(Raid1, InitBitmap) {
             total_written += ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
             EXPECT_LE(ublkpp::iovec_len(iovecs, iovecs + nr_vecs), max_tx);
             EXPECT_GE(addr, ublkpp::raid1::Bitmap::page_size()); // Expect write to bitmap!
-            EXPECT_LE(addr, ublkpp::raid1::k_superbitmap_bits * ublkpp::raid1::Bitmap::page_size());
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::Bitmap::page_size()));
             return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
         });
     bitmap.init_to(device);
-    EXPECT_EQ(ublkpp::raid1::k_superbitmap_bits * ublkpp::raid1::Bitmap::page_size(), total_written);
+    EXPECT_EQ(num_pages * ublkpp::raid1::Bitmap::page_size(), total_written);
 }
 
 // Ensure that all required pages are initialized

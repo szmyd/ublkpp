@@ -46,7 +46,7 @@ TEST(Raid1, NewDeviceB) {
             EXPECT_EQ(0, memcmp(&normal_superblock, iovecs->iov_base, sizeof(ublkpp::raid1::SuperBlock::header)));
             return ublkpp::raid1::k_page_size;
         });
-    // init_to writes k_superbitmap_bits zero pages to device_b (fixed layout, multiple batches)
+    // init_to writes _num_pages zero pages to device_b (capacity-derived, batched)
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
         .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
@@ -106,7 +106,7 @@ TEST(Raid1, NewDeviceA) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    // init_to writes k_superbitmap_bits zero pages to device_a (fixed layout, multiple batches)
+    // init_to writes _num_pages zero pages to device_a (capacity-derived, batched)
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
         .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
@@ -173,7 +173,7 @@ TEST(Raid1, ReversedOrder) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    // init_to writes k_superbitmap_bits zero pages to device_a (fixed layout, multiple batches)
+    // init_to writes _num_pages zero pages to device_a (capacity-derived, batched)
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
         .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
@@ -234,7 +234,7 @@ TEST(Raid1, NewDeviceThrowCantDirty) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    // init_to writes k_superbitmap_bits zero pages to device_b (fixed layout, multiple batches)
+    // init_to writes _num_pages zero pages to device_b (capacity-derived, batched)
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
         .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {

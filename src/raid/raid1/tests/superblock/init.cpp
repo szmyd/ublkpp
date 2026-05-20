@@ -26,7 +26,7 @@ TEST(Raid1, InitSuperBlock) {
             return ublkpp::raid1::k_page_size;
         });
 
-    // init_to writes k_superbitmap_bits zero pages to bitmap region (addr > 0)
+    // init_to writes _num_pages zero pages (capacity-derived) to bitmap region (addr > 0)
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
         .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {

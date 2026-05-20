@@ -7,13 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.32.0] - 2026-05-20
 
 ### Changed
-- **Fixed on-disk bitmap layout**: every RAID1 disk now reserves exactly
-  `sizeof(SuperBlock) + k_superbitmap_bits × k_page_size` (~125.6 MiB) regardless of capacity.
-  On-disk layout is identical for all disk sizes; existing space between the last used bitmap page
-  and the user-data region is reserved for future volume resize without a format change.
-- **In-memory bitmap unchanged**: all operations (`sync_to`, `load_from`, `next_dirty_after`, etc.)
-  iterate only over `_num_pages` (capacity-derived). A 1 GiB disk tracks 1 bitmap page in memory
-  while reserving the full 125.6 MiB on disk.
+- **Fixed on-disk reserved region**: `_reserved_size` is now always
+  `sizeof(SuperBlock) + k_superbitmap_bits × k_page_size` (~125.6 MiB) regardless of capacity,
+  leaving headroom for future volume resize without a format change. `init_to` still writes only
+  `_num_pages` (capacity-derived) zero pages — the remainder of the reserved region is claimed by
+  layout, not pre-written.
 - **Tighter user-data alignment (v2)**: `_reserved_size` padding now aligns to `logical_bs` (~4 KiB)
   instead of `max_sectors_bytes` (~512 KiB), reclaiming up to ~511 KiB of wasted tail space per
   device. v1 arrays keep the old alignment exactly.

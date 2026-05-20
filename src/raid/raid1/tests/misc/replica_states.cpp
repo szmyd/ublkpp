@@ -86,7 +86,7 @@ static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_devic
             memset(iovecs->iov_base, 0x00, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    // init_to writes k_superbitmap_bits zero pages to new device (fixed layout, multiple batches)
+    // init_to writes _num_pages zero pages to new device (capacity-derived, batched)
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
         .Times(testing::AtLeast(1))
         .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
