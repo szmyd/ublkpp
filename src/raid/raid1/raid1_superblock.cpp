@@ -74,11 +74,11 @@ io_result write_superblock(ublk_disk& device, raid1::SuperBlock* sb, bool device
 // the superblock to the current version. Otherwise migrate any changes needed after version discovery.
 std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
-    auto sb = read_superblock(device);
+    auto sb = std::unique_ptr< raid1::SuperBlock, decltype(&free) >(read_superblock(device), free);
     if (!sb) return std::unexpected(std::make_error_condition(std::errc::io_error));
     bool was_new{false};
     if (memcmp(sb->header.magic, magic_bytes, sizeof(magic_bytes))) {
-        memset(sb, 0x00, raid1::k_page_size);
+        memset(sb.get(), 0x00, raid1::k_page_size);
         memcpy(sb->header.magic, magic_bytes, sizeof(magic_bytes));
         memcpy(sb->header.uuid, uuid.data, sizeof(sb->header.uuid));
         sb->fields.clean_unmount = 1;
@@ -95,7 +95,6 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
     memcpy(read_uuid.data, sb->header.uuid, sizeof(sb->header.uuid));
     if (uuid != read_uuid) {
         RLOGE("Superblock did not have a matching UUID expected: {} read: {}", to_string(uuid), to_string(read_uuid))
-        free(sb);
         return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
     if (chunk_size != be32toh(sb->fields.bitmap.chunk_size)) {
@@ -113,9 +112,8 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
         // no safe in-place migration. The array must be re-created.
         RLOGE("Incompatible SB version {} (current {}); array must be re-created", be16toh(sb->header.version),
               SB_VERSION)
-        free(sb);
         return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
-    return std::make_pair(sb, was_new);
+    return std::make_pair(sb.release(), was_new);
 }
 } // namespace ublkpp::raid1

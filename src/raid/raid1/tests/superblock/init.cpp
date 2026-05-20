@@ -28,6 +28,7 @@ TEST(Raid1, InitSuperBlock) {
 
     // init_to writes k_superbitmap_bits zero pages to bitmap region (addr > 0)
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size));
@@ -43,6 +44,7 @@ TEST(Raid1, InitSuperBlock) {
             return ublkpp::raid1::k_page_size;
         });
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size));

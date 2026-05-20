@@ -11,13 +11,14 @@ TEST(Raid1, V1SuperblockRejected) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
 
-    // device_a presents a v1 SB — MirrorDevice throws before device_b is even touched.
+    // MirrorDevice(device_a) throws on version check before device_b is ever constructed.
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
         .WillOnce([&v1_superblock](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
             memcpy(iovecs->iov_base, &v1_superblock, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(0);
 
     EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                  std::runtime_error);
@@ -63,6 +64,7 @@ TEST(Raid1, NewArrayWritesV2Superblock) {
         });
 
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+    // Destructor writes clean_unmount=1 SB to both devices.
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 }

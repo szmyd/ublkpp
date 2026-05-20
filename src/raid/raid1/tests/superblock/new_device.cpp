@@ -48,6 +48,7 @@ TEST(Raid1, NewDeviceB) {
         });
     // init_to writes k_superbitmap_bits zero pages to device_b (fixed layout, multiple batches)
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             for (uint32_t i = 0; i < nr_vecs; ++i)
@@ -107,6 +108,7 @@ TEST(Raid1, NewDeviceA) {
         });
     // init_to writes k_superbitmap_bits zero pages to device_a (fixed layout, multiple batches)
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
@@ -173,6 +175,7 @@ TEST(Raid1, ReversedOrder) {
         });
     // init_to writes k_superbitmap_bits zero pages to device_a (fixed layout, multiple batches)
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
         .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
