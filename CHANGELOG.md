@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.32.0 feat(raid1): SB v2 — fixed bitmap disk layout + tighter user-data alignment
+- **Fixed on-disk bitmap layout**: every RAID1 disk now reserves exactly
+  `sizeof(SuperBlock) + k_superbitmap_bits × k_page_size` (~125.6 MiB) regardless of capacity.
+  On-disk layout is identical for all disk sizes; existing space between the last used bitmap page
+  and the user-data region is reserved for future volume resize without a format change.
+- **In-memory bitmap unchanged**: all operations (`sync_to`, `load_from`, `next_dirty_after`, etc.)
+  iterate only over `_num_pages` (capacity-derived). A 1 GiB disk tracks 1 bitmap page in memory
+  while reserving the full 125.6 MiB on disk.
+- **Tighter user-data alignment (v2)**: `_reserved_size` padding now aligns to `logical_bs` (~4 KiB)
+  instead of `max_sectors_bytes` (~512 KiB), reclaiming up to ~511 KiB of wasted tail space per
+  device. v1 arrays keep the old alignment exactly.
+- **`SB_VERSION` bumped 1 → 2**: signals both format changes. `load_superblock` auto-upgrades
+  older on-disk versions on read.
+- Constructor call order fixed: `__load_and_select_superblock` now runs before `__init_params`
+  so the SB version is available when choosing the alignment policy.
+
 ## 0.31.0 raid1: replace global PAUSE with lock-free per-region write tracker
 - Replace global `PAUSE` state with `RegionTracker`: a lock-free flat slot array that tracks
   `(lba, len)` of each in-flight write. Resync now yields only for chunks that actually conflict
