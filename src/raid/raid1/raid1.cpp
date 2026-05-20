@@ -138,8 +138,7 @@ void Raid1Disk::__init_params(std::shared_ptr< ublk_disk > const& dev_a, std::sh
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
 
-    auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
-    _reserved_size = sizeof(SuperBlock) + bitmap_size;
+    _reserved_size = sizeof(SuperBlock) + (k_superbitmap_bits * k_page_size);
 
     // Align user-data to max_sector size
     _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) %

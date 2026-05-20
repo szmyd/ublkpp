@@ -35,7 +35,7 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
 static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0305,
                                         0147, 072, 0310, 027, 0111, 0256, 033, 0144};
 
-constexpr auto SB_VERSION = 1;
+constexpr auto SB_VERSION = 2;
 
 static raid1::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid1::SuperBlock);

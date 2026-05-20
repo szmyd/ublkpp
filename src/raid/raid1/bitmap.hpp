@@ -74,6 +74,7 @@ public:
            std::string const& id = "");
 
     static uint64_t page_size() noexcept;
+    size_t pages_allocated() const noexcept;
     size_t dirty_pages() noexcept;
     uint64_t dirty_data_est() const noexcept;
 
