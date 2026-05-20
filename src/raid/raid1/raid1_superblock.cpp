@@ -71,7 +71,8 @@ io_result write_superblock(ublk_disk& device, raid1::SuperBlock* sb, bool device
 }
 
 // Read and load the RAID1 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
-// the superblock to the current version. Otherwise migrate any changes needed after version discovery.
+// the superblock to the current version. Existing disks with version < SB_VERSION are rejected — the on-disk layout
+// is incompatible and cannot be migrated in place.
 std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
     auto sb = std::unique_ptr< raid1::SuperBlock, decltype(&free) >(read_superblock(device), free);
