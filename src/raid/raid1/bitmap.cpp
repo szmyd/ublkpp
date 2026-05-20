@@ -104,20 +104,6 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
         if (!res) { throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message())); }
         pg_idx += max_pages;
     }
-
-    // Eagerly pre-allocate all bitmap pages in memory.
-    // Skip pages already allocated (idempotent: init_to is called once per device leg).
-    RLOGI("Pre-allocating {} BITMAP page(s) [sz:{}KiB, id:{}]", _num_pages, _num_pages * k_page_size / Ki, _id)
-    for (auto pg_idx = 0UL; _num_pages > pg_idx; ++pg_idx) {
-        if (_page_map[pg_idx].page.load(std::memory_order_relaxed)) continue;
-        void* new_mem{nullptr};
-        if (auto err = ::posix_memalign(&new_mem, _align, k_page_size); err)
-            throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
-        memset(new_mem, 0, k_page_size);
-        _page_map[pg_idx]._page_mem = new_mem;
-        _page_map[pg_idx].page.store(reinterpret_cast< word_t* >(new_mem), std::memory_order_relaxed);
-        // loaded_from_disk stays false — these are new pages, not loaded from disk.
-    }
 }
 
 io_result Bitmap::sync_to(ublk_disk& device, uint64_t offset) {
@@ -272,13 +258,6 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
 }
 
 uint64_t Bitmap::page_size() noexcept { return k_page_size; }
-
-size_t Bitmap::pages_allocated() const noexcept {
-    size_t count = 0;
-    for (auto const& pd : _page_map)
-        if (pd.page.load(std::memory_order_relaxed)) ++count;
-    return count;
-}
 
 size_t Bitmap::dirty_pages() noexcept {
     size_t dirty_cnt = 0;

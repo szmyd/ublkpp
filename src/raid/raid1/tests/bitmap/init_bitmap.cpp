@@ -47,59 +47,6 @@ TEST(Raid1, InitBitmap) {
     EXPECT_EQ(ublkpp::raid1::k_superbitmap_bits * ublkpp::raid1::Bitmap::page_size(), total_written);
 }
 
-// After init_to, all bitmap pages must be pre-allocated in memory.
-TEST(Raid1, InitBitmapPreallocatesAllPages) {
-    auto const capacity = 100 * Gi;
-    auto const chunk_size = 32 * Ki;
-
-    auto const device_params = TestParams{.capacity = capacity};
-    auto device = std::make_shared< ublkpp::TestDisk >(device_params);
-    auto superbitmap_buf = make_test_superbitmap();
-    auto bitmap = ublkpp::raid1::Bitmap(capacity, chunk_size, device_params.l_size, superbitmap_buf.get());
-
-    auto const page_width = chunk_size * ublkpp::raid1::Bitmap::page_size() * ublkpp::raid1::k_bits_in_byte;
-    auto const num_pages = capacity / page_width + ((0 == capacity % page_width) ? 0 : 1);
-
-    EXPECT_EQ(0UL, bitmap.pages_allocated());
-
-    EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
-            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-        });
-
-    bitmap.init_to(device);
-
-    EXPECT_EQ(num_pages, bitmap.pages_allocated());
-}
-
-// Calling init_to twice (one per device leg) must not double-allocate pages.
-TEST(Raid1, InitBitmapDoubleInitIdempotent) {
-    auto const capacity = 2 * Gi;
-    auto const chunk_size = 32 * Ki;
-
-    auto const device_params = TestParams{.capacity = capacity};
-    auto device_a = std::make_shared< ublkpp::TestDisk >(device_params);
-    auto device_b = std::make_shared< ublkpp::TestDisk >(device_params);
-    auto superbitmap_buf = make_test_superbitmap();
-    auto bitmap = ublkpp::raid1::Bitmap(capacity, chunk_size, device_params.l_size, superbitmap_buf.get());
-
-    auto const page_width = chunk_size * ublkpp::raid1::Bitmap::page_size() * ublkpp::raid1::k_bits_in_byte;
-    auto const num_pages = capacity / page_width + ((0 == capacity % page_width) ? 0 : 1);
-
-    auto write_ok = [](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
-        return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-    };
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _)).WillRepeatedly(write_ok);
-    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _)).WillRepeatedly(write_ok);
-
-    bitmap.init_to(device_a);
-    EXPECT_EQ(num_pages, bitmap.pages_allocated());
-
-    bitmap.init_to(device_b);
-    // Second call must not change the allocation count — pages are reused.
-    EXPECT_EQ(num_pages, bitmap.pages_allocated());
-}
-
 // Ensure that all required pages are initialized
 TEST(Raid1, InitBitmapFailure) {
     auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 2 * Gi});
