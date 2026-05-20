@@ -71,8 +71,8 @@ io_result write_superblock(ublk_disk& device, raid1::SuperBlock* sb, bool device
 }
 
 // Read and load the RAID1 superblock off a device. If it is not set, meaning the Magic is missing, then initialize
-// the superblock to the current version. Existing disks with version < SB_VERSION are rejected — the on-disk layout
-// is incompatible and cannot be migrated in place.
+// the superblock to the current version. Existing disks are returned as-is; __init_params reconstructs the correct
+// _reserved_size by branching on the version field.
 std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size) {
     auto sb = std::unique_ptr< raid1::SuperBlock, decltype(&free) >(read_superblock(device), free);
@@ -107,14 +107,9 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
     if (was_new) {
         // Fresh device — stamp with current version.
         sb->header.version = htobe16(SB_VERSION);
-    } else if (SB_VERSION > be16toh(sb->header.version)) {
-        // Existing disk with an older, incompatible on-disk layout. SB v2 changed _reserved_size
-        // from a capacity-proportional formula to a fixed k_superbitmap_bits constant — there is
-        // no safe in-place migration. The array must be re-created.
-        RLOGE("Incompatible SB version {} (current {}); array must be re-created", be16toh(sb->header.version),
-              SB_VERSION)
-        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
+    // Existing disks keep their on-disk version. __init_params branches on version to reconstruct
+    // the original _reserved_size formula (v1: capacity-proportional, v2+: fixed k_superbitmap_bits).
     return std::make_pair(sb.release(), was_new);
 }
 } // namespace ublkpp::raid1

@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tighter user-data alignment (v2)**: `_reserved_size` padding now aligns to `logical_bs` (~4 KiB)
   instead of `max_sectors_bytes` (~512 KiB), reclaiming up to ~511 KiB of wasted tail space per
   device. v1 arrays keep the old alignment exactly.
-- **`SB_VERSION` bumped 1 → 2**: breaking on-disk format change. `load_superblock` rejects
-  existing disks with version < 2; arrays must be re-created.
+- **`SB_VERSION` bumped 1 → 2**: new arrays are stamped v2. Existing v1 arrays open as-is;
+  `__init_params` branches on the version field to reconstruct the original capacity-proportional
+  `_reserved_size`, preserving the exact on-disk layout.
 - Constructor call order fixed: `__load_and_select_superblock` now runs before `__init_params`
   so the SB version is available when choosing the alignment policy.
 

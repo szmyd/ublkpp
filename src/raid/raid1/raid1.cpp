@@ -139,12 +139,19 @@ void Raid1Disk::__init_params() {
         if (!device->can_discard()) our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
     }
 
-    _reserved_size = sizeof(SuperBlock) + (k_superbitmap_bits * k_page_size);
+    auto const sb_version = be16toh(_sb->header.version);
+    if (sb_version < 2) {
+        // v1: capacity-proportional reserved region — reconstruct the exact on-disk layout.
+        auto const bitmap_size = ((our_params.basic.dev_sectors << SECTOR_SHIFT) / k_min_chunk_size) / k_bits_in_byte;
+        _reserved_size = sizeof(SuperBlock) + bitmap_size;
+    } else {
+        // v2+: fixed maximum, leaves headroom for future resize.
+        _reserved_size = sizeof(SuperBlock) + (k_superbitmap_bits * k_page_size);
+    }
 
     // Pad _reserved_size for alignment. Policy depends on SB version:
     //  v1: pad to max_sectors_bytes (preserves legacy on-disk layout exactly).
     //  v2+: pad to logical_bs only — sufficient for O_DIRECT, frees the ~511 KiB tail loss v1 imposed.
-    auto const sb_version = be16toh(_sb->header.version);
     auto const align = (sb_version >= 2) ? (static_cast< uint64_t >(1) << our_params.basic.logical_bs_shift)
                                          : (static_cast< uint64_t >(our_params.basic.max_sectors) << SECTOR_SHIFT);
     _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) % align;
