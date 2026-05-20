@@ -21,7 +21,13 @@ pipeline {
             when { not { branch "stable/v*" } }
             steps {
                 script {
-                    CONAN_CHANNEL = sh(script: "echo ${BRANCH_NAME} | sed -E 's,(\\w+-?\\d*)/.*,\\1,' | sed -E 's,-,_,' | tr -d '\n'", returnStdout: true)
+                    // Channel = the branch name with the leading category (e.g. "feature/")
+                    // stripped, since '/' is not valid in a Conan channel. Dashes are
+                    // also collapsed to underscores for the same reason.
+                    //   feature/248_md_raid_migration -> 248_md_raid_migration
+                    //   dev/v0.23.x                   -> v0.23.x
+                    //   PR-1234                       -> PR_1234
+                    CONAN_CHANNEL = sh(script: "echo ${BRANCH_NAME} | sed -E 's,.*/,,' | sed -E 's,-,_,g' | tr -d '\n'", returnStdout: true)
                     CONAN_FLAGS = "${CONAN_FLAGS} --user oss --channel ${CONAN_CHANNEL}"
                 }
             }

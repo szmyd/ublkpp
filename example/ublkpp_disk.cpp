@@ -93,48 +93,64 @@ Result create_raid0(boost::uuids::uuid const& id, std::vector< std::string > con
 }
 
 Result create_raid1(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
+    if (layout.size() != 2) {
+        LOGERROR("--raid1 requires exactly 2 leg paths, got {}", layout.size())
+        return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
+    }
     auto dev = std::shared_ptr< ublkpp::ublk_disk >();
-    auto raid_uuid = boost::uuids::to_string(id);
-
+    auto raid_uuid_str = boost::uuids::to_string(id);
     try {
-        // Create file-backed devices with RAID1 UUID for correlation
-        auto dev_a = get_driver(*layout.begin(), raid_uuid);
-        auto dev_b = get_driver(*(layout.begin() + 1), raid_uuid);
+        auto leg_a = get_driver(layout[0], raid_uuid_str);
+        auto leg_b = get_driver(layout[1], raid_uuid_str);
 
-        dev = ublkpp::make_raid1_disk(id, std::move(dev_a), std::move(dev_b), raid_uuid);
-    } catch (std::runtime_error const& e) {}
+        auto vol_type = ublkpp::md::disk_type::md_none;
+        if (std::filesystem::exists(layout[0]))
+            vol_type = ublkpp::md::probe(leg_a);
+        else if (std::filesystem::exists(layout[1]))
+            vol_type = ublkpp::md::probe(leg_b);
+        if (vol_type == ublkpp::md::disk_type::md_dirty) {
+            LOGERROR("md array is dirty; stop md-raid and retry")
+            return std::unexpected(std::make_error_condition(std::errc::device_or_resource_busy));
+        }
+        if (vol_type != ublkpp::md::disk_type::md_none)
+            dev = ublkpp::md::make_md_raid1_disk(id, {std::move(leg_a), std::move(leg_b)}, raid_uuid_str);
+        else
+            dev = ublkpp::make_raid1_disk(id, std::move(leg_a), std::move(leg_b), raid_uuid_str);
+    } catch (std::runtime_error const& e) { LOGERROR("raid1 construction failed: {}", e.what()) }
     if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
 }
 
 Result create_raid10(boost::uuids::uuid const& id, std::vector< std::string > const& layout) {
-    if (1 > layout.size()) {
-        LOGERROR("Zero mirrors in Array [uuid:{}]!", to_string(id))
+    if (layout.size() < 4 || (layout.size() & 1U) != 0) {
+        LOGERROR("--raid10 requires an even number of legs >= 4, got {}", layout.size())
         return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
-
     auto dev = std::shared_ptr< ublkpp::ublk_disk >();
-    auto raid10_uuid_str = boost::uuids::to_string(id);
+    auto raid_uuid_str = boost::uuids::to_string(id);
     try {
-        auto devices = std::vector< std::shared_ptr< ublkpp::ublk_disk > >();
-        auto name_gen = boost::uuids::name_generator(id);
+        auto legs = std::vector< std::shared_ptr< ublkpp::ublk_disk > >();
+        legs.reserve(layout.size());
+        for (auto const& path : layout)
+            legs.push_back(get_driver(path, raid_uuid_str));
 
-        // Process disks in pairs to create RAID1 mirrors
-        for (size_t i = 0; i + 1 < layout.size(); i += 2) {
-            // Generate partition UUID for this RAID1 mirror
-            auto partition_uuid = name_gen(fmt::format("partition_{}", i / 2));
-            auto partition_uuid_str = boost::uuids::to_string(partition_uuid);
-
-            auto dev_a = get_driver(layout[i], partition_uuid_str);
-            auto dev_b = get_driver(layout[i + 1], partition_uuid_str);
-
-            // Create RAID1 mirror and add to devices
-            devices.push_back(
-                ublkpp::make_raid1_disk(partition_uuid, std::move(dev_a), std::move(dev_b), raid10_uuid_str));
+        auto vol_type = ublkpp::md::disk_type::md_none;
+        for (size_t i = 0; i < layout.size(); ++i) {
+            if (std::filesystem::exists(layout[i])) {
+                vol_type = ublkpp::md::probe(legs[i]);
+                break;
+            }
         }
-
-        dev = ublkpp::make_raid0_disk(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(devices));
-    } catch (std::runtime_error const& e) {}
+        if (vol_type == ublkpp::md::disk_type::md_dirty) {
+            LOGERROR("md array is dirty; stop md-raid and retry")
+            return std::unexpected(std::make_error_condition(std::errc::device_or_resource_busy));
+        }
+        if (vol_type != ublkpp::md::disk_type::md_none)
+            dev = ublkpp::md::make_md_raid10_disk(id, std::move(legs), raid_uuid_str);
+        else
+            dev = ublkpp::make_raid10_disk(id, SISL_OPTIONS["stripe_size"].as< uint32_t >(), std::move(legs),
+                                           raid_uuid_str);
+    } catch (std::runtime_error const& e) { LOGERROR("raid10 construction failed: {}", e.what()) }
     if (!dev) return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
     return _run_target(id, std::move(dev));
 }

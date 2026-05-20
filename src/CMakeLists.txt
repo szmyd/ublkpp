@@ -13,6 +13,7 @@ add_subdirectory (target)
 list(APPEND LIBRARY_OBJECTS
   $<TARGET_OBJECTS:raid0>
   $<TARGET_OBJECTS:raid1>
+  $<TARGET_OBJECTS:md_disk>
   $<TARGET_OBJECTS:fs_disk>
   $<TARGET_OBJECTS:ublkpp_tgt>
   $<TARGET_OBJECTS:ublk_disk>
