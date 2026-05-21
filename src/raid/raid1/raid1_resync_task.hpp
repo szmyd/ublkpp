@@ -91,6 +91,8 @@ class Raid1ResyncTask {
 
     resync_state __yield(std::chrono::microseconds const yield_for, std::chrono::microseconds const spin_time) noexcept;
 
+    void __clean(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
+
 public:
     Raid1ResyncTask(std::shared_ptr< raid1::Bitmap >& bitmap, uint64_t offset, uint32_t io_size, uint32_t max_io,
                     uint32_t slot_count = k_default_slot_count, uint32_t chunk_size = k_min_chunk_size,
@@ -100,8 +102,6 @@ public:
     // Probe a mirror device: reads at reserved_size, clears unavail on success,
     // sets unavail on failure. Returns true if device is available.
     static bool probe_mirror(MirrorDevice& mirror, uint64_t reserved_size) noexcept;
-
-    void clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_device);
 
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
                 std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete);

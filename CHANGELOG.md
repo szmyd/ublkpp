@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pairs legs in order; assigns per-pair partition UUIDs via `name_generator("partition_K")`,
   matching the convention used by `make_md_raid10_disk` for UUID consistency.
 
+## [0.32.1] - 2026-05-21
+### Fixed
+- raid1: Remove Optimistic write path which can now race with region tracked resync.
+
 ## [0.32.0] - 2026-05-20
 
 ### Changed

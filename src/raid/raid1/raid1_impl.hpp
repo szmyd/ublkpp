@@ -58,9 +58,6 @@ class Raid1Disk : public ublk_disk {
     // data for this region (degraded array + dirty bitmap) -- callers must not read from it.
     std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
     __select_read_devices(RouteState const& state, uint64_t addr, uint32_t len) const noexcept;
-    enum class WriteBackupMode { SKIP, WRITE, OPTIMISTIC };
-    WriteBackupMode __compute_backup_mode(RouteState const& state, uint64_t addr, uint32_t len,
-                                          bool is_discard) const noexcept;
 
     // Internal routines
     io_result __become_clean();

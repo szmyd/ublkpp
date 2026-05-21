@@ -16,7 +16,7 @@
 - **Coroutine I/O**: Single-event-loop, CQE-driven coroutine pipeline
 - **Comprehensive Testing**: High test coverage with unit and functional (fio-driven) tests
 - **Modern C++**: Built with C++23, leveraging `std::expected` for error handling
-- **Production Ready**: Thread-safe, handles degraded modes, optimistic recovery
+- **Production Ready**: Thread-safe, handles degraded modes
 
 ## 📋 Table of Contents
 

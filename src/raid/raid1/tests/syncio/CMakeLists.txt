@@ -9,6 +9,5 @@ list(APPEND RAID1_TEST_SRCS
   syncio/write_backup_fail_degrade_fail.cpp
   syncio/write_fail_deva.cpp
   syncio/write_fail_devb.cpp
-  syncio/write_optimistic.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)
