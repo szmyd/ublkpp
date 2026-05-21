@@ -375,6 +375,8 @@ bool Raid1ResyncTask::probe_mirror(MirrorDevice& mirror, uint64_t reserved_size)
     alignas(k_page_size) uint8_t probe_buf[k_page_size];
     auto iov = iovec{.iov_base = probe_buf, .iov_len = k_page_size};
     if (auto res = mirror.disk->sync_iov(UBLK_IO_OP_READ, &iov, 1, reserved_size); res) {
+        if (mirror.unavail.test(std::memory_order_relaxed))
+            RLOGI("Device {} back online (probe succeeded)", *mirror.disk)
         mirror.unavail.clear(std::memory_order_release);
         return true;
     }
