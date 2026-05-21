@@ -328,6 +328,83 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     task.stop();
 }
 
+// Verify that when an OPTIMISTIC write calls clean_region() before the resync task's stale copy
+// write reaches the dirty mirror, Phase 2 re-dirties the bitmap to close the stale-read window.
+TEST(Raid1Concurrency, OptimisticCleansBeforeResyncStaleWrite_BitmapMustBeRedirtied) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
+
+    std::promise< void > resync_at_write;
+    std::promise< void > resync_can_write;
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            if (iovecs->iov_base) memset(iovecs->iov_base, 0xAA, iovecs->iov_len);
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    // Block the first WRITE to device_b — this is the resync's copy write (stale D1).
+    // It fires after Phase 1 has passed and the READ from device_a has completed, so
+    // we are strictly between Phase 1 and Phase 2 when the OPTIMISTIC simulation runs.
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillOnce([&](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            resync_at_write.set_value();
+            resync_can_write.get_future().wait();
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        })
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> ublkpp::io_result {
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
+    auto mirror_b = std::make_shared< MirrorDevice >(uuid, device_b);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
+    bitmap->dirty_region(0, 32 * Ki);
+
+    constexpr uint32_t io_size = 32 * Ki;
+    Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+
+    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    resync_at_write.get_future().wait();
+
+    // Simulate OPTIMISTIC write for region [0, io_size).
+    // Mirrors what Raid1Disk::sync_iov does in WriteBackupMode::OPTIMISTIC:
+    //   (a) ResyncWriteGuard constructor → track()
+    //   (b) D2 written to both mirrors (not modelled; data content is irrelevant to the race)
+    //   (c) clean_region() marks bitmap CLEAN — the dangerous call
+    //   (d) co_return → ResyncWriteGuard destructor → untrack() publishes shadow entry
+    // clean_region must come BEFORE dequeue to match real code ordering.
+    task.enqueue_write(0, io_size);           // (a)
+    task.clean_region(0, io_size, *mirror_a); // (c) bitmap CLEAN, dirty_pages → 0
+    task.dequeue_write(0, io_size);           // (d) shadow entry published; completed_since fires
+
+    // Unblock resync: writes stale D1 to device_b, overwriting the D2 OPTIMISTIC put there.
+    // Phase 2 then sees completed_since()=true, skips its own clean_region — but the bitmap
+    // is already CLEAN from (c). Without a dirty_region() call in Phase 2's else branch,
+    // the bitmap stays clean despite device_b holding stale data.
+    resync_can_write.set_value();
+
+    // stop() spin-waits for resync to yield (after Phase 2 completes), then joins.
+    // After stop() returns, Phase 2 has definitely executed and the bitmap state is stable.
+    task.stop();
+
+    EXPECT_GT(bitmap->dirty_pages(), 0u)
+        << "Stale read window: bitmap is clean after resync wrote stale data to dirty mirror. "
+           "Reads in degraded mode would route to device_b and return stale data.";
+}
+
 // Verify the core improvement: when a dirty run spans multiple chunks and only chunk 0
 // conflicts with an in-flight write, resync skips chunk 0 and copies chunk 1 in the same pass.
 // This is the key behaviour that distinguishes per-region tracking from the old global pause.
