@@ -7,6 +7,7 @@ list(APPEND RAID1_TEST_SRCS
   syncio/read_fail_deva.cpp
   syncio/read_fail_degraded_dirty.cpp
   syncio/write_backup_fail_degrade_fail.cpp
+  syncio/write_clears_unavail.cpp
   syncio/write_fail_deva.cpp
   syncio/write_fail_devb.cpp
 )
