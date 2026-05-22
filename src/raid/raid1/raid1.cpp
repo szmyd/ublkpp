@@ -757,6 +757,11 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         co_return backup_res >= 0 ? backup_res : -EAGAIN;
     }
 
+    if (state.active_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.active_dev->disk, _str_uuid)
+        state.active_dev->unavail.clear(std::memory_order_release);
+    }
+
     if (!backup_write) {
         _dirty_bitmap->dirty_region(addr, len);
         co_return active_res;
@@ -769,6 +774,9 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         if (!state.is_degraded) {
             if (auto d = __become_degraded(false, &state); !d) co_return -EIO;
         }
+    } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
+        state.backup_dev->unavail.clear(std::memory_order_release);
     }
 
     co_return active_res;
@@ -820,6 +828,11 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
                           : std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
     }
 
+    if (state.active_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.active_dev->disk, _str_uuid)
+        state.active_dev->unavail.clear(std::memory_order_release);
+    }
+
     if (!backup_write) {
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         return active_res;
@@ -833,6 +846,9 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             if (auto d = __become_degraded(false, &state); !d)
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
         }
+    } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
+        state.backup_dev->unavail.clear(std::memory_order_release);
     }
 
     return active_res;
