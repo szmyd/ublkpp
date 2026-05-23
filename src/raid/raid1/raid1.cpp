@@ -666,15 +666,19 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
         if (primary_dev->unavail.test(std::memory_order_relaxed))
             RLOGI("Device {} back online (read succeeded) [uuid:{}]", *primary_dev->disk, _str_uuid)
         primary_dev->unavail.clear(std::memory_order_release);
+        RLOGD("Read [addr:{:#0x}|len:{}] ← {} r={}", addr, len, *primary_dev->disk, r)
         co_return r;
     }
     if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
-        RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
+        RLOGW("Device marked unavailable [r={}]: {}", r, *primary_dev->disk)
 
     if (!failover_dev) co_return -EAGAIN;
 
     auto failover_task = (*failover_dev)->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
-    co_return co_await failover_task;
+    auto const failover_r = co_await failover_task;
+    RLOGD("Failover read [addr:{:#0x}|len:{}] ← {} r={} (primary {} r={})", addr, len, *(*failover_dev)->disk,
+          failover_r, *primary_dev->disk, r)
+    co_return failover_r;
 }
 
 std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
