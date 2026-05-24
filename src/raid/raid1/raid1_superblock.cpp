@@ -61,9 +61,14 @@ io_result write_superblock(ublk_disk& device, raid1::SuperBlock const* sb, bool 
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
-    // Work on a stack copy so the shared SB is never mutated — eliminates the data race between
-    // concurrent write_superblock callers (__become_clean vs __become_degraded) on the packed byte
-    // that holds clean_unmount, read_route, and device_b.
+    // Work on a stack copy so the shared SB is never mutated by write_superblock itself.
+    // This eliminates the write-write race between concurrent callers (__become_clean vs
+    // __become_degraded) on the packed bitfield byte shared by clean_unmount, read_route,
+    // and device_b — the most dangerous form because compilers generate non-atomic RMW sequences
+    // for bitfields and can silently corrupt adjacent bits.
+    // Note: the struct copy is still an unsynchronised read of _sb->fields.bitmap.age if
+    // __become_degraded is concurrently incrementing it; that is a pre-existing race not
+    // introduced here (it existed when write_superblock mutated the shared struct in-place).
     auto local = *sb;
     local.fields.read_route = static_cast< uint8_t >(read_route);
     local.fields.device_b = device_b ? 1 : 0;
