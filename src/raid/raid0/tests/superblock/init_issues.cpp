@@ -15,8 +15,8 @@ TEST(Raid0, DeviceSmallerThanStripeSizeThrows) {
 // M2: if every child device reports max_tx() == 0, max_sectors collapses to 0 via the std::min
 // loop and the subsequent volume alignment divides by zero. The constructor must throw.
 TEST(Raid0, ZeroMaxSectorsThrows) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = 2 * Gi, .max_io = 0});
-    auto device_b = CREATE_DISK(TestParams{.capacity = 2 * Gi, .max_io = 0});
+    auto device_a = CREATE_DISK((TestParams{.capacity = 2 * Gi, .max_io = 0}));
+    auto device_b = CREATE_DISK((TestParams{.capacity = 2 * Gi, .max_io = 0}));
     EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::random_generator()(), 32 * Ki,
                                          std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b}),
                  std::runtime_error);
