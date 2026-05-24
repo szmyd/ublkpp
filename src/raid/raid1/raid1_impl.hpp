@@ -50,6 +50,12 @@ class Raid1Disk : public ublk_disk {
     //         (2) _pending_results - serializes prepare() insertions across queue threads.
     std::mutex _ctrl_lock;
 
+    // Guards all writes to _sb->fields bitfields (clean_unmount, read_route, device_b).
+    // Those three bitfields share a single byte in the packed SuperBlock struct; concurrent
+    // writes from different threads (IO/resync paths vs. destructor) are C++ UB even when
+    // execution ordering via join() prevents the actual data race at runtime.
+    mutable std::mutex _sb_fields_lock;
+
     // Counts prepare() calls; used to enable resync on the first queue init.
     std::atomic_uint16_t _nr_hw_queues{0};
 

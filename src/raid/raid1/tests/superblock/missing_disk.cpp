@@ -97,3 +97,47 @@ TEST(Raid1, MissingDisks) {
     EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                  std::runtime_error);
 }
+
+// M11 regression: when the array is degraded because the backup is a missing-leg placeholder,
+// the destructor must still call sync_to() to persist the dirty bitmap to the active device.
+// The old condition was (is_degraded && !backup->is_missing()), which skipped the sync when
+// backup was a missing placeholder — causing the next swap-in to fall back to a full resync.
+TEST(Raid1, DegradedMissingBackupSyncsBitmapAtShutdown) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_b = ublkpp::make_missing_disk();
+
+    // SB read during construction (normal_superblock: clean, route=EITHER).
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // SB writes at offset 0: __become_active (clean_unmount=0) + destructor (clean_unmount=1).
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
+        .Times(2)
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return ublkpp::raid1::k_page_size; });
+
+    // Writes at offset > 0: data write (via sync_iov) + bitmap page write (via sync_to in destructor).
+    // The bitmap write is the M11 regression check: it only happens if sync_to() is called even
+    // though the backup device is a missing placeholder.
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(2)
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t) -> io_result {
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+
+    {
+        auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+
+        // Write marks a bitmap page dirty; the failed write to missing_device is silently absorbed
+        // (we're already degraded) and dirty_region() is called for the affected LBA range.
+        auto iov = iovec{.iov_base = nullptr, .iov_len = 4 * Ki};
+        ASSERT_TRUE(raid_device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0));
+
+        // Destructor: sync_to() writes the dirty bitmap page to device_a (Times(2) above),
+        // then the clean-unmount SB write (counted in the offset-0 Times(2) above).
+    }
+}

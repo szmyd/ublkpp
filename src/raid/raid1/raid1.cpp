@@ -255,8 +255,12 @@ Raid1Disk::~Raid1Disk() {
     if (!_sb) return;
 
     auto const state = __capture_route_state();
-    // Write out our dirty bitmap
-    if (state.is_degraded && !state.backup_dev->disk->is_missing()) {
+    // Write out our dirty bitmap.
+    // Flush even when the backup is a missing placeholder: the active device always holds the
+    // authoritative bitmap, and persisting it avoids a full resync when the missing disk is
+    // swapped in later. Skipping the flush when backup is missing was the old behaviour and
+    // caused incremental resync to fall back to a full resync unnecessarily (M11).
+    if (state.is_degraded) {
         RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *state.active_dev->disk)
         if (auto res = _dirty_bitmap->sync_to(*state.active_dev->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
@@ -265,16 +269,24 @@ Raid1Disk::~Raid1Disk() {
         }
         RLOGI("Synchronized: [uuid: {}]", _str_uuid)
     }
-    _sb->fields.clean_unmount = 0x1;
-    // Only update the superblock to clean devices
-    if (auto res = write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route);
-        !res) {
-        if (state.is_degraded) {
-            RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
+    // _sb->fields.{clean_unmount,read_route,device_b} share one byte; hold the lock across
+    // both the direct bitfield write and the write_superblock calls that write the same byte,
+    // eliminating the UB that would arise if an IO/resync thread calls write_superblock
+    // concurrently (even though thread joins ensure this cannot happen in practice).
+    {
+        auto lk = std::scoped_lock< std::mutex >(_sb_fields_lock);
+        _sb->fields.clean_unmount = 0x1;
+        // Only update the superblock to clean devices
+        if (auto res =
+                write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route);
+            !res) {
+            if (state.is_degraded) {
+                RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
+            }
         }
+        if (!state.is_degraded)
+            write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
     }
-    if (!state.is_degraded)
-        write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
 }
 
 Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
@@ -328,20 +340,25 @@ bool Raid1Disk::__swap_device(std::string const& outgoing_device_id, std::shared
     outgoing_dev.swap(incoming_mirror);
     _sb->fields.bitmap.age = htobe64(new_age);
 
-    // Write superblock to staying device first (critical path)
+    // Write superblock to staying device first (critical path).
+    // Lock guards the bitfield byte shared by clean_unmount/read_route/device_b.
     auto& staying_dev = swapping_device_a ? _device_b : _device_a;
-    if (auto sync_res = write_superblock(*staying_dev->disk, _sb.get(), swapping_device_a, new_read_route); !sync_res) {
-        RLOGE("Could not advance Age [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-        // Rollback
-        _sb->fields.bitmap.age = htobe64(old_age);
-        outgoing_dev.swap(incoming_mirror);
-        _read_route_cache.compare_exchange_strong(new_read_route, cur_route);
-        return false;
+    {
+        auto lk = std::scoped_lock< std::mutex >(_sb_fields_lock);
+        if (auto sync_res = write_superblock(*staying_dev->disk, _sb.get(), swapping_device_a, new_read_route);
+            !sync_res) {
+            RLOGE("Could not advance Age [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+            // Rollback
+            _sb->fields.bitmap.age = htobe64(old_age);
+            outgoing_dev.swap(incoming_mirror);
+            _read_route_cache.compare_exchange_strong(new_read_route, cur_route);
+            return false;
+        }
+        // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
+        // later when we become clean; so let's be optimistic!
+        write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a,
+                         _read_route_cache.load(std::memory_order_acquire));
     }
-    // Commit SuperBlock to new device; if this fails it's not fatal per say...could work
-    // later when we become clean; so let's be optimistic!
-    write_superblock(*outgoing_dev->disk, _sb.get(), !swapping_device_a,
-                     _read_route_cache.load(std::memory_order_acquire));
 
     // Dirty entire bitmap if this is a new device
     if (outgoing_dev->new_device) _dirty_bitmap->dirty_region(0, capacity());
@@ -573,13 +590,18 @@ io_result Raid1Disk::__become_clean() {
     // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
     bool const active_is_device_b = (state.route == read_route::DEVB);
 
-    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
-        !sync_res) {
-        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-    }
-    if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
-        !sync_res) {
-        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+    {
+        auto lk = std::scoped_lock< std::mutex >(_sb_fields_lock);
+        if (auto sync_res =
+                write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
+            !sync_res) {
+            RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        }
+        if (auto sync_res =
+                write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
+            !sync_res) {
+            RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        }
     }
 
     // Avoid checking DirtyBitmap going forward on reads/writes
@@ -607,7 +629,6 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     auto& failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
     auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
 
-    auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
@@ -621,13 +642,21 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     } // LCOV_EXCL_STOP
 
     // Must update age first; we do this synchronously to gate pending retry results
-    if (auto sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route); !sync_res) {
+    auto sync_res = [&]() {
+        auto lk = std::scoped_lock< std::mutex >(_sb_fields_lock);
+        return write_superblock(working_device, _sb.get(), backup_clean, new_route);
+    }();
+    if (!sync_res) {
         // SB write failed -- we cannot persist the degradation, but rolling back to EITHER would
         // allow round-robin reads to the failed device, serving inconsistent data (the backup may
         // have already received the write). Keep the in-memory degraded route and mark the failed
         // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
         // full recovery on next start will reconcile any inconsistency.
-        _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
+        //
+        // Do NOT revert _sb->fields.bitmap.age here: the in-memory route is already degraded
+        // (the CAS above succeeded), so a later successful SB write must persist the incremented
+        // age. Reverting age while keeping new_route active would make on-disk state appear
+        // pre-degradation, corrupting device selection on restart.
         failed_device->unavail.test_and_set(std::memory_order_acquire);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
