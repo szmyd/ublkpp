@@ -32,6 +32,35 @@ TEST(Raid0, StripeToSmallForMaxIoThrows) {
                  std::runtime_error);
 }
 
+// Regression: a corrupted on-disk SB with valid magic+UUID but stripe_size=0 must throw rather than
+// calling ilog2(0) (UB) or dividing by zero in the C1 iovecs-per-stripe check.
+TEST(Raid0, ZeroStripeSizeFromCorruptedSBThrows) {
+    // Devices return a valid SB header (magic+UUID) but stripe_size=0.
+    // device_a gets stripe_off=0, device_b gets stripe_off=1 (matches array index).
+    // Both reads AND writes fire before the guard (SB is committed per-device in the loop).
+    auto make_dev = [](TestParams params, uint16_t stripe_off) {
+        auto device = std::make_shared< ublkpp::TestDisk >(params);
+        EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_READ, _, _, _))
+            .Times(1)
+            .WillOnce([stripe_off](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+                auto sb = normal_superblock;
+                sb.fields.stripe_off = htobe16(stripe_off);
+                sb.fields.stripe_size = 0; // zero stripe_size — corrupted
+                memcpy(iovecs->iov_base, &sb, sizeof(ublkpp::raid0::SuperBlock));
+                return sizeof(ublkpp::raid0::SuperBlock);
+            });
+        EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+            .Times(1)
+            .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result { return sizeof(ublkpp::raid0::SuperBlock); });
+        return device;
+    };
+    auto device_a = make_dev(TestParams{.capacity = Gi}, 0);
+    auto device_b = make_dev(TestParams{.capacity = Gi}, 1);
+    EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::string_generator()(test_uuid), 32 * Ki,
+                                         std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b}),
+                 std::runtime_error);
+}
+
 // Brief: If any device should not load/write superblocks correctly, initialization should throw
 TEST(Raid0, FailedReadSB) {
     {

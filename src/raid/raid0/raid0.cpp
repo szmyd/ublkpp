@@ -111,6 +111,8 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // superblock value (the initializer-list computed it from the caller-supplied stripe_size_bytes
     // before any superblock was read, so it may be stale).
     _stride_width = _stripe_size * static_cast< uint32_t >(_stripe_array.size());
+    if (_stripe_size == 0)
+        throw std::runtime_error("Raid0Disk: on-disk superblock delivered zero stripe_size (possible data corruption)");
     // Recompute io_opt_shift to match the corrected stride width.
     our_params.basic.io_opt_shift = ilog2(_stride_width);
 
