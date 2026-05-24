@@ -237,3 +237,13 @@ TEST(Raid1, UncleanShutdownDegraded) {
     EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                  std::runtime_error);
 }
+
+// Verifies that resync_level=0 is rejected at construction time.
+// This test MUST run in isolation with --resync_level=0; it is not included in the default
+// Raid1Test CTest entry. See CMakeLists.txt: Raid1ZeroResyncLevelThrows target.
+TEST(Raid1, ZeroResyncLevelThrows) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
+}
