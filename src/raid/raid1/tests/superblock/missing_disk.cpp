@@ -117,8 +117,7 @@ TEST(Raid1, DegradedMissingBackupSyncsBitmapAtShutdown) {
     // SB writes at offset 0: __become_active (clean_unmount=0) + destructor (clean_unmount=1).
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
         .Times(2)
-        .WillRepeatedly(
-            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return ublkpp::raid1::k_page_size; });
+        .WillRepeatedly([](uint8_t, iovec*, uint32_t, off_t) -> io_result { return ublkpp::raid1::k_page_size; });
 
     // Writes at offset > 0: data write (via sync_iov) + bitmap page write (via sync_to in destructor).
     // The bitmap write is the M11 regression check: it only happens if sync_to() is called even
