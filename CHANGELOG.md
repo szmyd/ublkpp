@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.2] - 2026-05-24
+
+### Changed
+- **Ban `resync_level=0`**: construction now throws `std::runtime_error` if `resync_level` is set
+  to 0. A zero level silently produced zero `copies_left`, causing the resync loop to stall with
+  no forward progress. Valid range is 1–32.
+
 ## [0.32.1] - 2026-05-24
 - Some fixes for gcc-16 compilation
 

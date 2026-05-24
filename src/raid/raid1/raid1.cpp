@@ -18,7 +18,7 @@
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (resync_level, "", "resync_level", "Resync prioritization level (0-32)",
+                  (resync_level, "", "resync_level", "Resync prioritization level (1-32)",
                    cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"),
                   (resync_delay, "", "resync_delay", "Delay between I/O and Resync context switches",
                    cxxopts::value< std::uint32_t >()->default_value("300"), "<microseconds> (us)"),
@@ -42,6 +42,10 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk
     if (k_min_chunk_size > chunk_size) {
         RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, k_min_chunk_size / Ki) // LCOV_EXCL_START
         throw std::runtime_error("Invalid Chunk Size");
+    } // LCOV_EXCL_STOP
+    if (0 == SISL_OPTIONS["resync_level"].as< uint32_t >()) {
+        RLOGE("Invalid resync_level: 0 [min:1] — use 1-32") // LCOV_EXCL_START
+        throw std::runtime_error("resync_level must be at least 1");
     } // LCOV_EXCL_STOP
 
     // It is not a failure to be able to load the superblock from a missing-leg placeholder
