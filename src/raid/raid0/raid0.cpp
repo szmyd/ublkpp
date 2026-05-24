@@ -107,11 +107,42 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
         _stripe_array.emplace_back(std::make_unique< StripeDevice >(std::move(device), sb.value()));
     }
 
+    // Recompute _stride_width in case load_superblock corrected _stripe_size from the on-disk
+    // superblock value (the initializer-list computed it from the caller-supplied stripe_size_bytes
+    // before any superblock was read, so it may be stale).
+    _stride_width = _stripe_size * static_cast< uint32_t >(_stripe_array.size());
+    // Recompute io_opt_shift to match the corrected stride width.
+    our_params.basic.io_opt_shift = ilog2(_stride_width);
+
+    // Validate that the per-stripe iovec count fits in io_array (size _max_stripe_cnt).
+    // Worst case: ceil(max_io / stride_width) iovecs per stripe. With default max_io=512KiB,
+    // _stripe_size=4KiB, N=2, this is exactly 64 = _max_stripe_cnt. Must check AFTER _stride_width
+    // is recomputed above (load_superblock may have corrected _stripe_size).
+    {
+        auto const max_io = static_cast< uint64_t >(our_params.basic.max_sectors) << SECTOR_SHIFT;
+        auto const max_iovecs_per_stripe = (max_io + _stride_width - 1) / _stride_width;
+        if (max_iovecs_per_stripe > _max_stripe_cnt)
+            throw std::runtime_error(fmt::format(
+                "Raid0Disk: stripe_size ({}) too small for max_io ({}) with {} disks — would need {} iovecs/stripe, "
+                "max is {}",
+                _stripe_size, max_io, _stripe_array.size(), max_iovecs_per_stripe, _max_stripe_cnt));
+    }
+
     // Finally we'll calculate the volume size as a multiple of the smallest array device
     // and adjust to account for the superblock we will write at the HEAD of each array device.
     // To keep things simple, we'll just use the first chunk from each device for ourselves.
-    our_params.basic.dev_sectors -= (_stripe_size >> SECTOR_SHIFT);
+
+    // H2: guard against device capacity <= stripe_size which would underflow the unsigned subtraction.
+    auto const stripe_size_sectors = static_cast< uint64_t >(_stripe_size >> SECTOR_SHIFT);
+    if (our_params.basic.dev_sectors <= stripe_size_sectors)
+        throw std::runtime_error(
+            fmt::format("Raid0Disk: device capacity ({} sectors) is too small for stripe_size ({} sectors)",
+                        our_params.basic.dev_sectors, stripe_size_sectors));
+    our_params.basic.dev_sectors -= stripe_size_sectors;
     our_params.basic.dev_sectors *= _stripe_array.size();
+    // M2: guard against division by zero if max_sectors is 0 (e.g. child device reported max_tx()==0).
+    if (our_params.basic.max_sectors == 0)
+        throw std::runtime_error("Raid0Disk: max_sectors is zero; child device reported max_tx() == 0");
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
@@ -166,11 +197,17 @@ void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) const {
-    // We gather all the pieces of each I/O intended to dispatch using this structure
+    // We gather all the pieces of each I/O intended to dispatch using this structure.
+    // Maximum iovecs per stripe: ceil(max_io / stride_width) stripes alternate, so one stripe
+    // can accumulate at most ceil(max_io / stride_width) iovecs before early-dispatch fires.
+    // With max_io=512KiB and stride_width=8KiB (stripe=4KiB, N=2) that is 64 entries.
+    // Use _max_stripe_cnt as the upper bound: it already caps device count, and with a
+    // minimum stripe_size of logical_block_size the per-stripe iovec count is bounded by
+    // ceil(max_io / (_stripe_size * N)) <= ceil(max_io / _stripe_size) <= _max_stripe_cnt.
     struct StripeAccum {
-        uint64_t io_addr{0};                // Starting address
-        uint32_t nr_vecs{0};                // How many iovecs are valid
-        std::array< iovec, 16 > io_array{}; // The scatter-list
+        uint64_t io_addr{0};                             // Starting address
+        uint32_t nr_vecs{0};                             // How many iovecs are valid
+        std::array< iovec, _max_stripe_cnt > io_array{}; // The scatter-list
     };
     static_assert(_max_stripe_cnt == 64, "dirty_mask must be exactly uint64_t");
 
