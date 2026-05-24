@@ -61,15 +61,20 @@ io_result write_superblock(ublk_disk& device, raid1::SuperBlock const* sb, bool 
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
-    // Work on a stack copy so the shared SB is never mutated by write_superblock itself.
-    // This eliminates the write-write race between concurrent callers (__become_clean vs
-    // __become_degraded) on the packed bitfield byte shared by clean_unmount, read_route,
-    // and device_b — the most dangerous form because compilers generate non-atomic RMW sequences
+    // Build a local write buffer with the per-call bitfield values.
+    // Only header + fields (first 74 bytes) are copied from the shared SB.
+    // superbitmap_reserved is left zero in this write because SuperBitmap::set_bit modifies
+    // that region concurrently via atomic ops, and copying it non-atomically is a data race
+    // (TSan: non-atomic 8-byte load at offset 72 overlaps atomic fetch_or at offset 74).
+    // Zero superbitmap_reserved is the safe fallback: on next startup the bitmap layer does
+    // a full page scan to rebuild the super-index — correct, no data-loss risk.
+    // The live in-memory _sb->superbitmap_reserved is unaffected.
+    // This also eliminates the write-write race between concurrent write_superblock callers
+    // (__become_clean vs __become_degraded) on the packed bitfield byte shared by
+    // clean_unmount, read_route, and device_b — compilers generate non-atomic RMW sequences
     // for bitfields and can silently corrupt adjacent bits.
-    // Note: the struct copy is still an unsynchronised read of _sb->fields.bitmap.age if
-    // __become_degraded is concurrently incrementing it; that is a pre-existing race not
-    // introduced here (it existed when write_superblock mutated the shared struct in-place).
-    auto local = *sb;
+    alignas(4096) SuperBlock local{};
+    memcpy(&local, sb, offsetof(SuperBlock, superbitmap_reserved));
     local.fields.read_route = static_cast< uint8_t >(read_route);
     local.fields.device_b = device_b ? 1 : 0;
     auto iov = iovec{.iov_base = &local, .iov_len = sb_size};
