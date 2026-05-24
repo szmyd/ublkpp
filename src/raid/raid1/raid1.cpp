@@ -333,7 +333,8 @@ bool Raid1Disk::__swap_device(std::string const& outgoing_device_id, std::shared
     _sb->fields.bitmap.age = htobe64(new_age);
 
     // Write superblock to staying device first (critical path).
-    // Lock guards the bitfield byte shared by clean_unmount/read_route/device_b.
+    // write_superblock works on a stack-local copy, so the shared SB bitfield byte
+    // (clean_unmount/read_route/device_b) is never mutated in-place here.
     auto& staying_dev = swapping_device_a ? _device_b : _device_a;
     if (auto sync_res = write_superblock(*staying_dev->disk, _sb.get(), swapping_device_a, new_read_route); !sync_res) {
         RLOGE("Could not advance Age [uuid:{}]: {}", _str_uuid, sync_res.error().message())
