@@ -94,6 +94,9 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
     RLOGI("Clearing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}] on: {}", _num_pages, _num_pages * k_page_size / Ki, _id,
           *device)
     auto const max_pages = max_pages_per_tx(*device);
+    if (0 == max_pages)
+        throw std::runtime_error(
+            fmt::format("Device max_tx()={} is smaller than bitmap page size ({})", device->max_tx(), k_page_size));
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     std::fill_n(iov.get(), max_pages, proto);
@@ -110,6 +113,7 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
 io_result Bitmap::sync_to(ublk_disk& device, uint64_t offset) {
     // Allocate iovec array for batching consecutive pages
     auto const max_batch = max_pages_per_tx(device);
+    if (0 == max_batch) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
     if (!iovs) return std::unexpected(std::make_error_condition(std::errc::not_enough_memory)); // LCOV_EXCL_LINE
 
@@ -308,10 +312,15 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
         auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_and(clear_mask, std::memory_order_relaxed);
-        _dirty_chunks_est.fetch_sub(
-            std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
-                     static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)))),
-            std::memory_order_relaxed);
+        auto const cleared = static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)));
+        // Use a CAS loop to avoid TOCTOU underflow: a plain load() + fetch_sub() pair is not
+        // atomic; a concurrent clean_region() between them can cause _dirty_chunks_est to drop
+        // below `cleared`, making the subtraction wrap to UINT64_MAX.
+        auto cur_est = _dirty_chunks_est.load(std::memory_order_relaxed);
+        while (cur_est > 0 &&
+               !_dirty_chunks_est.compare_exchange_weak(cur_est, cur_est - std::min(cur_est, cleared),
+                                                        std::memory_order_relaxed, std::memory_order_relaxed))
+            ;
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
