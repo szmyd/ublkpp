@@ -1,5 +1,6 @@
 #include "ublkpp/target.hpp"
 
+#include <semaphore.h>
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
 #include <exec/task.hpp>
