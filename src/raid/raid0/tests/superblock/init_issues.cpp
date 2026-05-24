@@ -49,9 +49,9 @@ TEST(Raid0, ZeroStripeSizeFromCorruptedSBThrows) {
                 memcpy(iovecs->iov_base, &sb, sizeof(ublkpp::raid0::SuperBlock));
                 return sizeof(ublkpp::raid0::SuperBlock);
             });
-        EXPECT_CALL(*device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(1)
-            .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result { return sizeof(ublkpp::raid0::SuperBlock); });
+        // No write expectation: load_superblock only writes on the new-device path (no magic).
+        // An existing SB (valid magic) is accepted as-is; the corrupted stripe_size propagates
+        // into _stripe_size, and the guard fires before any write occurs.
         return device;
     };
     auto device_a = make_dev(TestParams{.capacity = Gi}, 0);
