@@ -110,9 +110,9 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // Recompute _stride_width in case load_superblock corrected _stripe_size from the on-disk
     // superblock value (the initializer-list computed it from the caller-supplied stripe_size_bytes
     // before any superblock was read, so it may be stale).
-    _stride_width = _stripe_size * static_cast< uint32_t >(_stripe_array.size());
     if (_stripe_size == 0)
         throw std::runtime_error("Raid0Disk: on-disk superblock delivered zero stripe_size (possible data corruption)");
+    _stride_width = _stripe_size * static_cast< uint32_t >(_stripe_array.size());
     // Recompute io_opt_shift to match the corrected stride width.
     our_params.basic.io_opt_shift = ilog2(_stride_width);
 
@@ -199,6 +199,7 @@ void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) const {
+    DEBUG_ASSERT_GT(_stride_width, 0U) // LCOV_EXCL_LINE
     // We gather all the pieces of each I/O intended to dispatch using this structure.
     // Maximum iovecs per stripe: ceil(max_io / stride_width) stripes alternate, so one stripe
     // can accumulate at most ceil(max_io / stride_width) iovecs before early-dispatch fires.
@@ -213,7 +214,7 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) con
     };
     static_assert(_max_stripe_cnt == 64, "dirty_mask must be exactly uint64_t");
 
-    // Then when allocated (once) an array of accumulators for the thread (1-thread per i/o queue)
+    // ~66 KiB per queue thread (_max_stripe_cnt × sizeof(StripeAccum) = 64 × ~1040 B); bounded and intentional.
     thread_local auto sub_cmds = std::array< StripeAccum, _max_stripe_cnt >();
 
     // Reset only touched stripes on exit; a failed call leaves non-zero nr_vecs that would corrupt the next I/O.
