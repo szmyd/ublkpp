@@ -55,7 +55,8 @@ public:
     void* io_buf(int tag);
 
     // Direct reference to the iovec passed to async_iov for the given tag slot.
-    // Used by tests that simulate sub_cmds overwrite (e.g. RAID10 stale-iovec regression).
+    // Allows tests to mutate the caller-side iov after submission to verify that the
+    // disk under test has snapshotted the values rather than holding a raw pointer.
     iovec& iov_ref(int tag) noexcept { return _tags[tag].iov; }
 
     int q_depth() const noexcept { return _q_depth; }

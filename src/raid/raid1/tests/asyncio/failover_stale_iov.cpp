@@ -4,41 +4,46 @@
 //
 // In RAID10, RAID0::__distribute populates thread_local sub_cmds and passes iovecs pointing
 // into it to RAID1::async_iov. While __failover_read_async is suspended at co_await
-// primary_task, a concurrent I/O on the same queue thread can overwrite sub_cmds, leaving
-// iovecs stale when the failover SQE is submitted.
+// primary_task, a concurrent I/O on the same queue thread can overwrite sub_cmds. The fix
+// snapshots iovecs into a frame-local array before the first co_await.
 //
-// The fix snapshots iovecs into a coroutine-frame-local copy before the first co_await so
-// the failover always uses the original values. This test simulates the race by mutating the
-// caller-side iov after the primary is in-flight and verifying the failover still sees the
-// original iov_len.
+// This test simulates the race by mutating the caller-side iov (MockUblksrv's TagState::iov,
+// analogous to sub_cmds) after the primary is in-flight. The failover must see the original
+// iov_base and iov_len, not the stale values.
 TEST_F(AsyncRaid1Fixture, FailoverUsesSnapshotIovecNotStaleCopy) {
+    // Thread is required: __select_read_devices uses thread_local last_read for round-robin
+    // routing. Running in a fresh thread prevents this test from mutating that state and
+    // causing routing surprises in other tests that share the main gtest thread.
     std::thread([this] {
         constexpr size_t k_req_len = 4 * Ki;
-        constexpr size_t k_stale_len = 128 * Ki;
 
-        // Capture the iov_len that disk_b's submit_iov receives during the failover.
-        size_t failover_iov_len = 0;
+        auto* const buf = mock->io_buf(0);
+        iovec captured_failover_iov{};
+
         EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _))
-            .WillOnce([&failover_iov_len](ublksrv_queue const*, ublk_io_data const*, iovec* iov, uint32_t,
-                                          uint64_t) -> io_result {
-                failover_iov_len = iov->iov_len;
+            .WillOnce([&captured_failover_iov](ublksrv_queue const*, ublk_io_data const*, iovec* iov, uint32_t,
+                                               uint64_t) -> io_result {
+                captured_failover_iov = *iov;
                 return 1;
             });
 
-        auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, k_req_len / 512, nullptr);
+        auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, k_req_len / 512, buf);
         ASSERT_TRUE(res);
         EXPECT_EQ(res.value(), 1u);
 
-        // Simulate concurrent I/O overwriting thread_local sub_cmds: mutate the
-        // caller-side iov_len after the primary is in-flight. Without the snapshot fix,
-        // the failover would use this stale value; with the fix it sees the original 4 KiB.
-        mock->iov_ref(0).iov_len = k_stale_len;
+        // Simulate sub_cmds overwrite: stomp both iov_base and iov_len on the caller-side iov
+        // after the primary is in-flight. Without the snapshot fix, the failover would use these
+        // stale values and read into the wrong buffer with the wrong length.
+        auto& orig_iov = mock->iov_ref(0);
+        orig_iov.iov_base = reinterpret_cast< void* >(static_cast< uintptr_t >(0xdeadbeef));
+        orig_iov.iov_len = 128 * Ki;
 
         // Primary fails (simulating SIGKILL'd AM) -> failover starts synchronously.
         EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
 
-        // Failover must have used the snapshotted iov_len (4 KiB), not the stale 128 KiB.
-        EXPECT_EQ(failover_iov_len, k_req_len);
+        // Failover must have used the snapshotted iov_base/iov_len, not the stale values.
+        EXPECT_EQ(captured_failover_iov.iov_base, buf);
+        EXPECT_EQ(captured_failover_iov.iov_len, k_req_len);
 
         auto completions = mock->inject_cqe(0, static_cast< int >(k_req_len));
         ASSERT_EQ(completions.size(), 1u);

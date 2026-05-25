@@ -661,7 +661,11 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
     // Snapshot before first co_await: in RAID10, iovecs points into RAID0's thread_local
     // sub_cmds. Once we suspend, concurrent I/Os on the same queue thread can overwrite
     // sub_cmds, making iovecs stale when the failover SQE is submitted.
-    auto iov_snap = std::vector< iovec >(iovecs, iovecs + nr_vecs);
+    // nr_vecs is bounded by StripeAccum::io_array (16 entries) or 1 from ublkpp_tgt.
+    // std::array avoids an additional heap allocation; the coroutine frame is already heap-allocated.
+    DEBUG_ASSERT_LE(nr_vecs, 16u)
+    std::array< iovec, 16 > iov_snap{};
+    std::copy_n(iovecs, nr_vecs, iov_snap.begin());
     iovecs = iov_snap.data();
 
     auto const state = __capture_route_state();
