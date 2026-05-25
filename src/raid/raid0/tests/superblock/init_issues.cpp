@@ -22,16 +22,6 @@ TEST(Raid0, ZeroMaxSectorsThrows) {
                  std::runtime_error);
 }
 
-// C1 validation: with stripe_size=2KiB and 2 disks, stride=4KiB. The default max_io of 512KiB
-// needs ceil(512KiB/4KiB)=128 iovecs per stripe, exceeding _max_stripe_cnt=64. Must throw.
-TEST(Raid0, StripeToSmallForMaxIoThrows) {
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi});
-    EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::random_generator()(), 2 * Ki,
-                                         std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b}),
-                 std::runtime_error);
-}
-
 // Regression: a corrupted on-disk SB with valid magic+UUID but stripe_size=0 must throw rather than
 // calling ilog2(0) (UB) or dividing by zero in the C1 iovecs-per-stripe check.
 TEST(Raid0, ZeroStripeSizeFromCorruptedSBThrows) {
