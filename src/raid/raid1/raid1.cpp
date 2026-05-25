@@ -707,6 +707,11 @@ Raid1Disk::__select_read_devices(RouteState const& state, uint64_t addr, uint32_
             backup_stale ? std::nullopt : std::optional{__route_to_device(state, other_route)}};
 }
 
+bool Raid1Disk::__backup_writable(RouteState const& state, uint64_t addr, uint32_t len) const noexcept {
+    return !(state.is_degraded &&
+             (state.backup_dev->unavail.test(std::memory_order_acquire) || _dirty_bitmap->is_dirty(addr, len)));
+}
+
 disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                       uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
@@ -728,9 +733,7 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // Register this write's LBA range in the region tracker so resync skips only the
     // conflicting chunk rather than pausing globally.
     auto _guard = raid1::ResyncWriteGuard{*_resync_task, addr, len};
-    auto const backup_write =
-        !(state.is_degraded &&
-          (state.backup_dev->unavail.test(std::memory_order_acquire) || _dirty_bitmap->is_dirty(addr, len)));
+    auto const backup_write = __backup_writable(state, addr, len);
 
     auto const adj_addr = addr + _reserved_size;
     auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start();
@@ -814,9 +817,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     // Register this write's LBA range in the region tracker so resync skips only the
     // conflicting chunk rather than pausing globally.
     auto _guard = raid1::ResyncWriteGuard{*_resync_task, static_cast< uint64_t >(addr), len};
-    auto const backup_write =
-        !(state.is_degraded &&
-          (state.backup_dev->unavail.test(std::memory_order_acquire) || _dirty_bitmap->is_dirty(addr, len)));
+    auto const backup_write = __backup_writable(state, static_cast< uint64_t >(addr), len);
 
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
