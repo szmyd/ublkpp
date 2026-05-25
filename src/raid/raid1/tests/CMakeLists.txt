@@ -37,6 +37,10 @@ target_link_libraries (test_raid1
   $<$<PLATFORM_ID:Linux>:atomic>
 )
 add_test(NAME Raid1Test COMMAND test_raid1 -cv warning)
+# Run ZeroResyncLevelThrows in isolation with resync_level=0 so the global option is set before
+# any MirrorDevice construction; --gtest_filter ensures only this test runs in that invocation.
+add_test(NAME Raid1ZeroResyncLevelThrows
+  COMMAND test_raid1 --resync_level=0 --gtest_filter=Raid1.ZeroResyncLevelThrows -cv warning)
 
 # Set TSAN suppression file for lock-free read path false positives
 if ((DEFINED THREAD_SANITIZER_ON) AND (${THREAD_SANITIZER_ON}))
