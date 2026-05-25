@@ -312,15 +312,10 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
         auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_and(clear_mask, std::memory_order_relaxed);
-        auto const cleared = static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)));
-        // Use a CAS loop to avoid TOCTOU underflow: a plain load() + fetch_sub() pair is not
-        // atomic; a concurrent clean_region() between them can cause _dirty_chunks_est to drop
-        // below `cleared`, making the subtraction wrap to UINT64_MAX.
-        auto cur_est = _dirty_chunks_est.load(std::memory_order_relaxed);
-        while (cur_est > 0 &&
-               !_dirty_chunks_est.compare_exchange_weak(cur_est, cur_est - std::min(cur_est, cleared),
-                                                        std::memory_order_relaxed, std::memory_order_relaxed))
-            ;
+        _dirty_chunks_est.fetch_sub(
+            std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
+                     static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)))),
+            std::memory_order_relaxed);
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
