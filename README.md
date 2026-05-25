@@ -104,7 +104,6 @@ ublkpp/
 - Two-way mirroring with dirty bitmap tracking
 - Degraded mode operation (single device failure)
 - Hot device replacement via `swap_device()`
-- Optimistic write recovery with dirty-bitmap-guided resync
 - Read routing round-robbins
 
 **Bitmap Efficiency:**

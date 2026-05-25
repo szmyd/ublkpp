@@ -822,7 +822,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         // become_degraded succeeded → state was EITHER → bm was WRITE → backup is reachable.
         DEBUG_ASSERT(backup_write,
-                     "backup_write must not be SKIP when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
+                     "backup_write must be true when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = state.backup_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
         return backup_res ? backup_res
                           : std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
