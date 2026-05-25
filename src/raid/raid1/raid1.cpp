@@ -707,17 +707,9 @@ Raid1Disk::__select_read_devices(RouteState const& state, uint64_t addr, uint32_
             backup_stale ? std::nullopt : std::optional{__route_to_device(state, other_route)}};
 }
 
-Raid1Disk::WriteBackupMode Raid1Disk::__compute_backup_mode(RouteState const& state, uint64_t addr, uint32_t len,
-                                                            bool is_discard) const noexcept {
-    if (!state.is_degraded) return WriteBackupMode::WRITE;
-    if (state.backup_dev->unavail.test(std::memory_order_acquire)) return WriteBackupMode::SKIP;
-    if (_dirty_bitmap->is_dirty(addr, len)) {
-        auto const chunk_size = be32toh(_sb->fields.bitmap.chunk_size);
-        auto const totally_aligned = (chunk_size <= len) && (0 == len % chunk_size) && (0 == addr % chunk_size);
-        if (!totally_aligned || is_discard) return WriteBackupMode::SKIP;
-        return WriteBackupMode::OPTIMISTIC;
-    }
-    return WriteBackupMode::WRITE;
+bool Raid1Disk::__backup_writable(RouteState const& state, uint64_t addr, uint32_t len) const noexcept {
+    return !(state.is_degraded &&
+             (state.backup_dev->unavail.test(std::memory_order_acquire) || _dirty_bitmap->is_dirty(addr, len)));
 }
 
 disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
@@ -737,18 +729,17 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     // Write / Discard / WriteZeroes: replicate to both devices
     auto const state = __capture_route_state();
-    auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
 
     // Register this write's LBA range in the region tracker so resync skips only the
     // conflicting chunk rather than pausing globally.
     auto _guard = raid1::ResyncWriteGuard{*_resync_task, addr, len};
-    auto const bm = __compute_backup_mode(state, addr, len, is_discard);
+    auto const backup_write = __backup_writable(state, addr, len);
 
     auto const adj_addr = addr + _reserved_size;
     auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start();
 
     std::optional< hot_task< int > > backup_task;
-    if (bm != WriteBackupMode::SKIP)
+    if (backup_write)
         backup_task.emplace(state.backup_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start());
 
     auto const active_res = co_await active_task;
@@ -773,7 +764,12 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         co_return backup_res >= 0 ? backup_res : -EAGAIN;
     }
 
-    if (bm == WriteBackupMode::SKIP) {
+    if (state.active_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.active_dev->disk, _str_uuid)
+        state.active_dev->unavail.clear(std::memory_order_release);
+    }
+
+    if (!backup_write) {
         _dirty_bitmap->dirty_region(addr, len);
         co_return active_res;
     }
@@ -785,9 +781,9 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         if (!state.is_degraded) {
             if (auto d = __become_degraded(false, &state); !d) co_return -EIO;
         }
-    } else if (bm == WriteBackupMode::OPTIMISTIC) {
+    } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
         state.backup_dev->unavail.clear(std::memory_order_release);
-        _resync_task->clean_region(addr, len, *state.active_dev);
     }
 
     co_return active_res;
@@ -817,12 +813,11 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     }
 
     // WRITE / DISCARD / WRITE_ZEROES: flat replication -- mirrors async_iov write path.
-    auto const is_discard = (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES);
 
     // Register this write's LBA range in the region tracker so resync skips only the
     // conflicting chunk rather than pausing globally.
     auto _guard = raid1::ResyncWriteGuard{*_resync_task, static_cast< uint64_t >(addr), len};
-    auto const bm = __compute_backup_mode(state, static_cast< uint64_t >(addr), len, is_discard);
+    auto const backup_write = __backup_writable(state, static_cast< uint64_t >(addr), len);
 
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
@@ -831,14 +826,19 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         if (auto d = __become_degraded(true, &state); !d)
             return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         // become_degraded succeeded → state was EITHER → bm was WRITE → backup is reachable.
-        DEBUG_ASSERT(bm != WriteBackupMode::SKIP,
-                     "bm must not be SKIP when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
+        DEBUG_ASSERT(backup_write,
+                     "backup_write must be true when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = state.backup_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
         return backup_res ? backup_res
                           : std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
     }
 
-    if (bm == WriteBackupMode::SKIP) {
+    if (state.active_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.active_dev->disk, _str_uuid)
+        state.active_dev->unavail.clear(std::memory_order_release);
+    }
+
+    if (!backup_write) {
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         return active_res;
     }
@@ -851,9 +851,9 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             if (auto d = __become_degraded(false, &state); !d)
                 return std::unexpected(std::make_error_condition(std::errc::io_error));
         }
-    } else if (bm == WriteBackupMode::OPTIMISTIC) {
+    } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
+        RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
         state.backup_dev->unavail.clear(std::memory_order_release);
-        _resync_task->clean_region(addr, len, *state.active_dev);
     }
 
     return active_res;

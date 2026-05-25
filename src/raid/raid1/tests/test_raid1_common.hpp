@@ -96,7 +96,7 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
     [] {                                                                                                               \
         auto p = (params);                                                                                             \
         p.is_slot_b = (dev_b);                                                                                         \
-        auto device = std::make_shared< ublkpp::TestDisk >(p);                                                         \
+        auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(p);                                \
         /* Expect to load and write clean_unmount bit */                                                               \
         if (!no_read) { EXPECT_TO_READ_SB_F(device, (dev_b), fail_read) }                                              \
         if (!no_write && !fail_read) { EXPECT_TO_WRITE_SB_F(device, fail_write) }                                      \

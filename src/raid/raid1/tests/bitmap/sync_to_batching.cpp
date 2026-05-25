@@ -12,7 +12,7 @@ using ::testing::Return;
 
 // Test that sync_to batches consecutive pages into single write operations
 TEST(Raid1Bitmap, SyncToBatchesConsecutivePages) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -35,7 +35,7 @@ TEST(Raid1Bitmap, SyncToBatchesConsecutivePages) {
 
 // Test that sync_to creates separate writes for non-consecutive pages
 TEST(Raid1Bitmap, SyncToSeparatesNonConsecutivePages) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -65,7 +65,7 @@ TEST(Raid1Bitmap, SyncToSeparatesNonConsecutivePages) {
 // Test that sync_to respects max_pages_per_tx batch limit
 TEST(Raid1Bitmap, SyncToRespectsMaxBatchSize) {
     // Create device with small max_io to force batching limits
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{
         .capacity = 16 * ublkpp::Gi,
         .max_io = 4 * ublkpp::Ki // 4 KiB = 1 page, so max_batch = 1
     });
@@ -89,7 +89,7 @@ TEST(Raid1Bitmap, SyncToRespectsMaxBatchSize) {
 
 // Test that sync_to skips pages loaded from disk (not modified)
 TEST(Raid1Bitmap, SyncToSkipsUnmodifiedLoadedPages) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
 
     // Mark all 8 pages as dirty in the SuperBitmap so load_from will load them
@@ -119,7 +119,7 @@ TEST(Raid1Bitmap, SyncToSkipsUnmodifiedLoadedPages) {
 
 // Test that sync_to writes pages that were loaded then modified
 TEST(Raid1Bitmap, SyncToWritesModifiedLoadedPages) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
 
     // Mark all 8 pages as dirty in the SuperBitmap so load_from will load them
@@ -157,7 +157,7 @@ TEST(Raid1Bitmap, SyncToWritesModifiedLoadedPages) {
 
 // Test that sync_to handles write failures correctly
 TEST(Raid1Bitmap, SyncToHandlesWriteFailure) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -178,7 +178,8 @@ TEST(Raid1Bitmap, SyncToHandlesWriteFailure) {
 
 // Test batching with mixed consecutive and non-consecutive pages
 TEST(Raid1Bitmap, SyncToBatchesMixedPages) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 16 * ublkpp::Gi});
+    auto device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 16 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(16 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -214,7 +215,7 @@ TEST(Raid1Bitmap, SyncToBatchesMixedPages) {
 
 // Test empty bitmap sync_to (no dirty pages)
 TEST(Raid1Bitmap, SyncToEmptyBitmap) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 
@@ -229,7 +230,7 @@ TEST(Raid1Bitmap, SyncToEmptyBitmap) {
 
 // Test that sync_to skips zero pages (cleaned pages)
 TEST(Raid1Bitmap, SyncToSkipsZeroPages) {
-    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 8 * ublkpp::Gi});
+    auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = 8 * ublkpp::Gi});
     auto superbitmap_buf = make_test_superbitmap();
     auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, superbitmap_buf.get());
 

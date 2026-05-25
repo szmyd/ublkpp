@@ -58,9 +58,12 @@ class Raid1Disk : public ublk_disk {
     // data for this region (degraded array + dirty bitmap) -- callers must not read from it.
     std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
     __select_read_devices(RouteState const& state, uint64_t addr, uint32_t len) const noexcept;
-    enum class WriteBackupMode { SKIP, WRITE, OPTIMISTIC };
-    WriteBackupMode __compute_backup_mode(RouteState const& state, uint64_t addr, uint32_t len,
-                                          bool is_discard) const noexcept;
+
+    // True when a write should be replicated to the backup leg. A dirty region in a degraded
+    // array means the backup is owned exclusively by the resync task, so the I/O path must not
+    // write it (this is what closes the resync stale-read race); an unavailable backup is skipped
+    // likewise. Used identically by both async_iov and sync_iov.
+    bool __backup_writable(RouteState const& state, uint64_t addr, uint32_t len) const noexcept;
 
     // Internal routines
     void __become_clean();
