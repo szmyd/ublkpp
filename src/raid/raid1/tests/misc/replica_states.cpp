@@ -73,9 +73,8 @@ TEST(Raid1, IdMethod) {
 // Helper: set up new_device mock expectations for a successful swap of device A.
 // After this swap: route=DEVB, new_device is in A slot (backup, unavail=false), device_b is active.
 // Caller must register the device_b staying-write and unmount expectations separately.
-static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_device,
-                                  std::shared_ptr< ublkpp::TestDisk >& device_b,
-                                  ublkpp::raid1::Raid1Disk& raid_device) {
+static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk > new_device,
+                                  std::shared_ptr< ublkpp::TestDisk > device_b, ublkpp::raid1::Raid1Disk& raid_device) {
     // new device read returns all-zeros → new_device=true → init_to is called
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
@@ -127,7 +126,8 @@ TEST(Raid1, ReplicaStatesSyncingDEVB) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     expect_swap_a_success(new_device, device_b, raid_device);
 
     // Swap succeeds; returns outgoing device_a
@@ -159,7 +159,8 @@ TEST(Raid1, ReplicasAccessDEVB) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     expect_swap_a_success(new_device, device_b, raid_device);
 
     // Swap succeeds; returns outgoing device_a

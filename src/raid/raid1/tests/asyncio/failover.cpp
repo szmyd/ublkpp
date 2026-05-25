@@ -7,8 +7,8 @@
 TEST_F(AsyncRaid1Fixture, ReadFailoverToBackup) {
     std::thread([this] {
         // Expect both disks to be called: primary attempt + failover attempt.
-        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
-        EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
+        EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
 
         auto res = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
         ASSERT_TRUE(res);
@@ -43,8 +43,8 @@ TEST_F(AsyncRaid1Fixture, ReadBothDevicesFail) {
 // Write: active device fails; backup was started eagerly and succeeds.
 // co_return backup_res (backup bytes returned).
 TEST_F(AsyncRaid1Fixture, WriteActiveFailsBecomeDegraded) {
-    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
+    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
 
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
@@ -60,8 +60,8 @@ TEST_F(AsyncRaid1Fixture, WriteActiveFailsBecomeDegraded) {
 
 // Write: active succeeds but backup device fails → become degraded, co_return active_res.
 TEST_F(AsyncRaid1Fixture, WriteReplicaFailsBecomeDegraded) {
-    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
+    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
 
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);

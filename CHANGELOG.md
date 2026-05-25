@@ -14,9 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pairs legs in order; assigns per-pair partition UUIDs via `name_generator("partition_K")`,
   matching the convention used by `make_md_raid10_disk` for UUID consistency.
 
-## [0.32.2]
+## [0.32.3] - 2026-05-25
 ### Fixed
 - raid1: Remove Optimistic write path which can now race with region tracked resync.
+
+## [0.32.2] - 2026-05-24
+
+### Changed
+- **Ban `resync_level=0`**: construction now throws `std::runtime_error` if `resync_level` is set
+  to 0. A zero level silently produced zero `copies_left`, causing the resync loop to stall with
+  no forward progress. Valid range is 1–32.
 
 ## [0.32.1] - 2026-05-24
 ### Fixed

@@ -6,11 +6,12 @@
 #include "test_raid1_common.hpp"
 
 using ::testing::_;
-using ::testing::NiceMock;
+using ::testing::AnyNumber;
+using ::testing::StrictMock;
 
 TEST(Raid1, SyncIoReadDegradedDirtyActiveFailNoFallback) {
-    auto raw_a = std::make_shared< NiceMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
-    auto raw_b = std::make_shared< NiceMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .is_slot_b = true});
+    auto raw_a = std::make_shared< StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+    auto raw_b = std::make_shared< StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .is_slot_b = true});
 
     // Degraded superblock: route=DEVA, unclean shutdown → __init_bitmap_and_degraded_route
     // calls dirty_region(0, capacity()) without going through __become_degraded, so
@@ -20,15 +21,18 @@ TEST(Raid1, SyncIoReadDegradedDirtyActiveFailNoFallback) {
     degraded_sb.fields.clean_unmount = 0;
     degraded_sb.fields.bitmap.age = htobe64(2);
 
-    ON_CALL(*raw_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .WillByDefault([degraded_sb](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([degraded_sb](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             if (iov->iov_base) memcpy(iov->iov_base, &degraded_sb, ublkpp::raid1::k_page_size);
             return ublkpp::raid1::k_page_size;
         });
-    ON_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .WillByDefault([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
-    ON_CALL(*raw_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .WillByDefault([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             if (iov->iov_base) {
                 memcpy(iov->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
                 auto* sb = static_cast< ublkpp::raid1::SuperBlock* >(iov->iov_base);
@@ -37,6 +41,9 @@ TEST(Raid1, SyncIoReadDegradedDirtyActiveFailNoFallback) {
             }
             return ublkpp::raid1::k_page_size;
         });
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
 

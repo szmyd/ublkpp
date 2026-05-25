@@ -18,7 +18,7 @@
 SISL_OPTION_GROUP(raid1,
                   (chunk_size, "", "chunk_size", "The desired chunk_size for new Raid1 devices",
                    cxxopts::value< std::uint32_t >()->default_value("32768"), "<io_size>"),
-                  (resync_level, "", "resync_level", "Resync prioritization level (0-32)",
+                  (resync_level, "", "resync_level", "Resync prioritization level (1-32)",
                    cxxopts::value< std::uint32_t >()->default_value("4"), "<io_size>"),
                   (resync_delay, "", "resync_delay", "Delay between I/O and Resync context switches",
                    cxxopts::value< std::uint32_t >()->default_value("300"), "<microseconds> (us)"),
@@ -43,6 +43,10 @@ MirrorDevice::MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk
         RLOGE("Invalid chunk_size: {}KiB [min:{}KiB]", chunk_size / Ki, k_min_chunk_size / Ki) // LCOV_EXCL_START
         throw std::runtime_error("Invalid Chunk Size");
     } // LCOV_EXCL_STOP
+    if (0 == SISL_OPTIONS["resync_level"].as< uint32_t >()) {
+        RLOGE("Invalid resync_level: 0 [min:1] — use 1-32")
+        throw std::runtime_error("resync_level must be at least 1");
+    }
 
     // It is not a failure to be able to load the superblock from a missing-leg placeholder
     if (disk->is_missing()) return;
@@ -713,6 +717,11 @@ Raid1Disk::__select_read_devices(RouteState const& state, uint64_t addr, uint32_
     return {primary, backup_stale ? std::nullopt : std::optional{__route_to_device(state, other_route)}};
 }
 
+bool Raid1Disk::__backup_writable(RouteState const& state, uint64_t addr, uint32_t len) const noexcept {
+    return !(state.is_degraded &&
+             (state.backup_dev->unavail.test(std::memory_order_acquire) || _dirty_bitmap->is_dirty(addr, len)));
+}
+
 disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs, uint32_t nr_vecs,
                                       uint64_t addr) {
     auto const op = ublksrv_get_op(data->iod);
@@ -734,9 +743,7 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // Register this write's LBA range in the region tracker so resync skips only the
     // conflicting chunk rather than pausing globally.
     auto _guard = raid1::ResyncWriteGuard{*_resync_task, addr, len};
-    auto const backup_write =
-        !(state.is_degraded &&
-          (state.backup_dev->unavail.test(std::memory_order_acquire) || _dirty_bitmap->is_dirty(addr, len)));
+    auto const backup_write = __backup_writable(state, addr, len);
 
     auto const adj_addr = addr + _reserved_size;
     auto active_task = state.active_dev->disk->async_iov(q, data, iovecs, nr_vecs, adj_addr).start();
@@ -822,9 +829,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     // Register this write's LBA range in the region tracker so resync skips only the
     // conflicting chunk rather than pausing globally.
     auto _guard = raid1::ResyncWriteGuard{*_resync_task, static_cast< uint64_t >(addr), len};
-    auto const backup_write =
-        !(state.is_degraded &&
-          (state.backup_dev->unavail.test(std::memory_order_acquire) || _dirty_bitmap->is_dirty(addr, len)));
+    auto const backup_write = __backup_writable(state, static_cast< uint64_t >(addr), len);
 
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 

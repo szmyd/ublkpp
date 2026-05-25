@@ -18,8 +18,8 @@ TEST_F(AsyncRaid1Fixture, ReadSingleDevice) {
 // Healthy write: replicates to both devices.
 // inject active CQE first (task suspends on backup), then inject backup CQE (task done).
 TEST_F(AsyncRaid1Fixture, WriteBothDevices) {
-    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
-    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
+    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
 
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);
@@ -39,8 +39,8 @@ TEST_F(AsyncRaid1Fixture, WriteBothDevices) {
 // second routes to DEVB (disk_b).
 TEST_F(AsyncRaid1Fixture, ReadRoundRobin) {
     std::thread([this] {
-        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
-        EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
+        EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
 
         auto res0 = mock->submit_io(0, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);
         ASSERT_TRUE(res0);
@@ -77,7 +77,7 @@ TEST_F(AsyncRaid1Fixture, WriteDegradedSkipsReplica) {
 
     // Second write: only disk_b (now the active surviving device) should be called.
     EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(0);
-    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1);
+    EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
 
     auto res2 = mock->submit_io(1, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res2);
