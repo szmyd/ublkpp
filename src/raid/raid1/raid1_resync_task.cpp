@@ -268,8 +268,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
                 continue;
             }
 
-            iov->iov_len = iov_len;
-            // Copy Region from clean to dirty
+            iov->iov_len = iov_len; // Copy Region from clean to dirty
             if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
                 // Phase 2: post-copy conflict check. Two cases require skipping clean_region:
