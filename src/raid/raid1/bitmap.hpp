@@ -60,7 +60,7 @@ private:
     std::vector< PageData > _page_map;
     std::shared_ptr< word_t > _clean_page;
 
-    uint32_t const _page_width; // Number of bytes represented by a single page (block)
+    uint64_t const _page_width; // Number of bytes represented by a single page (block)
     size_t const _num_pages;
     std::atomic_uint64_t _dirty_chunks_est{0};
     SuperBitmap _super_bitmap;

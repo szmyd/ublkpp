@@ -62,3 +62,22 @@ TEST(Raid1, InitBitmapFailure) {
 
     EXPECT_THROW(bitmap.init_to(device), std::runtime_error);
 }
+
+// H7: if a device's max_tx() is smaller than k_page_size, max_pages_per_tx() returns 0 and
+// init_to() cannot batch any pages — must throw rather than silently skip the initialisation.
+TEST(Raid1, InitBitmapThrowsWhenDeviceMaxTxTooSmall) {
+    // max_io=512 → max_sectors=1 → max_tx()=512B < k_page_size(4KiB) → max_pages_per_tx=0.
+    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .max_io = 512});
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
+    EXPECT_THROW(bitmap.init_to(device), std::runtime_error);
+}
+
+// C3 regression: _page_width was uint32_t. With chunk_size=128KiB the product
+// 128KiB * 4KiB * 8 = 4GiB overflows uint32_t to 0, causing a SIGFPE on the first division.
+// After the fix (_page_width is uint64_t) construction must succeed without crashing.
+TEST(Raid1, BitmapWith128KiChunkDoesNotOverflow) {
+    auto superbitmap_buf = make_test_superbitmap();
+    // 256GiB / (128KiB * 4KiB * 8) = 256GiB / 4GiB = 64 pages — fits in k_superbitmap_bits.
+    EXPECT_NO_THROW(ublkpp::raid1::Bitmap(256ULL << 30, 128 * Ki, 4 * Ki, superbitmap_buf.get()));
+}

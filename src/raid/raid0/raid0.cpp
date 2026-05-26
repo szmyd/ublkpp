@@ -43,6 +43,7 @@ class Raid0Disk : public ublk_disk {
 
     uint32_t _stripe_size{0};
     uint32_t _stride_width{0};
+    uint32_t _max_iovecs_per_stripe{0}; // ceil(max_tx / stripe_size): max iovecs a single stripe accumulates
 
     io_result __distribute(iovec* iov, uint64_t addr, auto&& func) const;
 
@@ -108,11 +109,33 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
         _stripe_array.emplace_back(std::make_unique< StripeDevice >(std::move(device), sb.value()));
     }
 
+    // Recompute _stride_width in case load_superblock corrected _stripe_size from the on-disk
+    // superblock value (the initializer-list computed it from the caller-supplied stripe_size_bytes
+    // before any superblock was read, so it may be stale).
+    if (_stripe_size == 0)
+        throw std::runtime_error("Raid0Disk: on-disk superblock delivered zero stripe_size (possible data corruption)");
+    _stride_width = _stripe_size * static_cast< uint32_t >(_stripe_array.size());
+    // Recompute io_opt_shift to match the corrected stride width.
+    our_params.basic.io_opt_shift = ilog2(_stride_width);
+
     // Finally we'll calculate the volume size as a multiple of the smallest array device
     // and adjust to account for the superblock we will write at the HEAD of each array device.
     // To keep things simple, we'll just use the first chunk from each device for ourselves.
-    our_params.basic.dev_sectors -= (_stripe_size >> SECTOR_SHIFT);
+
+    // H2: guard against device capacity <= stripe_size which would underflow the unsigned subtraction.
+    auto const stripe_size_sectors = static_cast< uint64_t >(_stripe_size >> SECTOR_SHIFT);
+    if (our_params.basic.dev_sectors <= stripe_size_sectors)
+        throw std::runtime_error(
+            fmt::format("Raid0Disk: device capacity ({} sectors) is too small for stripe_size ({} sectors)",
+                        our_params.basic.dev_sectors, stripe_size_sectors));
+    our_params.basic.dev_sectors -= stripe_size_sectors;
     our_params.basic.dev_sectors *= _stripe_array.size();
+    // M2: guard against division by zero if max_sectors is 0 (e.g. child device reported max_tx()==0).
+    if (our_params.basic.max_sectors == 0)
+        throw std::runtime_error("Raid0Disk: max_sectors is zero; child device reported max_tx() == 0");
+    // Per-stripe iovec bound: worst case is N=1 (single stripe), where one I/O can touch at most
+    // ceil(max_tx / stripe_size) stripes of the same device before the early-dispatch fires.
+    _max_iovecs_per_stripe = static_cast< uint32_t >((max_tx() + _stripe_size - 1) / _stripe_size);
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
@@ -167,15 +190,17 @@ void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) const {
-    // We gather all the pieces of each I/O intended to dispatch using this structure
+    DEBUG_ASSERT_GT(_stride_width, 0U) // LCOV_EXCL_LINE
+    // Per-stripe iovec accumulator. io_array is sized lazily to _max_iovecs_per_stripe
+    // (= ceil(max_tx / stripe_size)) on first touch per stripe; the thread_local vector
+    // grows to fit and is never shrunk, so cost is amortised to zero after warm-up.
     struct StripeAccum {
-        uint64_t io_addr{0};                // Starting address
-        uint32_t nr_vecs{0};                // How many iovecs are valid
-        std::array< iovec, 16 > io_array{}; // The scatter-list
+        uint64_t io_addr{0};           // Starting address
+        uint32_t nr_vecs{0};           // How many iovecs are valid
+        std::vector< iovec > io_array; // The scatter-list
     };
     static_assert(_max_stripe_cnt == 64, "dirty_mask must be exactly uint64_t");
 
-    // Then when allocated (once) an array of accumulators for the thread (1-thread per i/o queue)
     thread_local auto sub_cmds = std::array< StripeAccum, _max_stripe_cnt >();
 
     // Reset only touched stripes on exit; a failed call leaves non-zero nr_vecs that would corrupt the next I/O.
@@ -204,7 +229,10 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) con
 
         dirty_mask |= 1ULL << stripe_off;
         auto& acc = sub_cmds[stripe_off];
-        if (!acc.nr_vecs) acc.io_addr = logical_off;
+        if (!acc.nr_vecs) {
+            acc.io_addr = logical_off;
+            if (acc.io_array.size() < _max_iovecs_per_stripe) acc.io_array.resize(_max_iovecs_per_stripe);
+        }
         acc.io_array[acc.nr_vecs++] = {buf_cursor, sz};
 
         // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
@@ -280,10 +308,11 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         if (!res) co_return -EIO;
     }
 
-    // Submit now so the kernel snapshots leaf-staged iovecs that point into thread_local sub_cmds
-    // (in __distribute) before this coroutine suspends. Without this submit, sibling Raid0 IOs on
-    // the same thread would overwrite sub_cmds before the queue loop's submit_and_wait_timeout
-    // hands the SQEs to the kernel, corrupting in-flight writev/readv. One extra syscall per
+    // Submit now so the kernel snapshots leaf-staged iovecs before this coroutine suspends.
+    // The iovec buffers live in heap storage owned by thread_local sub_cmds (in __distribute);
+    // a sibling Raid0 IO on the same thread can trigger a vector resize (via DirtyGuard reset +
+    // re-entry) that frees those buffers before the kernel reads them. Submit hands them to the
+    // kernel before __distribute's DirtyGuard fires, eliminating the window. One extra syscall per
     // multi-stripe RAID0 IO; FSDisk-only and single-stripe paths are unaffected.
     // On submit failure, drain all tasks before returning so no _waiter handles are left dangling.
     // Reads are safe to retry (EAGAIN); writes may have partially committed stripes, so EIO.
