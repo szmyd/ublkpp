@@ -677,22 +677,16 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
     auto const r = co_await primary_task;
 
     if (r >= 0) {
-        if (primary_dev->unavail.test(std::memory_order_relaxed))
-            RLOGI("Device {} back online (read succeeded) [uuid:{}]", *primary_dev->disk, _str_uuid)
         primary_dev->unavail.clear(std::memory_order_release);
-        RLOGD("Read [addr:{:#0x}|len:{}] ← {} r={}", addr, len, *primary_dev->disk, r)
         co_return r;
     }
     if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
-        RLOGW("Device marked unavailable [r={}]: {}", r, *primary_dev->disk)
+        RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
     if (!failover_dev) co_return -EAGAIN;
 
     auto failover_task = (*failover_dev)->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
-    auto const failover_r = co_await failover_task;
-    RLOGD("Failover read [addr:{:#0x}|len:{}] ← {} r={} (primary {} r={})", addr, len, *(*failover_dev)->disk,
-          failover_r, *primary_dev->disk, r)
-    co_return failover_r;
+    co_return co_await failover_task;
 }
 
 std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
@@ -713,18 +707,14 @@ Raid1Disk::__select_read_devices(RouteState const& state, uint64_t addr, uint32_
         backup_stale = true;
     }
     if (!state.is_degraded && __route_to_device(state, route)->unavail.test(std::memory_order_acquire)) {
-        auto const unavail_dev = __route_to_device(state, route);
         route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
-        RLOGD("Read [addr:{:#0x}|len:{}]: {} unavail, routing to {}", addr, len, *unavail_dev->disk,
-              *__route_to_device(state, route)->disk)
+        RLOGD("Skipping unavail device, routing to alternate")
     }
 
     last_read = route;
     auto const other_route = (route == read_route::DEVA) ? read_route::DEVB : read_route::DEVA;
-    auto const& primary = __route_to_device(state, route);
-    RLOGD("Read [addr:{:#0x}|len:{}] → {} ({}{})", addr, len, *primary->disk,
-          state.is_degraded ? "degraded" : "healthy", backup_stale ? ",dirty" : "")
-    return {primary, backup_stale ? std::nullopt : std::optional{__route_to_device(state, other_route)}};
+    return {__route_to_device(state, route),
+            backup_stale ? std::nullopt : std::optional{__route_to_device(state, other_route)}};
 }
 
 bool Raid1Disk::__backup_writable(RouteState const& state, uint64_t addr, uint32_t len) const noexcept {
@@ -822,8 +812,6 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         auto const [primary_dev, failover_dev] = __select_read_devices(state, static_cast< uint64_t >(addr), len);
         auto const primary_res = primary_dev->disk->sync_iov(UBLK_IO_OP_READ, iovecs, nr_vecs, adj_addr);
         if (primary_res) {
-            if (primary_dev->unavail.test(std::memory_order_relaxed))
-                RLOGI("Device {} back online (read succeeded) [uuid:{}]", *primary_dev->disk, _str_uuid)
             primary_dev->unavail.clear(std::memory_order_release);
             return primary_res;
         }
