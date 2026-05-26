@@ -126,8 +126,7 @@ void Raid1Disk::__init_params() {
     our_params.basic.dev_sectors = k_max_user_data >> SECTOR_SHIFT;
 
     // Now find the what size we should actually set based on the smallest provided device
-    for (auto device_array = std::set< std::shared_ptr< ublk_disk > >{_device_a->disk, _device_b->disk};
-         auto const& device : device_array) {
+    for (auto const& device : std::array{_device_a->disk, _device_b->disk}) {
         if (!device->direct_io()) {
             RLOGW("Device {} does not support O_DIRECT - RAID-1 will use buffered I/O (backend caching not bypassed!)",
                   device)
@@ -164,8 +163,7 @@ void Raid1Disk::__init_params() {
     // Without this check a too-small device silently produces an integer underflow in the
     // dev_sectors adjustment below and a confusing "exceeds SuperBitmap max capacity" error
     // from Bitmap's constructor later.
-    for (auto device_array = std::set< std::shared_ptr< ublk_disk > >{_device_a->disk, _device_b->disk};
-         auto const& device : device_array) {
+    for (auto const& device : std::array{_device_a->disk, _device_b->disk}) {
         if (device->is_missing()) continue; // placeholder — no physical capacity to check
         auto const dev_bytes = device->capacity();
         if (dev_bytes < _reserved_size) {
