@@ -4,7 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.5] - 2026-05-26
+
+### Fixed
+
+- **H5 (target)**: `ublksrv_ctrl_start_recovery` failure was logged but execution continued into subsequent recovery steps in an undefined state. Now returns `std::errc::operation_not_permitted` immediately on failure.
+- **H6 (target)**: the io_uring completion handler only caught `std::exception`; any other thrown type would propagate through the `noexcept` coroutine boundary and terminate the process. Added a `catch (...)` fallback that completes the IO with `-EIO`.
+- **M8 (target)**: `sem_destroy` was never called on the queue semaphore, leaking an OS resource on every device teardown.
+- **M7 (driver)**: `FSDisk` could `throw` during `fstat`/`ioctl`/`fcntl` without closing `_fd`, leaking the file descriptor. Added an RAII `FdGuard` that closes `_fd` on any exception path.
+- **L3 (driver)**: `ilog2(0)` is undefined behaviour (SIGFPE). Added explicit zero-checks for `lbs` and `pbs` before calling `ilog2` on both block-device and regular-file code paths.
+
 ## [0.32.4] - 2026-05-25
+
 ### Fixed
 - raid1: Make stable copy of iovecs in __failover_read
 
