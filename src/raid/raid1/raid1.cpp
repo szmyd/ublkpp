@@ -160,6 +160,20 @@ void Raid1Disk::__init_params() {
                                          : (static_cast< uint64_t >(our_params.basic.max_sectors) << SECTOR_SHIFT);
     _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) % align;
 
+    // L4: verify every physical device is large enough to hold the reserved region.
+    // Without this, a too-small device silently underflows dev_sectors and later triggers
+    // a confusing "exceeds SuperBitmap max capacity" error from the Bitmap constructor.
+    for (auto const& device : std::array{_device_a->disk, _device_b->disk}) {
+        if (device->is_missing()) continue;
+        auto const dev_bytes = device->capacity();
+        if (dev_bytes < _reserved_size) {
+            RLOGE("Device {} is too small: {} bytes < reserved {} bytes [uuid:{}]", *device, dev_bytes, _reserved_size,
+                  _str_uuid)
+            throw std::runtime_error(
+                fmt::format("device too small: {} bytes < reserved {} bytes", dev_bytes, _reserved_size));
+        }
+    }
+
     // Reserve space for the superblock/bitmap
     our_params.basic.dev_sectors -= (_reserved_size >> SECTOR_SHIFT);
 
@@ -274,8 +288,10 @@ Raid1Disk::~Raid1Disk() {
     if (!_sb) return;
 
     auto const state = __capture_route_state();
-    // Write out our dirty bitmap
-    if (state.is_degraded && !state.backup_dev->disk->is_missing()) {
+    // Write out our dirty bitmap to the active device.
+    // M11: flush even when backup_dev is a missing placeholder — the active device still needs
+    // the current bitmap so the next startup can do an incremental resync rather than a full one.
+    if (state.is_degraded) {
         RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *state.active_dev->disk)
         if (auto res = _dirty_bitmap->sync_to(*state.active_dev->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
@@ -626,7 +642,6 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     auto& failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
     auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
 
-    auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
@@ -646,7 +661,11 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // have already received the write). Keep the in-memory degraded route and mark the failed
         // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
         // full recovery on next start will reconcile any inconsistency.
-        _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
+        //
+        // M6: do NOT revert bitmap.age here. The bumped age must stay in memory so the next
+        // successful SB write (e.g. at clean shutdown) persists the post-degradation age.
+        // Rolling back to old_age would make the active device look as old as the failed one,
+        // causing pick_superblock to choose the wrong (failed) device on next restart.
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
