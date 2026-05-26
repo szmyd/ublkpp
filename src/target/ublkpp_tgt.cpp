@@ -128,6 +128,9 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     } catch (std::exception const& e) {
                         TLOGE("I/O threw exception: [{}]", e.what())
                         if (state->_owner) ublksrv_complete_io(q, state->_owner->_tag, -EIO);
+                    } catch (...) {
+                        TLOGE("I/O threw unknown exception")
+                        if (state->_owner) ublksrv_complete_io(q, state->_owner->_tag, -EIO);
                     }
                 }
             } else {
@@ -189,8 +192,10 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         if (auto ret = ublksrv_ctrl_get_info(tgt->ctrl_dev); ret < 0) {
             TLOGE("Cannot get Ctrl Info for disk {}", tgt->device)
             return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
-        } else {
-            ret = ublksrv_ctrl_start_recovery(tgt->ctrl_dev);
+        }
+        if (auto ret = ublksrv_ctrl_start_recovery(tgt->ctrl_dev); ret < 0) {
+            TLOGE("Cannot start recovery for disk {}: {}", tgt->device, ret)
+            return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
         }
     }
 
@@ -248,6 +253,7 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     // Wait for Queues to start
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i)
         sem_wait(&queue_sem);
+    sem_destroy(&queue_sem);
 
     // Start processing I/Os
     if (!recovery) {
