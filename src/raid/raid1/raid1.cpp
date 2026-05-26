@@ -499,7 +499,7 @@ std::shared_ptr< ublk_disk > Raid1Disk::swap_device(std::string const& outgoing_
             incoming_mirror->new_device = true;
         }
         // Do not read or write here yet
-        incoming_mirror->unavail.test_and_set(std::memory_order_acquire);
+        incoming_mirror->unavail.test_and_set(std::memory_order_acq_rel);
     } catch (std::runtime_error const& e) { return incoming_device; }
 
     // Stop resync before touching the bitmap so the resync task doesn't race set_bit/clear_bit
@@ -647,11 +647,11 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
         // full recovery on next start will reconcile any inconsistency.
         _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
-        failed_device->unavail.test_and_set(std::memory_order_acquire);
+        failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
-    failed_device->unavail.test_and_set(std::memory_order_acquire);
+    failed_device->unavail.test_and_set(std::memory_order_acq_rel);
     if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
     return 0;
 }
@@ -680,7 +680,7 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
         primary_dev->unavail.clear(std::memory_order_release);
         co_return r;
     }
-    if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
+    if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acq_rel))
         RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
     if (!failover_dev) co_return -EAGAIN;
@@ -815,7 +815,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             primary_dev->unavail.clear(std::memory_order_release);
             return primary_res;
         }
-        if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
+        if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acq_rel))
             RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
         if (!failover_dev) return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));

@@ -99,8 +99,9 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
     }
     ts.iov.iov_base = reinterpret_cast< void* >(ts.iod.addr);
     ts.iov.iov_len = ts.iod.nr_sectors << SECTOR_SHIFT;
+    int const qid = tag % static_cast< int >(_queues.size());
     _async_tasks[tag].emplace(
-        _disk->async_iov(&_queues[0], &ts.data, &ts.iov, 1, ts.iod.start_sector << SECTOR_SHIFT).start());
+        _disk->async_iov(&_queues[qid], &ts.data, &ts.iov, 1, ts.iod.start_sector << SECTOR_SHIFT).start());
     // Pool size == number of CqeStates registered (one per pending stripe SQE)
     return io_result{_io_states[tag]._pool.size()};
 }

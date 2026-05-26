@@ -20,6 +20,10 @@ TEST(Raid1Concurrency, WriteDuringSwap) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
+    // device_b write counter: tracks writes to device_b so we can verify none occur after swap.
+    std::atomic< int > device_b_writes_after_swap{0};
+    std::atomic< bool > swap_done{false};
+
     // Both devices handle sync writes
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
@@ -28,8 +32,12 @@ TEST(Raid1Concurrency, WriteDuringSwap) {
 
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(::testing::AnyNumber())
-        .WillRepeatedly(
-            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
+        .WillRepeatedly([&](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            // Count writes that arrive after the swap completes — these indicate a routing bug.
+            if (swap_done.load(std::memory_order_acquire))
+                device_b_writes_after_swap.fetch_add(1, std::memory_order_relaxed);
+            return static_cast< int >(iovecs->iov_len);
+        });
 
     // Background thread: issue writes continuously
     std::atomic< bool > stop{false};
@@ -70,12 +78,18 @@ TEST(Raid1Concurrency, WriteDuringSwap) {
     auto old_dev = raid_device.swap_device("DiskB", device_c);
     EXPECT_EQ(old_dev, device_b);
 
+    // Signal that the swap is complete so device_b write counting begins.
+    swap_done.store(true, std::memory_order_release);
+
     // Continue writes for a while after swap to ensure overlap
     std::this_thread::sleep_for(20ms);
     stop.store(true, std::memory_order_relaxed);
     writer.join();
 
     EXPECT_GT(write_count.load(), 10); // Should achieve substantial writes
+    // After the swap, all writes must go to device_a and device_c — never to the removed device_b.
+    EXPECT_EQ(device_b_writes_after_swap.load(), 0)
+        << "Writes must not be routed to device_b after it has been swapped out";
 }
 
 // Test that reads during swap_device do not crash. The __failover_read

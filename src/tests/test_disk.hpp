@@ -65,23 +65,3 @@ public:
 };
 
 }; // namespace ublkpp
-
-inline ublk_io_data make_io_data(uint32_t op_flags, uint32_t len = 0, uint64_t start = 0) {
-    static int rolling_tag = 0;
-    return ublk_io_data{
-        .tag = ++rolling_tag,
-        .pad = 0,
-        .iod =
-            new ublksrv_io_desc{
-                .op_flags = op_flags,
-                .nr_sectors = len >> ublkpp::SECTOR_SHIFT,
-                .start_sector = start >> ublkpp::SECTOR_SHIFT,
-                .addr = 0,
-            },
-        .private_data = nullptr,
-    };
-}
-
-inline void remove_io_data(ublk_io_data& data) {
-    if (data.iod) delete data.iod;
-}
