@@ -290,7 +290,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
                     any_copy = false;
                 }
             } else {
-                dirty_mirror->unavail.test_and_set(std::memory_order_acquire);
+                dirty_mirror->unavail.test_and_set(std::memory_order_acq_rel);
                 break;
             }
         }
@@ -377,7 +377,7 @@ bool Raid1ResyncTask::probe_mirror(MirrorDevice& mirror, uint64_t reserved_size)
         mirror.unavail.clear(std::memory_order_release);
         return true;
     }
-    mirror.unavail.test_and_set(std::memory_order_acquire);
+    mirror.unavail.test_and_set(std::memory_order_acq_rel);
     return false;
 }
 

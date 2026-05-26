@@ -83,6 +83,19 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
         DLOGE("backing file {} can't be opened: {}", str_path, strerror(errno))
         throw std::runtime_error("Open Failed!");
     }
+    // RAII guard: closes _fd if any subsequent constructor step throws.
+    struct FdGuard {
+        FSDisk* _self;
+        bool _released{false};
+        explicit FdGuard(FSDisk* s) noexcept : _self(s) {}
+        ~FdGuard() noexcept {
+            if (!_released && _self->_fd >= 0) {
+                close(_self->_fd);
+                _self->_fd = -1;
+            }
+        }
+        void release() noexcept { _released = true; }
+    } fd_scope{this};
 
     // clang-format off
     struct stat st{};
@@ -102,6 +115,7 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
             ioctl(_fd, BLKPBSZGET, &pbs) != 0)
             throw std::runtime_error("ioctl Failed!");
         if (block_has_unmap(st)) our_params.types |= UBLK_PARAM_TYPE_DISCARD;
+        if (lbs == 0 || pbs == 0) throw std::runtime_error("Block device reported zero block size!");
         our_params.basic.logical_bs_shift = static_cast< uint8_t >(ilog2(lbs));
         our_params.basic.physical_bs_shift = static_cast< uint8_t >(ilog2(pbs));
         DLOGD("Backing is a block device [{}:{}:{}]!", str_path, lbs, pbs)
@@ -110,6 +124,7 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
         bytes = st.st_size;
         our_params.types |= UBLK_PARAM_TYPE_DISCARD;
         auto const lbs = static_cast< uint32_t >(st.st_blksize);
+        if (lbs == 0) throw std::runtime_error("Regular file reported zero block size!");
         our_params.basic.logical_bs_shift = static_cast< uint8_t >(ilog2(lbs));
         our_params.basic.physical_bs_shift = our_params.basic.logical_bs_shift;
         DLOGD("Backing is a regular file [{}:{}:{}]!", str_path, lbs, lbs)
@@ -140,10 +155,8 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
     our_params.basic.dev_sectors = bytes >> SECTOR_SHIFT;
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
-    if (UINT32_MAX == our_params.discard.discard_granularity) {
-        our_params.discard.discard_granularity = 0;
-        our_params.types &= ~UBLK_PARAM_TYPE_DISCARD;
-    }
+    if (our_params.discard.discard_granularity == 0) { our_params.types &= ~UBLK_PARAM_TYPE_DISCARD; }
+    fd_scope.release(); // constructor succeeded: _fd ownership transferred to this
 }
 
 FSDisk::~FSDisk() {

@@ -1,6 +1,7 @@
 #include "../test_raid1_common.hpp"
 
 #include <isa-l/mem_routines.h>
+#include <thread>
 
 // Test: replica_states when both devices are healthy
 TEST(Raid1, ReplicaStatesHealthy) {
@@ -48,8 +49,10 @@ TEST(Raid1, ToggleResyncDisable) {
     // Disable resync
     raid_device.toggle_resync(false);
 
-    // Re-enable resync
+    // Re-enable resync — with a clean (empty) bitmap the resync thread exits immediately.
+    // wait_for_clean_state confirms both replicas reach CLEAN state and bytes_to_sync drops to 0.
     raid_device.toggle_resync(true);
+    EXPECT_TRUE(wait_for_clean_state(raid_device)) << "Array should reach clean state after resync completes";
 
     // Expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);

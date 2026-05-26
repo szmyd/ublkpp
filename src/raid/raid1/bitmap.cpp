@@ -404,6 +404,14 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
         auto page_data = __get_or_create_page(page_offset);
         if (!page_data) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
 
+        // Clear loaded_from_disk BEFORE writing bits so that a concurrent sync_to cannot
+        // observe loaded_from_disk=true after new dirty bits have already been ORed in.
+        // If sync_to reads loaded_from_disk=false it will include this page in the flush,
+        // which is correct whether or not we have finished setting bits yet (extra flush is safe).
+        // The reverse ordering (bits first, then clear flag) is the TOCTOU bug: sync_to could
+        // read loaded_from_disk=true, skip the page, and a subsequent crash would lose those bits.
+        page_data->loaded_from_disk.store(false, std::memory_order_release);
+
         auto page = page_data->page.load(std::memory_order_acquire);
         auto cur_word = page + word_offset;
         // Handle update crossing multiple words (optimization potential?)
@@ -419,9 +427,6 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
-
-        // Mark as modified AFTER all modifications (release ensures visibility)
-        page_data->loaded_from_disk.store(false, std::memory_order_release);
 
         // Update superbitmap to mark this page as dirty
         _super_bitmap.set_bit(page_offset);

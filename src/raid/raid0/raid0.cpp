@@ -6,6 +6,7 @@
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
 
+#include <ublkpp/lib/cqe_state.hpp>
 #include <ublkpp/lib/disk_task.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
@@ -42,7 +43,7 @@ class Raid0Disk : public ublk_disk {
     std::vector< std::unique_ptr< StripeDevice > > _stripe_array;
 
     uint32_t _stripe_size{0};
-    uint32_t _stride_width{0};
+    uint64_t _stride_width{0};          // L1: widened to uint64_t; large configs (e.g. 128MiB × 64) overflow uint32_t
     uint32_t _max_iovecs_per_stripe{0}; // ceil(max_tx / stripe_size): max iovecs a single stripe accumulates
 
     io_result __distribute(iovec* iov, uint64_t addr, auto&& func) const;
@@ -71,6 +72,11 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
         ublk_disk(), _stripe_size(stripe_size_bytes), _stride_width(_stripe_size * disks.size()) {
     if (disks.empty()) throw std::invalid_argument("Raid0Disk: at least one disk required");
     if (stripe_size_bytes == 0) throw std::invalid_argument("Raid0Disk: stripe_size_bytes must be non-zero");
+    // L2: ilog2 rounds down for non-power-of-2 inputs, producing wrong geometry silently.
+    // E.g. stripe_size=6KiB would use ilog2→12, treating it as 4KiB. Reject early.
+    if (stripe_size_bytes & (stripe_size_bytes - 1))
+        throw std::invalid_argument(
+            fmt::format("Raid0Disk: stripe_size_bytes ({}) must be a power of 2", stripe_size_bytes));
     if (disks.size() > _max_stripe_cnt)
         throw std::invalid_argument(
             fmt::format("Raid0Disk: too many disks ({}), max is {}", disks.size(), _max_stripe_cnt));
@@ -114,7 +120,7 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // before any superblock was read, so it may be stale).
     if (_stripe_size == 0)
         throw std::runtime_error("Raid0Disk: on-disk superblock delivered zero stripe_size (possible data corruption)");
-    _stride_width = _stripe_size * static_cast< uint32_t >(_stripe_array.size());
+    _stride_width = static_cast< uint64_t >(_stripe_size) * _stripe_array.size(); // L1: keep uint64_t arithmetic
     // Recompute io_opt_shift to match the corrected stride width.
     our_params.basic.io_opt_shift = ilog2(_stride_width);
 
@@ -190,7 +196,7 @@ void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
 io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) const {
-    DEBUG_ASSERT_GT(_stride_width, 0U) // LCOV_EXCL_LINE
+    DEBUG_ASSERT_GT(_stride_width, 0ULL) // LCOV_EXCL_LINE
     // Per-stripe iovec accumulator. io_array is sized lazily to _max_iovecs_per_stripe
     // (= ceil(max_tx / stripe_size)) on first touch per stripe; the thread_local vector
     // grows to fit and is never shrunk, so cost is amortised to zero after warm-up.
@@ -314,12 +320,17 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     // re-entry) that frees those buffers before the kernel reads them. Submit hands them to the
     // kernel before __distribute's DirtyGuard fires, eliminating the window. One extra syscall per
     // multi-stripe RAID0 IO; FSDisk-only and single-stripe paths are unaffected.
-    // On submit failure, drain all tasks before returning so no _waiter handles are left dangling.
-    // Reads are safe to retry (EAGAIN); writes may have partially committed stripes, so EIO.
+    //
+    // H1: Retry once on failure: the ring can be transiently full if the kernel hasn't drained CQEs
+    // yet. A second failure means the ring is genuinely broken (EBADF, ENOMEM, …) — abort rather
+    // than attempt recovery. Recovery would require synthetically completing every suspended
+    // cqe_state to unblock the drain loop; that is complex machinery for an effectively-zero-
+    // probability path. Aborting also prevents a stale-SQE UAF: the staged SQEs left in the ring
+    // would be flushed by the next io_uring_submit on this queue, delivering CQEs into an
+    // already-freed coroutine frame.
     if (q && q->ring_ptr && io_uring_submit(q->ring_ptr) < 0) [[unlikely]] { // LCOV_EXCL_START
-        for (auto& t : stripe_tasks)
-            co_await t;
-        co_return op == UBLK_IO_OP_READ ? -EAGAIN : -EIO;
+        RELEASE_ASSERT_GE(io_uring_submit(q->ring_ptr), 0,
+                          "io_uring_submit failed twice; ring is broken ({}). Aborting.", strerror(errno))
     } // LCOV_EXCL_STOP
 
     int total = 0;
@@ -336,7 +347,7 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
 static const uint8_t magic_bytes[16] = {0127, 0345, 072,  0211, 0254, 033,  070,  0146,
                                         0125, 0377, 0204, 065,  0131, 0120, 0306, 047};
-constexpr auto SB_VERSION = 1;
+using raid0::k_sb_version;
 
 static raid0::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid0::SuperBlock);
@@ -411,10 +422,17 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t& str
     auto const sb_ver = be16toh(sb->header.version);
     RLOGI("Loaded v{:#0x} superblock [stripe_sz:{}Ki, stripe_off:{}, uuid:{}] from: {}", sb_ver, stripe_size / Ki,
           stripe_off, to_string(uuid), device)
+    // M3: reject superblocks written by a newer version of this code. A future format may add
+    // fields before the existing ones, so silently processing would cause data corruption.
+    if (sb_ver > k_sb_version) {
+        RLOGE("Superblock version {:#0x} is newer than supported {:#0x} — refusing to open", sb_ver, k_sb_version)
+        free(sb);
+        return std::unexpected(std::make_error_condition(std::errc::not_supported));
+    }
 
     // Migrating to latest version
-    if (SB_VERSION > sb_ver) {
-        sb->header.version = htobe16(SB_VERSION);
+    if (k_sb_version > sb_ver) {
+        sb->header.version = htobe16(k_sb_version);
         if (!write_superblock(device, sb)) {
             free(sb);
             return std::unexpected(std::make_error_condition(std::errc::io_error));

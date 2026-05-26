@@ -51,6 +51,41 @@ TEST(Raid0, ZeroStripeSizeFromCorruptedSBThrows) {
                  std::runtime_error);
 }
 
+// L2: ilog2 silently rounds down for non-power-of-2 stripe sizes (e.g. 6KiB → treated as 4KiB).
+// The constructor must reject non-power-of-2 stripe sizes before any device operations.
+TEST(Raid0, NonPowerOfTwoStripeSizeThrows) {
+    // 6 KiB is not a power of 2; no disk I/O should occur (guard fires before the device loop).
+    // Use CREATE_DISK_F with no_read=true so mock expectations allow zero calls.
+    auto device_a = CREATE_DISK_F((TestParams{.capacity = Gi}), true, false, true, false);
+    auto device_b = CREATE_DISK_F((TestParams{.capacity = Gi}), true, false, true, false);
+    EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::random_generator()(), 6 * Ki,
+                                         std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b}),
+                 std::invalid_argument);
+}
+
+// M3: load_superblock must reject on-disk superblock versions newer than SB_VERSION.
+// If a newer code wrote extra fields before the existing ones, silently processing would corrupt data.
+TEST(Raid0, FutureSuperblockVersionThrows) {
+    // device_a returns a superblock with version = k_sb_version + 1 (future format).
+    // The constructor throws on the first device; device_b is never reached.
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            auto sb = normal_superblock;
+            sb.fields.stripe_off = htobe16(0);
+            sb.header.version = htobe16(ublkpp::raid0::k_sb_version + 1);
+            memcpy(iovecs->iov_base, &sb, sizeof(ublkpp::raid0::SuperBlock));
+            return sizeof(ublkpp::raid0::SuperBlock);
+        });
+    // No write expectation: future-version SBs are rejected before any migration write.
+    // device_b: no I/O expected because the constructor throws before reaching it.
+    auto device_b = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+    EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::string_generator()(test_uuid), 128 * Ki,
+                                         std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b}),
+                 std::runtime_error);
+}
+
 // Brief: If any device should not load/write superblocks correctly, initialization should throw
 TEST(Raid0, FailedReadSB) {
     {

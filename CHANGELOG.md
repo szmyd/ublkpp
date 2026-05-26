@@ -14,7 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pairs legs in order; assigns per-pair partition UUIDs via `name_generator("partition_K")`,
   matching the convention used by `make_md_raid10_disk` for UUID consistency.
 
+## [0.32.6] - 2026-05-26
+
+### Fixed
+
+- **H1 (raid0)**: `io_uring_submit` failure in `async_iov` left child coroutines waiting for CQEs that would never arrive, deadlocking the drain loop. Staged SQEs remaining in the ring would be submitted later with recycled `cqe_state` pointers, causing UAF. Fixed by retrying submit once; if still failing, synthetically completing pending `cqe_state` entries before draining.
+- **M3 (raid0)**: `load_superblock` silently accepted on-disk superblock versions newer than `SB_VERSION`. A future format change adding fields before existing ones would corrupt data. Now throws `std::runtime_error` (returns `std::errc::not_supported`) for `sb_ver > SB_VERSION`.
+- **L1 (raid0)**: `_stride_width` was `uint32_t`; for large configs (e.g. 128 MiB stripe × 64 disks = 8 GiB) the multiplication overflowed silently. Widened to `uint64_t` throughout, including `next_subcmd`/`merged_subcmds` signatures in `raid0_impl.hpp`.
+- **L2 (raid0)**: Non-power-of-2 `stripe_size_bytes` was silently rounded down by `ilog2` (e.g. 6 KiB treated as 4 KiB), producing wrong geometry. Constructor now throws `std::invalid_argument` for non-power-of-2 stripe sizes.
+
+## [0.32.5] - 2026-05-26
+
+### Fixed
+
+- **H5 (target)**: `ublksrv_ctrl_start_recovery` failure was logged but execution continued into subsequent recovery steps in an undefined state. Now returns `std::errc::operation_not_permitted` immediately on failure.
+- **H6 (target)**: the io_uring completion handler only caught `std::exception`; any other thrown type would propagate through the `noexcept` coroutine boundary and terminate the process. Added a `catch (...)` fallback that completes the IO with `-EIO`.
+- **M8 (target)**: `sem_destroy` was never called on the queue semaphore, leaking an OS resource on every device teardown.
+- **M7 (driver)**: `FSDisk` could `throw` during `fstat`/`ioctl`/`fcntl` without closing `_fd`, leaking the file descriptor. Added an RAII `FdGuard` that closes `_fd` on any exception path.
+- **L3 (driver)**: `ilog2(0)` is undefined behaviour (SIGFPE). Added explicit zero-checks for `lbs` and `pbs` before calling `ilog2` on both block-device and regular-file code paths.
+
 ## [0.32.4] - 2026-05-25
+
 ### Fixed
 - raid1: Make stable copy of iovecs in __failover_read
 
