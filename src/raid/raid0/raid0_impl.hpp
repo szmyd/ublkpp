@@ -14,25 +14,26 @@ namespace ublkpp::raid0 {
 
 constexpr auto k_page_size = 4 * Ki;
 
-inline auto next_subcmd(uint32_t const stride_width, uint32_t const stripe_size, uint64_t const addr,
+// L1: stride_width widened to uint64_t to prevent overflow for large configs (e.g. 128MiB × 64 disks).
+inline auto next_subcmd(uint64_t const stride_width, uint32_t const stripe_size, uint64_t const addr,
                         uint32_t const len) {
     // If single disk, nothing needed
     if (stride_width == stripe_size) [[unlikely]]
         return std::make_tuple(0U, addr, len);
     auto const chunk_num = addr / stride_width; // Which stride
     auto const offset_in_stride = addr % stride_width;
-    uint32_t const device_off = offset_in_stride / stripe_size;     // Which disk
-    auto const chunk_off = offset_in_stride % stripe_size;          // Offset in stripe
-    auto const logical_off = (chunk_num * stripe_size) + chunk_off; // Logical offset
+    uint32_t const device_off = static_cast< uint32_t >(offset_in_stride / stripe_size); // Which disk
+    auto const chunk_off = static_cast< uint32_t >(offset_in_stride % stripe_size);      // Offset in stripe
+    auto const logical_off = (chunk_num * stripe_size) + chunk_off;                      // Logical offset
     auto const sz = std::min(len, static_cast< uint32_t >(stripe_size - chunk_off));
     return std::make_tuple(device_off, logical_off, sz);
 }
 
 // For operations that don't require a buffer being passed (e.g. Discard) we can optimize by merging I/Os that would
 // access the same device after wrapping around the stride.
-inline auto merged_subcmds(uint32_t const stride_width, uint32_t const stripe_size, uint64_t addr, uint64_t const len) {
+inline auto merged_subcmds(uint64_t const stride_width, uint32_t const stripe_size, uint64_t addr, uint64_t const len) {
     auto ret = std::map< uint32_t, std::pair< uint64_t, uint64_t > >();
-    // If single disk, no splitting needed
+    // If single disk, no splitting needed (stride_width == stripe_size implies 1-disk array)
     if (stride_width == stripe_size) {
         ret[0] = std::make_pair(addr, len);
         return ret;
@@ -67,5 +68,7 @@ static_assert(k_page_size == sizeof(SuperBlock), "Size of raid0::SuperBlock does
 #else
 #error "Big Endian not supported!"
 #endif
+
+constexpr uint16_t k_sb_version = 1;
 
 } // namespace ublkpp::raid0
