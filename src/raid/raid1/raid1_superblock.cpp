@@ -27,16 +27,20 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
         dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
         return dev_a;
     } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount) {
-        // Ages are equal but one device had an unclean shutdown. Route reads to the clean device
-        // so __init_bitmap_and_degraded_route enters the degraded path and loads the dirty bitmap
-        // from the authoritative replica. Without setting read_route here the array opens as
-        // healthy (EITHER) and the unclean device's in-flight writes are silently ignored.
-        if (dev_a->fields.clean_unmount) {
-            dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
-            return dev_a;
-        }
-        dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
-        return dev_b;
+        // Ages are equal but clean_unmount differs. This can only happen when the shutdown write
+        // of clean_unmount=1 succeeded on one device but not the other — no data write can cause
+        // this because any data-write failure immediately degrades the array and diverges the ages.
+        // Equal ages therefore guarantee both devices are bit-for-bit identical: the bitmap is
+        // irrelevant and there is nothing to resync. Opening with the existing on-disk route
+        // (EITHER for a previously healthy array, DEVA/DEVB for a previously degraded one) is
+        // correct. clean_unmount=0 only triggers action in __init_bitmap_and_degraded_route when
+        // the route is already non-EITHER (degraded), which is already handled by the age branches
+        // above or the on-disk route value — not by anything we need to set here.
+        //
+        // NOTE FOR FUTURE ANALYSIS: do not add read_route assignment here. The temptation is to
+        // route to the clean device to "be safe", but equal ages make it unnecessary and it causes
+        // the array to open degraded and run a no-op resync on every asymmetric shutdown.
+        return dev_a->fields.clean_unmount ? dev_a : dev_b;
     }
 
     return dev_a;

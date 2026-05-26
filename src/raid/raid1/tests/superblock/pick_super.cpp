@@ -48,9 +48,11 @@ TEST(Raid1, PickSuper) {
         // pick_superblock must write DEVB into the returned superblock.
         EXPECT_EQ((ublkpp::raid1::read_route)choice->fields.read_route, ublkpp::raid1::read_route::DEVB);
     }
-    // Case 3: Equal ages, dev_b is clean, dev_a is unclean → pick_superblock routes to B.
-    // pick_superblock must write DEVB so __init_bitmap_and_degraded_route opens the array
-    // in degraded mode; without this the array opens healthy and A's in-flight writes are lost.
+    // Case 3: Equal ages, dev_b is clean, dev_a is unclean → pick_superblock returns B.
+    // Equal ages mean both devices have identical data; the asymmetric clean_unmount can only
+    // arise from a failed shutdown write, not from a data-write failure (which would diverge the
+    // ages). pick_superblock returns the clean device but does NOT set read_route — the array
+    // opens with whatever route was on disk (EITHER for a previously healthy array).
     {
         auto deva_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
@@ -68,8 +70,8 @@ TEST(Raid1, PickSuper) {
                                       .superbitmap_reserved = {0}};
         auto choice = ublkpp::raid1::pick_superblock(&deva_sb, &devb_sb);
         EXPECT_EQ(choice, &devb_sb);
-        // Must write DEVB so the degraded init path fires on next open.
-        EXPECT_EQ((ublkpp::raid1::read_route)choice->fields.read_route, ublkpp::raid1::read_route::DEVB);
+        // read_route is not modified — the on-disk value (EITHER) is preserved.
+        EXPECT_EQ((ublkpp::raid1::read_route)choice->fields.read_route, ublkpp::raid1::read_route::EITHER);
     }
     // Case 4: dev_a has higher age → pick_superblock returns dev_a and sets read_route=DEVA.
     // Verifies that the code explicitly sets DEVA (non-vacuous: initial value is EITHER=0).
@@ -93,9 +95,9 @@ TEST(Raid1, PickSuper) {
         // pick_superblock must write DEVA into the returned superblock.
         EXPECT_EQ((ublkpp::raid1::read_route)choice->fields.read_route, ublkpp::raid1::read_route::DEVA);
     }
-    // Case 5: Equal ages, dev_a is clean, dev_b is unclean → pick_superblock routes to A.
-    // pick_superblock must write DEVA so __init_bitmap_and_degraded_route opens the array
-    // in degraded mode; without this the array opens healthy and B's in-flight writes are lost.
+    // Case 5: Equal ages, dev_a is clean, dev_b is unclean → pick_superblock returns A.
+    // Symmetric to Case 3: equal ages guarantee consistent data; clean_unmount asymmetry is
+    // only from a failed shutdown write. read_route is not modified.
     {
         auto deva_sb =
             ublkpp::raid1::SuperBlock{.header = {.magic = {0}, .version = 0, .uuid = {0}},
@@ -113,8 +115,8 @@ TEST(Raid1, PickSuper) {
                                       .superbitmap_reserved = {0}};
         auto choice = ublkpp::raid1::pick_superblock(&deva_sb, &devb_sb);
         EXPECT_EQ(choice, &deva_sb);
-        // Must write DEVA so the degraded init path fires on next open.
-        EXPECT_EQ((ublkpp::raid1::read_route)choice->fields.read_route, ublkpp::raid1::read_route::DEVA);
+        // read_route is not modified — the on-disk value (EITHER) is preserved.
+        EXPECT_EQ((ublkpp::raid1::read_route)choice->fields.read_route, ublkpp::raid1::read_route::EITHER);
     }
     // Case 6: Explicit DEVA check — dev_a has higher age and initial route DEVB to confirm
     // pick_superblock overwrites the field to DEVA (not just preserving the initial value).
