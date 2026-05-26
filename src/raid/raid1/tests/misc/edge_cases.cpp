@@ -238,8 +238,123 @@ TEST(Raid1, UncleanShutdownDegraded) {
                  std::runtime_error);
 }
 
+// Test L4: Device too small to hold reserved region — should throw with a clear message.
+// The reserved region for a v2 superblock with default chunk_size (32KiB) is ~125 MiB.
+// A 64 MiB device is guaranteed to be smaller than the reserved region.
+TEST(Raid1, DeviceTooSmallThrows) {
+    // 64 MiB is below the ~125 MiB v2 reserved region.
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 64 * Mi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 64 * Mi, .is_slot_b = true});
+
+    // Both devices need to return a superblock on READ so __load_and_select_superblock succeeds.
+    // __init_params will then throw before any WRITEs are issued.
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            if (iovecs->iov_base) {
+                memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
+            }
+            return ublkpp::raid1::k_page_size;
+        });
+
+    EXPECT_THROW(
+        {
+            try {
+                ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+            } catch (std::runtime_error const& e) {
+                EXPECT_NE(std::string::npos, std::string(e.what()).find("device too small"))
+                    << "Expected 'device too small' in exception message, got: " << e.what();
+                throw;
+            }
+        },
+        std::runtime_error);
+}
+
+// Test M6: Verify that bitmap.age is NOT reverted when __become_degraded's SB write fails.
+// After the write failure, the in-memory age must retain the post-degradation value so that
+// the next successful SB write (e.g. at clean shutdown) persists the correct age.
+TEST(Raid1, BecomeDegradedAgeNotRevertedOnWriteFailure) {
+    auto raw_a = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+    auto raw_b =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .is_slot_b = true});
+
+    // Both devices present and healthy for superblock load
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+            if (iov->iov_base) memcpy(iov->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+            if (iov->iov_base) {
+                memcpy(iov->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+                static_cast< ublkpp::raid1::SuperBlock* >(iov->iov_base)->fields.device_b = 1;
+            }
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // The age captured from the shutdown superblock write to raw_a.
+    auto raw_a_shutdown_age = uint64_t{0};
+
+    {
+        // Init: __become_active writes SB to both devices
+        EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+            .Times(::testing::AnyNumber())
+            .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+        EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+            .Times(::testing::AnyNumber())
+            .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+        auto raid =
+            std::make_unique< ublkpp::raid1::Raid1Disk >(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
+        raid->toggle_resync(false);
+
+        // I/O phase: raw_a data write succeeds; raw_b data write fails → __become_degraded.
+        // __become_degraded's SB write to raw_a (offset 0) also fails — this is the M6 path.
+        // Subsequent SB writes (at shutdown) succeed and capture the age.
+        EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, ::testing::Ne((off_t)0)))
+            .WillOnce([](uint8_t, iovec* iv, uint32_t, off_t) -> io_result { return iv->iov_len; })
+            .WillRepeatedly([](uint8_t, iovec* iv, uint32_t, off_t) -> io_result { return iv->iov_len; });
+        EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, ::testing::Ne((off_t)0)))
+            .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            });
+        EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
+            // First call: __become_degraded's SB write — fail it
+            .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+                return std::unexpected(std::make_error_condition(std::errc::io_error));
+            })
+            // Subsequent calls: shutdown SB write — succeed and capture the age
+            .WillRepeatedly([&raw_a_shutdown_age](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+                if (iov->iov_base)
+                    raw_a_shutdown_age =
+                        be64toh(static_cast< ublkpp::raid1::SuperBlock* >(iov->iov_base)->fields.bitmap.age);
+                return iov->iov_len;
+            });
+
+        iovec iov{nullptr, 4 * Ki};
+        std::ignore = raid->sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 4 * Ki);
+
+        // raid goes out of scope here; destructor issues sync_to (dirty bitmap pages) then SB write
+    }
+
+    // The age written at clean shutdown must be 1 (the degradation bump), NOT 0 (the pre-bump
+    // value that was incorrectly restored by the old rollback).
+    EXPECT_EQ(1UL, raw_a_shutdown_age)
+        << "bitmap.age must not be reverted to pre-degradation value after failed __become_degraded SB write";
+}
+
 // Verifies that resync_level=0 is rejected at construction time.
-// Only meaningful when the binary is invoked with --resync_level=0; skipped otherwise so
+// Only meaningful when the binary is invoked with --resync_level=4; skipped otherwise so
 // the regular Raid1Test CTest entry (resync_level=4) is not affected.
 // See CMakeLists.txt: Raid1ZeroResyncLevelThrows target.
 TEST(Raid1, ZeroResyncLevelThrows) {

@@ -160,6 +160,22 @@ void Raid1Disk::__init_params() {
                                          : (static_cast< uint64_t >(our_params.basic.max_sectors) << SECTOR_SHIFT);
     _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) % align;
 
+    // Bug L4: Validate that every member device is large enough to hold the reserved region.
+    // Without this check a too-small device silently produces an integer underflow in the
+    // dev_sectors adjustment below and a confusing "exceeds SuperBitmap max capacity" error
+    // from Bitmap's constructor later.
+    for (auto device_array = std::set< std::shared_ptr< ublk_disk > >{_device_a->disk, _device_b->disk};
+         auto const& device : device_array) {
+        if (device->is_missing()) continue; // placeholder — no physical capacity to check
+        auto const dev_bytes = device->capacity();
+        if (dev_bytes < _reserved_size) {
+            RLOGE("Device {} is too small: {} bytes < reserved {} bytes [uuid:{}]", *device, dev_bytes, _reserved_size,
+                  _str_uuid)
+            throw std::runtime_error(
+                fmt::format("device too small: {} bytes < reserved {} bytes", dev_bytes, _reserved_size));
+        }
+    }
+
     // Reserve space for the superblock/bitmap
     our_params.basic.dev_sectors -= (_reserved_size >> SECTOR_SHIFT);
 
@@ -274,8 +290,12 @@ Raid1Disk::~Raid1Disk() {
     if (!_sb) return;
 
     auto const state = __capture_route_state();
-    // Write out our dirty bitmap
-    if (state.is_degraded && !state.backup_dev->disk->is_missing()) {
+    // Write out our dirty bitmap to the active device when degraded.
+    // Bug M11: flush even when backup_dev is a missing/placeholder disk — the active device
+    // still needs the current bitmap so the next startup can do an incremental resync rather
+    // than a full one.  The old guard "!state.backup_dev->disk->is_missing()" incorrectly
+    // skipped the flush in exactly this scenario.
+    if (state.is_degraded) {
         RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *state.active_dev->disk)
         if (auto res = _dirty_bitmap->sync_to(*state.active_dev->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
@@ -284,7 +304,16 @@ Raid1Disk::~Raid1Disk() {
         }
         RLOGI("Synchronized: [uuid: {}]", _str_uuid)
     }
-    _sb->fields.clean_unmount = 0x1;
+    // Bug M5: All three bitfields (clean_unmount, read_route, device_b) share a single byte.
+    // Writes to any of them are read-modify-write operations that race with write_superblock()
+    // calls from I/O paths.  Guard the in-memory update with _ctrl_lock — the same lock that
+    // serializes __swap_device — to eliminate the undefined-behaviour window.  By the time the
+    // destructor runs the ublksrv queue threads are torn down (no new I/Os), so this lock is
+    // uncontended; its purpose is to act as a compiler/CPU barrier and document the invariant.
+    {
+        auto lg = std::scoped_lock< std::mutex >(_ctrl_lock);
+        _sb->fields.clean_unmount = 0x1;
+    }
     // Only update the superblock to clean devices
     if (auto res = write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route);
         !res) {
@@ -499,7 +528,7 @@ std::shared_ptr< ublk_disk > Raid1Disk::swap_device(std::string const& outgoing_
             incoming_mirror->new_device = true;
         }
         // Do not read or write here yet
-        incoming_mirror->unavail.test_and_set(std::memory_order_acquire);
+        incoming_mirror->unavail.test_and_set(std::memory_order_acq_rel);
     } catch (std::runtime_error const& e) { return incoming_device; }
 
     // Stop resync before touching the bitmap so the resync task doesn't race set_bit/clear_bit
@@ -626,7 +655,6 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     auto& failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
     auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
 
-    auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
@@ -646,12 +674,17 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // have already received the write). Keep the in-memory degraded route and mark the failed
         // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
         // full recovery on next start will reconcile any inconsistency.
-        _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
-        failed_device->unavail.test_and_set(std::memory_order_acquire);
+        //
+        // Bug M6: Do NOT revert bitmap.age here. The bumped age must stay in memory so that any
+        // subsequent successful SB write (e.g. at shutdown or via swap_device) persists the
+        // correct post-degradation age. Rolling back to old_age would make the active device's SB
+        // look as old as the failed device's SB, causing incorrect device selection on next restart
+        // (the degraded device could appear equally up-to-date and be chosen as primary).
+        failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
     }
-    failed_device->unavail.test_and_set(std::memory_order_acquire);
+    failed_device->unavail.test_and_set(std::memory_order_acq_rel);
     if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
     return 0;
 }
@@ -680,7 +713,7 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
         primary_dev->unavail.clear(std::memory_order_release);
         co_return r;
     }
-    if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
+    if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acq_rel))
         RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
     if (!failover_dev) co_return -EAGAIN;
@@ -815,7 +848,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
             primary_dev->unavail.clear(std::memory_order_release);
             return primary_res;
         }
-        if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acquire))
+        if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acq_rel))
             RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
 
         if (!failover_dev) return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
