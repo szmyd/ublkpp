@@ -94,6 +94,9 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
     RLOGI("Clearing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}] on: {}", _num_pages, _num_pages * k_page_size / Ki, _id,
           *device)
     auto const max_pages = max_pages_per_tx(*device);
+    if (0 == max_pages)
+        throw std::runtime_error(
+            fmt::format("Device max_tx()={} is smaller than bitmap page size ({})", device->max_tx(), k_page_size));
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     std::fill_n(iov.get(), max_pages, proto);
@@ -110,6 +113,7 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
 io_result Bitmap::sync_to(ublk_disk& device, uint64_t offset) {
     // Allocate iovec array for batching consecutive pages
     auto const max_batch = max_pages_per_tx(device);
+    if (0 == max_batch) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
     if (!iovs) return std::unexpected(std::make_error_condition(std::errc::not_enough_memory)); // LCOV_EXCL_LINE
 
