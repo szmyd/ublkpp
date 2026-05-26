@@ -26,8 +26,18 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
     } else if (be64toh(dev_a->fields.bitmap.age) > be64toh(dev_b->fields.bitmap.age)) {
         dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
         return dev_a;
-    } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount)
-        return dev_a->fields.clean_unmount ? dev_a : dev_b;
+    } else if (dev_a->fields.clean_unmount != dev_b->fields.clean_unmount) {
+        // Ages are equal but one device had an unclean shutdown. Route reads to the clean device
+        // so __init_bitmap_and_degraded_route enters the degraded path and loads the dirty bitmap
+        // from the authoritative replica. Without setting read_route here the array opens as
+        // healthy (EITHER) and the unclean device's in-flight writes are silently ignored.
+        if (dev_a->fields.clean_unmount) {
+            dev_a->fields.read_route = static_cast< uint8_t >(read_route::DEVA);
+            return dev_a;
+        }
+        dev_b->fields.read_route = static_cast< uint8_t >(read_route::DEVB);
+        return dev_b;
+    }
 
     return dev_a;
 }
