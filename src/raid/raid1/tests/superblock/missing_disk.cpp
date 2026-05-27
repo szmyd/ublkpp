@@ -107,7 +107,6 @@ TEST(Raid1, BitmapFlushedToActiveWhenBackupMissing) {
 
     bool bitmap_sync_written = false;
     constexpr off_t k_bitmap_lo = static_cast< off_t >(ublkpp::raid1::k_page_size);
-    constexpr off_t k_bitmap_hi = static_cast< off_t >(64 * 1024 * 1024);
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
@@ -120,17 +119,18 @@ TEST(Raid1, BitmapFlushedToActiveWhenBackupMissing) {
             return ublkpp::raid1::k_page_size;
         });
 
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(::testing::AnyNumber())
-        .WillRepeatedly([&bitmap_sync_written, k_bitmap_lo, k_bitmap_hi](uint8_t, iovec* iovecs, uint32_t nr_vecs,
-                                                                         off_t addr) -> io_result {
-            if (addr >= k_bitmap_lo && addr < k_bitmap_hi) bitmap_sync_written = true;
-            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-        });
-
     {
         auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid.toggle_resync(false);
+        auto const bitmap_hi = static_cast< off_t >(raid.reserved_size());
+
+        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+            .Times(::testing::AnyNumber())
+            .WillRepeatedly([&bitmap_sync_written, k_bitmap_lo, bitmap_hi](uint8_t, iovec* iovecs, uint32_t nr_vecs,
+                                                                           off_t addr) -> io_result {
+                if (addr >= k_bitmap_lo && addr < bitmap_hi) bitmap_sync_written = true;
+                return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+            });
 
         // Write marks a bitmap chunk dirty. The missing backup absorbs the failure silently
         // (already degraded), so __become_degraded is not re-entered.

@@ -155,6 +155,8 @@ FSDisk::FSDisk(std::filesystem::path const& path, std::string const& parent_id) 
     our_params.basic.dev_sectors = bytes >> SECTOR_SHIFT;
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
+    // discard_granularity is zero-initialized and only set from st.st_blksize when the device
+    // supports discard (can_discard()). If it stayed zero, discard was not configured — strip flag.
     if (our_params.discard.discard_granularity == 0) { our_params.types &= ~UBLK_PARAM_TYPE_DISCARD; }
     fd_scope.release(); // constructor succeeded: _fd ownership transferred to this
 }
