@@ -234,9 +234,13 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         bool const a_is_missing = _device_a->disk->is_missing();
         // Route reads to whichever physical slot is live
         _read_route_cache.store(a_is_missing ? read_route::DEVB : read_route::DEVA, std::memory_order_release);
-        // Load bitmap from the live slot; don't bump age - we may get the original disk back via swap
-        _dirty_bitmap->load_from(*(a_is_missing ? _device_b : _device_a)->disk,
-                                 static_cast< read_route >(_sb->fields.read_route) != read_route::EITHER);
+        // Load bitmap from the live slot; don't bump age - we may get the original disk back via swap.
+        // If the array was already degraded at last clean shutdown the destructor must have persisted
+        // a non-empty superbitmap. An all-zero superbitmap is a bug — reject the volume.
+        bool const was_degraded = static_cast< read_route >(_sb->fields.read_route) != read_route::EITHER;
+        if (was_degraded && !_dirty_bitmap->superbitmap_nonempty())
+            throw std::runtime_error("Invariant violated: previously degraded array has empty superbitmap");
+        _dirty_bitmap->load_from(*(a_is_missing ? _device_b : _device_a)->disk);
     } else if (_device_a->new_device xor _device_b->new_device) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
@@ -255,7 +259,11 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         auto const& active_dev = (route == read_route::DEVB) ? _device_b : _device_a;
         auto const& backup_dev = (route == read_route::DEVB) ? _device_a : _device_b;
         RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *backup_dev->disk)
-        _dirty_bitmap->load_from(*active_dev->disk, true);
+        // clean_unmount=1 is implied by the branch structure (the unclean-degraded case was handled
+        // above). The destructor must have persisted a non-empty superbitmap; reject if it is empty.
+        if (!_dirty_bitmap->superbitmap_nonempty())
+            throw std::runtime_error("Invariant violated: previously degraded array has empty superbitmap");
+        _dirty_bitmap->load_from(*active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
         RLOGW("Raid1 was not cleanly shutdown last time [uuid:{}]!", _str_uuid)
     }
@@ -303,8 +311,8 @@ Raid1Disk::~Raid1Disk() {
     }
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices. Pass include_superbitmap=true so the
-    // on-disk superbitmap reflects the current dirty state; load_from checks this on next
-    // startup when the array opens degraded (was_previously_degraded invariant).
+    // on-disk superbitmap reflects the current dirty state. On next startup the call sites
+    // for load_from check superbitmap_nonempty() and reject the volume if it is empty.
     if (auto res =
             write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route, true);
         !res) {

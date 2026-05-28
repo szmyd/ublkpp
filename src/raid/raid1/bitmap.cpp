@@ -165,14 +165,11 @@ io_result Bitmap::sync_to(ublk_disk& device, uint64_t offset) {
     return 0;
 }
 
-void Bitmap::load_from(ublk_disk& device, bool was_previously_degraded) {
+bool Bitmap::superbitmap_nonempty() const noexcept { return _super_bitmap.next_set_bit(0) < _num_pages; }
+
+void Bitmap::load_from(ublk_disk& device) {
     // Note: SuperBitmap must be loaded from SuperBlock BEFORE calling this function.
     // load_from is called during single-threaded init — no concurrent access, no lock needed.
-
-    // If the array was degraded at last clean shutdown, the destructor must have persisted the
-    // superbitmap. An all-zero superbitmap here is a bug — the on-disk state is untrustworthy.
-    if (was_previously_degraded && _super_bitmap.next_set_bit(0) >= k_superbitmap_bits)
-        throw std::runtime_error("Invariant violated: previously degraded array has empty superbitmap");
 
     auto iov = iovec{.iov_base = nullptr, .iov_len = k_page_size};
     size_t pages_skipped = 0;

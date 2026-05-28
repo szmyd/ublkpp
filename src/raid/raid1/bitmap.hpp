@@ -91,7 +91,8 @@ public:
 
     void init_to(std::shared_ptr< ublk_disk > device);
     io_result sync_to(ublk_disk& device, uint64_t offset = 0UL);
-    void load_from(ublk_disk& device, bool was_previously_degraded = false);
+    bool superbitmap_nonempty() const noexcept;
+    void load_from(ublk_disk& device);
 };
 
 } // namespace ublkpp::raid1
