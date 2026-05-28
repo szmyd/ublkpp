@@ -273,6 +273,19 @@ TEST(Raid1, DeviceTooSmallThrows) {
         std::runtime_error);
 }
 
+// Test 7: load_from with was_previously_degraded=true and an all-zero superbitmap must throw.
+// The invariant: if the array was degraded at last clean shutdown, the destructor persisted the
+// superbitmap. An all-zero superbitmap means that persistence never happened — reject the volume.
+TEST(Raid1, LoadFromZeroSuperBitmapPreviouslyDegradedThrows) {
+    ublkpp::raid1::SuperBlock sb{};
+    // sb.superbitmap_reserved is zero-initialized — no pages marked dirty.
+    ublkpp::raid1::Bitmap bitmap(Gi, 32 * Ki, 4096, sb.superbitmap_reserved);
+
+    auto device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    // load_from must throw before issuing any device I/O.
+    EXPECT_THROW(bitmap.load_from(*device, true), std::runtime_error);
+}
+
 // Verifies that resync_level=0 is rejected at construction time.
 // Only meaningful when the binary is invoked with --resync_level=0; skipped otherwise so
 // the regular Raid1Test CTest entry (resync_level=4) is not affected.
