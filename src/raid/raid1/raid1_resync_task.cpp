@@ -166,7 +166,7 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
          compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
 }
 
-void Raid1ResyncTask::clean_region(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {
+void Raid1ResyncTask::__clean(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {
     auto const pg_size = _dirty_bitmap->page_size();
     auto iov = iovec{.iov_base = nullptr, .iov_len = pg_size};
 
@@ -268,18 +268,17 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
                 continue;
             }
 
-            iov->iov_len = iov_len;
-            // Copy Region from clean to dirty
+            iov->iov_len = iov_len; // Copy Region from clean to dirty
             if (auto res = __copy_region(iov, 1, logical_off + _offset, *clean_mirror->disk, *dirty_mirror->disk);
                 res) {
-                // Phase 2: post-copy conflict check. Two cases require skipping clean_region:
+                // Phase 2: post-copy conflict check. Two cases require skipping __clean:
                 //   (a) overlaps() — write is still in-flight (single CAS slot still holds
                 //       the packed value; k_free is not visible until untrack() completes).
                 //   (b) completed_since() — write arrived AND fully completed during the READ
                 //       window; slot freed before Phase 2 ran; shadow log catches this.
                 if (!_region_tracker.overlaps(logical_off, iov_len) &&
                     !_region_tracker.completed_since(logical_off, iov_len, gen_before)) {
-                    clean_region(logical_off, iov->iov_len, *clean_mirror);
+                    __clean(logical_off, iov->iov_len, *clean_mirror);
                     if (_metrics) { _metrics->record_resync_progress(iov->iov_len); } // GCOVR_EXCL_BR_LINE
                 }
                 any_copy = true;
@@ -291,7 +290,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
                     any_copy = false;
                 }
             } else {
-                dirty_mirror->unavail.test_and_set(std::memory_order_acquire);
+                dirty_mirror->unavail.test_and_set(std::memory_order_acq_rel);
                 break;
             }
         }
@@ -378,7 +377,7 @@ bool Raid1ResyncTask::probe_mirror(MirrorDevice& mirror, uint64_t reserved_size)
         mirror.unavail.clear(std::memory_order_release);
         return true;
     }
-    mirror.unavail.test_and_set(std::memory_order_acquire);
+    mirror.unavail.test_and_set(std::memory_order_acq_rel);
     return false;
 }
 

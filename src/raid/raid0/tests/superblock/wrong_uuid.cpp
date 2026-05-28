@@ -2,8 +2,8 @@
 
 // If we initialize with one clean device and one with the wrong uuid in the superblock
 TEST(Raid0, WrongUUIDA) {
-    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
-    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_a = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
@@ -23,8 +23,8 @@ TEST(Raid0, WrongUUIDA) {
 }
 
 TEST(Raid0, WrongUUIDB) {
-    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
-    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_a = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
 
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)

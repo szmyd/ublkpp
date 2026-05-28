@@ -1,6 +1,7 @@
 #include "../test_raid1_common.hpp"
 
 #include <isa-l/mem_routines.h>
+#include <thread>
 
 // Test: replica_states when both devices are healthy
 TEST(Raid1, ReplicaStatesHealthy) {
@@ -48,8 +49,10 @@ TEST(Raid1, ToggleResyncDisable) {
     // Disable resync
     raid_device.toggle_resync(false);
 
-    // Re-enable resync
+    // Re-enable resync — with a clean (empty) bitmap the resync thread exits immediately.
+    // wait_for_clean_state confirms both replicas reach CLEAN state and bytes_to_sync drops to 0.
     raid_device.toggle_resync(true);
+    EXPECT_TRUE(wait_for_clean_state(raid_device)) << "Array should reach clean state after resync completes";
 
     // Expect unmount_clean update
     EXPECT_TO_WRITE_SB(device_a);
@@ -73,9 +76,8 @@ TEST(Raid1, IdMethod) {
 // Helper: set up new_device mock expectations for a successful swap of device A.
 // After this swap: route=DEVB, new_device is in A slot (backup, unavail=false), device_b is active.
 // Caller must register the device_b staying-write and unmount expectations separately.
-static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_device,
-                                  std::shared_ptr< ublkpp::TestDisk >& device_b,
-                                  ublkpp::raid1::Raid1Disk& raid_device) {
+static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk > new_device,
+                                  std::shared_ptr< ublkpp::TestDisk > device_b, ublkpp::raid1::Raid1Disk& raid_device) {
     // new device read returns all-zeros → new_device=true → init_to is called
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
@@ -86,19 +88,19 @@ static void expect_swap_a_success(std::shared_ptr< ublkpp::TestDisk >& new_devic
             memset(iovecs->iov_base, 0x00, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            // init_to: bitmap write to new device
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+    // init_to writes _num_pages zero pages to new device (capacity-derived, batched)
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size);
             EXPECT_LT(addr, raid_device.reserved_size());
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // all zeros
-            return ublkpp::raid1::k_page_size;
-        })
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    // __swap_device: new device superblock commit (new_device is in A slot → device_b=0)
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            // __swap_device: new device superblock commit (new_device is in A slot → device_b=0)
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
@@ -127,7 +129,8 @@ TEST(Raid1, ReplicaStatesSyncingDEVB) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     expect_swap_a_success(new_device, device_b, raid_device);
 
     // Swap succeeds; returns outgoing device_a
@@ -159,7 +162,8 @@ TEST(Raid1, ReplicasAccessDEVB) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     expect_swap_a_success(new_device, device_b, raid_device);
 
     // Swap succeeds; returns outgoing device_a

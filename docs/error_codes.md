@@ -28,7 +28,6 @@ In all submit-failure cases the started stripe tasks are drained before returnin
 | WRITE | Active succeeds; backup mode SKIP (degraded + unavail/dirty) | active result | - | Degraded write; bitmap dirtied; resync will reconcile |
 | WRITE | Active succeeds; backup fails; `__become_degraded` fails | `-EIO` | No | CAS lost or SB write failed; state indeterminate |
 | WRITE | Active succeeds; backup fails; `__become_degraded` succeeds | active result | - | Array transitions to degraded; active write is authoritative |
-| WRITE | Active and backup both succeed (OPTIMISTIC mode) | active result | - | Chunk cleaned in bitmap; backup marked available |
 
 ### Notes on RAID1 `-EAGAIN` vs `-EIO`
 

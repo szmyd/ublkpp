@@ -126,7 +126,7 @@ TEST_F(AsyncRaid1Fixture, ReadAfterReplicaFail) {
 
     // In degraded mode with disk_b unavail, reads must route to disk_a only.
     std::thread([this] {
-        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1);
+        EXPECT_CALL(*disk_a, submit_iov(_, _, _, _, _)).Times(1).WillRepeatedly(make_async_iov_action());
         EXPECT_CALL(*disk_b, submit_iov(_, _, _, _, _)).Times(0);
 
         auto res = mock->submit_io(1, UBLK_IO_OP_READ, 0, 4 * Ki / 512, nullptr);

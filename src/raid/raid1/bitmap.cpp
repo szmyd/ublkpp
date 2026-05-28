@@ -94,13 +94,17 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
     RLOGI("Clearing RAID-1 BITMAP [pgs:{}, sz:{}Ki, id:{}] on: {}", _num_pages, _num_pages * k_page_size / Ki, _id,
           *device)
     auto const max_pages = max_pages_per_tx(*device);
+    if (0 == max_pages)
+        throw std::runtime_error(
+            fmt::format("Device max_tx()={} is smaller than bitmap page size ({})", device->max_tx(), k_page_size));
     auto iov = std::unique_ptr< iovec[] >(new iovec[max_pages]);
     if (!iov) throw std::runtime_error("OutOfMemory"); // LCOV_EXCL_LINE
     std::fill_n(iov.get(), max_pages, proto);
 
+    auto const bitmap_start = k_page_size; // offset 0 is the superblock; bitmap pages follow immediately after
     for (auto pg_idx = 0UL; _num_pages > pg_idx;) {
         auto res = device->sync_iov(UBLK_IO_OP_WRITE, iov.get(), std::min(_num_pages - pg_idx, max_pages),
-                                    k_page_size + (pg_idx * k_page_size));
+                                    bitmap_start + (pg_idx * k_page_size));
         if (!res) { throw std::runtime_error(fmt::format("Failed to write: {}", res.error().message())); }
         pg_idx += max_pages;
     }
@@ -109,6 +113,7 @@ void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
 io_result Bitmap::sync_to(ublk_disk& device, uint64_t offset) {
     // Allocate iovec array for batching consecutive pages
     auto const max_batch = max_pages_per_tx(device);
+    if (0 == max_batch) return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     auto iovs = std::unique_ptr< iovec[] >(new iovec[max_batch]);
     if (!iovs) return std::unexpected(std::make_error_condition(std::errc::not_enough_memory)); // LCOV_EXCL_LINE
 
@@ -399,6 +404,14 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
         auto page_data = __get_or_create_page(page_offset);
         if (!page_data) throw std::runtime_error("Could not insert new page"); // LCOV_EXCL_LINE
 
+        // Clear loaded_from_disk BEFORE writing bits so that a concurrent sync_to cannot
+        // observe loaded_from_disk=true after new dirty bits have already been ORed in.
+        // If sync_to reads loaded_from_disk=false it will include this page in the flush,
+        // which is correct whether or not we have finished setting bits yet (extra flush is safe).
+        // The reverse ordering (bits first, then clear flag) is the TOCTOU bug: sync_to could
+        // read loaded_from_disk=true, skip the page, and a subsequent crash would lose those bits.
+        page_data->loaded_from_disk.store(false, std::memory_order_release);
+
         auto page = page_data->page.load(std::memory_order_acquire);
         auto cur_word = page + word_offset;
         // Handle update crossing multiple words (optimization potential?)
@@ -414,9 +427,6 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
         }
-
-        // Mark as modified AFTER all modifications (release ensures visibility)
-        page_data->loaded_from_disk.store(false, std::memory_order_release);
 
         // Update superbitmap to mark this page as dirty
         _super_bitmap.set_bit(page_offset);

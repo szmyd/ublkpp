@@ -23,7 +23,8 @@ TEST(Raid1, SwapDeviceB) {
             return ublkpp::raid1::k_page_size;
         });
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
@@ -33,16 +34,16 @@ TEST(Raid1, SwapDeviceB) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size());                                 // Expect write to bitmap!
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);
+            EXPECT_LT(addr, raid_device.reserved_size());
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
-            return ublkpp::raid1::k_page_size;
-        })
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
@@ -90,11 +91,13 @@ TEST(Raid1, SwapDeviceA) {
             return ublkpp::raid1::k_page_size;
         });
 
-    auto small_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Mi, .id = "DiskD"});
+    auto small_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Mi, .id = "DiskD"});
     auto old_device = raid_device.swap_device("DiskA", small_device);
     EXPECT_EQ(old_device, small_device);
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
@@ -104,16 +107,16 @@ TEST(Raid1, SwapDeviceA) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_GE(addr, ublkpp::raid1::k_page_size);                                  // Expect write to bitmap!
-            EXPECT_LT(addr, raid_device.reserved_size());                                 // Expect write to bitmap!
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_GE(addr, ublkpp::raid1::k_page_size);
+            EXPECT_LT(addr, raid_device.reserved_size());
             EXPECT_EQ(0, isal_zero_detect(iovecs->iov_base, ublkpp::raid1::k_page_size)); // All zeros
-            return ublkpp::raid1::k_page_size;
-        })
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
@@ -146,7 +149,8 @@ TEST(Raid1, SwapStayingWriteFail) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     // New device read returns a valid superblock with matching age → not a new device → no bitmap write
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
@@ -199,7 +203,8 @@ TEST(Raid1, SwapDeviceWhileIdle) {
             return ublkpp::raid1::k_page_size;
         });
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
@@ -207,13 +212,15 @@ TEST(Raid1, SwapDeviceWhileIdle) {
             memset(iovecs->iov_base, 000, iovecs->iov_len);
             return ublkpp::raid1::k_page_size;
         });
-    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-        .Times(2)
-        .WillOnce([&raid_device](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(testing::AtLeast(1))
+        .WillRepeatedly([&raid_device](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_GE(addr, ublkpp::raid1::k_page_size); // bitmap
             EXPECT_LT(addr, raid_device.reserved_size());
-            return ublkpp::raid1::k_page_size;
-        })
+            return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+        });
+    EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_WRITE, _, _, 0))
+        .Times(1)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
             EXPECT_EQ(0UL, addr); // superblock
             return ublkpp::raid1::k_page_size;
@@ -241,7 +248,8 @@ TEST(Raid1, SwapFail) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
     raid_device.toggle_resync(false);
 
-    auto new_device = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+    auto new_device =
+        std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .id = "DiskC"});
     EXPECT_CALL(*new_device, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {

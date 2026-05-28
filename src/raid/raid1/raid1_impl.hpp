@@ -58,22 +58,27 @@ class Raid1Disk : public ublk_disk {
     // data for this region (degraded array + dirty bitmap) -- callers must not read from it.
     std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >
     __select_read_devices(RouteState const& state, uint64_t addr, uint32_t len) const noexcept;
-    enum class WriteBackupMode { SKIP, WRITE, OPTIMISTIC };
-    WriteBackupMode __compute_backup_mode(RouteState const& state, uint64_t addr, uint32_t len,
-                                          bool is_discard) const noexcept;
+
+    // True when a write should be replicated to the backup leg. A dirty region in a degraded
+    // array means the backup is owned exclusively by the resync task, so the I/O path must not
+    // write it (this is what closes the resync stale-read race); an unavailable backup is skipped
+    // likewise. Used identically by both async_iov and sync_iov.
+    bool __backup_writable(RouteState const& state, uint64_t addr, uint32_t len) const noexcept;
 
     // Internal routines
-    io_result __become_clean();
+    void __become_clean();
     io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
     disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                            uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,
                        raid1::read_route const& cur_route);
 
-    // Constructor helpers
-    void __init_params(std::shared_ptr< ublk_disk > const& dev_a, std::shared_ptr< ublk_disk > const& dev_b);
+    // Constructor helpers. Order matters: __load_and_select_superblock must run first to
+    // populate _device_a/_device_b/_sb; __init_params then reads _sb->header.version to
+    // decide the user-data alignment policy.
     void __load_and_select_superblock(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > dev_a,
                                       std::shared_ptr< ublk_disk > dev_b, std::string const& parent_id);
+    void __init_params();
     void __init_bitmap_and_degraded_route();
     void __become_active();
 

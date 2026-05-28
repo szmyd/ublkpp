@@ -54,6 +54,11 @@ public:
     // Per-tag sector-aligned I/O buffer (max_io_size = DEF_BUF_SIZE bytes).
     void* io_buf(int tag);
 
+    // Direct reference to the iovec passed to async_iov for the given tag slot.
+    // Allows tests to mutate the caller-side iov after submission to verify that the
+    // disk under test has snapshotted the values rather than holding a raw pointer.
+    iovec& iov_ref(int tag) noexcept { return _tags[tag].iov; }
+
     int q_depth() const noexcept { return _q_depth; }
     int nr_queues() const noexcept { return static_cast< int >(_queues.size()); }
     ublksrv_queue const* queue(int q_id = 0) const noexcept { return &_queues[q_id]; }

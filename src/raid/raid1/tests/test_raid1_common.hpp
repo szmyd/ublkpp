@@ -24,7 +24,7 @@ using ::ublkpp::Mi;
 static const ublkpp::raid1::SuperBlock normal_superblock = {
     .header = {.magic = {0x53, 0x25, 0xff, 0x0a, 0x34, 0x99, 0x3e, 0xc5, 0x67, 0x3a, 0xc8, 0x17, 0x49, 0xae, 0x1b,
                          0x64},
-               .version = htobe16(1),
+               .version = htobe16(2),
                .uuid = {0xad, 0xa4, 0x07, 0x37, 0x30, 0xe3, 0x49, 0xfe, 0x99, 0x42, 0x5a, 0x28, 0x7d, 0x71, 0xeb,
                         0x3f}},
     .fields = {.clean_unmount = 1,
@@ -96,7 +96,7 @@ inline std::unique_ptr< uint8_t[] > make_test_superbitmap() {
     [] {                                                                                                               \
         auto p = (params);                                                                                             \
         p.is_slot_b = (dev_b);                                                                                         \
-        auto device = std::make_shared< ublkpp::TestDisk >(p);                                                         \
+        auto device = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(p);                                \
         /* Expect to load and write clean_unmount bit */                                                               \
         if (!no_read) { EXPECT_TO_READ_SB_F(device, (dev_b), fail_read) }                                              \
         if (!no_write && !fail_read) { EXPECT_TO_WRITE_SB_F(device, fail_write) }                                      \

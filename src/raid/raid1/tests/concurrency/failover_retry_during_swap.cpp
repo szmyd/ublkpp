@@ -31,7 +31,11 @@ TEST(Raid1Concurrency, FailoverRetryDuringSwap) {
     std::atomic< bool > first_read_attempted{false};
     std::atomic< bool > swap_completed{false};
 
-    // device_a: fail first read, then succeed on subsequent reads
+    // New device for swap — created before threads so EXPECT_CALLs are registered on the main thread.
+    auto device_c = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
+
+    // device_a: fail first read, then succeed on subsequent reads.
+    // Registered on main thread before any spawned thread starts calling through device_a.
     std::atomic< int > device_a_read_count{0};
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
@@ -51,6 +55,12 @@ TEST(Raid1Concurrency, FailoverRetryDuringSwap) {
             return static_cast< int >(iovecs->iov_len);
         });
 
+    // device_a: also handle writes after the swap (resync writes to the staying device).
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
+
     // device_b: always succeed (backup for failover)
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
         .Times(::testing::AnyNumber())
@@ -58,6 +68,25 @@ TEST(Raid1Concurrency, FailoverRetryDuringSwap) {
             if (iovecs->iov_base) memset(iovecs->iov_base, 0xCD, iovecs->iov_len);
             return static_cast< int >(iovecs->iov_len);
         });
+
+    // device_c: registered on main thread before any thread uses it.
+    EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
+            if (addr == 0) {
+                // Superblock read: return zeroed (new device)
+                memset(iovecs->iov_base, 0, iovecs->iov_len);
+            } else if (iovecs->iov_base) {
+                // Data read
+                memset(iovecs->iov_base, 0xEF, iovecs->iov_len);
+            }
+            return static_cast< int >(iovecs->iov_len);
+        });
+
+    EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(
+            [](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result { return static_cast< int >(iovecs->iov_len); });
 
     // Thread 1: Issue a read that will trigger failover
     auto reader = std::thread([&] {
@@ -76,34 +105,6 @@ TEST(Raid1Concurrency, FailoverRetryDuringSwap) {
 
         // Small delay to maximize chance of swap occurring between failure and retry
         std::this_thread::sleep_for(2ms);
-
-        // New device for swap
-        auto device_c = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskC"});
-
-        EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_READ, _, _, _))
-            .Times(::testing::AnyNumber())
-            .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
-                if (addr == 0) {
-                    // Superblock read: return zeroed (new device)
-                    memset(iovecs->iov_base, 0, iovecs->iov_len);
-                } else if (iovecs->iov_base) {
-                    // Data read
-                    memset(iovecs->iov_base, 0xEF, iovecs->iov_len);
-                }
-                return static_cast< int >(iovecs->iov_len);
-            });
-
-        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(::testing::AnyNumber())
-            .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-                return static_cast< int >(iovecs->iov_len);
-            });
-
-        EXPECT_CALL(*device_c, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(::testing::AnyNumber())
-            .WillRepeatedly([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-                return static_cast< int >(iovecs->iov_len);
-            });
 
         // Swap device_b for device_c during failover retry window
         auto old_dev = raid_device.swap_device("DiskB", device_c);
