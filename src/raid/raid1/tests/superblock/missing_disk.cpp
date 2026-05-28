@@ -142,6 +142,44 @@ TEST(Raid1, BitmapFlushedToActiveWhenBackupMissing) {
         << "Bug M11: bitmap was not flushed to active device at shutdown when backup is missing";
 }
 
+// Regression: missing device + previously degraded + unclean shutdown must dirty the entire bitmap.
+// The superbitmap cannot be trusted when clean_unmount=0 and the array was already degraded
+// (route != EITHER). dirty_region(0, capacity()) is called instead of load_from, and the age is
+// bumped by 16. At shutdown sync_to flushes the now-dirty bitmap page to the active device.
+TEST(Raid1, MissingDevicePreviouslyDegradedUncleanDirtiesAll) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = false});
+    auto device_b = ublkpp::make_missing_disk();
+
+    bool bitmap_page_written = false;
+    constexpr off_t k_bitmap_lo = static_cast< off_t >(ublkpp::raid1::k_page_size);
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
+            sb->fields.device_b = 0;
+            sb->fields.clean_unmount = 0; // unclean shutdown while already degraded
+            return ublkpp::raid1::k_page_size;
+        });
+
+    {
+        auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+        auto const bitmap_hi = static_cast< off_t >(raid.reserved_size());
+
+        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+            .Times(::testing::AnyNumber())
+            .WillRepeatedly([&bitmap_page_written, k_bitmap_lo, bitmap_hi](uint8_t, iovec* iovecs, uint32_t nr_vecs,
+                                                                           off_t addr) -> io_result {
+                if (addr >= k_bitmap_lo && addr < bitmap_hi) bitmap_page_written = true;
+                return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+            });
+    }
+
+    EXPECT_TRUE(bitmap_page_written) << "dirty_region must cause bitmap flush at shutdown";
+}
+
 // We should throw if both devices are missing
 TEST(Raid1, MissingDisks) {
     auto device_a = ublkpp::make_missing_disk();
