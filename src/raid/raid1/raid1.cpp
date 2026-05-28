@@ -642,6 +642,7 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     auto& failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
     auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
 
+    auto const old_age = _sb->fields.bitmap.age;
     _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
@@ -662,10 +663,7 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
         // full recovery on next start will reconcile any inconsistency.
         //
-        // M6: do NOT revert bitmap.age here. The bumped age must stay in memory so the next
-        // successful SB write (e.g. at clean shutdown) persists the post-degradation age.
-        // Rolling back to old_age would make the active device look as old as the failed one,
-        // causing pick_superblock to choose the wrong (failed) device on next restart.
+        _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
