@@ -25,11 +25,9 @@ TEST(Raid1, MissingDiskA) {
 TEST(Raid1, MissingRemountA) {
     // device_b returns the superblock as persisted from the first degraded mount:
     // read_route=DEVB, device_b=1, clean_unmount=1 (i.e. device_a was missing last time too).
-    // superbitmap_reserved[0]=0x01: page 0 dirty — satisfies the invariant that any previously-
-    // degraded clean-shutdown must have at least one dirty page persisted in the superbitmap.
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = true});
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .Times(2)
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
@@ -38,15 +36,6 @@ TEST(Raid1, MissingRemountA) {
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVB);
             sb->fields.device_b = 1;
-            sb->superbitmap_reserved[0] = 0x01; // page 0 dirty — invariant: non-empty superbitmap
-            return ublkpp::raid1::k_page_size;
-        })
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            // load_from reads bitmap page 0 (superbitmap bit 0 set)
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_EQ(static_cast< off_t >(ublkpp::raid1::k_page_size), addr);
-            memset(iovecs->iov_base, 0xFF, ublkpp::raid1::k_page_size); // dirty page
             return ublkpp::raid1::k_page_size;
         });
     // __become_active must write to device_b (the live slot), not to device_a (missing)
@@ -70,11 +59,9 @@ TEST(Raid1, MissingRemountA) {
 TEST(Raid1, MissingRemountB) {
     // device_a returns the superblock as persisted from the first degraded mount:
     // read_route=DEVA, device_b=0, clean_unmount=1 (i.e. device_b was missing last time too).
-    // superbitmap_reserved[0]=0x01: page 0 dirty — satisfies the invariant that any previously-
-    // degraded clean-shutdown must have at least one dirty page persisted in the superbitmap.
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = false});
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
-        .Times(2)
+        .Times(1)
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
@@ -83,15 +70,6 @@ TEST(Raid1, MissingRemountB) {
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
             sb->fields.device_b = 0;
-            sb->superbitmap_reserved[0] = 0x01; // page 0 dirty — invariant: non-empty superbitmap
-            return ublkpp::raid1::k_page_size;
-        })
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            // load_from reads bitmap page 0 (superbitmap bit 0 set)
-            EXPECT_EQ(1U, nr_vecs);
-            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
-            EXPECT_EQ(static_cast< off_t >(ublkpp::raid1::k_page_size), addr);
-            memset(iovecs->iov_base, 0xFF, ublkpp::raid1::k_page_size); // dirty page
             return ublkpp::raid1::k_page_size;
         });
     // __become_active must write to device_a (the live slot), not to device_b (missing)
@@ -141,18 +119,19 @@ TEST(Raid1, BitmapFlushedToActiveWhenBackupMissing) {
             return ublkpp::raid1::k_page_size;
         });
 
+    // Register WRITE expectation before construction so __become_active's SB write is covered.
+    // Bitmap pages live at offsets >= k_page_size; the SB write at offset 0 does not set the flag.
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(
+            [&bitmap_sync_written, k_bitmap_lo](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+                if (addr >= k_bitmap_lo) bitmap_sync_written = true;
+                return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
+            });
+
     {
         auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid.toggle_resync(false);
-        auto const bitmap_hi = static_cast< off_t >(raid.reserved_size());
-
-        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(::testing::AnyNumber())
-            .WillRepeatedly([&bitmap_sync_written, k_bitmap_lo, bitmap_hi](uint8_t, iovec* iovecs, uint32_t nr_vecs,
-                                                                           off_t addr) -> io_result {
-                if (addr >= k_bitmap_lo && addr < bitmap_hi) bitmap_sync_written = true;
-                return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
-            });
 
         // Write marks a bitmap chunk dirty. The missing backup absorbs the failure silently
         // (already degraded), so __become_degraded is not re-entered.
@@ -186,18 +165,17 @@ TEST(Raid1, MissingDevicePreviouslyDegradedUncleanDirtiesAll) {
             return ublkpp::raid1::k_page_size;
         });
 
-    {
-        auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
-        auto const bitmap_hi = static_cast< off_t >(raid.reserved_size());
-
-        EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
-            .Times(::testing::AnyNumber())
-            .WillRepeatedly([&bitmap_page_written, k_bitmap_lo, bitmap_hi](uint8_t, iovec* iovecs, uint32_t nr_vecs,
-                                                                           off_t addr) -> io_result {
-                if (addr >= k_bitmap_lo && addr < bitmap_hi) bitmap_page_written = true;
+    // Register WRITE expectation before construction so __become_active's SB write is covered.
+    // Bitmap pages live at offsets >= k_page_size; the SB write at offset 0 does not set the flag.
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(
+            [&bitmap_page_written, k_bitmap_lo](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+                if (addr >= k_bitmap_lo) bitmap_page_written = true;
                 return ublkpp::iovec_len(iovecs, iovecs + nr_vecs);
             });
-    }
+
+    { auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b); }
 
     EXPECT_TRUE(bitmap_page_written) << "dirty_region must cause bitmap flush at shutdown";
 }

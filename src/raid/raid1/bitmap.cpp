@@ -76,16 +76,16 @@ Bitmap::calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size) noe
 }
 
 void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
-    // Clear the SuperBitmap when initializing a new bitmap
-    _super_bitmap.clear_all();
-
     // Skip if the device passed to us is a missing-leg placeholder. Missing disks will never
-    // succeed WRITEs and *must* be swapped with another disk for the RAID1 to begin resync. So
-    // we just return rather than inevitably throw below.
+    // succeed WRITEs and *must* be swapped with another disk for the RAID1 to begin resync.
+    // Check before clear_all() so a missing device does not wipe superbitmap bits loaded from
+    // the live device's on-disk superblock.
     if (device->is_missing()) [[unlikely]] {
         RLOGD("Device is MISSING, skipping init_to")
         return;
     }
+    // Clear the SuperBitmap only when actually initializing a real device.
+    _super_bitmap.clear_all();
 
     auto proto = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
 

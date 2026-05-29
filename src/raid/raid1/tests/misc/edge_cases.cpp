@@ -302,7 +302,7 @@ TEST(Raid1, CleanDegradedStartupLoadsFromActiveDevice) {
             sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
             sb->fields.clean_unmount = 1;
             sb->fields.bitmap.age = htobe64(10);
-            sb->superbitmap_reserved[0] = 0x80; // bit 0 set → page 0 is dirty
+            sb->superbitmap_reserved[0] = 0x01; // bit 0 set → page 0 is dirty
             return ublkpp::raid1::k_page_size;
         })
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {

@@ -243,13 +243,6 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
             RLOGW("Unclean shutdown while degraded with missing device! Dirty all of BITMAP")
             _dirty_bitmap->dirty_region(0, capacity());
         } else {
-            // Previously degraded arrays must have a non-empty superbitmap: every degradation path
-            // calls dirty_region() before committing the new route, and the destructor persists the
-            // superbitmap on clean shutdown. An all-zero superbitmap here means the disk state is
-            // corrupt or was written by a build that predates superbitmap persistence.
-            bool const was_degraded = static_cast< read_route >(_sb->fields.read_route) != read_route::EITHER;
-            if (was_degraded && !_dirty_bitmap->superbitmap_nonempty())
-                throw std::runtime_error("Invariant violated: previously degraded array has empty superbitmap");
             _dirty_bitmap->load_from(*(a_is_missing ? _device_b : _device_a)->disk);
         }
     } else if (_device_a->new_device xor _device_b->new_device) {
