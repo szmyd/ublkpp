@@ -1,3 +1,4 @@
+#include "raid/raid1/bitmap.hpp"
 #include "test_raid1_common.hpp"
 
 using namespace std::chrono_literals;
