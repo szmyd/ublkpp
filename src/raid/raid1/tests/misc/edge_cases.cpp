@@ -1,3 +1,4 @@
+#include "raid/raid1/bitmap.hpp"
 #include "test_raid1_common.hpp"
 
 using namespace std::chrono_literals;
@@ -234,6 +235,167 @@ TEST(Raid1, UncleanShutdownDegraded) {
     // This should trigger lines 222-224: unclean shutdown in degraded mode
     // Should dirty the entire bitmap and bump age
     // Note: Constructor will fail because device_b cannot be read, so we expect a throw
+    EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
+}
+
+// L4: Device too small to hold the reserved region — must throw with a clear message.
+// A 64 MiB device is well below the minimum reserved region for any supported configuration.
+TEST(Raid1, DeviceTooSmallThrows) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 64 * Mi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = 64 * Mi, .is_slot_b = true});
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            if (iovecs->iov_base) memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            if (iovecs->iov_base) {
+                memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+                static_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base)->fields.device_b = 1;
+            }
+            return ublkpp::raid1::k_page_size;
+        });
+
+    EXPECT_THROW(
+        {
+            try {
+                ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+            } catch (std::runtime_error const& e) {
+                EXPECT_NE(std::string::npos, std::string(e.what()).find("device too small"))
+                    << "Expected 'device too small' in exception message, got: " << e.what();
+                throw;
+            }
+        },
+        std::runtime_error);
+}
+
+// Test 7: An all-zero superbitmap on a previously-degraded array must be caught at the call site.
+// superbitmap_nonempty() is the guard used in raid1.cpp before calling load_from.
+TEST(Raid1, SuperbitmapNonemptyReturnsFalseOnCleanBitmap) {
+    ublkpp::raid1::SuperBlock sb{};
+    // sb.superbitmap_reserved is zero-initialized — no pages marked dirty.
+    ublkpp::raid1::Bitmap bitmap(Gi, 32 * Ki, 4096, sb.superbitmap_reserved);
+    EXPECT_FALSE(bitmap.superbitmap_nonempty());
+}
+
+// Test 8: Clean degraded startup — route=DEVA, clean_unmount=1, superbitmap has dirty pages.
+// Exercises the load_from(*active_dev) call site and verifies the destructor persists
+// the superbitmap (include_superbitmap=true) so the invariant holds on next startup.
+TEST(Raid1, CleanDegradedStartupLoadsFromActiveDevice) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = true});
+
+    // device_a: SB read, then bitmap page-0 read (load_from follows SB read)
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(2)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
+            sb->fields.clean_unmount = 1;
+            sb->fields.bitmap.age = htobe64(10);
+            sb->superbitmap_reserved[0] = 0x01; // bit 0 set → page 0 is dirty
+            return ublkpp::raid1::k_page_size;
+        })
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            // Bitmap page 0 read at offset k_page_size
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(static_cast< off_t >(ublkpp::raid1::k_page_size), addr);
+            memset(iovecs->iov_base, 0xFF, ublkpp::raid1::k_page_size); // non-zero → dirty page
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // device_b: SB read only (age=9, one behind device_a — not new_device)
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.device_b = 1;
+            sb->fields.bitmap.age = htobe64(9);
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // device_a: __become_active SB write + destructor SB write (include_superbitmap=true)
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(2)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            return ublkpp::raid1::k_page_size;
+        })
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            // Destructor: clean_unmount=1 and superbitmap persisted (non-zero)
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            EXPECT_EQ(1, sb->fields.clean_unmount);
+            EXPECT_NE(0, sb->superbitmap_reserved[0]) << "superbitmap must be persisted on shutdown";
+            return ublkpp::raid1::k_page_size;
+        });
+
+    // device_b: __become_active SB write only — degraded, no destructor write to backup
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            return ublkpp::raid1::k_page_size;
+        });
+
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+}
+
+// Test 9: Clean degraded startup with an all-zero superbitmap must throw.
+// Covers the superbitmap_nonempty() guard in the clean-degraded branch (Branch 4) of
+// __init_bitmap_and_degraded_route. Constructor throws before __become_active, so no writes.
+TEST(Raid1, CleanDegradedStartupEmptySuperbitmapThrows) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = true});
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
+            sb->fields.clean_unmount = 1;
+            sb->fields.bitmap.age = htobe64(10);
+            // superbitmap_reserved stays zero — simulates missing/corrupt persistence
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.device_b = 1;
+            sb->fields.bitmap.age = htobe64(9);
+            return ublkpp::raid1::k_page_size;
+        });
+    // No WRITE expectations — constructor throws in __init_bitmap_and_degraded_route,
+    // before __become_active is reached.
     EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
                  std::runtime_error);
 }

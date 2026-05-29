@@ -70,16 +70,32 @@ static raid1::SuperBlock* read_superblock(ublk_disk& device) {
     return static_cast< raid1::SuperBlock* >(iov.iov_base);
 }
 
-io_result write_superblock(ublk_disk& device, raid1::SuperBlock* sb, bool device_b, raid1::read_route read_route) {
+io_result write_superblock(ublk_disk& device, raid1::SuperBlock const* sb, bool device_b, raid1::read_route read_route,
+                           bool include_superbitmap) {
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
                     sb_size)
-    sb->fields.read_route = static_cast< uint8_t >(read_route);
-    if (device_b) sb->fields.device_b = 1;
-    auto iov = iovec{.iov_base = sb, .iov_len = sb_size};
+    // Never mutate the shared SuperBlock in place. Build a stack-local write buffer so
+    // concurrent write_superblock calls cannot race on the packed byte that clean_unmount,
+    // read_route, and device_b share (M5).
+    //
+    // Live I/O path (include_superbitmap=false): copy only header + fields (74 bytes).
+    // Leaving superbitmap_reserved zero avoids a TSan-visible non-atomic 8-byte load that
+    // would overlap SuperBitmap::set_bit's concurrent atomic_ref::fetch_or at offset 74.
+    //
+    // Shutdown path (include_superbitmap=true): copy the full 4 KiB page so the on-disk
+    // superbitmap is up-to-date. Safe because resync has been joined and I/O is quiesced
+    // before the destructor runs; no concurrent set_bit/clear_bit can race the memcpy.
+    alignas(4096) SuperBlock local{};
+    if (include_superbitmap)
+        memcpy(&local, sb, sb_size);
+    else
+        memcpy(&local, sb, offsetof(SuperBlock, superbitmap_reserved));
+    local.fields.read_route = static_cast< uint8_t >(read_route);
+    local.fields.device_b = device_b ? 1 : 0;
+    auto iov = iovec{.iov_base = &local, .iov_len = sb_size};
     auto res = device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, 0UL);
-    RLOGI("Wrote: {} to: {}", *sb, device)
-    sb->fields.device_b = 0;
+    RLOGI("Wrote: {} to: {}", local, device)
     if (!res) RLOGE("Error writing Superblock to: {}: {}", device, res.error().message())
     return res;
 }

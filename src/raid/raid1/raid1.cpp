@@ -160,6 +160,18 @@ void Raid1Disk::__init_params() {
                                          : (static_cast< uint64_t >(our_params.basic.max_sectors) << SECTOR_SHIFT);
     _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) % align;
 
+    // L4: verify the array is large enough to hold the reserved region.
+    // dev_sectors already holds the minimum of both physical devices, so one check suffices —
+    // the larger device is always >= the minimum and passes trivially. Without this guard a
+    // too-small device silently underflows dev_sectors and later triggers a confusing
+    // "exceeds SuperBitmap max capacity" error from the Bitmap constructor.
+    auto const min_dev_bytes = our_params.basic.dev_sectors << SECTOR_SHIFT;
+    if (min_dev_bytes < _reserved_size) {
+        RLOGE("Devices are too small: {} bytes < reserved {} bytes [uuid:{}]", min_dev_bytes, _reserved_size, _str_uuid)
+        throw std::runtime_error(
+            fmt::format("device too small: {} bytes < reserved {} bytes", min_dev_bytes, _reserved_size));
+    }
+
     // Reserve space for the superblock/bitmap
     our_params.basic.dev_sectors -= (_reserved_size >> SECTOR_SHIFT);
 
@@ -220,8 +232,17 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         bool const a_is_missing = _device_a->disk->is_missing();
         // Route reads to whichever physical slot is live
         _read_route_cache.store(a_is_missing ? read_route::DEVB : read_route::DEVA, std::memory_order_release);
-        // Load bitmap from the live slot; don't bump age - we may get the original disk back via swap
-        _dirty_bitmap->load_from(*(a_is_missing ? _device_b : _device_a)->disk);
+        // If already degraded and crashed (clean_unmount=0), the superbitmap cannot be trusted —
+        // dirty all regions to force a full resync. For any other combination (clean shutdown, or
+        // previously healthy with unclean shutdown), the superbitmap is trustworthy: load it and
+        // let load_from skip pages that are already clean.
+        if (!_sb->fields.clean_unmount && static_cast< read_route >(_sb->fields.read_route) != read_route::EITHER) {
+            _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
+            RLOGW("Unclean shutdown while degraded with missing device! Dirty all of BITMAP")
+            _dirty_bitmap->dirty_region(0, capacity());
+        } else {
+            _dirty_bitmap->load_from(*(a_is_missing ? _device_b : _device_a)->disk);
+        }
     } else if (_device_a->new_device xor _device_b->new_device) {
         // Bump the bitmap age
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
@@ -240,6 +261,12 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         auto const& active_dev = (route == read_route::DEVB) ? _device_b : _device_a;
         auto const& backup_dev = (route == read_route::DEVB) ? _device_a : _device_b;
         RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *backup_dev->disk)
+        // clean_unmount=1 is implied: the unclean-degraded case was handled above. The superbitmap
+        // must be non-empty: the array can only reach this point if a write failed (which called
+        // dirty_region before __become_degraded), and the destructor persists the superbitmap on
+        // clean shutdown. An empty superbitmap here indicates a corrupt or pre-persistence disk.
+        if (!_dirty_bitmap->superbitmap_nonempty())
+            throw std::runtime_error("Invariant violated: previously degraded array has empty superbitmap");
         _dirty_bitmap->load_from(*active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
         RLOGW("Raid1 was not cleanly shutdown last time [uuid:{}]!", _str_uuid)
@@ -274,8 +301,10 @@ Raid1Disk::~Raid1Disk() {
     if (!_sb) return;
 
     auto const state = __capture_route_state();
-    // Write out our dirty bitmap
-    if (state.is_degraded && !state.backup_dev->disk->is_missing()) {
+    // Write out our dirty bitmap to the active device.
+    // M11: flush even when backup_dev is a missing placeholder — the active device still needs
+    // the current bitmap so the next startup can do an incremental resync rather than a full one.
+    if (state.is_degraded) {
         RLOGI("Synchronizing BITMAP [uuid: {}] to clean device: {}", _str_uuid, *state.active_dev->disk)
         if (auto res = _dirty_bitmap->sync_to(*state.active_dev->disk, sizeof(SuperBlock)); !res) {
             RLOGW("Could not sync Bitmap to device on shutdown, will require full resync next time! [uuid:{}]",
@@ -285,8 +314,11 @@ Raid1Disk::~Raid1Disk() {
         RLOGI("Synchronized: [uuid: {}]", _str_uuid)
     }
     _sb->fields.clean_unmount = 0x1;
-    // Only update the superblock to clean devices
-    if (auto res = write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route);
+    // Only update the superblock to clean devices. Pass include_superbitmap=true so the
+    // on-disk superbitmap reflects the current dirty state. On next startup the call sites
+    // for load_from check superbitmap_nonempty() and reject the volume if it is empty.
+    if (auto res =
+            write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route, true);
         !res) {
         if (state.is_degraded) {
             RLOGE("Failed to clear clean bit...full sync required upon next assembly [uuid:{}]", _str_uuid)
@@ -294,7 +326,7 @@ Raid1Disk::~Raid1Disk() {
     }
     if (!state.is_degraded)
         std::ignore =
-            write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route);
+            write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route, true);
 }
 
 Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
@@ -646,6 +678,7 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // have already received the write). Keep the in-memory degraded route and mark the failed
         // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
         // full recovery on next start will reconcile any inconsistency.
+        //
         _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
