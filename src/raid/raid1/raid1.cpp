@@ -625,13 +625,19 @@ void Raid1Disk::__become_clean() {
     // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
     bool const active_is_device_b = (state.route == read_route::DEVB);
 
-    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
-        !sync_res) {
-        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+    // Active device write must succeed before we CAS to EITHER. If it fails, leave the
+    // in-memory route at DEVA/DEVB so it matches the still-degraded on-disk state; diverging
+    // the two would produce wrong startup behaviour on the next mount.
+    if (auto active_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
+        !active_res) {
+        RLOGE("Could not become clean [uuid:{}]: active SB write failed: {}", _str_uuid, active_res.error().message())
+        return;
     }
     if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
         !sync_res) {
-        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        // Backup write failure is non-fatal: the active device already has the clean SB.
+        // On next restart pick_superblock will choose the active (higher age) device correctly.
+        RLOGW("Could not write clean SB to backup [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
 
     // Avoid checking DirtyBitmap going forward on reads/writes
