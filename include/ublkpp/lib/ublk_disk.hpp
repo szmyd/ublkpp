@@ -60,6 +60,7 @@ public:
     uint32_t max_tx() const noexcept;
     bool can_discard() const noexcept;
     uint32_t discard_granularity() const noexcept;
+    uint32_t max_discard_sectors() const noexcept;
     uint64_t capacity() const noexcept;
     bool direct_io() const noexcept { return _direct_io; }
     bool is_missing() const noexcept { return _is_missing; }

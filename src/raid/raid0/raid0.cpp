@@ -144,8 +144,16 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
-    if (can_discard())
+    if (can_discard()) {
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
+        // Propagate the tightest per-stripe max_discard_sectors across all child devices, scaled
+        // by stripe count (a top-level discard of N sectors distributes ~N/stripes per child).
+        uint32_t child_min = UINT32_MAX;
+        for (auto const& s : _stripe_array)
+            child_min = std::min(child_min, s->disk->max_discard_sectors());
+        our_params.discard.max_discard_sectors = static_cast< uint32_t >(
+            std::min< uint64_t >(static_cast< uint64_t >(child_min) * _stripe_array.size(), UINT32_MAX));
+    }
 }
 
 Raid0Disk::~Raid0Disk() = default;

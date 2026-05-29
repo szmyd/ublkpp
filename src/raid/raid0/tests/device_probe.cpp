@@ -1,5 +1,18 @@
 #include "test_raid0_common.hpp"
 
+// max_discard_sectors is propagated from child devices (min * stripe count)
+TEST(Raid0, MaxDiscardSectorsPropagated) {
+    constexpr uint32_t k_child_max_discard = 1000; // sectors
+    auto device_a = CREATE_DISK(TestParams{.capacity = Gi, .max_discard_sectors = k_child_max_discard});
+    auto device_b = CREATE_DISK(TestParams{.capacity = Gi, .max_discard_sectors = k_child_max_discard * 2});
+
+    auto raid_device = ublkpp::make_raid0_disk(boost::uuids::random_generator()(), 32 * Ki,
+                                               std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b});
+
+    // min child (1000) * 2 stripes = 2000 sectors
+    EXPECT_EQ(raid_device->max_discard_sectors(), k_child_max_discard * 2u);
+}
+
 // Brief: Test that RAID0 devices correctly report paramaters based on Devices A and B
 //
 // Construct a RAID0 device with 3 Identical underlying devices that match on every

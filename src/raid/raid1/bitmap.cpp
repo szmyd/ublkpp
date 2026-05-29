@@ -328,8 +328,17 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
 
     // Check if page became completely clean, and update superbitmap if so
     if (0 == isal_zero_detect(page, k_page_size)) {
-        // Clear superbitmap bit for this now-clean page
         _super_bitmap.clear_bit(page_offset);
+        // Race guard: dirty_region may have called fetch_or (setting bits) and then set_bit
+        // (marking superbitmap) between our isal_zero_detect and clear_bit above. The fence
+        // ensures we observe any such concurrent store before re-reading the page. If the page
+        // has new dirty bits we restore the superbitmap bit; if dirty_region's set_bit runs
+        // after our fence it wins and sets the bit itself — either way the superbitmap is correct.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (0 != isal_zero_detect(page, k_page_size)) {
+            _super_bitmap.set_bit(page_offset);
+            return std::make_tuple(nullptr, page_offset, sz);
+        }
         return std::make_tuple(_clean_page.get(), page_offset, sz);
     }
     return std::make_tuple(nullptr, page_offset, sz);
