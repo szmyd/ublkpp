@@ -160,18 +160,16 @@ void Raid1Disk::__init_params() {
                                          : (static_cast< uint64_t >(our_params.basic.max_sectors) << SECTOR_SHIFT);
     _reserved_size += ((our_params.basic.dev_sectors << SECTOR_SHIFT) - _reserved_size) % align;
 
-    // L4: verify every physical device is large enough to hold the reserved region.
-    // Without this, a too-small device silently underflows dev_sectors and later triggers
-    // a confusing "exceeds SuperBitmap max capacity" error from the Bitmap constructor.
-    for (auto const& device : std::array{_device_a->disk, _device_b->disk}) {
-        if (device->is_missing()) continue;
-        auto const dev_bytes = device->capacity();
-        if (dev_bytes < _reserved_size) {
-            RLOGE("Device {} is too small: {} bytes < reserved {} bytes [uuid:{}]", *device, dev_bytes, _reserved_size,
-                  _str_uuid)
-            throw std::runtime_error(
-                fmt::format("device too small: {} bytes < reserved {} bytes", dev_bytes, _reserved_size));
-        }
+    // L4: verify the array is large enough to hold the reserved region.
+    // dev_sectors already holds the minimum of both physical devices, so one check suffices —
+    // the larger device is always >= the minimum and passes trivially. Without this guard a
+    // too-small device silently underflows dev_sectors and later triggers a confusing
+    // "exceeds SuperBitmap max capacity" error from the Bitmap constructor.
+    auto const min_dev_bytes = our_params.basic.dev_sectors << SECTOR_SHIFT;
+    if (min_dev_bytes < _reserved_size) {
+        RLOGE("Devices are too small: {} bytes < reserved {} bytes [uuid:{}]", min_dev_bytes, _reserved_size, _str_uuid)
+        throw std::runtime_error(
+            fmt::format("device too small: {} bytes < reserved {} bytes", min_dev_bytes, _reserved_size));
     }
 
     // Reserve space for the superblock/bitmap
