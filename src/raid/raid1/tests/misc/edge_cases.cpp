@@ -360,6 +360,45 @@ TEST(Raid1, CleanDegradedStartupLoadsFromActiveDevice) {
     auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
 }
 
+// Test 9: Clean degraded startup with an all-zero superbitmap must throw.
+// Covers the superbitmap_nonempty() guard in the clean-degraded branch (Branch 4) of
+// __init_bitmap_and_degraded_route. Constructor throws before __become_active, so no writes.
+TEST(Raid1, CleanDegradedStartupEmptySuperbitmapThrows) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = true});
+
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::DEVA);
+            sb->fields.clean_unmount = 1;
+            sb->fields.bitmap.age = htobe64(10);
+            // superbitmap_reserved stays zero — simulates missing/corrupt persistence
+            return ublkpp::raid1::k_page_size;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
+            EXPECT_EQ(1U, nr_vecs);
+            EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
+            EXPECT_EQ(0UL, addr);
+            memcpy(iovecs->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
+            sb->fields.device_b = 1;
+            sb->fields.bitmap.age = htobe64(9);
+            return ublkpp::raid1::k_page_size;
+        });
+    // No WRITE expectations — constructor throws in __init_bitmap_and_degraded_route,
+    // before __become_active is reached.
+    EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
+}
+
 // Verifies that resync_level=0 is rejected at construction time.
 // Only meaningful when the binary is invoked with --resync_level=0; skipped otherwise so
 // the regular Raid1Test CTest entry (resync_level=4) is not affected.
