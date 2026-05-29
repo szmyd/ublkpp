@@ -189,6 +189,47 @@ Before reporting a race, determine which direction it can go:
 A race that can only go in the safe direction is a TSan warning, not a correctness bug.
 Document it accurately; do not overstate the risk.
 
+### RAID1 Known False Positives — Verify Before Reporting
+
+These patterns look dangerous on first inspection but are structurally impossible. Confirm each
+applies before flagging a finding; if anything in the code path has changed, re-trace from scratch.
+
+#### 1. Destructor races with IO coroutines (phantom)
+
+`Raid1Disk::~Raid1Disk` is called **after** all IO queues are stopped.
+`_resync_task->stop()` is the first call in the destructor — it joins the resync coroutine
+and waits for all in-flight IO to drain. By the time any subsequent destructor line executes
+there are **zero active IO coroutines**. Nothing in the destructor can race with anything:
+
+- `_dirty_bitmap->sync_to(...)` — no concurrent `dirty_region` / `clean_region` / `set_bit`
+- `write_superblock(..., include_superbitmap=true)` — no concurrent `SuperBitmap::set_bit`
+- `_sb->fields.clean_unmount = 0x1` — no concurrent readers or writers
+
+**REJECT** any candidate that claims a race between the destructor and IO coroutines.
+
+#### 2. Concurrent `write_superblock` callers (phantom)
+
+Two `write_superblock` calls cannot overlap — the state machine prevents it structurally:
+
+- `__become_degraded` opens with `CAS(EITHER → DEVA/DEVB)`. It only proceeds past the CAS —
+  and only reaches `write_superblock` — when it wins from `EITHER`.
+- `__become_clean` only runs when `route != EITHER` (array already degraded).
+- After `__become_degraded`'s CAS succeeds the route is DEVA/DEVB; any concurrent caller
+  that tries `CAS(EITHER → ...)` sees a mismatch and returns before reaching `write_superblock`.
+- The same CAS argument excludes `__swap_device`.
+
+**What TSan actually detects is a different, safe-direction race:** the old code passed `_sb`
+directly as `iov_base`, causing a non-atomic read of `superbitmap_reserved` (bytes 74–4095)
+while IO coroutines call `SuperBitmap::set_bit` → `atomic_ref<uint8_t>::fetch_or` on those same
+bytes. Under the core invariant this race can only go in the safe direction — `fetch_or` only
+sets bits, so memory gets dirtier than disk, never cleaner. It is a TSan warning, not a
+correctness bug. The fix (local-copy buffer stopping at byte 74) silences TSan and is a correct
+cleanup, but the concurrent-callers framing is wrong.
+
+**REJECT** any candidate claiming two concurrent `write_superblock` callers.
+
+---
+
 ### Pattern Checklist
 
 Check each explicitly during both discovery and verification:
