@@ -3,8 +3,11 @@
 // max_discard_sectors is propagated from child devices (min * stripe count)
 TEST(Raid0, MaxDiscardSectorsPropagated) {
     constexpr uint32_t k_child_max_discard = 1000; // sectors
-    auto device_a = CREATE_DISK(TestParams{.capacity = Gi, .max_discard_sectors = k_child_max_discard});
-    auto device_b = CREATE_DISK(TestParams{.capacity = Gi, .max_discard_sectors = k_child_max_discard * 2});
+    // Named vars: commas in brace-init confuse the C preprocessor into splitting the macro arg.
+    TestParams p_a{.capacity = Gi, .max_discard_sectors = k_child_max_discard};
+    TestParams p_b{.capacity = Gi, .max_discard_sectors = k_child_max_discard * 2};
+    auto device_a = CREATE_DISK(p_a);
+    auto device_b = CREATE_DISK(p_b);
 
     auto raid_device = ublkpp::make_raid0_disk(boost::uuids::random_generator()(), 32 * Ki,
                                                std::vector< std::shared_ptr< ublk_disk > >{device_a, device_b});
