@@ -189,6 +189,35 @@ Before reporting a race, determine which direction it can go:
 A race that can only go in the safe direction is a TSan warning, not a correctness bug.
 Document it accurately; do not overstate the risk.
 
+### Write Acknowledgment Boundary
+
+A write scenario is a correctness bug **only if** the caller could receive a successful
+acknowledgment while the data is in an inconsistent state on disk.
+
+**If the caller received EIO (or the process crashed before ACK), the upper layer owns
+recovery — this is NOT a bug in the RAID/storage layer:**
+
+- Journaling filesystems (XFS, ext4) come up after power loss, find unfinished journal
+  entries, and replay them. They read state before trusting anything — they do not assume
+  data is consistent just because RAID didn't return EIO.
+- `USER_RECOVERY` mode resubmits outstanding I/Os after restart.
+- "I never got an ACK back from this write; I should read before I assume anything" is the
+  correct upper-layer semantic.
+
+**The dangerous pattern** (real correctness bug) requires **both**:
+1. The write was (or could be) ACK'd to the caller as successful
+2. The on-disk data is inconsistent — caller reads stale data from a replica
+
+**Common false alarm**: both-writes-in-flight + A-fails + crash-before-SB-write.
+Even if B committed new data and the SB was never updated to show degraded mode,
+the caller never got a success ACK for that write (they got EIO or no response).
+On restart, a journaling filesystem treats that region as "unknown — must verify before use."
+This is handled correctly at the filesystem layer and is not a RAID-level data-loss bug.
+
+**What to check**: trace whether the ACK path (`co_return` with success,
+`UBLK_IO_COMMIT_AND_FETCH_REQ`) can fire AFTER a write landed on only one replica with no
+record of the inconsistency. If the ack fires only on the error path (EIO returned), it is safe.
+
 ### RAID1 Known False Positives — Verify Before Reporting
 
 These patterns look dangerous on first inspection but are structurally impossible. Confirm each
