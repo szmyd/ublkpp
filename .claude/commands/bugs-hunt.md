@@ -4,6 +4,9 @@ Systematic correctness audit using parallel discovery agents followed by indepen
 verification. Each finding must survive a separate clean-context challenge before it
 is reported as real.
 
+**Scope**: implementation files only (`src/`). Public headers (`include/ublkpp/`) and
+interface-level contracts are out of scope for this hunt.
+
 ---
 
 ## Mindset — The Million-Dollar Rule
@@ -64,12 +67,16 @@ files in full, and writes its candidates to a dedicated output file.
 After all 5 discovery agents complete:
 1. Read **all 5 output files** (`/tmp/bh-agent1.md` through `/tmp/bh-agent5.md`) and collect
    every candidate into a working list before spawning any verification agent.
-2. Spawn **one verification agent per candidate** (batch Low-confidence candidates that target
-   the same source file into a single agent to reduce redundant reads).
+2. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which discovery
+   agent produced it.
+3. Spawn verification agents in batches of **at most 8 at a time**. The runtime queues excess
+   agents automatically, but keeping batches small avoids overwhelming the context budget.
+   Batch Low-confidence candidates that target the same source file into a single agent.
 
 Each verification agent:
 
-- Has **clean context** — no memory of the discovery phase, no shared state with other agents
+- Has **no knowledge of what discovery agents found** — it receives only the candidate text,
+  not the discovery agents' reasoning or other candidates
 - Reads the candidate verbatim from the output file
 - Reads the relevant source files from scratch, following call chains as needed
 - Applies the million-dollar rule as the only criterion
@@ -83,8 +90,9 @@ Each verification agent:
 5. **CONFIRM** if the sequence is definitively reachable and produces the claimed harm
 6. **ESCALATE** if uncertain after full investigation — do not guess; ask the user
 
-**Verification output per candidate** — write to `/tmp/bh-verify-[N][X].md`
-(e.g. `/tmp/bh-verify-2a.md` for Candidate 2.A; batched candidates share one file):
+**Verification output per candidate** — write to `/tmp/bh-verify-NN.md` using the flat
+sequential index assigned in step 2 above (e.g. `/tmp/bh-verify-01.md`, `/tmp/bh-verify-02.md`).
+Batched candidates share one file; list all their IDs in the filename comment:
 ```
 ### [CONFIRMED | REJECTED | ESCALATE] Candidate [N.X]: [Title]
 
@@ -113,6 +121,7 @@ synthesize into one consolidated report:
 ### Confirmed Bugs
 
 #### [B1] Title — P0 | P1 | P2
+<!-- Severity: P0 = data loss / corruption | P1 = crash / unavailability | P2 = extra resync / silent wrong behaviour -->
 
 **Location**: file.cpp:line
 **Type**: ...
