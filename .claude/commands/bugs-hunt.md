@@ -28,13 +28,19 @@ Operate accordingly:
 
 ## Session Setup
 
-Before spawning any agents, choose a session prefix (e.g., last 6 digits of the current
-epoch seconds) and use it as a prefix for **every** output file in this run. This prevents
-silent overwrites on re-runs or concurrent hunts.
+Run the following via the Bash tool to get a stable session prefix:
+
+```bash
+date +%s | tail -c 7
+```
+
+Use the output (e.g., `947312`) as a prefix for **every** output file in this run. This
+prevents silent overwrites on re-runs or concurrent hunts. Find-and-replace `{PREFIX}` in
+every agent prompt and shell command before emitting — do not pass the literal string
+`{PREFIX}` to agents or the cleanup command.
 
 Example: prefix `947312` → `/tmp/bh-947312-agent1.md`, `/tmp/bh-947312-verify-01.md`,
-`/tmp/bh-947312-report.md`. Find-and-replace `{PREFIX}` in every agent prompt you emit
-before spawning — do not pass the literal string `{PREFIX}` to agents.
+`/tmp/bh-947312-report.md`.
 
 ---
 
@@ -48,8 +54,8 @@ files in full, and writes its candidates to a dedicated output file.
 |---|---|---|
 | 1 | `src/raid/raid1/bitmap.cpp`, `src/raid/raid1/bitmap.hpp`, `src/raid/raid1/super_bitmap.cpp`, `src/raid/raid1/super_bitmap.hpp` | `/tmp/bh-{PREFIX}-agent1.md` |
 | 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `/tmp/bh-{PREFIX}-agent2.md` |
-| 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; note any concerns for Agent 2 to verify.** | `/tmp/bh-{PREFIX}-agent3.md` |
-| 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp` | `/tmp/bh-{PREFIX}-agent4.md` |
+| 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; log cross-boundary concerns in the XB section (see output format below).** | `/tmp/bh-{PREFIX}-agent3.md` |
+| 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/disk_task.hpp`, `src/lib/disk_task.cpp`, `src/lib/cqe_state.hpp` | `/tmp/bh-{PREFIX}-agent4.md` |
 | 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `/tmp/bh-{PREFIX}-agent5.md` |
 
 **Discovery agent prompt must include:**
@@ -74,6 +80,17 @@ files in full, and writes its candidates to a dedicated output file.
 **Uncertainty**: [what you're not sure about, if anything]
 ```
 
+**Agent 3 only** — append a cross-boundary section for anything that doesn't clear the
+Candidate confidence bar but touches `__become_degraded`:
+
+```
+## Cross-Boundary Concerns (for Agent 2 verification)
+
+### XB-[N]: [Title]
+**Concern**: [what needs investigating in __become_degraded]
+**Context**: [what Agent 3 observed in __become_active that triggered this]
+```
+
 ---
 
 ## Phase 2 — Independent Verification
@@ -83,18 +100,18 @@ After all 5 discovery agents complete:
    `/tmp/bh-{PREFIX}-agent5.md`) and collect every candidate into a working list
    before spawning any verification agent. **If any file is missing or empty, report
    it explicitly** (e.g., "Agent 3 output missing — that subsystem was not audited")
-   before continuing. Do not silently skip it. If Agent 3 flagged a cross-boundary
-   concern about `__become_degraded`, merge it with Agent 2's candidates and treat
-   it as a single candidate for verification.
+   before continuing. Do not silently skip it. Also collect any `## Cross-Boundary
+   Concerns` sections from `agent3.md` — merge each XB entry with Agent 2's candidates
+   and treat it as a single candidate for verification.
 2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
    found.` Do not proceed to Phase 3.
 3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
    discovery agent produced it.
 4. Spawn verification agents in batches of **at most 8 at a time** (the per-turn concurrency
-   limit in Claude Code's Agent tool). Batch Low-confidence candidates that target the same
-   source file into a single agent (note: batched agents share agent context — a finding in
-   candidate A may anchor reasoning for candidate B; only batch when you accept this risk for
-   Low-confidence candidates).
+   limit in Claude Code's Agent tool). Each candidate gets its own agent. If there are more
+   than 8 candidates total and batching is unavoidable, batch only **Low-confidence** candidates
+   targeting the same source file — never High or Medium (batched agents share agent context:
+   a finding in candidate A may anchor reasoning for candidate B).
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -141,10 +158,15 @@ in a header comment. Use one verdict block per candidate, referenced by flat ind
 ## Phase 3 — Final Report
 
 After all verification agents complete, read all `/tmp/bh-{PREFIX}-verify-*.md` files and
-synthesize into one consolidated report. **Write the report to `/tmp/bh-{PREFIX}-report.md`**
-and then emit it as a response. After writing the report, clean up intermediate files:
-`rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md` — the report and escalations
-files are kept intentionally (report for record-keeping, escalations for user follow-up).
+synthesize into one consolidated report:
+1. **Write the report to `/tmp/bh-{PREFIX}-report.md`** and emit it as a response.
+2. If any escalations exist, **also write them to `/tmp/bh-{PREFIX}-escalations.md`**
+   (so the user can re-read them without parsing the full report). Omit this file if there
+   are no escalations.
+3. **Optionally** clean up intermediate files after confirming the report is complete:
+   `rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md`
+   Do not run this if Phase 3 failed mid-synthesis — the intermediates are needed to retry.
+   The report and escalations files are always kept.
 
 ```
 ## Bug Hunt Report
@@ -183,10 +205,10 @@ files are kept intentionally (report for record-keeping, escalations for user fo
 
 ### Escalations — Human Review Needed
 
-Write escalations to `/tmp/bh-{PREFIX}-escalations.md` and list them here. For each one,
-present the precise scenario question to the user. After the user responds, spawn a new
-targeted verification agent for any scenario confirmed as possible, adding the deployment
-context to the candidate prompt.
+List escalations here and in `/tmp/bh-{PREFIX}-escalations.md` (omit the file if none).
+For each one, present the precise scenario question to the user. After the user responds,
+spawn a new targeted verification agent for any scenario confirmed as possible, adding the
+deployment context to the candidate prompt.
 
 #### [E1] Title
 
@@ -340,6 +362,10 @@ Check each explicitly during both discovery and verification:
 - [ ] Signal before check: `sem_post` / completion fires before the `if (success)` guard
 - [ ] Stale capture across `co_await`: value loaded before suspension used after resumption
   without re-read — another coroutine may have mutated shared state while this one was suspended
+- [ ] Dangling reference into coroutine frame: `const T&` or pointer captured into a coroutine
+  body may outlive the referent if the owning object is destroyed while the coroutine is suspended
+- [ ] Relaxed atomic as a branch guard: `load(relaxed)` used as a condition without a subsequent
+  `acquire` fence — the load can be reordered past dependent loads it was intended to gate
 
 **Error handling**
 - [ ] Error from device A sets `unavail` / triggers `__become_degraded` on device B
