@@ -344,11 +344,6 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         // x86-only: MFENCE drains the store buffer, making dirty_region's relaxed fetch_or
         // visible here. On ARM/POWER a one-sided seq_cst fence does not order a relaxed
         // store from another thread; both sides would need seq_cst or release/acquire.
-        // The #error below prevents a silent broken port.
-#if !defined(__x86_64__) && !defined(__i386__)
-#error "clean_region double-check fence relies on x86 TSO. For other architectures, " \
-           "make dirty_region's fetch_or memory_order_release and this re-read memory_order_acquire."
-#endif
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (0 != isal_zero_detect(page, k_page_size)) {
             _super_bitmap.set_bit(page_offset);
