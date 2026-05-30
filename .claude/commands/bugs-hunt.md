@@ -30,8 +30,8 @@ files in full, and writes its candidates to a dedicated output file.
 | Agent | Scope | Output file |
 |---|---|---|
 | 1 | `src/raid/raid1/bitmap.cpp`, `bitmap.hpp`, `super_bitmap.*` | `/tmp/bh-agent1.md` |
-| 2 | `src/raid/raid1/raid1.cpp` — state transitions (`__become_*`, `__swap_device`, `async_iov`) | `/tmp/bh-agent2.md` |
-| 3 | `src/raid/raid1/raid1_superblock.*`, startup path in `raid1.cpp` (`__init_*`, `__load_*`) | `/tmp/bh-agent3.md` |
+| 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*` | `/tmp/bh-agent2.md` |
+| 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded` | `/tmp/bh-agent3.md` |
 | 4 | `src/target/ublkpp_tgt.cpp`, `src/lib/disk_task.*` | `/tmp/bh-agent4.md` |
 | 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `/tmp/bh-agent5.md` |
 
@@ -61,8 +61,13 @@ files in full, and writes its candidates to a dedicated output file.
 
 ## Phase 2 — Independent Verification
 
-After all 5 discovery agents complete, spawn **one verification agent per candidate**
-(batch Low-confidence candidates from the same file together). Each verification agent:
+After all 5 discovery agents complete:
+1. Read **all 5 output files** (`/tmp/bh-agent1.md` through `/tmp/bh-agent5.md`) and collect
+   every candidate into a working list before spawning any verification agent.
+2. Spawn **one verification agent per candidate** (batch Low-confidence candidates that target
+   the same source file into a single agent to reduce redundant reads).
+
+Each verification agent:
 
 - Has **clean context** — no memory of the discovery phase, no shared state with other agents
 - Reads the candidate verbatim from the output file
@@ -78,7 +83,8 @@ After all 5 discovery agents complete, spawn **one verification agent per candid
 5. **CONFIRM** if the sequence is definitively reachable and produces the claimed harm
 6. **ESCALATE** if uncertain after full investigation — do not guess; ask the user
 
-**Verification output per candidate:**
+**Verification output per candidate** — write to `/tmp/bh-verify-[N][X].md`
+(e.g. `/tmp/bh-verify-2a.md` for Candidate 2.A; batched candidates share one file):
 ```
 ### [CONFIRMED | REJECTED | ESCALATE] Candidate [N.X]: [Title]
 
@@ -93,7 +99,8 @@ After all 5 discovery agents complete, spawn **one verification agent per candid
 
 ## Phase 3 — Final Report
 
-After all verification agents complete, synthesize into one consolidated report:
+After all verification agents complete, read all `/tmp/bh-verify-*.md` files and
+synthesize into one consolidated report:
 
 ```
 ## Bug Hunt Report
