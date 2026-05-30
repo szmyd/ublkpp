@@ -243,9 +243,12 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
         auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             calc_bitmap_region(addr + off, len - off, _chunk_size);
         off += sz;
-        if (!_super_bitmap.test_bit(page_offset)) continue;
+        // Do not skip on superbitmap alone: clean_region may have transiently cleared the bit
+        // between dirty_region's fetch_or and its set_bit, making the superbitmap momentarily
+        // wrong. Always verify page bits directly; the superbitmap is authoritative only for
+        // "dirty → definitely dirty", not for "clean → definitely clean".
         auto page = _page_map[page_offset].page.load(std::memory_order_acquire);
-        if (!page) continue;
+        if (!page) continue; // page never allocated → definitely clean
         auto cur_word = page + word_offset;
 
         // Handle update crossing multiple words (optimization potential?)
