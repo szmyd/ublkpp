@@ -33,7 +33,8 @@ epoch seconds) and use it as a prefix for **every** output file in this run. Thi
 silent overwrites on re-runs or concurrent hunts.
 
 Example: prefix `947312` → `/tmp/bh-947312-agent1.md`, `/tmp/bh-947312-verify-01.md`,
-`/tmp/bh-947312-report.md`. Replace `{PREFIX}` with your chosen value throughout.
+`/tmp/bh-947312-report.md`. Find-and-replace `{PREFIX}` in every agent prompt you emit
+before spawning — do not pass the literal string `{PREFIX}` to agents.
 
 ---
 
@@ -45,10 +46,10 @@ files in full, and writes its candidates to a dedicated output file.
 
 | Agent | Scope | Output file |
 |---|---|---|
-| 1 | `src/raid/raid1/bitmap.cpp`, `bitmap.hpp`, `super_bitmap.*` | `/tmp/bh-{PREFIX}-agent1.md` |
+| 1 | `src/raid/raid1/bitmap.cpp`, `src/raid/raid1/bitmap.hpp`, `src/raid/raid1/super_bitmap.cpp`, `src/raid/raid1/super_bitmap.hpp` | `/tmp/bh-{PREFIX}-agent1.md` |
 | 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `/tmp/bh-{PREFIX}-agent2.md` |
 | 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; note any concerns for Agent 2 to verify.** | `/tmp/bh-{PREFIX}-agent3.md` |
-| 4 | `src/target/ublkpp_tgt.cpp`, `src/lib/disk_task.*` | `/tmp/bh-{PREFIX}-agent4.md` |
+| 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp` | `/tmp/bh-{PREFIX}-agent4.md` |
 | 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `/tmp/bh-{PREFIX}-agent5.md` |
 
 **Discovery agent prompt must include:**
@@ -82,15 +83,18 @@ After all 5 discovery agents complete:
    `/tmp/bh-{PREFIX}-agent5.md`) and collect every candidate into a working list
    before spawning any verification agent. **If any file is missing or empty, report
    it explicitly** (e.g., "Agent 3 output missing — that subsystem was not audited")
-   before continuing. Do not silently skip it.
+   before continuing. Do not silently skip it. If Agent 3 flagged a cross-boundary
+   concern about `__become_degraded`, merge it with Agent 2's candidates and treat
+   it as a single candidate for verification.
 2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
    found.` Do not proceed to Phase 3.
 3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
    discovery agent produced it.
 4. Spawn verification agents in batches of **at most 8 at a time** (the per-turn concurrency
    limit in Claude Code's Agent tool). Batch Low-confidence candidates that target the same
-   source file into a single agent (note: batched agents share file context — an acceptable
-   cost/independence tradeoff for Low-confidence candidates only).
+   source file into a single agent (note: batched agents share agent context — a finding in
+   candidate A may anchor reasoning for candidate B; only batch when you accept this risk for
+   Low-confidence candidates).
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -139,8 +143,8 @@ in a header comment. Use one verdict block per candidate, referenced by flat ind
 After all verification agents complete, read all `/tmp/bh-{PREFIX}-verify-*.md` files and
 synthesize into one consolidated report. **Write the report to `/tmp/bh-{PREFIX}-report.md`**
 and then emit it as a response. After writing the report, clean up intermediate files:
-`rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md` — keep only the report and
-escalations files.
+`rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md` — the report and escalations
+files are kept intentionally (report for record-keeping, escalations for user follow-up).
 
 ```
 ## Bug Hunt Report
@@ -173,7 +177,7 @@ escalations files.
 
 | ID | Title | Rejected because |
 |---|---|---|
-| 03 | ... | CAS at raid1.cpp:620 prevents concurrent entry |
+| 03 | ... | CAS in `__become_degraded` prevents concurrent entry |
 
 ---
 
@@ -296,7 +300,7 @@ there are **zero active IO coroutines**. Nothing in the destructor can race with
 
 **REJECT** any candidate that claims a race between the destructor and IO coroutines.
 
-#### 2. Concurrent `write_superblock` callers (phantom)
+#### 2a. Concurrent `write_superblock` callers (phantom)
 
 Two `write_superblock` calls cannot overlap — the state machine prevents it structurally:
 
@@ -307,15 +311,19 @@ Two `write_superblock` calls cannot overlap — the state machine prevents it st
   that tries `CAS(EITHER → ...)` sees a mismatch and returns before reaching `write_superblock`.
 - The same CAS argument excludes `__swap_device`.
 
-**What TSan actually detects is a different, safe-direction race:** the old code passed `_sb`
-directly as `iov_base`, causing a non-atomic read of the `superbitmap_reserved` field while IO
-coroutines call `SuperBitmap::set_bit` → `atomic_ref<uint8_t>::fetch_or` on those same bytes.
-Under the core invariant this race can only go in the safe direction — `fetch_or` only sets
-bits, so memory gets dirtier than disk, never cleaner. It is a TSan warning, not a correctness
-bug. The fix (local-copy buffer stopping before `superbitmap_reserved`) silences TSan and is a
-correct cleanup, but the concurrent-callers framing is wrong.
-
 **REJECT** any candidate claiming two concurrent `write_superblock` callers.
+
+#### 2b. TSan report on `superbitmap_reserved` during superblock write (safe direction)
+
+TSan may flag a race between `write_superblock` reading `_sb` as raw bytes (via `iov_base`)
+and IO coroutines calling `SuperBitmap::set_bit` → `atomic_ref<uint8_t>::fetch_or` on the
+`superbitmap_reserved` field of the same superblock page. This is a **safe-direction race**:
+`fetch_or` only sets bits, so memory gets dirtier than disk, never cleaner. Under the core
+invariant this cannot cause data loss. The fix (local-copy buffer stopping before
+`superbitmap_reserved`) silences TSan and is a correct cleanup, but the race is not a
+correctness bug.
+
+**REJECT** any candidate framing this TSan report as a data-loss or corruption risk.
 
 ---
 
