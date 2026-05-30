@@ -337,15 +337,19 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
     if (0 == isal_zero_detect(page, k_page_size)) {
         _super_bitmap.clear_bit(page_offset);
         // Race guard: dirty_region may have called fetch_or (setting bits) and then set_bit
-        // (marking superbitmap) between our isal_zero_detect and clear_bit above. The fence
-        // ensures we observe any such concurrent store before re-reading the page. If the page
-        // has new dirty bits we restore the superbitmap bit; if dirty_region's set_bit runs
-        // after our fence it wins and sets the bit itself — either way the superbitmap is correct.
-        // x86-only: MFENCE drains the store buffer, making dirty_region's relaxed fetch_or
-        // visible here. On ARM/POWER a one-sided seq_cst fence does not order a relaxed
-        // store from another thread; both sides would need seq_cst or release/acquire.
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        if (0 != isal_zero_detect(page, k_page_size)) {
+        // (marking superbitmap) between our isal_zero_detect and clear_bit above. Re-scan the
+        // page with acquire loads to synchronize with dirty_region's release fetch_or: if any
+        // word is non-zero the concurrent write is now visible, and we restore the superbitmap
+        // bit. If dirty_region's set_bit runs after our clear_bit it wins and sets the bit
+        // itself — either way the superbitmap is correct.
+        // Using acquire loads (rather than atomic_thread_fence) keeps TSan happy and makes the
+        // fix portable to ARM/POWER: the release/acquire pair creates the required happens-before.
+        auto const nwords = k_page_size / sizeof(word_t);
+        auto const* words = page;
+        bool still_clean = true;
+        for (size_t i = 0; i < nwords && still_clean; ++i)
+            still_clean = (std::atomic_ref< word_t >(words[i]).load(std::memory_order_acquire) == 0);
+        if (!still_clean) {
             _super_bitmap.set_bit(page_offset);
             return std::make_tuple(nullptr, page_offset, sz);
         }
@@ -442,7 +446,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_or(bits_to_set, std::memory_order_relaxed);
+            auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_or(bits_to_set, std::memory_order_release);
             _dirty_chunks_est.fetch_add(std::popcount(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;
