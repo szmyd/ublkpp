@@ -17,7 +17,7 @@ struct TestParams {
     uint32_t l_size{ublkpp::DEFAULT_BLOCK_SIZE};
     uint32_t p_size{ublkpp::DEFAULT_BLOCK_SIZE};
     uint32_t max_io{512 * Ki};
-    uint32_t max_discard_sectors{UINT32_MAX >> 9}; // UINT_MAX >> SECTOR_SHIFT default
+    uint32_t max_discard_sectors{UINT32_MAX >> 9}; // UINT32_MAX >> SECTOR_SHIFT default
     bool can_discard{true};
     bool direct_io{true};
     bool is_slot_b{false};

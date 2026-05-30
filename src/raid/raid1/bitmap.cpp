@@ -337,6 +337,10 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         // ensures we observe any such concurrent store before re-reading the page. If the page
         // has new dirty bits we restore the superbitmap bit; if dirty_region's set_bit runs
         // after our fence it wins and sets the bit itself — either way the superbitmap is correct.
+        // x86 note: MFENCE (what seq_cst compiles to) drains the store buffer, making
+        // dirty_region's relaxed fetch_or visible here. On weakly-ordered architectures
+        // (ARM, POWER) a relaxed store is NOT guaranteed visible after a one-sided seq_cst
+        // fence; both sides would need seq_cst stores or an acquire-release pair.
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (0 != isal_zero_detect(page, k_page_size)) {
             _super_bitmap.set_bit(page_offset);

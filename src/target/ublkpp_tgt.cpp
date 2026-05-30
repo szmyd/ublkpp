@@ -248,11 +248,9 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
 
-    // Let go of our shared_ptr to the target
     auto ctrl_dev = tgt->ctrl_dev;
     auto dev_ptr = tgt->device.get();
     auto const dev_id = tgt->dev_data->dev_id;
-    tgt.reset();
 
     // Wait for Queues to start
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i)
@@ -261,8 +259,15 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 
     if (auto const failed = queue_failures.load(std::memory_order_relaxed); failed > 0) {
         TLOGE("dev {} failed: {} queue(s) did not initialize", dev_id, failed)
-        return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        // Tear down surviving queue threads (ublksrv_ctrl_stop_dev unblocks their io_uring loops)
+        // before returning; without this they run indefinitely with no way to join or stop them.
+        tgt->destroy();
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
+
+    // All queues started; let go of our shared_ptr (each queue thread released its own copy
+    // immediately after signalling, so the impl is now owned solely by queue_handlers)
+    tgt.reset();
 
     // Start processing I/Os
     if (!recovery) {
