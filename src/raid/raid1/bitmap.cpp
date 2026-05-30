@@ -245,7 +245,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
         off += sz;
         // No superbitmap fast-path here: is_dirty must read page bits directly.
         // The superbitmap can transiently show "clean" while the page has dirty bits —
-        // dirty_region writes page bits (relaxed) before setting the superbitmap bit, and
+        // dirty_region writes page bits (release) before setting the superbitmap bit, and
         // clean_region clears the superbitmap bit before its double-check restore. Either
         // window would cause is_dirty to skip a dirty page and route a degraded-mode read
         // to the stale backup device. Reading page bits directly avoids this entirely.
@@ -345,7 +345,7 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
         // Using acquire loads (rather than atomic_thread_fence) keeps TSan happy and makes the
         // fix portable to ARM/POWER: the release/acquire pair creates the required happens-before.
         auto const nwords = k_page_size / sizeof(word_t);
-        auto const* words = page;
+        auto* words = page;
         bool still_clean = true;
         for (size_t i = 0; i < nwords && still_clean; ++i)
             still_clean = (std::atomic_ref< word_t >(words[i]).load(std::memory_order_acquire) == 0);

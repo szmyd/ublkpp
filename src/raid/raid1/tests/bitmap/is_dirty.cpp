@@ -25,7 +25,7 @@ TEST(Raid1, IsDirtyNextPage) {
 // return true based on page bits — not be suppressed by the now-cleared superbitmap.
 // dirty_region re-sets the superbitmap, but the code path under test is the direct page-bit
 // read that executes regardless of the superbitmap state.
-TEST(Raid1IsDirty, ReflectsPageBitsAfterSuperbitmapCleared) {
+TEST(Raid1, IsDirtyReflectsPageBitsAfterSuperbitmapCleared) {
     auto superbitmap_buf = make_test_superbitmap();
     // Two 32KiB chunks on the same bitmap page (page covers 1 GiB of data)
     auto bitmap = ublkpp::raid1::Bitmap(10 * ublkpp::Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
