@@ -1,5 +1,6 @@
 #include "ublkpp/target.hpp"
 
+#include <ranges>
 #include <semaphore.h>
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
@@ -148,7 +149,7 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 }
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem,
-                                   std::atomic< int >* queue_failures) {
+                                   int* queue_ok) {
     auto qs = std::make_unique< ublkpp_queue_state >(target.get());
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
@@ -157,9 +158,10 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     auto q = ublksrv_queue_init_flags(target->ublk_dev, q_id, qs.get(),
                                       IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
 
-    // Signal start() regardless of success/failure so it never deadlocks waiting.
-    // Report failures via queue_failures so start() can detect a partial init.
-    if (!q) queue_failures->fetch_add(1, std::memory_order_relaxed);
+    // Each thread writes to its own slot — no concurrent writes to the same location.
+    // sem_post provides the release that pairs with start()'s sem_wait acquire, so no
+    // atomic needed: start() reads queue_ok[] only after all sem_waits complete.
+    if (!q) *queue_ok = 0;
     sem_post(queue_sem);
     target.reset();
 
@@ -240,10 +242,10 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     // Setup Queues
     sem_t queue_sem;
     sem_init(&queue_sem, 0, 0);
-    std::atomic< int > queue_failures{0};
+    auto queue_ok = std::vector< int >(dinfo->nr_hw_queues, 1);
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
         tgt->queue_handlers.push_back(sisl::named_thread(fmt::format("q_{}_{}", tgt->dev_data->dev_id, i),
-                                                         ublksrv_queue_handler, tgt, i, &queue_sem, &queue_failures));
+                                                         ublksrv_queue_handler, tgt, i, &queue_sem, &queue_ok[i]));
     }
     auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
@@ -257,8 +259,8 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         sem_wait(&queue_sem);
     sem_destroy(&queue_sem);
 
-    if (auto const failed = queue_failures.load(std::memory_order_relaxed); failed > 0) {
-        TLOGE("dev {} failed: {} queue(s) did not initialize", dev_id, failed)
+    if (std::ranges::any_of(queue_ok, [](int ok) { return !ok; })) {
+        TLOGE("dev {} failed: one or more queues did not initialize", dev_id)
         // Tear down surviving queue threads (ublksrv_ctrl_stop_dev unblocks their io_uring loops)
         // before returning; without this they run indefinitely with no way to join or stop them.
         tgt->destroy();
