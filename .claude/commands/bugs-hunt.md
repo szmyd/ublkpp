@@ -1,11 +1,13 @@
 # Bug Hunt — ublkpp
 
+<!-- Last updated: 2026-05-31. KFP entries reflect code as of this date — re-verify before applying if significant time has passed. -->
+
 Systematic correctness audit using parallel discovery agents followed by independent
 verification. Each finding must survive a separate clean-context challenge before it
 is reported as real.
 
-**Scope**: implementation files only (`src/`). Public headers (`include/ublkpp/`) and
-interface-level contracts are out of scope for this hunt.
+**Scope**: implementation files only (`src/`), including internal headers under `src/`.
+Out of scope: public API headers (`include/ublkpp/`) and interface-level contracts.
 
 ---
 
@@ -24,6 +26,17 @@ Operate accordingly:
 
 ---
 
+## Session Setup
+
+Before spawning any agents, choose a session prefix (e.g., last 6 digits of the current
+epoch seconds) and use it as a prefix for **every** output file in this run. This prevents
+silent overwrites on re-runs or concurrent hunts.
+
+Example: prefix `947312` → `/tmp/bh-947312-agent1.md`, `/tmp/bh-947312-verify-01.md`,
+`/tmp/bh-947312-report.md`. Replace `{PREFIX}` with your chosen value throughout.
+
+---
+
 ## Phase 1 — Parallel Discovery (5 agents)
 
 Spawn **5 agents in parallel** using the Agent tool. Send all 5 in a single message so
@@ -32,15 +45,15 @@ files in full, and writes its candidates to a dedicated output file.
 
 | Agent | Scope | Output file |
 |---|---|---|
-| 1 | `src/raid/raid1/bitmap.cpp`, `bitmap.hpp`, `super_bitmap.*` | `/tmp/bh-agent1.md` |
-| 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*` | `/tmp/bh-agent2.md` |
-| 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded` | `/tmp/bh-agent3.md` |
-| 4 | `src/target/ublkpp_tgt.cpp`, `src/lib/disk_task.*` | `/tmp/bh-agent4.md` |
-| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `/tmp/bh-agent5.md` |
+| 1 | `src/raid/raid1/bitmap.cpp`, `bitmap.hpp`, `super_bitmap.*` | `/tmp/bh-{PREFIX}-agent1.md` |
+| 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `/tmp/bh-{PREFIX}-agent2.md` |
+| 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; note any concerns for Agent 2 to verify.** | `/tmp/bh-{PREFIX}-agent3.md` |
+| 4 | `src/target/ublkpp_tgt.cpp`, `src/lib/disk_task.*` | `/tmp/bh-{PREFIX}-agent4.md` |
+| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `/tmp/bh-{PREFIX}-agent5.md` |
 
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
-- The Analysis Framework section below
+- The Analysis Framework section below — **paste it verbatim, do not summarize**
 - The million-dollar rule
 - This output format — write raw candidates to the output file, no filtering yet:
 
@@ -65,19 +78,26 @@ files in full, and writes its candidates to a dedicated output file.
 ## Phase 2 — Independent Verification
 
 After all 5 discovery agents complete:
-1. Read **all 5 output files** (`/tmp/bh-agent1.md` through `/tmp/bh-agent5.md`) and collect
-   every candidate into a working list before spawning any verification agent.
-2. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which discovery
-   agent produced it.
-3. Spawn verification agents in batches of **at most 8 at a time**. The runtime queues excess
-   agents automatically, but keeping batches small avoids overwhelming the context budget.
-   Batch Low-confidence candidates that target the same source file into a single agent.
+1. Read **all 5 output files** (`/tmp/bh-{PREFIX}-agent1.md` through
+   `/tmp/bh-{PREFIX}-agent5.md`) and collect every candidate into a working list
+   before spawning any verification agent. **If any file is missing or empty, report
+   it explicitly** (e.g., "Agent 3 output missing — that subsystem was not audited")
+   before continuing. Do not silently skip it.
+2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
+   found.` Do not proceed to Phase 3.
+3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
+   discovery agent produced it.
+4. Spawn verification agents in batches of **at most 8 at a time** (the per-turn concurrency
+   limit in Claude Code's Agent tool). Batch Low-confidence candidates that target the same
+   source file into a single agent (note: batched agents share file context — an acceptable
+   cost/independence tradeoff for Low-confidence candidates only).
 
-Each verification agent:
+Each verification agent receives: the candidate text, the full Analysis Framework section
+(**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
+agents found** — no other candidates, no discovery reasoning.
 
-- Has **no knowledge of what discovery agents found** — it receives only the candidate text,
-  not the discovery agents' reasoning or other candidates
-- Reads the candidate verbatim from the output file
+The verification agent:
+- Reads the candidate verbatim
 - Reads the relevant source files from scratch, following call chains as needed
 - Applies the million-dollar rule as the only criterion
 - Delivers a verdict: **CONFIRM**, **REJECT**, or **ESCALATE**
@@ -90,16 +110,25 @@ Each verification agent:
 5. **CONFIRM** if the sequence is definitively reachable and produces the claimed harm
 6. **ESCALATE** if uncertain after full investigation — do not guess; ask the user
 
-**Verification output per candidate** — write to `/tmp/bh-verify-NN.md` using the flat
-sequential index assigned in step 2 above (e.g. `/tmp/bh-verify-01.md`, `/tmp/bh-verify-02.md`).
-Batched candidates share one file; list all their IDs in the filename comment:
-```
-### [CONFIRMED | REJECTED | ESCALATE] Candidate [N.X]: [Title]
+**Verification output per candidate** — write to `/tmp/bh-{PREFIX}-verify-NN.md` where NN
+is the **flat sequential index** assigned in step 3 above (e.g. `/tmp/bh-{PREFIX}-verify-01.md`).
+For batched candidates, name the file after the **first** candidate's index and list all IDs
+in a header comment. Use one verdict block per candidate, referenced by flat index:
 
-**Verdict**: ...
+```
+<!-- Candidates: 04, 05, 07 -->
+
+### [CONFIRMED] Candidate 04: [Title]
+**Verdict**: CONFIRMED
 **Evidence**: [exact code path, line numbers, CAS values]
-**REJECTED — blocked by**: [specific gate that prevents it]
-**ESCALATE — scenario for user**: "Please consider: [precise, concrete sequence].
+
+### [REJECTED] Candidate 05: [Title]
+**Verdict**: REJECTED
+**Blocked by**: [specific gate that prevents it, cite the line]
+
+### [ESCALATE] Candidate 07: [Title]
+**Verdict**: ESCALATE
+**Scenario for user**: "Please consider: [precise, concrete sequence].
   Is this execution possible in your deployment?"
 ```
 
@@ -107,8 +136,11 @@ Batched candidates share one file; list all their IDs in the filename comment:
 
 ## Phase 3 — Final Report
 
-After all verification agents complete, read all `/tmp/bh-verify-*.md` files and
-synthesize into one consolidated report:
+After all verification agents complete, read all `/tmp/bh-{PREFIX}-verify-*.md` files and
+synthesize into one consolidated report. **Write the report to `/tmp/bh-{PREFIX}-report.md`**
+and then emit it as a response. After writing the report, clean up intermediate files:
+`rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md` — keep only the report and
+escalations files.
 
 ```
 ## Bug Hunt Report
@@ -121,7 +153,10 @@ synthesize into one consolidated report:
 ### Confirmed Bugs
 
 #### [B1] Title — P0 | P1 | P2
-<!-- Severity: P0 = data loss / corruption | P1 = crash / unavailability | P2 = extra resync / silent wrong behaviour -->
+<!-- Severity:
+     P0 = data loss / corruption
+     P1 = crash / unavailability
+     P2 = extra resync / degraded performance / unnecessary I/O — no data loss or crash path -->
 
 **Location**: file.cpp:line
 **Type**: ...
@@ -138,15 +173,20 @@ synthesize into one consolidated report:
 
 | ID | Title | Rejected because |
 |---|---|---|
-| N.X | ... | CAS at raid1.cpp:620 prevents concurrent entry |
+| 03 | ... | CAS at raid1.cpp:620 prevents concurrent entry |
 
 ---
 
 ### Escalations — Human Review Needed
 
+Write escalations to `/tmp/bh-{PREFIX}-escalations.md` and list them here. For each one,
+present the precise scenario question to the user. After the user responds, spawn a new
+targeted verification agent for any scenario confirmed as possible, adding the deployment
+context to the candidate prompt.
+
 #### [E1] Title
 
-Please consider this scenario: [precise sequence]. Is this possible in your deployment?
+Please consider this scenario: [precise sequence]. Is this execution possible in your deployment?
 ```
 
 ---
@@ -236,6 +276,10 @@ record of the inconsistency. If the ack fires only on the error path (EIO return
 
 ### RAID1 Known False Positives — Verify Before Reporting
 
+> **Staleness warning**: these entries reflect the code as of 2026-05-31. If significant
+> time has passed or the code has changed, re-trace the guard from scratch before applying
+> a pre-emptive REJECT — a stale KFP entry can suppress a real bug.
+
 These patterns look dangerous on first inspection but are structurally impossible. Confirm each
 applies before flagging a finding; if anything in the code path has changed, re-trace from scratch.
 
@@ -264,12 +308,12 @@ Two `write_superblock` calls cannot overlap — the state machine prevents it st
 - The same CAS argument excludes `__swap_device`.
 
 **What TSan actually detects is a different, safe-direction race:** the old code passed `_sb`
-directly as `iov_base`, causing a non-atomic read of `superbitmap_reserved` (bytes 74–4095)
-while IO coroutines call `SuperBitmap::set_bit` → `atomic_ref<uint8_t>::fetch_or` on those same
-bytes. Under the core invariant this race can only go in the safe direction — `fetch_or` only
-sets bits, so memory gets dirtier than disk, never cleaner. It is a TSan warning, not a
-correctness bug. The fix (local-copy buffer stopping at byte 74) silences TSan and is a correct
-cleanup, but the concurrent-callers framing is wrong.
+directly as `iov_base`, causing a non-atomic read of the `superbitmap_reserved` field while IO
+coroutines call `SuperBitmap::set_bit` → `atomic_ref<uint8_t>::fetch_or` on those same bytes.
+Under the core invariant this race can only go in the safe direction — `fetch_or` only sets
+bits, so memory gets dirtier than disk, never cleaner. It is a TSan warning, not a correctness
+bug. The fix (local-copy buffer stopping before `superbitmap_reserved`) silences TSan and is a
+correct cleanup, but the concurrent-callers framing is wrong.
 
 **REJECT** any candidate claiming two concurrent `write_superblock` callers.
 
@@ -286,6 +330,8 @@ Check each explicitly during both discovery and verification:
   - `dirty_pages() == 0` then `complete()` — new dirty page appears between the two calls
 - [ ] CAS loser acts on context captured before the CAS (stale premise)
 - [ ] Signal before check: `sem_post` / completion fires before the `if (success)` guard
+- [ ] Stale capture across `co_await`: value loaded before suspension used after resumption
+  without re-read — another coroutine may have mutated shared state while this one was suspended
 
 **Error handling**
 - [ ] Error from device A sets `unavail` / triggers `__become_degraded` on device B
