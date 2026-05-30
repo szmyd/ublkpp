@@ -243,12 +243,16 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
         auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             calc_bitmap_region(addr + off, len - off, _chunk_size);
         off += sz;
-        // Do not skip on superbitmap alone: clean_region may have transiently cleared the bit
-        // between dirty_region's fetch_or and its set_bit, making the superbitmap momentarily
-        // wrong. Always verify page bits directly; the superbitmap is authoritative only for
-        // "dirty → definitely dirty", not for "clean → definitely clean".
+        // No superbitmap fast-path here: is_dirty must read page bits directly.
+        // The superbitmap can transiently show "clean" while the page has dirty bits —
+        // dirty_region writes page bits (relaxed) before setting the superbitmap bit, and
+        // clean_region clears the superbitmap bit before its double-check restore. Either
+        // window would cause is_dirty to skip a dirty page and route a degraded-mode read
+        // to the stale backup device. Reading page bits directly avoids this entirely.
+        // next_dirty() and dirty_pages() still use the superbitmap safely (a missed dirty
+        // page there means a later resync pass picks it up, not a stale read).
         auto page = _page_map[page_offset].page.load(std::memory_order_acquire);
-        if (!page) continue; // page never allocated → definitely clean
+        if (!page) continue;
         auto cur_word = page + word_offset;
 
         // Handle update crossing multiple words (optimization potential?)

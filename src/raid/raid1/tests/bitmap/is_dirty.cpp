@@ -23,9 +23,8 @@ TEST(Raid1, IsDirtyNextPage) {
 
 // After a full clean cycle (superbitmap cleared) followed by dirty_region, is_dirty must
 // return true based on page bits — not be suppressed by the now-cleared superbitmap.
-// This validates that the superbitmap's "clean" state is treated as a hint, not as
-// authoritative: dirty_region re-sets the superbitmap, but the code path under test is
-// the page-bit check that executes regardless of what the superbitmap says.
+// dirty_region re-sets the superbitmap, but the code path under test is the direct page-bit
+// read that executes regardless of the superbitmap state.
 TEST(Raid1IsDirty, ReflectsPageBitsAfterSuperbitmapCleared) {
     auto superbitmap_buf = make_test_superbitmap();
     // Two 32KiB chunks on the same bitmap page (page covers 1 GiB of data)
@@ -44,7 +43,7 @@ TEST(Raid1IsDirty, ReflectsPageBitsAfterSuperbitmapCleared) {
 
     // Re-dirty the first chunk (page is already allocated from the first cycle).
     // dirty_region will set the bit AND call set_bit on the superbitmap; is_dirty must
-    // return true regardless — this exercises the page-bit check path for an existing page.
+    // return true regardless — this exercises the direct page-bit check for an existing page.
     bitmap.dirty_region(0, 32 * Ki);
     EXPECT_TRUE(bitmap.is_dirty(0, 32 * Ki));
     EXPECT_FALSE(bitmap.is_dirty(32 * Ki, 32 * Ki)); // second chunk stays clean
