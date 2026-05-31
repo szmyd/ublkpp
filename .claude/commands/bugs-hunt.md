@@ -57,17 +57,28 @@ Then verify no prior run left conflicting files:
 ls /tmp/bh-3847201-* 2>/dev/null && echo "conflict — regenerate prefix" || echo "prefix clear"
 ```
 
-**{PREFIX} substitution is LLM-enforced**: there is no mechanical check. If the literal
-string `{PREFIX}` is passed to an agent, the sentinel check passes vacuously (no files
-found) and Phase 2 will report all agents as unaudited. The announced prefix above is the
-guard — reference it explicitly when constructing each agent prompt.
+**{PREFIX} substitution is LLM-enforced**. Run this mechanical backstop after announcing
+the prefix — the escaped-brace glob only matches if the literal string `{PREFIX}` leaked:
 
-Also check for KFP staleness before Phase 1 by running:
 ```bash
-git log --since=2026-05-31 --oneline src/raid/raid1/raid1.cpp src/raid/raid1/raid1_superblock.cpp
+ls /tmp/bh-\{PREFIX\}-* 2>/dev/null && echo "LITERAL BRACE DETECTED — substitution failed" || true
 ```
-A non-empty result means code that KFP entries depend on has changed — re-verify the
-relevant KFP entries before trusting them.
+
+If the literal string is passed to an agent, the sentinel check passes vacuously (no files
+found) and Phase 2 will report all agents as unaudited. The announced prefix and this
+check together are the guards — reference the prefix explicitly in every agent prompt.
+
+Also check for KFP staleness before Phase 1. The KFP entries were last verified at
+commit `f984348`. Run:
+```bash
+# KFP §1 (destructor) and §2a (CAS gate) — anchored to raid1.cpp:
+git log f984348..HEAD --oneline src/raid/raid1/raid1.cpp
+# KFP §2b (superbitmap safe-direction race) — anchored to super_bitmap.*:
+git log f984348..HEAD --oneline src/raid/raid1/super_bitmap.cpp src/raid/raid1/super_bitmap.hpp
+```
+Non-empty output for the first command → re-verify §1 and §2a.
+Non-empty output for the second → re-verify §2b.
+If you re-verify and the entries still hold, update the anchor commit hash above.
 
 Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-verify-01.md`,
 `/tmp/bh-3847201-report.md`. The PREFIX is preserved in the report and escalations filenames
@@ -96,7 +107,8 @@ files in full, and writes its candidates to a dedicated output file.
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
 - The Analysis Framework section below — **paste it verbatim, do not summarize**
-  (intentional: ~300 tokens × 15+ agents ≈ 4–5k tokens overhead per run; accepted cost
+  (intentional: ~300 tokens × (5 discovery + N verify) agents; at 10 candidates ≈ 4.5k
+   overhead; accepted cost
   for consistent reasoning)
 - The million-dollar rule
 - This output format — write raw candidates to the output file, no filtering yet:
@@ -166,14 +178,17 @@ After all 5 discovery agents complete:
    and do not proceed to Phase 3.
 4. **If there are more than 20 candidates total**: escalate all Low-confidence candidates
    directly to the report as ESCALATE (without spawning verifiers) — treat discovery-time
-   Low-confidence as insufficient evidence for a full verification pass. This caps Phase 2
-   cost when discovery floods.
+   Low-confidence as insufficient evidence for a full verification pass. The threshold of 20
+   is chosen to keep Phase 2 within roughly 4 rounds of 8 agents; adjust if the framework
+   is re-used on a larger codebase.
 5. Sort remaining candidates by agent number, then candidate number, then assign a flat
    sequential index (01, 02, 03 …).
-6. Each candidate gets its own agent — do not batch. Prefer **≤ 8 individual-candidate
-   agent calls per turn** to stay within the context window budget. If there are more than 8
-   candidates total, run them in rounds of 8 — read all outputs from round N, applying the
-   same sentinel-check (`<!-- END VERIFY NN -->`) as for discovery files, before round N+1.
+6. Prefer one candidate per agent. Run **≤ 8 agents per turn** to stay within the context
+   window budget. If there are more than 8 candidates total, run them in rounds of 8 — read
+   all outputs from round N, applying the same sentinel-check as for discovery files
+   (`<!-- END VERIFY NN -->`, where NN is the first candidate's flat index in that file),
+   before round N+1. If budget or candidate volume makes individual agents impractical, you
+   may put multiple candidates in one agent, but never mix High or Medium candidates.
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -217,8 +232,10 @@ in a header comment. Use one verdict block per candidate, referenced by flat ind
 <!-- END VERIFY NN -->
 ```
 
-The sentinel `<!-- END VERIFY NN -->` is required on every verify file (NN = flat index).
-Apply the same truncation check as for discovery files before proceeding to the next round.
+The sentinel `<!-- END VERIFY NN -->` is required on every verify file. NN must be the
+**first** candidate's flat index (matching the filename, e.g., verify-04.md → sentinel
+`<!-- END VERIFY 04 -->`). Using the last candidate's index would allow partial files to
+pass the truncation check. Apply the sentinel check before proceeding to the next round.
 
 ---
 
@@ -282,8 +299,11 @@ For each one, present the precise scenario question to the user. After the user 
 spawn one verification agent per scenario confirmed as possible, passing the candidate text
 plus the user's deployment context. Write each agent's output to
 `/tmp/bh-{PREFIX}-verify-ENN.md` (E prefix for escalation re-verification, NN is the
-escalation number). If confirmed, append findings to a `### Confirmed Bugs (Post-Escalation)`
-section at the bottom of the existing report file. Do not re-run Phases 1–3.
+escalation number). If confirmed, write findings to a **separate file**
+`/tmp/bh-{PREFIX}-report-escalations.md` (do not append to the existing report — appending
+requires read-modify-write which risks partial corruption if synthesis fails mid-write).
+Tell the user to read both the main report and the escalations supplement together.
+Do not re-run Phases 1–3.
 
 #### [E1] Title
 
