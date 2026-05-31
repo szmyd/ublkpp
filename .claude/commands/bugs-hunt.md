@@ -55,7 +55,7 @@ files in full, and writes its candidates to a dedicated output file.
 | 1 | `src/raid/raid1/bitmap.cpp`, `src/raid/raid1/bitmap.hpp`, `src/raid/raid1/super_bitmap.cpp`, `src/raid/raid1/super_bitmap.hpp` | `/tmp/bh-{PREFIX}-agent1.md` |
 | 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `/tmp/bh-{PREFIX}-agent2.md` |
 | 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; log cross-boundary concerns in the XB section (see output format below).** | `/tmp/bh-{PREFIX}-agent3.md` |
-| 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/disk_task.hpp`, `src/lib/disk_task.cpp`, `src/lib/cqe_state.hpp` | `/tmp/bh-{PREFIX}-agent4.md` |
+| 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/ublk_disk.cpp` | `/tmp/bh-{PREFIX}-agent4.md` |
 | 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `/tmp/bh-{PREFIX}-agent5.md` |
 
 **Discovery agent prompt must include:**
@@ -100,18 +100,20 @@ After all 5 discovery agents complete:
    `/tmp/bh-{PREFIX}-agent5.md`) and collect every candidate into a working list
    before spawning any verification agent. **If any file is missing or empty, report
    it explicitly** (e.g., "Agent 3 output missing — that subsystem was not audited")
-   before continuing. Do not silently skip it. Also collect any `## Cross-Boundary
-   Concerns` sections from `agent3.md` — merge each XB entry with Agent 2's candidates
-   and treat it as a single candidate for verification.
+   before continuing. Do not silently skip it — a missing agent output means that
+   subsystem is unaudited; do not synthesize a partial report. Also collect any
+   `## Cross-Boundary Concerns` sections from `agent3.md` — merge each XB entry with
+   Agent 2's candidates and treat it as a single candidate for verification.
 2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
    found.` Do not proceed to Phase 3.
 3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
    discovery agent produced it.
 4. Spawn verification agents in batches of **at most 8 at a time** (the per-turn concurrency
    limit in Claude Code's Agent tool). Each candidate gets its own agent. If there are more
-   than 8 candidates total and batching is unavoidable, batch only **Low-confidence** candidates
-   targeting the same source file — never High or Medium (batched agents share agent context:
-   a finding in candidate A may anchor reasoning for candidate B).
+   than 8 candidates total, run them in rounds of 8 — read all outputs from round N before
+   spawning round N+1. Only if forced by the limit: batch **Low-confidence** candidates
+   targeting the same source file into one agent (never High or Medium — batched agents share
+   agent context, and a finding in candidate A may anchor reasoning for candidate B).
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -207,8 +209,10 @@ synthesize into one consolidated report:
 
 List escalations here and in `/tmp/bh-{PREFIX}-escalations.md` (omit the file if none).
 For each one, present the precise scenario question to the user. After the user responds,
-spawn a new targeted verification agent for any scenario confirmed as possible, adding the
-deployment context to the candidate prompt.
+spawn one verification agent per scenario confirmed as possible, passing the candidate text
+plus the user's deployment context. If confirmed, append findings to a
+`### Confirmed Bugs (Post-Escalation)` section at the bottom of the existing report file.
+Do not re-run Phases 1–3.
 
 #### [E1] Title
 
@@ -302,14 +306,13 @@ record of the inconsistency. If the ack fires only on the error path (EIO return
 
 ### RAID1 Known False Positives — Verify Before Reporting
 
-> **Staleness warning**: these entries reflect the code as of 2026-05-31. If significant
-> time has passed or the code has changed, re-trace the guard from scratch before applying
-> a pre-emptive REJECT — a stale KFP entry can suppress a real bug.
-
-These patterns look dangerous on first inspection but are structurally impossible. Confirm each
-applies before flagging a finding; if anything in the code path has changed, re-trace from scratch.
+These patterns look dangerous on first inspection but are structurally impossible. Each entry
+is anchored to a specific invariant — if that invariant changes in the code, re-trace from
+scratch before applying a pre-emptive REJECT.
 
 #### 1. Destructor races with IO coroutines (phantom)
+
+<!-- Valid while: _resync_task->stop() is the first call in ~Raid1Disk and blocks until all coroutines and in-flight I/O drain before returning. If the destructor order or stop() semantics change, re-verify. -->
 
 `Raid1Disk::~Raid1Disk` is called **after** all IO queues are stopped.
 `_resync_task->stop()` is the first call in the destructor — it joins the resync coroutine
@@ -324,6 +327,8 @@ there are **zero active IO coroutines**. Nothing in the destructor can race with
 
 #### 2a. Concurrent `write_superblock` callers (phantom)
 
+<!-- Valid while: __become_degraded opens with CAS(EITHER→DEVA/DEVB) and reaches write_superblock only on CAS success; __become_clean only runs when route≠EITHER; __swap_device is guarded by the same CAS. If any of these CAS gates are removed or bypassed, re-verify. -->
+
 Two `write_superblock` calls cannot overlap — the state machine prevents it structurally:
 
 - `__become_degraded` opens with `CAS(EITHER → DEVA/DEVB)`. It only proceeds past the CAS —
@@ -336,6 +341,8 @@ Two `write_superblock` calls cannot overlap — the state machine prevents it st
 **REJECT** any candidate claiming two concurrent `write_superblock` callers.
 
 #### 2b. TSan report on `superbitmap_reserved` during superblock write (safe direction)
+
+<!-- Valid while: SuperBitmap::set_bit uses atomic_ref<uint8_t>::fetch_or (set-only); write_superblock copies the superblock buffer excluding superbitmap_reserved. If set_bit gains a clear path or write_superblock includes superbitmap_reserved in the copy, re-verify. -->
 
 TSan may flag a race between `write_superblock` reading `_sb` as raw bytes (via `iov_base`)
 and IO coroutines calling `SuperBitmap::set_bit` → `atomic_ref<uint8_t>::fetch_or` on the
