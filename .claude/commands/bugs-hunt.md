@@ -32,13 +32,13 @@ Operate accordingly:
 
 ## Session Setup
 
-Run the following via the Bash tool to get a unique session prefix (portable):
+Run the following via the Bash tool to get a unique session prefix (ublk is Linux-only,
+so `shuf` is available; use the Python fallback in containers without util-linux):
 
 ```bash
-python3 -c "import random; print(random.randint(1000000,9999999))"
+shuf -i 1000000-9999999 -n1
+# fallback: python3 -c "import random; print(random.randint(1000000,9999999))"
 ```
-
-On Linux you can also use `shuf -i 1000000-9999999 -n1`.
 
 Use the output (e.g., `3847201`) as a prefix for **every** output file and shell command
 in this run. This prevents silent overwrites on re-runs or concurrent hunts — a timestamp
@@ -62,6 +62,13 @@ string `{PREFIX}` is passed to an agent, the sentinel check passes vacuously (no
 found) and Phase 2 will report all agents as unaudited. The announced prefix above is the
 guard — reference it explicitly when constructing each agent prompt.
 
+Also check for KFP staleness before Phase 1 by running:
+```bash
+git log --since=2026-05-31 --oneline src/raid/raid1/raid1.cpp src/raid/raid1/raid1_superblock.cpp
+```
+A non-empty result means code that KFP entries depend on has changed — re-verify the
+relevant KFP entries before trusting them.
+
 Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-verify-01.md`,
 `/tmp/bh-3847201-report.md`. The PREFIX is preserved in the report and escalations filenames
 — these are the only files kept after cleanup, so the PREFIX remains recoverable.
@@ -70,8 +77,9 @@ Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-veri
 
 ## Phase 1 — Parallel Discovery (5 agents)
 
-**Reminder**: substitute the actual prefix for `{PREFIX}` in every agent prompt and
-filename you emit in this phase — do not pass the literal string `{PREFIX}` to agents.
+**Pre-spawn verification**: before spawning agents, list the 5 output filenames you will
+tell each agent to write to and confirm none contains the literal string `{PREFIX}`. If any
+does, the substitution failed — stop and re-announce the prefix.
 
 Spawn **5 agents in parallel** using the Agent tool. Send all 5 in a single message so
 they run concurrently. Each agent is scoped to one subsystem, reads the relevant source
@@ -122,6 +130,9 @@ was interrupted mid-run and should be treated as missing (report explicitly, do 
 Candidate confidence bar but touches `__become_degraded`. Note: the XB channel is the
 **only** path for startup-path findings that straddle the Agent 2/3 boundary — Agent 3
 cannot confirm or reject such findings directly, only flag them for Agent 2 verification.
+The channel is one-directional (Agent 3 → Agent 2 only). If Agent 2 finds something in
+`__become_degraded` that needs startup-path context, it should write a High-confidence
+candidate and note the dependency in its Uncertainty field.
 
 ```
 ## Cross-Boundary Concerns (for Agent 2 verification)
@@ -136,31 +147,33 @@ cannot confirm or reject such findings directly, only flag them for Agent 2 veri
 ## Phase 2 — Independent Verification
 
 After all 5 discovery agents complete:
-1. Read **all 5 output files** (`/tmp/bh-{PREFIX}-agent1.md` through
-   `/tmp/bh-{PREFIX}-agent5.md`) and collect every candidate into a working list
-   before spawning any verification agent. For each file: verify it exists, is non-empty,
-   and ends with `<!-- END AGENT N -->`. A file that fails any check (missing, empty, or
-   no sentinel) means that subsystem is unaudited — **report it prominently and ask the
-   user** whether to rerun that agent or continue without it. Do not silently skip and do
-   not synthesize a partial report without user acknowledgement. Also collect any
-   `## Cross-Boundary Concerns` sections from `agent3.md` — **XB items are appended to
-   the candidate list before dedup, not after**.
-   After collecting all candidates, **dedup before assigning flat indices**. Two candidates
-   are the same issue if they point to the same code location AND the trigger sequence
-   produces the same harmful outcome — merge them into one rather than spawning two
-   independent verifiers. Same location but different harmful outcome = keep both.
-2. **If the working list is empty**: emit `Bug Hunt Report: 0 candidates found — no bugs
+1. Run a pre-read sentinel check before processing any file:
+   ```bash
+   grep -rL "END AGENT" /tmp/bh-{PREFIX}-agent*.md 2>/dev/null
+   ```
+   Any file listed by this command is missing its sentinel (truncated or failed). For each:
+   ask the user whether to rerun that agent (with the same output file target) or continue
+   without it. If an agent tool call failed entirely (no file at all), treat it the same way.
+   Do not proceed until all 5 files are confirmed or the user explicitly accepts a gap.
+2. Read the confirmed files and collect every candidate into a working list. Also collect any
+   `## Cross-Boundary Concerns` sections from `agent3.md` — **XB items are appended to the
+   candidate list before dedup, not after**.
+   After collecting, **dedup before assigning flat indices**. Two candidates are the same
+   issue if they point to the same code location AND the trigger sequence produces the same
+   harmful outcome — merge them. Same location but different harmful outcome = keep both.
+3. **If the working list is empty**: emit `Bug Hunt Report: 0 candidates found — no bugs
    detected in audited subsystems.` Clean up discovery files (`rm /tmp/bh-{PREFIX}-agent*.md`)
    and do not proceed to Phase 3.
-3. Sort candidates by agent number, then by candidate number within each agent, then assign
-   a flat sequential index (01, 02, 03 …). Consistent ordering ensures batching by source
-   file groups same-file Low-confidence candidates together naturally.
-4. Each candidate gets its own agent — do not batch unless the user explicitly instructs it
-   (batched agents share context, and a finding in candidate A can anchor reasoning for B).
-   Never batch High or Medium confidence candidates. Prefer **≤ 8 agents per turn** to stay
-   within the context window budget. If there are more than 8 candidates total, run them in
-   rounds of 8 — read all outputs from round N, applying the same sentinel-check
-   (`<!-- END VERIFY NN -->`) as for discovery files, before spawning round N+1.
+4. **If there are more than 20 candidates total**: escalate all Low-confidence candidates
+   directly to the report as ESCALATE (without spawning verifiers) — treat discovery-time
+   Low-confidence as insufficient evidence for a full verification pass. This caps Phase 2
+   cost when discovery floods.
+5. Sort remaining candidates by agent number, then candidate number, then assign a flat
+   sequential index (01, 02, 03 …).
+6. Each candidate gets its own agent — do not batch. Prefer **≤ 8 individual-candidate
+   agent calls per turn** to stay within the context window budget. If there are more than 8
+   candidates total, run them in rounds of 8 — read all outputs from round N, applying the
+   same sentinel-check (`<!-- END VERIFY NN -->`) as for discovery files, before round N+1.
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -186,7 +199,7 @@ For batched candidates, name the file after the **first** candidate's index and 
 in a header comment. Use one verdict block per candidate, referenced by flat index:
 
 ```
-<!-- Candidates: 04, 05, 07 -->
+<!-- Candidates: 04, 05, 06 -->
 
 ### [CONFIRMED] Candidate 04: [Title]
 **Verdict**: CONFIRMED
@@ -196,7 +209,7 @@ in a header comment. Use one verdict block per candidate, referenced by flat ind
 **Verdict**: REJECTED
 **Blocked by**: [specific gate that prevents it, cite the line]
 
-### [ESCALATE] Candidate 07: [Title]
+### [ESCALATE] Candidate 06: [Title]
 **Verdict**: ESCALATE
 **Scenario for user**: "Please consider: [precise, concrete sequence].
   Is this execution possible in your deployment?"
