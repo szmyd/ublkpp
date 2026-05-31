@@ -32,34 +32,36 @@ Operate accordingly:
 
 ## Session Setup
 
-Run the following via the Bash tool to create the working directory:
+All output files go in `.claude/bugs-hunt/` (repo-scoped, survives reboots). Re-running
+overwrites all previous files including the report — this is intentional.
 
-```bash
-mkdir -p /tmp/bugs-hunt
-```
-
-All output files go in `/tmp/bugs-hunt/`. Re-running the command overwrites previous
-results — this is intentional. Before starting, check whether KFP-relevant code has changed since you last ran this command.
-If `Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap` were modified in recent
-commits, re-verify the Known False Positive entries before trusting them.
+Before starting, check whether KFP-relevant code has changed since you last ran this
+command. If `Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap` were modified
+in recent commits, re-verify the Known False Positive entries before trusting them.
 
 ---
 
 ## Phase 1 — Parallel Discovery (5 agents)
 
-Spawn **5 agents in parallel** using the Agent tool. Send all 5 in a single message so
-they run concurrently. Each agent is scoped to one subsystem, reads the relevant source
-files in full, and writes its candidates to a dedicated output file.
+Create the working directory, then spawn **5 agents in parallel** using the Agent tool.
+Send all 5 in a single message so they run concurrently.
+
+```bash
+mkdir -p .claude/bugs-hunt
+```
+
+Each agent is scoped to one subsystem, reads the relevant source files in full, and writes
+its candidates to a dedicated output file.
 
 <!-- Scope last reviewed: 2026-05-31. Update when src/ files are renamed, moved, or new subsystems added. -->
 
 | Agent | Scope | Output file |
 |---|---|---|
-| 1 | `src/raid/raid1/bitmap.cpp`, `src/raid/raid1/bitmap.hpp`, `src/raid/raid1/super_bitmap.cpp`, `src/raid/raid1/super_bitmap.hpp` | `/tmp/bugs-hunt/bh-agent1.md` |
-| 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `/tmp/bugs-hunt/bh-agent2.md` |
-| 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; log cross-boundary concerns in the XB section (see output format below).** | `/tmp/bugs-hunt/bh-agent3.md` |
-| 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/ublk_disk.cpp` | `/tmp/bugs-hunt/bh-agent4.md` |
-| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `/tmp/bugs-hunt/bh-agent5.md` |
+| 1 | `src/raid/raid1/bitmap.cpp`, `src/raid/raid1/bitmap.hpp`, `src/raid/raid1/super_bitmap.cpp`, `src/raid/raid1/super_bitmap.hpp` | `.claude/bugs-hunt/bh-agent1.md` |
+| 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `.claude/bugs-hunt/bh-agent2.md` |
+| 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; log cross-boundary concerns in the XB section (see output format below).** | `.claude/bugs-hunt/bh-agent3.md` |
+| 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/ublk_disk.cpp` | `.claude/bugs-hunt/bh-agent4.md` |
+| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `.claude/bugs-hunt/bh-agent5.md` |
 
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
@@ -118,7 +120,7 @@ candidate and note the dependency in its Uncertainty field.
 After all 5 discovery agents complete:
 1. Run a pre-read sentinel check before processing any file:
    ```bash
-   grep -rL "END AGENT" /tmp/bugs-hunt/bh-agent*.md 2>/dev/null
+   grep -rL "END AGENT" .claude/bugs-hunt/bh-agent*.md 2>/dev/null
    ```
    Any file listed by this command is missing its sentinel (truncated or failed). For each:
    ask the user whether to rerun that agent (with the same output file target) or continue
@@ -131,7 +133,7 @@ After all 5 discovery agents complete:
    issue if they point to the same code location AND the trigger sequence produces the same
    harmful outcome — merge them. Same location but different harmful outcome = keep both.
 3. **If the working list is empty**: emit `Bug Hunt Report: 0 candidates found — no bugs
-   detected in audited subsystems.` Clean up discovery files (`rm /tmp/bugs-hunt/bh-agent*.md`)
+   detected in audited subsystems.` Clean up discovery files (`rm .claude/bugs-hunt/bh-agent*.md`)
    and do not proceed to Phase 3.
 4. **If there are ≥ 20 candidates total**: escalate all Low-confidence candidates directly
    to the report as ESCALATE (without spawning verifiers) — treat discovery-time
@@ -141,12 +143,15 @@ After all 5 discovery agents complete:
    sequential index (01, 02, 03 …).
 6. **By default, one candidate per agent.** Run **≤ 8 agents per turn** (sized for the
    current context window; adjust if model context limits change). If there are more than 8
-   candidates total, run them in rounds of 8 — read all outputs from round N, applying the
-   sentinel-check (`<!-- END VERIFY NN -->`) before round N+1. If a discovery agent produces
-   no output after a reasonable wait, treat it as failed and apply the missing-agent protocol
-   (ask user to rerun). **Budget exception only**: if candidate volume makes individual agents
-   impractical, you may put multiple Low-confidence candidates in one agent — never High or
-   Medium.
+   candidates total, run them in rounds of 8. Before each new round, run:
+   ```bash
+   grep -rL "END VERIFY" .claude/bugs-hunt/bh-verify-*.md 2>/dev/null
+   ```
+   Any file listed is truncated — apply the missing-agent protocol before continuing.
+   If a discovery agent produces no output after a reasonable wait, treat it as failed
+   and ask the user to rerun. **Budget exception**: if there are more than 16 Low-confidence
+   candidates in a single round, batch same-file Low-confidence candidates into one agent
+   (never High or Medium).
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -166,8 +171,8 @@ The verification agent:
 5. **CONFIRM** if the sequence is definitively reachable and produces the claimed harm
 6. **ESCALATE** if uncertain after full investigation — do not guess; ask the user
 
-**Verification output per candidate** — write to `/tmp/bugs-hunt/bh-verify-NN.md` where NN
-is the **flat sequential index** assigned in step 3 above (e.g. `/tmp/bugs-hunt/bh-verify-01.md`).
+**Verification output per candidate** — write to `.claude/bugs-hunt/bh-verify-NN.md` where NN
+is the **flat sequential index** assigned in step 3 above (e.g. `.claude/bugs-hunt/bh-verify-01.md`).
 For batched candidates, name the file after the **first** candidate's index and list all IDs
 in a header comment. Use one verdict block per candidate, referenced by flat index:
 
@@ -199,17 +204,16 @@ sentinel check, masking the truncation. Apply the sentinel check before the next
 
 ## Phase 3 — Final Report
 
-After all verification agents complete, read all `/tmp/bugs-hunt/bh-verify-*.md` files and
+After all verification agents complete, read all `.claude/bugs-hunt/bh-verify-*.md` files and
 synthesize into one consolidated report:
-1. **Write the report to `/tmp/bugs-hunt/bh-report.md`** and emit it as a response.
-2. If any escalations exist, **also write them to `/tmp/bugs-hunt/bh-escalations.md`**
+1. **Write the report to `.claude/bugs-hunt/bh-report.md`** and emit it as a response.
+   As the final line of the report, write: `<!-- BUG HUNT COMPLETE -->`
+2. If any escalations exist, **also write them to `.claude/bugs-hunt/bh-escalations.md`**
    (so the user can re-read them without parsing the full report). Omit this file if there
-   are no escalations.
-3. **Conditionally** clean up intermediate files — only if the report contains the
-   `### Rejected (False Positives)` section header (present in every complete report,
-   absent if synthesis was interrupted), and every verify file was read without exception. Substitute the actual prefix
-   before running (same rule as Phase 1 prompts):
-   `rm /tmp/bugs-hunt/bh-agent*.md /tmp/bugs-hunt/bh-verify-*.md`
+   are no escalations. This file is intentionally kept across re-runs (not cleaned up).
+3. **Conditionally** clean up intermediate files — only if `bh-report.md` ends with
+   `<!-- BUG HUNT COMPLETE -->` and every verify file was read without exception:
+   `rm .claude/bugs-hunt/bh-agent*.md .claude/bugs-hunt/bh-verify-*.md`
    Note: the glob `verify-*.md` matches escalation re-verification files (`verify-ENN.md`)
    as well — this is intentional. If the `rm` fails (permissions, already deleted), note it
    but do not treat it as a Phase 3 failure — the report is already written. The report and
@@ -255,13 +259,13 @@ synthesize into one consolidated report:
 
 ### Escalations — Human Review Needed
 
-List escalations here and in `/tmp/bugs-hunt/bh-escalations.md` (omit the file if none).
+List escalations here and in `.claude/bugs-hunt/bh-escalations.md` (omit the file if none).
 For each one, present the precise scenario question to the user. After the user responds,
 spawn one verification agent per scenario confirmed as possible, passing the candidate text
 plus the user's deployment context. Write each agent's output to
-`/tmp/bugs-hunt/bh-verify-ENN.md` (E prefix for escalation re-verification, NN is the
+`.claude/bugs-hunt/bh-verify-ENN.md` (E prefix for escalation re-verification, NN is the
 escalation number). If confirmed, write findings to a **separate file**
-`/tmp/bugs-hunt/bh-report-escalations.md` (do not append to the existing report — appending
+`.claude/bugs-hunt/bh-report-escalations.md` (do not append to the existing report — appending
 requires read-modify-write which risks partial corruption if synthesis fails mid-write).
 Tell the user to read both the main report and the escalations supplement together.
 Do not re-run Phases 1–3.
