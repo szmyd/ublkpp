@@ -1,6 +1,7 @@
 # Bug Hunt — ublkpp
 
-<!-- Last updated: 2026-05-31. KFP entries reflect code as of this date — re-verify before applying if significant time has passed. -->
+> **KFP last verified: 2026-05-31.** Re-verify Known False Positive entries before running
+> after any refactor touching `Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap`.
 
 Systematic correctness audit using parallel discovery agents followed by independent
 verification. Each finding must survive a separate clean-context challenge before it
@@ -23,6 +24,9 @@ Operate accordingly:
 - "This looks suspicious" is not a finding. "This exact sequence produces data loss:
   1. Thread A does X, 2. Thread B does Y, 3. result Z is wrong" is a finding.
 - Removing a false positive is always correct. Keeping an uncertain finding is never correct.
+- **"No bugs found" is a valid and valuable outcome.** If the code is correct, say so. Do
+  not manufacture findings to justify the run — a clean report is the most useful output
+  when the codebase is actually sound.
 
 ---
 
@@ -40,15 +44,23 @@ Use the output (e.g., `3847201`) as a prefix for **every** output file and shell
 in this run. This prevents silent overwrites on re-runs or concurrent hunts — a timestamp
 suffix is not used because two runs starting in the same second would collide.
 
-After generating the prefix, verify no prior run left files with it:
+After generating the prefix, announce it prominently in your response so it stays visible
+in the conversation context throughout the session:
+
+```
+SESSION PREFIX: 3847201 — substitute this value for every {PREFIX} in this workflow.
+```
+
+Then verify no prior run left conflicting files:
 
 ```bash
 ls /tmp/bh-3847201-* 2>/dev/null && echo "conflict — regenerate prefix" || echo "prefix clear"
 ```
 
-Find-and-replace `{PREFIX}` in every agent prompt and shell command before emitting — do
-not pass the literal string `{PREFIX}` to agents or the cleanup command. (The Setup section
-example shows the substitution: `{PREFIX}` → `3847201` → `/tmp/bh-3847201-agent1.md`.)
+**{PREFIX} substitution is LLM-enforced**: there is no mechanical check. If the literal
+string `{PREFIX}` is passed to an agent, the sentinel check passes vacuously (no files
+found) and Phase 2 will report all agents as unaudited. The announced prefix above is the
+guard — reference it explicitly when constructing each agent prompt.
 
 Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-verify-01.md`,
 `/tmp/bh-3847201-report.md`. The PREFIX is preserved in the report and escalations filenames
@@ -76,7 +88,8 @@ files in full, and writes its candidates to a dedicated output file.
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
 - The Analysis Framework section below — **paste it verbatim, do not summarize**
-  (this is intentional; the token cost buys consistent reasoning across all agents)
+  (intentional: ~300 tokens × 15+ agents ≈ 4–5k tokens overhead per run; accepted cost
+  for consistent reasoning)
 - The million-dollar rule
 - This output format — write raw candidates to the output file, no filtering yet:
 
@@ -136,18 +149,18 @@ After all 5 discovery agents complete:
    are the same issue if they point to the same code location AND the trigger sequence
    produces the same harmful outcome — merge them into one rather than spawning two
    independent verifiers. Same location but different harmful outcome = keep both.
-2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
-   found.` Do not proceed to Phase 3.
-3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
-   discovery agent produced it.
-4. Each candidate gets its own agent. Prefer batches of **≤ 8 agents per turn** to stay
-   within the context window budget; if you have strong reason to exceed this, proceed but
-   note the quality risk. If there are more than 8 candidates total, run them in rounds of
-   8 — read all outputs from round N (applying the same sentinel-check as for discovery
-   files) before spawning round N+1. Only if a single round has more than 8 **Low-confidence**
-   candidates targeting the same source file: batch those into one agent (never High or
-   Medium — batched agents share agent context, and a finding in candidate A may anchor
-   reasoning for candidate B).
+2. **If the working list is empty**: emit `Bug Hunt Report: 0 candidates found — no bugs
+   detected in audited subsystems.` Clean up discovery files (`rm /tmp/bh-{PREFIX}-agent*.md`)
+   and do not proceed to Phase 3.
+3. Sort candidates by agent number, then by candidate number within each agent, then assign
+   a flat sequential index (01, 02, 03 …). Consistent ordering ensures batching by source
+   file groups same-file Low-confidence candidates together naturally.
+4. Each candidate gets its own agent — do not batch unless the user explicitly instructs it
+   (batched agents share context, and a finding in candidate A can anchor reasoning for B).
+   Never batch High or Medium confidence candidates. Prefer **≤ 8 agents per turn** to stay
+   within the context window budget. If there are more than 8 candidates total, run them in
+   rounds of 8 — read all outputs from round N, applying the same sentinel-check
+   (`<!-- END VERIFY NN -->`) as for discovery files, before spawning round N+1.
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -187,7 +200,12 @@ in a header comment. Use one verdict block per candidate, referenced by flat ind
 **Verdict**: ESCALATE
 **Scenario for user**: "Please consider: [precise, concrete sequence].
   Is this execution possible in your deployment?"
+
+<!-- END VERIFY NN -->
 ```
+
+The sentinel `<!-- END VERIFY NN -->` is required on every verify file (NN = flat index).
+Apply the same truncation check as for discovery files before proceeding to the next round.
 
 ---
 
@@ -203,15 +221,17 @@ synthesize into one consolidated report:
    bytes, and every verify file was read without exception. Substitute the actual prefix
    before running (same rule as Phase 1 prompts):
    `rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md`
-   If the `rm` fails (permissions, already deleted), note it but do not treat it as a
-   Phase 3 failure — the report is already written. The report and escalations files are
-   always kept. Do not run if Phase 3 failed mid-synthesis (intermediates needed to retry).
+   Note: the glob `verify-*.md` matches escalation re-verification files (`verify-ENN.md`)
+   as well — this is intentional. If the `rm` fails (permissions, already deleted), note it
+   but do not treat it as a Phase 3 failure — the report is already written. The report and
+   escalations files are always kept. Do not run if Phase 3 failed mid-synthesis.
 
 ```
 ## Bug Hunt Report
 
 **Scope**: [subsystems]
 **Candidates**: N total — Confirmed: X | Rejected: Y | Escalated: Z
+**Coverage**: All 5 agents audited | *or* Agent N unaudited (truncated/missing — [reason])
 
 ---
 
@@ -348,7 +368,9 @@ record of the inconsistency. If the ack fires only on the error path (EIO return
 RAID0, driver, or metrics code. Skip this section when scoped to Agent 5.
 
 **Staleness gate**: re-audit this entire section before running after any refactor touching
-`Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap`.
+`Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap`. There is no automated
+check — if you modify these functions, manually verify the relevant KFP entries still hold
+before the next hunt run.
 
 These patterns look dangerous on first inspection but are structurally impossible. Each entry
 is anchored to a specific invariant — if that invariant changes in the code, re-trace from
