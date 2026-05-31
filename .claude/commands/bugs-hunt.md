@@ -1,3 +1,7 @@
+---
+description: Systematic 3-phase bug hunt — parallel discovery, independent verification, consolidated report
+---
+
 # Bug Hunt — ublkpp
 
 > **KFP last verified: 2026-05-31.** Re-verify Known False Positive entries before running
@@ -23,7 +27,7 @@ Operate accordingly:
   scenario and ask the user: *"Is this execution sequence possible in your deployment?"*
 - "This looks suspicious" is not a finding. "This exact sequence produces data loss:
   1. Thread A does X, 2. Thread B does Y, 3. result Z is wrong" is a finding.
-- Removing a false positive is always correct. Keeping an uncertain finding is never correct.
+- Removing a false positive from your report is always correct. Keeping an uncertain finding is never correct.
 - **"No bugs found" is a valid and valuable outcome.** If the code is correct, say so. Do
   not manufacture findings to justify the run — a clean report is the most useful output
   when the codebase is actually sound.
@@ -48,6 +52,8 @@ Send all 5 in a single message so they run concurrently.
 
 ```bash
 mkdir -p .claude/bugs-hunt
+# Clean up stale escalations from any prior run so they don't mix with new results:
+rm -f .claude/bugs-hunt/bh-escalations.md .claude/bugs-hunt/bh-report-escalations.md
 ```
 
 Each agent is scoped to one subsystem, reads the relevant source files in full, and writes
@@ -101,9 +107,10 @@ was interrupted mid-run and should be treated as missing (report explicitly, do 
 Candidate confidence bar but touches `__become_degraded`. Note: the XB channel is the
 **only** path for startup-path findings that straddle the Agent 2/3 boundary — Agent 3
 cannot confirm or reject such findings directly, only flag them for Agent 2 verification.
-The channel is one-directional (Agent 3 → Agent 2 only). If Agent 2 finds something in
-`__become_degraded` that needs startup-path context, it should write a High-confidence
-candidate and note the dependency in its Uncertainty field.
+The channel is one-directional: the orchestrator collects XB items in Phase 2 and assigns
+them to verification agents scoped to Agent 2's domain (`__become_degraded`). If Agent 2
+finds something in `__become_degraded` that needs startup-path context but doesn't meet the
+High-confidence bar, it should write it as an ESCALATE candidate (not suppress it).
 
 ```
 ## Cross-Boundary Concerns (for Agent 2 verification)
@@ -139,6 +146,9 @@ After all 5 discovery agents complete:
    to the report as ESCALATE (without spawning verifiers) — treat discovery-time
    Low-confidence as insufficient evidence when discovery is this broad. <!-- threshold rule:
    keep Phase 2 ≤ 4 rounds × 8 agents; recalibrate for larger codebases -->
+   Step 6 budget exception applies only after step 4; Low-confidence candidates escalated
+   here don't reach step 6. If High+Medium candidates after dedup exceed 32, cap at the
+   top 32 by confidence tier then agent number, and note the truncation in the report.
 5. Sort remaining candidates by agent number, then candidate number, then assign a flat
    sequential index (01, 02, 03 …).
 6. **By default, one candidate per agent.** Run **≤ 8 agents per turn** (sized for the
@@ -192,13 +202,15 @@ in a header comment. Use one verdict block per candidate, referenced by flat ind
 **Scenario for user**: "Please consider: [precise, concrete sequence].
   Is this execution possible in your deployment?"
 
-<!-- END VERIFY 04 -->
+<!-- END VERIFY 04 | batch: 3 -->
 ```
 
 The sentinel is required on every verify file. **NN = first candidate's flat index**
-(matching the filename: verify-04.md → `<!-- END VERIFY 04 -->`). Do not use the last
-candidate's index — a file truncated after the first verdict block would then pass the
-sentinel check, masking the truncation. Apply the sentinel check before the next round.
+(matching the filename: verify-04.md → `<!-- END VERIFY 04 | batch: N -->`), where N is
+the number of candidates in the file. Do not use the last candidate's index — a file
+truncated after the first verdict block would then pass the sentinel check. For batched
+files, the `batch: N` count lets the orchestrator verify all N verdicts are present.
+Apply the sentinel check before the next round.
 
 ---
 
@@ -212,12 +224,13 @@ synthesize into one consolidated report:
    (so the user can re-read them without parsing the full report). Omit this file if there
    are no escalations. This file is intentionally kept across re-runs (not cleaned up).
 3. **Conditionally** clean up intermediate files — only if `bh-report.md` ends with
-   `<!-- BUG HUNT COMPLETE -->` and every verify file was read without exception:
+   `<!-- BUG HUNT COMPLETE -->` and every file listed by
+   `ls .claude/bugs-hunt/bh-verify-*.md` was included in the synthesis:
    `rm .claude/bugs-hunt/bh-agent*.md .claude/bugs-hunt/bh-verify-*.md`
-   Note: the glob `verify-*.md` matches escalation re-verification files (`verify-ENN.md`)
-   as well — this is intentional. If the `rm` fails (permissions, already deleted), note it
-   but do not treat it as a Phase 3 failure — the report is already written. The report and
-   escalations files are always kept. Do not run if Phase 3 failed mid-synthesis.
+   Note: `verify-ENN.md` escalation re-verification files are created after Phase 3, so
+   they won't exist yet at this cleanup step — the glob will not match them here. They'll
+   be cleaned up on the next run's Phase 1 (overwritten). If the `rm` fails, note it but
+   do not treat it as a Phase 3 failure — the report is already written.
 
 ```
 ## Bug Hunt Report
@@ -425,32 +438,32 @@ correctness bug.
 Check each explicitly during both discovery and verification:
 
 **Concurrency**
-- [ ] Non-atomic compound RMW: `check + act` where another thread can act between the two
+- Non-atomic compound RMW: `check + act` where another thread can act between the two
   - `isal_zero_detect(page)` then `clear_bit` — concurrent `fetch_or` fires in the gap
   - `load()` then `fetch_sub()` — two callers both read the same value and both subtract
   - `dirty_pages() == 0` then `complete()` — new dirty page appears between the two calls
-- [ ] CAS loser acts on context captured before the CAS (stale premise)
-- [ ] Signal before check: `sem_post` / completion fires before the `if (success)` guard
-- [ ] Stale capture across `co_await`: value loaded before suspension used after resumption
+- CAS loser acts on context captured before the CAS (stale premise)
+- Signal before check: `sem_post` / completion fires before the `if (success)` guard
+- Stale capture across `co_await`: value loaded before suspension used after resumption
   without re-read — another coroutine may have mutated shared state while this one was suspended
-- [ ] Dangling reference into coroutine frame: `const T&` or pointer captured into a coroutine
+- Dangling reference into coroutine frame: `const T&` or pointer captured into a coroutine
   body may outlive the referent if the owning object is destroyed while the coroutine is suspended
-- [ ] Relaxed atomic as a branch guard: `load(relaxed)` used as a condition without a subsequent
+- Relaxed atomic as a branch guard: `load(relaxed)` used as a condition without a subsequent
   `acquire` fence — the load can be reordered past dependent loads it was intended to gate
-- [ ] Convention-only protection: field assumed single-threaded but guarded only by a
+- Convention-only protection: field assumed single-threaded but guarded only by a
   "callers must ensure X" invariant with no lock or atomic — verify the invariant holds on
   every call path (these don't appear in TSan if the convention is always honored but are fragile)
 
 **Error handling**
-- [ ] Error from device A sets `unavail` / triggers `__become_degraded` on device B
-- [ ] SB write failure ignored but CAS still fires (in-memory and on-disk states diverge)
+- Error from device A sets `unavail` / triggers `__become_degraded` on device B
+- SB write failure ignored but CAS still fires (in-memory and on-disk states diverge)
 
 **State machine**
-- [ ] Redirect stores last-used state in a way that creates a stable wrong fixed point
-- [ ] Rollback assumed to run after an error (crash between error and rollback)
+- Redirect stores last-used state in a way that creates a stable wrong fixed point
+- Rollback assumed to run after an error (crash between error and rollback)
 
 **Persistence**
-- [ ] Destructor-assumed side effect (sync, flush, write) that may not run on pod kill
+- Destructor-assumed side effect (sync, flush, write) that may not run on pod kill
   (but see KFP §1 — for ublkpp this is currently structurally blocked by resync drain)
-- [ ] One-sided version bounds: `version < N` with no `version > MAX` upper-bound rejection
-- [ ] Two writes that must be consistent but have no atomic boundary between them
+- One-sided version bounds: `version < N` with no `version > MAX` upper-bound rejection
+- Two writes that must be consistent but have no atomic boundary between them
