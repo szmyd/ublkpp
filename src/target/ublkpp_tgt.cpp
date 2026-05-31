@@ -261,9 +261,6 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 
     if (std::ranges::any_of(queue_ok, [](int ok) { return !ok; })) {
         TLOGE("dev {} failed: one or more queues did not initialize", dev_id)
-        // Tear down surviving queue threads (ublksrv_ctrl_stop_dev unblocks their io_uring loops)
-        // before returning; without this they run indefinitely with no way to join or stop them.
-        tgt->destroy();
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
