@@ -619,12 +619,35 @@ void Raid1Disk::__become_clean() {
 
     RLOGI("Device becoming clean [{}] [uuid:{}] ", *state.backup_dev->disk, _str_uuid)
 
-    // Write the new SuperBlock with updated clean read_route
     // Determine which device is device_b based on route:
     // - When route == DEVA: active_dev is A (is_device_b=false), backup_dev is B (is_device_b=true)
     // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
     bool const active_is_device_b = (state.route == read_route::DEVB);
 
+    // CAS the in-memory route to EITHER before writing superblocks. This ordering is
+    // intentional: superblocks are written only after confirming the bitmap is clean,
+    // which we cannot check atomically with the CAS. Reversing the order (CAS first)
+    // also improves crash safety — a crash after CAS but before superblocks leaves the
+    // on-disk route in the old degraded state, so restart runs resync correctly.
+    auto old_route = state.route;
+    if (!_read_route_cache.compare_exchange_strong(old_route, read_route::EITHER)) return;
+
+    // Double-check: a concurrent backup-fail dirty_region() call may have fired between
+    // the resync task's dirty_pages()==0 observation and the CAS above, leaving dirty
+    // bits with no resync task to pick them up. Reverse the transition and re-launch
+    // resync so those bits reach the backup.
+    if (_dirty_bitmap->dirty_pages() > 0) {
+        auto either_route = read_route::EITHER;
+        if (_read_route_cache.compare_exchange_strong(either_route, state.route)) {
+            RLOGW("Resync complete but found unsynced dirty bits — re-launching resync [uuid:{}]", _str_uuid)
+            if (_resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
+        }
+        // If the reverse CAS fails, another path (e.g. a new device failure calling
+        // __become_degraded) already moved the route — it will write the correct superblocks.
+        return;
+    }
+
+    // Bitmap is empty — safe to write clean superblocks.
     if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
         !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
@@ -633,10 +656,6 @@ void Raid1Disk::__become_clean() {
         !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
-
-    // Avoid checking DirtyBitmap going forward on reads/writes
-    auto old_route = state.route;
-    _read_route_cache.compare_exchange_strong(old_route, read_route::EITHER);
 }
 
 // See the comment above __swap_device for the CAS-based mutual exclusion between this function
