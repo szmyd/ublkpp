@@ -28,22 +28,32 @@ Operate accordingly:
 
 ## Session Setup
 
-Run the following via the Bash tool to get a unique session prefix:
+Run the following via the Bash tool to get a unique session prefix (Linux):
 
 ```bash
 shuf -i 1000000-9999999 -n1
 ```
 
+On macOS use: `python3 -c "import random; print(random.randint(1000000,9999999))"` or
+install GNU coreutils (`brew install coreutils`) and use `gshuf`.
+
 Use the output (e.g., `3847201`) as a prefix for **every** output file and shell command
 in this run. This prevents silent overwrites on re-runs or concurrent hunts — a timestamp
 suffix is not used because two runs starting in the same second would collide.
+
+After generating the prefix, verify no prior run left files with it:
+
+```bash
+ls /tmp/bh-3847201-* 2>/dev/null && echo "conflict — regenerate prefix" || echo "prefix clear"
+```
 
 Find-and-replace `{PREFIX}` in every agent prompt and shell command before emitting — do
 not pass the literal string `{PREFIX}` to agents or the cleanup command. (The Setup section
 example shows the substitution: `{PREFIX}` → `3847201` → `/tmp/bh-3847201-agent1.md`.)
 
 Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-verify-01.md`,
-`/tmp/bh-3847201-report.md`.
+`/tmp/bh-3847201-report.md`. The PREFIX is preserved in the report and escalations filenames
+— these are the only files kept after cleanup, so the PREFIX remains recoverable.
 
 ---
 
@@ -111,19 +121,22 @@ After all 5 discovery agents complete:
 1. Read **all 5 output files** (`/tmp/bh-{PREFIX}-agent1.md` through
    `/tmp/bh-{PREFIX}-agent5.md`) and collect every candidate into a working list
    before spawning any verification agent. For each file: verify it exists, is non-empty,
-   and ends with `<!-- END AGENT N -->`. A file that fails any check was interrupted —
-   **report it explicitly** (e.g., "Agent 3 truncated — that subsystem is unaudited") and
-   halt. Do not synthesize a partial report. Also collect any `## Cross-Boundary Concerns`
-   sections from `agent3.md` and merge each XB entry into the working list as a candidate.
-   After collecting all candidates, **dedup by (source file, claim) before assigning flat
-   indices** — if Agent 2 and an XB entry describe the same issue, merge them into one
-   candidate rather than spawning two independent verifiers.
+   and ends with `<!-- END AGENT N -->`. A file that fails any check (missing, empty, or
+   no sentinel) means that subsystem is unaudited — **report it prominently and ask the
+   user** whether to rerun that agent or continue without it. Do not silently skip and do
+   not synthesize a partial report without user acknowledgement. Also collect any
+   `## Cross-Boundary Concerns` sections from `agent3.md` — **XB items are appended to
+   the candidate list before dedup, not after**.
+   After collecting all candidates, **dedup before assigning flat indices**. Two candidates
+   are the same issue if they point to the same code location AND the trigger sequence
+   produces the same harmful outcome — merge them into one rather than spawning two
+   independent verifiers.
 2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
    found.` Do not proceed to Phase 3.
 3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
    discovery agent produced it.
-4. Spawn verification agents in batches of **at most 8 at a time** (to stay within the
-   context window budget per turn — not a hard cap, but exceeding it degrades quality). Each candidate gets its own agent. If there are more
+4. Prefer batches of **≤ 8 agents per turn** to stay within the context window budget.
+   If you have strong reason to exceed this, proceed but note the quality risk. Each candidate gets its own agent. If there are more
    than 8 candidates total, run them in rounds of 8 — read all outputs from round N before
    spawning round N+1. Only if forced by the limit: batch **Low-confidence** candidates
    targeting the same source file into one agent (never High or Medium — batched agents share
@@ -179,8 +192,8 @@ synthesize into one consolidated report:
 2. If any escalations exist, **also write them to `/tmp/bh-{PREFIX}-escalations.md`**
    (so the user can re-read them without parsing the full report). Omit this file if there
    are no escalations.
-3. **Conditionally** clean up intermediate files — only if `/tmp/bh-{PREFIX}-report.md` is
-   non-empty and Phase 3 completed without error:
+3. **Conditionally** clean up intermediate files — only if the report file exists, is ≥ 100
+   bytes, and every verify file was read without exception:
    `rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md`
    Do not run if Phase 3 failed mid-synthesis (intermediates needed to retry).
    The report and escalations files are always kept.
@@ -406,5 +419,6 @@ Check each explicitly during both discovery and verification:
 
 **Persistence**
 - [ ] Destructor-assumed side effect (sync, flush, write) that may not run on pod kill
+  (but see KFP §1 — for ublkpp this is currently structurally blocked by resync drain)
 - [ ] One-sided version bounds: `version < N` with no `version > MAX` upper-bound rejection
 - [ ] Two writes that must be consistent but have no atomic boundary between them
