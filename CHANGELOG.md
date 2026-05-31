@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.8] - 2026-06-02
+
+### Fixed
+
+- **P0 (raid1)**: `__become_clean()` could transition the route to `EITHER` while dirty bits remained in the bitmap, with no resync task to process them. A concurrent write whose backup leg fails calls `dirty_region()` after the resync task's `dirty_pages()==0` observation but before the CAS. Subsequent reads skipped the `is_dirty` guard (only active in degraded mode) and could be served from the stale backup — a write-acknowledgment boundary violation. Fixed by inverting the CAS/superblock write ordering and re-checking `dirty_pages()` after the CAS; if dirty bits are found the transition is reversed and resync is re-launched.
+- **SuperBitmap::set_bit()** now uses `memory_order_release` (was `relaxed`) to pair correctly with the `memory_order_acquire` loads in `next_set_bit()` and `dirty_pages()`.
+
 ## [0.32.7] - 2026-06-01
 
 ### Fixed

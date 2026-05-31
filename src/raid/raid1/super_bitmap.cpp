@@ -22,8 +22,10 @@ void SuperBitmap::set_bit(uint32_t page_idx) noexcept {
     DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
-    // Use atomic fetch_or to safely set the bit without racing with other bit operations
-    std::atomic_ref< uint8_t >(_bits[byte_idx]).fetch_or(1U << bit_idx, std::memory_order_relaxed);
+    // release pairs with the acquire loads in next_set_bit()/dirty_pages(), ensuring
+    // that any page-bit writes preceding set_bit() are visible to callers that observe
+    // the superbitmap bit (e.g. the dirty_pages() re-check in __become_clean).
+    std::atomic_ref< uint8_t >(_bits[byte_idx]).fetch_or(1U << bit_idx, std::memory_order_release);
 }
 
 void SuperBitmap::clear_bit(uint32_t page_idx) noexcept {

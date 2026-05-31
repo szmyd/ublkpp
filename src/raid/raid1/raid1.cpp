@@ -632,18 +632,18 @@ void Raid1Disk::__become_clean() {
     auto old_route = state.route;
     if (!_read_route_cache.compare_exchange_strong(old_route, read_route::EITHER)) return;
 
-    // Double-check: a concurrent backup-fail dirty_region() call may have fired between
-    // the resync task's dirty_pages()==0 observation and the CAS above, leaving dirty
-    // bits with no resync task to pick them up. Reverse the transition and re-launch
-    // resync so those bits reach the backup.
+    // Double-check: a concurrent backup-fail dirty_region() may have fired between the
+    // resync task's dirty_pages()==0 observation and the CAS above. Reverse the
+    // transition so those bits are not stranded with no resync to process them.
     if (_dirty_bitmap->dirty_pages() > 0) {
         auto either_route = read_route::EITHER;
         if (_read_route_cache.compare_exchange_strong(either_route, state.route)) {
             RLOGW("Resync complete but found unsynced dirty bits — re-launching resync [uuid:{}]", _str_uuid)
             if (_resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
+        } else {
+            RLOGD("Route moved by concurrent path during resync completion; dirty bits handled there [uuid:{}]",
+                  _str_uuid)
         }
-        // If the reverse CAS fails, another path (e.g. a new device failure calling
-        // __become_degraded) already moved the route — it will write the correct superblocks.
         return;
     }
 
