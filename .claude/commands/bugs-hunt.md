@@ -28,19 +28,22 @@ Operate accordingly:
 
 ## Session Setup
 
-Run the following via the Bash tool to get a stable session prefix:
+Run the following via the Bash tool to get a unique session prefix:
 
 ```bash
-date +%s | tail -c 7
+shuf -i 1000000-9999999 -n1
 ```
 
-Use the output (e.g., `947312`) as a prefix for **every** output file in this run. This
-prevents silent overwrites on re-runs or concurrent hunts. Find-and-replace `{PREFIX}` in
-every agent prompt and shell command before emitting — do not pass the literal string
-`{PREFIX}` to agents or the cleanup command.
+Use the output (e.g., `3847201`) as a prefix for **every** output file and shell command
+in this run. This prevents silent overwrites on re-runs or concurrent hunts — a timestamp
+suffix is not used because two runs starting in the same second would collide.
 
-Example: prefix `947312` → `/tmp/bh-947312-agent1.md`, `/tmp/bh-947312-verify-01.md`,
-`/tmp/bh-947312-report.md`.
+Find-and-replace `{PREFIX}` in every agent prompt and shell command before emitting — do
+not pass the literal string `{PREFIX}` to agents or the cleanup command. (The Setup section
+example shows the substitution: `{PREFIX}` → `3847201` → `/tmp/bh-3847201-agent1.md`.)
+
+Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-verify-01.md`,
+`/tmp/bh-3847201-report.md`.
 
 ---
 
@@ -80,6 +83,15 @@ files in full, and writes its candidates to a dedicated output file.
 **Uncertainty**: [what you're not sure about, if anything]
 ```
 
+**Last line of every agent output file must be the sentinel:**
+
+```
+<!-- END AGENT [N] -->
+```
+
+The orchestrator uses this to detect truncation — a file that exists but lacks the sentinel
+was interrupted mid-run and should be treated as missing (report explicitly, do not skip).
+
 **Agent 3 only** — append a cross-boundary section for anything that doesn't clear the
 Candidate confidence bar but touches `__become_degraded`:
 
@@ -98,18 +110,20 @@ Candidate confidence bar but touches `__become_degraded`:
 After all 5 discovery agents complete:
 1. Read **all 5 output files** (`/tmp/bh-{PREFIX}-agent1.md` through
    `/tmp/bh-{PREFIX}-agent5.md`) and collect every candidate into a working list
-   before spawning any verification agent. **If any file is missing or empty, report
-   it explicitly** (e.g., "Agent 3 output missing — that subsystem was not audited")
-   before continuing. Do not silently skip it — a missing agent output means that
-   subsystem is unaudited; do not synthesize a partial report. Also collect any
-   `## Cross-Boundary Concerns` sections from `agent3.md` — merge each XB entry with
-   Agent 2's candidates and treat it as a single candidate for verification.
+   before spawning any verification agent. For each file: verify it exists, is non-empty,
+   and ends with `<!-- END AGENT N -->`. A file that fails any check was interrupted —
+   **report it explicitly** (e.g., "Agent 3 truncated — that subsystem is unaudited") and
+   halt. Do not synthesize a partial report. Also collect any `## Cross-Boundary Concerns`
+   sections from `agent3.md` and merge each XB entry into the working list as a candidate.
+   After collecting all candidates, **dedup by (source file, claim) before assigning flat
+   indices** — if Agent 2 and an XB entry describe the same issue, merge them into one
+   candidate rather than spawning two independent verifiers.
 2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
    found.` Do not proceed to Phase 3.
 3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
    discovery agent produced it.
-4. Spawn verification agents in batches of **at most 8 at a time** (the per-turn concurrency
-   limit in Claude Code's Agent tool). Each candidate gets its own agent. If there are more
+4. Spawn verification agents in batches of **at most 8 at a time** (to stay within the
+   context window budget per turn — not a hard cap, but exceeding it degrades quality). Each candidate gets its own agent. If there are more
    than 8 candidates total, run them in rounds of 8 — read all outputs from round N before
    spawning round N+1. Only if forced by the limit: batch **Low-confidence** candidates
    targeting the same source file into one agent (never High or Medium — batched agents share
@@ -165,9 +179,10 @@ synthesize into one consolidated report:
 2. If any escalations exist, **also write them to `/tmp/bh-{PREFIX}-escalations.md`**
    (so the user can re-read them without parsing the full report). Omit this file if there
    are no escalations.
-3. **Optionally** clean up intermediate files after confirming the report is complete:
+3. **Conditionally** clean up intermediate files — only if `/tmp/bh-{PREFIX}-report.md` is
+   non-empty and Phase 3 completed without error:
    `rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md`
-   Do not run this if Phase 3 failed mid-synthesis — the intermediates are needed to retry.
+   Do not run if Phase 3 failed mid-synthesis (intermediates needed to retry).
    The report and escalations files are always kept.
 
 ```
@@ -210,9 +225,10 @@ synthesize into one consolidated report:
 List escalations here and in `/tmp/bh-{PREFIX}-escalations.md` (omit the file if none).
 For each one, present the precise scenario question to the user. After the user responds,
 spawn one verification agent per scenario confirmed as possible, passing the candidate text
-plus the user's deployment context. If confirmed, append findings to a
-`### Confirmed Bugs (Post-Escalation)` section at the bottom of the existing report file.
-Do not re-run Phases 1–3.
+plus the user's deployment context. Write each agent's output to
+`/tmp/bh-{PREFIX}-verify-ENN.md` (E prefix for escalation re-verification, NN is the
+escalation number). If confirmed, append findings to a `### Confirmed Bugs (Post-Escalation)`
+section at the bottom of the existing report file. Do not re-run Phases 1–3.
 
 #### [E1] Title
 
@@ -306,6 +322,9 @@ record of the inconsistency. If the ack fires only on the error path (EIO return
 
 ### RAID1 Known False Positives — Verify Before Reporting
 
+<!-- Re-audit this entire section before running after any refactor touching
+     Raid1Disk, __become_*, write_superblock, or SuperBitmap. -->
+
 These patterns look dangerous on first inspection but are structurally impossible. Each entry
 is anchored to a specific invariant — if that invariant changes in the code, re-trace from
 scratch before applying a pre-emptive REJECT.
@@ -373,6 +392,9 @@ Check each explicitly during both discovery and verification:
   body may outlive the referent if the owning object is destroyed while the coroutine is suspended
 - [ ] Relaxed atomic as a branch guard: `load(relaxed)` used as a condition without a subsequent
   `acquire` fence — the load can be reordered past dependent loads it was intended to gate
+- [ ] Convention-only protection: field assumed single-threaded but guarded only by a
+  "callers must ensure X" invariant with no lock or atomic — verify the invariant holds on
+  every call path (these don't appear in TSan if the convention is always honored but are fragile)
 
 **Error handling**
 - [ ] Error from device A sets `unavail` / triggers `__become_degraded` on device B
