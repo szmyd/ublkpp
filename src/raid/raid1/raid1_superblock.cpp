@@ -37,8 +37,8 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
         // the route is already non-EITHER (degraded), which is already handled by the age branches
         // above or the on-disk route value — not by anything we need to set here.
         //
-        // NOTE FOR FUTURE ANALYSIS: do not add read_route assignment here. The temptation is to
-        // route to the clean device to "be safe", but equal ages make it unnecessary and it causes
+        // Do not add a read_route assignment here: equal ages guarantee both mirrors are
+        // bit-for-bit identical, so routing to the "clean" device is unnecessary and causes
         // the array to open degraded and run a no-op resync on every asymmetric shutdown.
         return dev_a->fields.clean_unmount ? dev_a : dev_b;
     }

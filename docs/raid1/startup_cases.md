@@ -78,8 +78,8 @@ flowchart TD
 flowchart TD
     IN([Both SBs loaded]) --> AGE{"Compare age"}
 
-    AGE -->|"age_A > age_B"| WIN_A["Winner = A\nread_route ← DEVA\nif gap > 1: B.new_device = true"]
-    AGE -->|"age_B > age_A"| WIN_B["Winner = B\nread_route ← DEVB\nif gap > 1: A.new_device = true"]
+    AGE -->|"age_A > age_B"| WIN_A["Winner = A\nread_route ← DEVA\nif gap > 1: B.new_device = true\n(new_device set by caller)"]
+    AGE -->|"age_B > age_A"| WIN_B["Winner = B\nread_route ← DEVB\nif gap > 1: A.new_device = true\n(new_device set by caller)"]
     AGE -->|"equal"| CM{"clean_unmount\ndiffer?"}
 
     CM -->|Yes| CLEAN["Take the clean one\nRoute unchanged\nEqual age = mirrors are identical;\nno resync needed regardless of route"]
@@ -121,8 +121,9 @@ flowchart TD
 
     %% Branch 1
     C1 -->|"Yes — Branch 1"| B1_ROUTE["Route to live slot\n(DEVA if B missing, DEVB if A missing)"]
-    B1_ROUTE --> B1_WD["was_degraded =\n(route≠EITHER) OR (!clean_unmount)"]
-    B1_WD --> B1_LOAD["load_from(live_disk, was_degraded)\n← see load_from diagram"]
+    B1_ROUTE --> B1_CRASH{"!clean_unmount\nAND route≠EITHER?\n(was degraded + crashed)"}
+    B1_CRASH -->|Yes| B1_DIRTY["age += 16\ndirty_region(0, capacity())\n→ Full resync"]
+    B1_CRASH -->|No| B1_LOAD["load_from(live_disk)\n← superbitmap guides scan"]
 
     %% Branch 2
     C1 -->|No| C2{"new_device(A) XOR\nnew_device(B)?"}
@@ -134,7 +135,7 @@ flowchart TD
 
     %% Branch 4
     C3 -->|No| C4{"route ≠ EITHER?"}
-    C4 -->|"Yes — Branch 4\nDegraded clean shutdown\n(clean_unmount = 1 implied)"| B4["load_from(active_dev,\nwas_previously_degraded=true)\n→ Incremental or full resync\n   (see load_from diagram)"]
+    C4 -->|"Yes — Branch 4\nDegraded clean shutdown\n(clean_unmount = 1 implied)"| B4["assert superbitmap_nonempty()\nload_from(active_dev)\n→ Incremental resync"]
 
     %% Branch 5
     C4 -->|No| C5{"clean_unmount = 0?"}
@@ -148,63 +149,83 @@ flowchart TD
     style B4 fill:#fff9c4,stroke:#f57f17,color:#000000
     style B5 fill:#e8f5e9,stroke:#2e7d32,color:#000000
     style B6 fill:#e8f5e9,stroke:#2e7d32,color:#000000
+    style B1_DIRTY fill:#ffcdd2,stroke:#b71c1c,color:#000000
     style B1_LOAD fill:#fff9c4,stroke:#f57f17,color:#000000
 ```
 
 ### Branch 1 sub-cases: Missing device
 
-`was_degraded = (route ≠ EITHER) OR (clean_unmount = 0)`
+The branch condition is AND, not OR: only a **degraded crash** (both `!clean_unmount` and
+`route ≠ EITHER` true simultaneously) takes the full-resync path. Every other combination
+goes to `load_from`.
 
 ```mermaid
 flowchart TD
-    B1(["Branch 1: one device missing\nload_from(live_disk, was_degraded)"]) --> WD{"was_degraded?"}
+    B1(["Branch 1: one device missing"]) --> COND{"!clean_unmount\nAND route≠EITHER?\n(was degraded + crashed)"}
 
-    WD -->|"false\nroute=EITHER AND clean_unmount=1\n(was healthy + clean shutdown)"| TRUST["superbitmap always trusted\nSuperbitmap = zeros\n(healthy: bitmap never dirtied)\n→ Zero pages scanned\n→ No resync when disk returns"]
+    COND -->|"Yes"| DIRTY_ALL["age += 16\ndirty_region(0, capacity())\n→ Full resync when disk returns"]
 
-    WD -->|"true — all other cases"| HAS_BITS{"superbitmap has\nany set bits?"}
+    COND -->|"No — all other cases"| LOAD["load_from(live_disk)\n— superbitmap guides what is read"]
 
-    HAS_BITS -->|"Yes\n(new format: destructor flushed it)"| TARGETED["Targeted scan\nOnly superbitmap-indicated pages read\n→ Incremental resync when disk returns"]
+    LOAD --> SB_STATE{"Superbitmap\nstate?"}
 
-    HAS_BITS -->|"No — all zeros\n(crash OR old-format SB)"| FULL["Full scan\nEvery bitmap page read from disk\n→ Full resync when disk returns"]
+    SB_STATE -->|"All zeros\n(was healthy: writes never\ncalled dirty_region)"| NO_SCAN["No pages read\n→ Incremental resync when disk returns\n(covers only writes since degradation)"]
 
-    style TRUST fill:#e8f5e9,stroke:#2e7d32,color:#000000
+    SB_STATE -->|"Has bits\n(was degraded + clean shutdown:\ndestructor flushed superbitmap)"| TARGETED["Only flagged pages read\n→ Incremental resync when disk returns"]
+
+    style DIRTY_ALL fill:#ffcdd2,stroke:#b71c1c,color:#000000
+    style NO_SCAN fill:#e8f5e9,stroke:#2e7d32,color:#000000
     style TARGETED fill:#fff9c4,stroke:#f57f17,color:#000000
-    style FULL fill:#ffcdd2,stroke:#b71c1c,color:#000000
 ```
+
+Note: "was healthy, crash" (`route=EITHER, clean_unmount=0`) reaches the `load_from` branch
+because the condition requires **both** `!clean_unmount` and `route≠EITHER`. Healthy sessions
+never call `dirty_region`, so the superbitmap is all zeros and no pages are read. This is
+correct — both mirrors were in sync at crash time; `dirty_region` accumulates writes going
+forward during the current degraded session, and those regions are resynced when the missing
+disk returns via `swap_device`.
 
 ---
 
-## `load_from` Logic: When Is the Superbitmap Trusted?
+## `load_from`: What the Superbitmap Guides
+
+`load_from(device)` takes only the disk to read from. It uses the **in-memory superbitmap**
+— loaded from `_sb->superbitmap_reserved` during construction — as a skip index. There is no
+"full scan" mode: the amount of work is determined entirely by what is in the superbitmap
+when `load_from` is called.
 
 ```mermaid
 flowchart TD
-    LF(["load_from(device, was_previously_degraded)"]) --> VALID{"superbitmap_valid =\n!was_previously_degraded\nOR next_set_bit < k_bits"}
+    LF(["load_from(device)\nSuperBitmap already loaded from _sb"]) --> LOOP["For each page 0..N-1"]
+    LOOP --> CHECK{"superbitmap\nbit N set?"}
+    CHECK -->|"No — skip"| SKIP["continue\n(superbitmap says clean)"]
+    CHECK -->|"Yes — read"| READ["Read page from disk\n(k_page_size bytes)"]
+    READ --> ZEROS{"Page all zeros?"}
+    ZEROS -->|Yes| CLEAR["clear_bit(N)\nleave slot unallocated\n(stale bit; page confirmed clean)"]
+    ZEROS -->|No| SETBIT["set_bit(N)\nload into page_map\nmark loaded_from_disk=true"]
+    SKIP --> LOOP
+    CLEAR --> LOOP
+    SETBIT --> LOOP
 
-    VALID -->|"was_previously_degraded=false\n→ valid=true always"| HEALTHY_LOOP
-
-    VALID -->|"was_previously_degraded=true\nAND superbitmap all-zeros\n→ valid=false"| FULL_LOOP
-
-    VALID -->|"was_previously_degraded=true\nAND superbitmap has bits\n→ valid=true"| HEALTHY_LOOP
-
-    HEALTHY_LOOP["For each page 0..N-1:\n  if valid AND bit clear → SKIP page\n  if valid AND bit set  → read page from disk"] --> PAGE_CHECK
-
-    FULL_LOOP["For each page 0..N-1:\n  read page from disk unconditionally"] --> PAGE_CHECK
-
-    PAGE_CHECK{"Page content?"} -->|"All zeros"| CLEAR["clear_bit(pg)\nleave slot unallocated\n(confirms clean)"]
-    PAGE_CHECK -->|"Has dirty data"| DIRTY["set_bit(pg)\nload into page_map\nmark loaded_from_disk=true"]
-
-    style FULL_LOOP fill:#ffcdd2,stroke:#b71c1c,color:#000000
-    style HEALTHY_LOOP fill:#e8f5e9,stroke:#2e7d32,color:#000000
+    style CLEAR fill:#e8f5e9,stroke:#2e7d32,color:#000000
+    style SETBIT fill:#ffcdd2,stroke:#b71c1c,color:#000000
 ```
 
-**Why zeros trigger full scan for degraded but not healthy:**
+**What determines the superbitmap content at the time `load_from` is called:**
 
-- **Healthy** (`was_previously_degraded=false`): healthy writes always hit both mirrors.
-  The bitmap is never dirtied during healthy operation. All-zeros is always correct — trust it.
-- **Degraded** (`was_previously_degraded=true`): all-zeros could mean (a) old-format superblock
-  that predates superbitmap persistence, or (b) a crash that prevented the destructor from
-  flushing. Both require a full scan. A new-format clean shutdown always has set bits if
-  dirty pages existed.
+| Previous session | Superbitmap when `load_from` is called | Pages read |
+|---|---|---|
+| Healthy (route=EITHER) | All zeros — healthy writes never call `dirty_region` | None; bitmap stays empty |
+| Degraded + clean shutdown | Has set bits — destructor flushed via `include_superbitmap=true` | Only flagged pages; targeted scan |
+
+**Full resync** branches (Branches 2, 3, Branch 1 degraded crash) call
+`dirty_region(0, capacity())` **instead of** `load_from`. The caller — not `load_from` —
+decides when a full resync is needed.
+
+**Branch 4 guard**: Degraded clean shutdown with both disks present additionally asserts
+`superbitmap_nonempty()` before calling `load_from`. An empty superbitmap here would
+indicate a corrupt or pre-superbitmap-persistence disk, so the code throws rather than
+silently skipping all pages and missing a resync.
 
 ---
 
@@ -223,8 +244,9 @@ flowchart LR
 ```
 
 This zeroing is the safety net: if the process crashes after `__become_active`, the next
-startup sees all-zero superbitmap on disk and falls back to the safe path (full scan for
-degraded, no scan needed for healthy).
+startup sees all-zero superbitmap on disk and takes the safe path — full resync via
+`dirty_region` for a degraded crash (Branch 3), or no scan needed for a healthy crash
+(Branches 5/6; mirrors were in sync).
 
 ---
 
@@ -326,37 +348,52 @@ as a large age gap to any future analysis.
 | **Healthy clean shutdown** | EITHER | 1 | both=false | 6 | — | **None** |
 | **Healthy crash** | EITHER | 0 | both=false | 5 | — | **None** |
 | Degraded clean shutdown (new SB) | DEVA/B | 1 | both=false | 4 | load_from targeted | Incremental |
-| Degraded clean shutdown (old SB) | DEVA/B | 1 | both=false | 4 | load_from full scan | Full |
+| Degraded clean shutdown (old SB) | DEVA/B | 1 | both=false | 4 | throws (superbitmap empty) | — |
 | **Degraded crash** | DEVA/B | 0 | both=false | 3 | dirty all | **Full** |
 | Missing: was healthy, clean | EITHER | 1 | live=false | 1 | load_from no scan | None (when B returns) |
-| Missing: was healthy, crash | EITHER | 0 | live=false | 1 | load_from full scan | Full (when B returns) |
+| Missing: was healthy, crash | EITHER | 0 | live=false | 1 | load_from no scan | Incremental (when B returns) |
 | Missing: was degraded, clean (new SB) | DEVA/B | 1 | live=false | 1 | load_from targeted | Incremental (when B returns) |
-| Missing: was degraded, clean (old SB) | DEVA/B | 1 | live=false | 1 | load_from full scan | Full (when B returns) |
-| Missing: was degraded, crash | DEVA/B | 0 | live=false | 1 | load_from full scan | Full (when B returns) |
+| Missing: was degraded, clean (old SB) | DEVA/B | 1 | live=false | 1 | load_from no scan¹ | Incremental (when B returns) |
+| Missing: was degraded, crash | DEVA/B | 0 | live=false | 1 | dirty all | Full (when B returns) |
 | Original disk returns via swap_device | — | — | false | swap | bitmap unchanged | Incremental |
 | Blank new disk via swap_device | — | — | true | swap | dirty all | Full |
 
 > **"Resync at startup"** refers to resync that begins immediately once `prepare()` is called.
 > For the "missing device" rows, the resync only begins when the missing disk is replaced
 > via `swap_device`.
+>
+> ¹ Old-format SB: `superbitmap_reserved` is all zeros because the disk was last written
+> by software that did not persist the superbitmap. `load_from` skips all pages (no scan),
+> leaving the bitmap empty. Unlike Branch 4 (which throws on empty superbitmap), Branch 1
+> does not guard this case — dirty regions from the previous degraded session are not
+> recovered. This is a known limitation for disks migrated from pre-superbitmap software.
 
 ---
 
-## Summary: When Is the Superbitmap Trusted?
+## Summary: What Does `load_from` Read?
+
+`load_from` always uses the in-memory superbitmap as a skip index. What it reads depends
+entirely on the superbitmap state at call time, which reflects the previous session.
 
 ```mermaid
 flowchart TD
-    Q(["Does load_from trust\nthe in-memory superbitmap?"]) --> HD{"was_previously_degraded?"}
+    Q(["load_from is called —\nwhat does it read?"]) --> HD{"Previous session\nhealthy?\n(route=EITHER)"}
 
-    HD -->|"false — healthy path"| T1["Always trusted\nAll-zeros = clean array\nNo pages read from disk"]
+    HD -->|"Yes — healthy path\n(Branches 5/6, Branch 1 healthy)"| T1["Superbitmap = all zeros\n(healthy writes never dirty the bitmap)\nNo pages read from disk"]
 
-    HD -->|"true — degraded path"| HB{"Superbitmap has\nset bits?"}
+    HD -->|"No — was degraded"| HB{"Superbitmap\nhas set bits?"}
 
-    HB -->|"Yes — destructor ran\nand persisted bits"| T2["Trusted\nOnly indicated pages read\nTargeted scan"]
+    HB -->|"Yes — destructor flushed it\n(clean shutdown)"| T2["Only flagged pages read\nTargeted scan"]
 
-    HB -->|"No — all zeros\n(crash or old format)"| T3["Not trusted\nFull scan of all pages\nZero pages confirm clean;\nnon-zero pages loaded as dirty"]
+    HB -->|"No — all zeros\n(degraded crash: caller used\ndirty_region instead of load_from)"| T3["load_from is not called\nin this state — caller chose\ndirty_region(0, capacity())"]
 
     style T1 fill:#e8f5e9,stroke:#2e7d32,color:#000000
     style T2 fill:#fff9c4,stroke:#f57f17,color:#000000
-    style T3 fill:#ffcdd2,stroke:#b71c1c,color:#000000
+    style T3 fill:#e0e0e0,stroke:#757575,color:#000000
 ```
+
+Note: "Degraded crash" cases (Branches 3, and Branch 1 when `!clean_unmount AND route≠EITHER`)
+call `dirty_region(0, capacity())` at the caller level and do **not** call `load_from`.
+Branch 4 additionally asserts `superbitmap_nonempty()` before calling `load_from`, so the
+"degraded + empty superbitmap" case only reaches `load_from` in Branch 1 as an edge case
+for old-format disks (see footnote ¹ in the case table).
