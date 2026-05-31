@@ -39,17 +39,9 @@ mkdir -p /tmp/bugs-hunt
 ```
 
 All output files go in `/tmp/bugs-hunt/`. Re-running the command overwrites previous
-results — this is intentional. Check for KFP staleness before Phase 1:
-
-```bash
-# KFP §1 (destructor) and §2a (CAS gate) — anchored to raid1.cpp:
-git log f984348..HEAD --oneline src/raid/raid1/raid1.cpp
-# KFP §2b (superbitmap safe-direction race) — anchored to super_bitmap.*:
-git log f984348..HEAD --oneline src/raid/raid1/super_bitmap.cpp src/raid/raid1/super_bitmap.hpp
-```
-
-Non-empty output for the first → re-verify §1 and §2a. Second → re-verify §2b. If entries
-still hold after re-verification, update the anchor hash `f984348` above.
+results — this is intentional. Before starting, check whether KFP-relevant code has changed since you last ran this command.
+If `Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap` were modified in recent
+commits, re-verify the Known False Positive entries before trusting them.
 
 ---
 
@@ -59,7 +51,7 @@ Spawn **5 agents in parallel** using the Agent tool. Send all 5 in a single mess
 they run concurrently. Each agent is scoped to one subsystem, reads the relevant source
 files in full, and writes its candidates to a dedicated output file.
 
-<!-- Scope last reviewed: 2026-05-31 / commit f984348. Update when src/ files are renamed, moved, or new subsystems added. -->
+<!-- Scope last reviewed: 2026-05-31. Update when src/ files are renamed, moved, or new subsystems added. -->
 
 | Agent | Scope | Output file |
 |---|---|---|
