@@ -28,14 +28,13 @@ Operate accordingly:
 
 ## Session Setup
 
-Run the following via the Bash tool to get a unique session prefix (Linux):
+Run the following via the Bash tool to get a unique session prefix (portable):
 
 ```bash
-shuf -i 1000000-9999999 -n1
+python3 -c "import random; print(random.randint(1000000,9999999))"
 ```
 
-On macOS use: `python3 -c "import random; print(random.randint(1000000,9999999))"` or
-install GNU coreutils (`brew install coreutils`) and use `gshuf`.
+On Linux you can also use `shuf -i 1000000-9999999 -n1`.
 
 Use the output (e.g., `3847201`) as a prefix for **every** output file and shell command
 in this run. This prevents silent overwrites on re-runs or concurrent hunts — a timestamp
@@ -59,6 +58,9 @@ Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-veri
 
 ## Phase 1 — Parallel Discovery (5 agents)
 
+**Reminder**: substitute the actual prefix for `{PREFIX}` in every agent prompt and
+filename you emit in this phase — do not pass the literal string `{PREFIX}` to agents.
+
 Spawn **5 agents in parallel** using the Agent tool. Send all 5 in a single message so
 they run concurrently. Each agent is scoped to one subsystem, reads the relevant source
 files in full, and writes its candidates to a dedicated output file.
@@ -74,6 +76,7 @@ files in full, and writes its candidates to a dedicated output file.
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
 - The Analysis Framework section below — **paste it verbatim, do not summarize**
+  (this is intentional; the token cost buys consistent reasoning across all agents)
 - The million-dollar rule
 - This output format — write raw candidates to the output file, no filtering yet:
 
@@ -103,7 +106,9 @@ The orchestrator uses this to detect truncation — a file that exists but lacks
 was interrupted mid-run and should be treated as missing (report explicitly, do not skip).
 
 **Agent 3 only** — append a cross-boundary section for anything that doesn't clear the
-Candidate confidence bar but touches `__become_degraded`:
+Candidate confidence bar but touches `__become_degraded`. Note: the XB channel is the
+**only** path for startup-path findings that straddle the Agent 2/3 boundary — Agent 3
+cannot confirm or reject such findings directly, only flag them for Agent 2 verification.
 
 ```
 ## Cross-Boundary Concerns (for Agent 2 verification)
@@ -130,17 +135,19 @@ After all 5 discovery agents complete:
    After collecting all candidates, **dedup before assigning flat indices**. Two candidates
    are the same issue if they point to the same code location AND the trigger sequence
    produces the same harmful outcome — merge them into one rather than spawning two
-   independent verifiers.
+   independent verifiers. Same location but different harmful outcome = keep both.
 2. **If the working list is empty**: skip Phase 2 and emit `Bug Hunt Report: 0 candidates
    found.` Do not proceed to Phase 3.
 3. Assign each candidate a flat sequential index (01, 02, 03 …) regardless of which
    discovery agent produced it.
-4. Prefer batches of **≤ 8 agents per turn** to stay within the context window budget.
-   If you have strong reason to exceed this, proceed but note the quality risk. Each candidate gets its own agent. If there are more
-   than 8 candidates total, run them in rounds of 8 — read all outputs from round N before
-   spawning round N+1. Only if forced by the limit: batch **Low-confidence** candidates
-   targeting the same source file into one agent (never High or Medium — batched agents share
-   agent context, and a finding in candidate A may anchor reasoning for candidate B).
+4. Each candidate gets its own agent. Prefer batches of **≤ 8 agents per turn** to stay
+   within the context window budget; if you have strong reason to exceed this, proceed but
+   note the quality risk. If there are more than 8 candidates total, run them in rounds of
+   8 — read all outputs from round N (applying the same sentinel-check as for discovery
+   files) before spawning round N+1. Only if a single round has more than 8 **Low-confidence**
+   candidates targeting the same source file: batch those into one agent (never High or
+   Medium — batched agents share agent context, and a finding in candidate A may anchor
+   reasoning for candidate B).
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -193,10 +200,12 @@ synthesize into one consolidated report:
    (so the user can re-read them without parsing the full report). Omit this file if there
    are no escalations.
 3. **Conditionally** clean up intermediate files — only if the report file exists, is ≥ 100
-   bytes, and every verify file was read without exception:
+   bytes, and every verify file was read without exception. Substitute the actual prefix
+   before running (same rule as Phase 1 prompts):
    `rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md`
-   Do not run if Phase 3 failed mid-synthesis (intermediates needed to retry).
-   The report and escalations files are always kept.
+   If the `rm` fails (permissions, already deleted), note it but do not treat it as a
+   Phase 3 failure — the report is already written. The report and escalations files are
+   always kept. Do not run if Phase 3 failed mid-synthesis (intermediates needed to retry).
 
 ```
 ## Bug Hunt Report
@@ -335,8 +344,11 @@ record of the inconsistency. If the ack fires only on the error path (EIO return
 
 ### RAID1 Known False Positives — Verify Before Reporting
 
-<!-- Re-audit this entire section before running after any refactor touching
-     Raid1Disk, __become_*, write_superblock, or SuperBitmap. -->
+**Note for Agent 5**: the KFP entries below are RAID1-specific and do not apply to
+RAID0, driver, or metrics code. Skip this section when scoped to Agent 5.
+
+**Staleness gate**: re-audit this entire section before running after any refactor touching
+`Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap`.
 
 These patterns look dangerous on first inspection but are structurally impossible. Each entry
 is anchored to a specific invariant — if that invariant changes in the code, re-trace from
