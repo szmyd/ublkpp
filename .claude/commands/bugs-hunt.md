@@ -72,11 +72,12 @@ its candidates to a dedicated output file.
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
 - The Analysis Framework section below — **paste it verbatim, do not summarize**
-  (~300 tokens × (5 discovery + N verify) agents; at 10 candidates ≈ 4.5k overhead; accepted)
 - If you encounter an unfamiliar pattern (SISL macros, coroutine idioms, etc.), check
   `CLAUDE.md` for project conventions before flagging it as a bug candidate
 - The million-dollar rule
 - This output format — write raw candidates to the output file, no filtering yet:
+
+*(Operator note: framework paste costs ~300 tokens × agent count; at 10 candidates ≈ 4k total overhead — intentional for consistency.)*
 
 ```
 ## Candidate Findings — Agent [N] — [Subsystem]
@@ -144,23 +145,22 @@ After all 5 discovery agents complete:
    and do not proceed to Phase 3.
 4. **If there are ≥ 20 candidates total**: escalate all Low-confidence candidates directly
    to the report as ESCALATE (without spawning verifiers) — treat discovery-time
-   Low-confidence as insufficient evidence when discovery is this broad. <!-- threshold rule:
+   Low-confidence as insufficient evidence when discovery is this broad. <!-- threshold:
    keep Phase 2 ≤ 4 rounds × 8 agents; recalibrate for larger codebases -->
-   Step 6 budget exception applies only after step 4; Low-confidence candidates escalated
-   here don't reach step 6. If High+Medium candidates after dedup exceed 32, cap at the
-   top 32 by confidence tier then agent number, and note the truncation in the report.
-5. Sort remaining candidates by agent number, then candidate number, then assign a flat
+5. **If High+Medium candidates after step 4 exceed 32**: cap at the top 32 by confidence
+   tier then agent number; note the truncation in the Coverage line of the report.
+6. Sort remaining candidates by agent number, then candidate number, then assign a flat
    sequential index (01, 02, 03 …).
-6. **By default, one candidate per agent.** Run **≤ 8 agents per turn** (sized for the
-   current context window; adjust if model context limits change). If there are more than 8
-   candidates total, run them in rounds of 8. Before each new round, run:
+7. **One candidate per agent.** Run **≤ 8 agents per turn** (sized for the current context
+   window; adjust if model context limits change). If there are more than 8 candidates
+   total, run them in rounds of 8. Before each new round, run:
    ```bash
    grep -rL "END VERIFY" .claude/bugs-hunt/bh-verify-*.md 2>/dev/null
    ```
    Any file listed is truncated — apply the missing-agent protocol before continuing.
-   If a discovery agent produces no output after a reasonable wait, treat it as failed
+   If a verification agent produces no output after a reasonable wait, treat it as failed
    and ask the user to rerun. **Budget exception**: if there are more than 16 Low-confidence
-   candidates in a single round, batch same-file Low-confidence candidates into one agent
+   candidates total, batch same-file Low-confidence candidates into one agent per file group
    (never High or Medium).
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
@@ -222,10 +222,11 @@ synthesize into one consolidated report:
    As the final line of the report, write: `<!-- BUG HUNT COMPLETE -->`
 2. If any escalations exist, **also write them to `.claude/bugs-hunt/bh-escalations.md`**
    (so the user can re-read them without parsing the full report). Omit this file if there
-   are no escalations. This file is intentionally kept across re-runs (not cleaned up).
+   are no escalations. This file survives the current run's cleanup but is removed at the
+   start of the next run (Phase 1 setup).
 3. **Conditionally** clean up intermediate files — only if `bh-report.md` ends with
-   `<!-- BUG HUNT COMPLETE -->` and every file listed by
-   `ls .claude/bugs-hunt/bh-verify-*.md` was included in the synthesis:
+   `<!-- BUG HUNT COMPLETE -->` (Phase 2 sentinel checks already confirmed verify files
+   are complete, so no additional check is needed):
    `rm .claude/bugs-hunt/bh-agent*.md .claude/bugs-hunt/bh-verify-*.md`
    Note: `verify-ENN.md` escalation re-verification files are created after Phase 3, so
    they won't exist yet at this cleanup step — the glob will not match them here. They'll
