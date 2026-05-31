@@ -32,8 +32,8 @@ Operate accordingly:
 
 ## Session Setup
 
-Run the following via the Bash tool to get a unique session prefix (ublk is Linux-only,
-so `shuf` is available; use the Python fallback in containers without util-linux):
+Run the following via the Bash tool to get a unique session prefix (use the Python fallback
+if `shuf` is absent, e.g. on macOS dev machines):
 
 ```bash
 shuf -i 1000000-9999999 -n1
@@ -79,6 +79,8 @@ git log f984348..HEAD --oneline src/raid/raid1/super_bitmap.cpp src/raid/raid1/s
 Non-empty output for the first command → re-verify §1 and §2a.
 Non-empty output for the second → re-verify §2b.
 If you re-verify and the entries still hold, update the anchor commit hash above.
+Failing to update the hash is not a correctness problem — agents will re-investigate
+already-cleared false positives unnecessarily, but won't miss real bugs.
 
 Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-verify-01.md`,
 `/tmp/bh-3847201-report.md`. The PREFIX is preserved in the report and escalations filenames
@@ -88,13 +90,17 @@ Example: prefix `3847201` → `/tmp/bh-3847201-agent1.md`, `/tmp/bh-3847201-veri
 
 ## Phase 1 — Parallel Discovery (5 agents)
 
-**Pre-spawn verification**: before spawning agents, list the 5 output filenames you will
-tell each agent to write to and confirm none contains the literal string `{PREFIX}`. If any
-does, the substitution failed — stop and re-announce the prefix.
+**Pre-spawn verification**: emit the 5 actual output filenames before spawning (e.g.,
+`/tmp/bh-3847201-agent1.md` through `/tmp/bh-3847201-agent5.md`), then confirm they match
+the announced SESSION PREFIX. If any contains the literal string `{PREFIX}`, substitution
+failed — stop and re-announce the prefix. This forces the LLM to demonstrate correct
+substitution before any agent is spawned.
 
 Spawn **5 agents in parallel** using the Agent tool. Send all 5 in a single message so
 they run concurrently. Each agent is scoped to one subsystem, reads the relevant source
 files in full, and writes its candidates to a dedicated output file.
+
+<!-- Scope last reviewed: 2026-05-31 / commit f984348. Update when src/ files are renamed, moved, or new subsystems added. -->
 
 | Agent | Scope | Output file |
 |---|---|---|
@@ -107,6 +113,8 @@ files in full, and writes its candidates to a dedicated output file.
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
 - The Analysis Framework section below — **paste it verbatim, do not summarize**
+- If you encounter an unfamiliar pattern (SISL macros, coroutine idioms, etc.), check
+  `CLAUDE.md` for project conventions before flagging it as a bug candidate
   (intentional: ~300 tokens × (5 discovery + N verify) agents; at 10 candidates ≈ 4.5k
    overhead; accepted cost
   for consistent reasoning)
@@ -176,19 +184,20 @@ After all 5 discovery agents complete:
 3. **If the working list is empty**: emit `Bug Hunt Report: 0 candidates found — no bugs
    detected in audited subsystems.` Clean up discovery files (`rm /tmp/bh-{PREFIX}-agent*.md`)
    and do not proceed to Phase 3.
-4. **If there are more than 20 candidates total**: escalate all Low-confidence candidates
-   directly to the report as ESCALATE (without spawning verifiers) — treat discovery-time
-   Low-confidence as insufficient evidence for a full verification pass. The threshold of 20
-   is chosen to keep Phase 2 within roughly 4 rounds of 8 agents; adjust if the framework
-   is re-used on a larger codebase.
+4. **If there are ≥ 20 candidates total**: escalate all Low-confidence candidates directly
+   to the report as ESCALATE (without spawning verifiers) — treat discovery-time
+   Low-confidence as insufficient evidence when discovery is this broad. <!-- threshold rule:
+   keep Phase 2 ≤ 4 rounds × 8 agents; recalibrate for larger codebases -->
 5. Sort remaining candidates by agent number, then candidate number, then assign a flat
    sequential index (01, 02, 03 …).
-6. Prefer one candidate per agent. Run **≤ 8 agents per turn** to stay within the context
-   window budget. If there are more than 8 candidates total, run them in rounds of 8 — read
-   all outputs from round N, applying the same sentinel-check as for discovery files
-   (`<!-- END VERIFY NN -->`, where NN is the first candidate's flat index in that file),
-   before round N+1. If budget or candidate volume makes individual agents impractical, you
-   may put multiple candidates in one agent, but never mix High or Medium candidates.
+6. **By default, one candidate per agent.** Run **≤ 8 agents per turn** (sized for the
+   current context window; adjust if model context limits change). If there are more than 8
+   candidates total, run them in rounds of 8 — read all outputs from round N, applying the
+   sentinel-check (`<!-- END VERIFY NN -->`) before round N+1. If a discovery agent produces
+   no output after a reasonable wait, treat it as failed and apply the missing-agent protocol
+   (ask user to rerun). **Budget exception only**: if candidate volume makes individual agents
+   impractical, you may put multiple Low-confidence candidates in one agent — never High or
+   Medium.
 
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
@@ -229,13 +238,13 @@ in a header comment. Use one verdict block per candidate, referenced by flat ind
 **Scenario for user**: "Please consider: [precise, concrete sequence].
   Is this execution possible in your deployment?"
 
-<!-- END VERIFY NN -->
+<!-- END VERIFY 04 -->
 ```
 
-The sentinel `<!-- END VERIFY NN -->` is required on every verify file. NN must be the
-**first** candidate's flat index (matching the filename, e.g., verify-04.md → sentinel
-`<!-- END VERIFY 04 -->`). Using the last candidate's index would allow partial files to
-pass the truncation check. Apply the sentinel check before proceeding to the next round.
+The sentinel is required on every verify file. **NN = first candidate's flat index**
+(matching the filename: verify-04.md → `<!-- END VERIFY 04 -->`). Do not use the last
+candidate's index — a file truncated after the first verdict block would then pass the
+sentinel check, masking the truncation. Apply the sentinel check before the next round.
 
 ---
 
@@ -247,8 +256,9 @@ synthesize into one consolidated report:
 2. If any escalations exist, **also write them to `/tmp/bh-{PREFIX}-escalations.md`**
    (so the user can re-read them without parsing the full report). Omit this file if there
    are no escalations.
-3. **Conditionally** clean up intermediate files — only if the report file exists, is ≥ 100
-   bytes, and every verify file was read without exception. Substitute the actual prefix
+3. **Conditionally** clean up intermediate files — only if the report contains the
+   `### Rejected (False Positives)` section header (present in every complete report,
+   absent if synthesis was interrupted), and every verify file was read without exception. Substitute the actual prefix
    before running (same rule as Phase 1 prompts):
    `rm /tmp/bh-{PREFIX}-agent*.md /tmp/bh-{PREFIX}-verify-*.md`
    Note: the glob `verify-*.md` matches escalation re-verification files (`verify-ENN.md`)
@@ -271,7 +281,9 @@ synthesize into one consolidated report:
 <!-- Severity:
      P0 = data loss / corruption
      P1 = crash / unavailability
-     P2 = extra resync / degraded performance / unnecessary I/O — no data loss or crash path -->
+     P2 = extra resync / degraded performance / unnecessary I/O — no data loss or crash path
+     When in doubt between two severities, use the higher one. If deployment context is
+     needed to determine severity, use ESCALATE instead. -->
 
 **Location**: file.cpp:line
 **Type**: ...
