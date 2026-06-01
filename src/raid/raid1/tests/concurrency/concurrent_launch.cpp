@@ -50,11 +50,11 @@ TEST(Raid1Concurrency, ConcurrentLaunch) {
     std::barrier sync_point{3};
     auto t1 = std::thread([&] {
         sync_point.arrive_and_wait();
-        task.launch(test_uuid, mirror_a, mirror_b, [] {});
+        task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
     });
     auto t2 = std::thread([&] {
         sync_point.arrive_and_wait();
-        task.launch(test_uuid, mirror_a, mirror_b, [] {});
+        task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
     });
     sync_point.arrive_and_wait();
     t1.join();
