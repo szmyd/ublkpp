@@ -640,6 +640,11 @@ bool Raid1Disk::__become_clean() {
     // Double-check: a concurrent backup-fail dirty_region() may have fired between the
     // resync task's dirty_pages()==0 observation and the CAS above. Reverse the
     // transition so those bits are not stranded — the caller loops __run() to re-sync them.
+    // Note: a narrower residual window remains — an in-flight write that captured
+    // state.is_degraded==true before the CAS can fail its backup during the synchronous
+    // superblock writes below, dirty the bitmap, and not re-degrade (it trusts the resync
+    // task, which is exiting). Fully closing that window requires a mutex; this double-check
+    // handles the common case where dirty_region fires before the superblock I/O begins.
     if (_dirty_bitmap->dirty_pages() > 0) {
         auto either_route = read_route::EITHER;
         if (_read_route_cache.compare_exchange_strong(either_route, state.route)) {
