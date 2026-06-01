@@ -51,3 +51,51 @@ TEST(Raid0, IdenticalDeviceProbing) {
     EXPECT_EQ(raid_device->can_discard(), true);
     EXPECT_EQ(raid_device->direct_io(), true);
 }
+
+// Brief: A leg whose capacity is not a multiple of the stripe size must not inflate the array size.
+//
+// RAID0 can only stripe across whole stripes present on every leg. The trailing partial stripe on
+// each leg (leg_capacity % stripe_size) is unusable and must be discarded BEFORE multiplying by the
+// leg count. Pre-fix the reported capacity carried (remainder * leg_count) of phantom space, so a
+// top-of-device read mapped to a per-leg offset past the end of the backing device (observed on a
+// 50-leg RAID10 of 3 TiB legs after raid1 SuperBlock v2 dropped the alignment that had masked this).
+TEST(Raid0, PartialStripeLegNotOverReported) {
+    constexpr uint64_t leg_cap = Gi + 64 * Ki; // 4 KiB-aligned, but NOT a 128 KiB stripe multiple
+    constexpr uint32_t stripe = 128 * Ki;
+    constexpr size_t n = 8;
+
+    std::vector< std::shared_ptr< ublk_disk > > disks;
+    for (size_t i = 0; i < n; ++i) {
+        disks.push_back(CREATE_DISK(TestParams{.capacity = leg_cap}));
+    }
+
+    auto raid_device = ublkpp::make_raid0_disk(boost::uuids::random_generator()(), stripe, std::move(disks));
+
+    // safe_max = leg_count * usable_stripes_per_leg * stripe, where
+    //   usable_stripes_per_leg = floor(leg_cap / stripe) - 1   (the -1 reserves the head stripe
+    //   for our superblock). This is the largest size that keeps every per-leg offset within the
+    //   backing device. The final max_sectors alignment in the ctor is 512 KiB here (capped by
+    //   DEF_BUF_SIZE at raid0.cpp:97, regardless of leg max_io or count) and both the pre- and
+    //   post-fix totals are 512 KiB-aligned, so that step is a no-op and the value is exact.
+    uint64_t const safe_max = n * ((leg_cap / stripe) - 1) * stripe;
+    // Pre-fix this returned n * (leg_cap - stripe) = 8,589,410,304, which is (64 KiB * 8) too large
+    // and would route reads past the end of each leg.
+    EXPECT_EQ(raid_device->capacity(), safe_max);
+}
+
+// Brief: A leg smaller than two stripes is rejected, never over-reported.
+//
+// The H3 floor runs before the H2 guard, so a sub-2-stripe leg is floored to zero usable stripes
+// and H2 throws. This pins the ordering: the floor must not let construction underflow the unsigned
+// dev_sectors subtraction or expose a degenerate (phantom) capacity for a too-small device.
+TEST(Raid0, LegSmallerThanTwoStripesThrows) {
+    constexpr uint64_t leg_cap = 100 * Ki; // smaller than a single 128 KiB stripe
+    constexpr uint32_t stripe = 128 * Ki;
+
+    std::vector< std::shared_ptr< ublk_disk > > disks;
+    disks.push_back(CREATE_DISK(TestParams{.capacity = leg_cap}));
+    disks.push_back(CREATE_DISK(TestParams{.capacity = leg_cap}));
+
+    EXPECT_THROW(ublkpp::make_raid0_disk(boost::uuids::random_generator()(), stripe, std::move(disks)),
+                 std::runtime_error);
+}

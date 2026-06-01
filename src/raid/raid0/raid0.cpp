@@ -129,6 +129,15 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
 
     // H2: guard against device capacity <= stripe_size which would underflow the unsigned subtraction.
     auto const stripe_size_sectors = static_cast< uint64_t >(_stripe_size >> SECTOR_SHIFT);
+    // H3: floor the smallest leg to a whole number of stripes before striping. RAID0 can only use
+    // stripes that are fully present on EVERY leg; a partial trailing stripe (when a leg's capacity
+    // is not a multiple of stripe_size) is unusable. Without flooring, that remainder stays in the
+    // per-leg term and is then multiplied by the leg count, so the array over-reports its size by
+    // (leg_capacity % stripe_size) * leg_count. I/O into that phantom tail maps to a per-leg offset
+    // past the end of the backing device, returning EIO. This was latent for years because leg
+    // capacities happened to be stripe-aligned; raid1 SuperBlock v2 dropped the 512 KiB user-data
+    // alignment that masked it, exposing top-of-device read failures on RAID10 arrays.
+    our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % stripe_size_sectors);
     if (our_params.basic.dev_sectors <= stripe_size_sectors)
         throw std::runtime_error(
             fmt::format("Raid0Disk: device capacity ({} sectors) is too small for stripe_size ({} sectors)",
