@@ -21,6 +21,34 @@ TEST(Raid1, IsDirtyNextPage) {
     EXPECT_TRUE(bitmap.is_dirty(ublkpp::Gi - (4 * Ki), 8 * Ki));
 }
 
+// After a full clean cycle (superbitmap cleared) followed by dirty_region, is_dirty must
+// return true based on page bits — not be suppressed by the now-cleared superbitmap.
+// dirty_region re-sets the superbitmap, but the code path under test is the direct page-bit
+// read that executes regardless of the superbitmap state.
+TEST(Raid1, IsDirtyReflectsPageBitsAfterSuperbitmapCleared) {
+    auto superbitmap_buf = make_test_superbitmap();
+    // Two 32KiB chunks on the same bitmap page (page covers 1 GiB of data)
+    auto bitmap = ublkpp::raid1::Bitmap(10 * ublkpp::Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
+
+    // Dirty both chunks → superbitmap SET
+    bitmap.dirty_region(0, 32 * Ki);
+    bitmap.dirty_region(32 * Ki, 32 * Ki);
+    ASSERT_EQ(1UL, bitmap.dirty_pages());
+
+    // Clean both → all bits zero → superbitmap CLEARED
+    bitmap.clean_region(0, 32 * Ki);
+    bitmap.clean_region(32 * Ki, 32 * Ki);
+    ASSERT_EQ(0UL, bitmap.dirty_pages());
+    EXPECT_FALSE(bitmap.is_dirty(0, 32 * Ki));
+
+    // Re-dirty the first chunk (page is already allocated from the first cycle).
+    // dirty_region will set the bit AND call set_bit on the superbitmap; is_dirty must
+    // return true regardless — this exercises the direct page-bit check for an existing page.
+    bitmap.dirty_region(0, 32 * Ki);
+    EXPECT_TRUE(bitmap.is_dirty(0, 32 * Ki));
+    EXPECT_FALSE(bitmap.is_dirty(32 * Ki, 32 * Ki)); // second chunk stays clean
+}
+
 // Some actual problematic Bitmap bugs encountered when testing BufferedI/O
 TEST(Raid1, BufferedIoTest) {
     auto superbitmap_buf = make_test_superbitmap();

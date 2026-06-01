@@ -1,5 +1,6 @@
 #include "ublkpp/target.hpp"
 
+#include <ranges>
 #include <semaphore.h>
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
@@ -147,7 +148,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
     co_await qs->scope.on_empty();
 }
 
-static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem) {
+static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem,
+                                   int* queue_ok) {
     auto qs = std::make_unique< ublkpp_queue_state >(target.get());
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
@@ -156,7 +158,10 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     auto q = ublksrv_queue_init_flags(target->ublk_dev, q_id, qs.get(),
                                       IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
 
-    // Wake up ::start() thread
+    // Each thread writes to its own slot — no concurrent writes to the same location.
+    // sem_post provides the release that pairs with start()'s sem_wait acquire, so no
+    // atomic needed: start() reads queue_ok[] only after all sem_waits complete.
+    if (!q) *queue_ok = 0;
     sem_post(queue_sem);
     target.reset();
 
@@ -237,23 +242,31 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     // Setup Queues
     sem_t queue_sem;
     sem_init(&queue_sem, 0, 0);
+    auto queue_ok = std::vector< int >(dinfo->nr_hw_queues, 1);
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i) {
         tgt->queue_handlers.push_back(sisl::named_thread(fmt::format("q_{}_{}", tgt->dev_data->dev_id, i),
-                                                         ublksrv_queue_handler, tgt, i, &queue_sem));
+                                                         ublksrv_queue_handler, tgt, i, &queue_sem, &queue_ok[i]));
     }
     auto const recovery = tgt->device_recovering;
     auto const dev_name = fmt::format("{}", *tgt->device);
 
-    // Let go of our shared_ptr to the target
     auto ctrl_dev = tgt->ctrl_dev;
     auto dev_ptr = tgt->device.get();
     auto const dev_id = tgt->dev_data->dev_id;
-    tgt.reset();
 
     // Wait for Queues to start
     for (auto i = 0; i < dinfo->nr_hw_queues; ++i)
         sem_wait(&queue_sem);
     sem_destroy(&queue_sem);
+
+    if (std::ranges::any_of(queue_ok, [](int ok) { return !ok; })) {
+        TLOGE("dev {} failed: one or more queues did not initialize", dev_id)
+        return std::unexpected(std::make_error_condition(std::errc::io_error));
+    }
+
+    // All queues started; let go of our shared_ptr (each queue thread released its own copy
+    // immediately after signalling, so the impl is now owned solely by queue_handlers)
+    tgt.reset();
 
     // Start processing I/Os
     if (!recovery) {
