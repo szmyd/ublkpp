@@ -48,8 +48,10 @@ TEST(Raid1Concurrency, ResyncRelaunchAfterComplete) {
 
     // Track when the resync complete callback fires (called just before state→IDLE CAS).
     std::atomic< bool > first_complete{false};
-    task.launch(test_uuid, mirror_a, mirror_b,
-                [&first_complete] { first_complete.store(true, std::memory_order_release); });
+    task.launch(test_uuid, mirror_a, mirror_b, [&first_complete] {
+        first_complete.store(true, std::memory_order_release);
+        return true;
+    });
 
     // Wait for the complete callback then sleep briefly to let the IDLE CAS happen.
     // _resync_task is joinable for the entire period from launch() until stop() — which
@@ -65,7 +67,7 @@ TEST(Raid1Concurrency, ResyncRelaunchAfterComplete) {
     // Second launch(): state is IDLE, _resync_task is joinable (never joined).
     // Without the fix: std::thread::operator= on joinable thread → std::terminate() → crash.
     // With the fix: joins first, then starts new thread cleanly.
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
 
     task.stop();
 }
@@ -110,8 +112,10 @@ TEST(Raid1Concurrency, StopAndRelaunchAfterComplete) {
 
     // First launch: empty bitmap → resync completes immediately.
     std::atomic< bool > first_complete{false};
-    task->launch(test_uuid, mirror_a, mirror_b,
-                 [&first_complete] { first_complete.store(true, std::memory_order_release); });
+    task->launch(test_uuid, mirror_a, mirror_b, [&first_complete] {
+        first_complete.store(true, std::memory_order_release);
+        return true;
+    });
 
     auto deadline = std::chrono::steady_clock::now() + 2s;
     while (!first_complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
@@ -130,8 +134,10 @@ TEST(Raid1Concurrency, StopAndRelaunchAfterComplete) {
     auto launched = std::make_shared< std::atomic< bool > >(false);
     auto second_complete = std::make_shared< std::atomic< bool > >(false);
     auto t = std::thread([task, launched, second_complete, mirror_a, mirror_b]() mutable {
-        task->launch(test_uuid, mirror_a, mirror_b,
-                     [second_complete] { second_complete->store(true, std::memory_order_release); });
+        task->launch(test_uuid, mirror_a, mirror_b, [second_complete] {
+            second_complete->store(true, std::memory_order_release);
+            return true;
+        });
         launched->store(true, std::memory_order_release);
     });
 
