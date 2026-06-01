@@ -68,7 +68,7 @@ its candidates to a dedicated output file.
 | 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; log cross-boundary concerns in the XB section (see output format below).** | `.claude/bugs-hunt/bh-agent3.md` |
 | 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/ublk_disk.cpp` | `.claude/bugs-hunt/bh-agent4.md` |
 | 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `.claude/bugs-hunt/bh-agent5.md` |
-| 6 | **All `.cpp` files in `src/`** (every subsystem) — focused exclusively on arithmetic & geometry invariants: capacity formulas, size computations, stride/alignment assumptions, and cross-subsystem invariant propagation. Must read **both** the consumer (e.g. `raid0.cpp`) and the supplier (e.g. `raid1.cpp`) to verify cross-subsystem alignment guarantees hold. See dedicated brief below. | `.claude/bugs-hunt/bh-agent6.md` |
+| 6 | **All `.cpp` and internal `.hpp` files in `src/`** excluding test subdirectories — focused exclusively on arithmetic & geometry invariants: capacity formulas, size computations, stride/alignment assumptions, and cross-subsystem invariant propagation. Must read **both** the consumer (e.g. `raid0.cpp`) and the supplier (e.g. `raid1.cpp`) to verify cross-subsystem alignment guarantees hold. See dedicated brief below. | `.claude/bugs-hunt/bh-agent6.md` |
 
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
@@ -85,7 +85,7 @@ its candidates to a dedicated output file.
 
 ### Candidate [N.X]: [Title]
 **Location**: file.cpp:line
-**Type**: race | power-loss | TOCTOU | wrong-device | sequencing | version-bounds | other
+**Type**: race | power-loss | TOCTOU | wrong-device | sequencing | version-bounds | arithmetic | other
 **Claim**: [one sentence — what goes wrong and what the impact is]
 **Trigger sequence**:
   1. [exact step]
@@ -105,40 +105,6 @@ its candidates to a dedicated output file.
 The orchestrator uses this to detect truncation — a file that exists but lacks the sentinel
 was interrupted mid-run and should be treated as missing (report explicitly, do not skip).
 
-**Agent 6 only** — dedicated arithmetic & geometry analysis. Ignore races, power-loss,
-and state-machine issues (those are covered by Agents 1–5). Focus entirely on:
-
-**1. Implicit alignment assumptions.**
-For every formula `(x - stride) * n` or `x * n / stride` — what supplies `x`? Is `x`
-guaranteed to be a multiple of `stride`? Read the supplier's implementation (not just its
-callers), check version history, and verify the guarantee holds across all config paths.
-
-**2. Remainder amplification.**
-When a per-unit value is multiplied by a count, any remainder is amplified:
-```
-wrong:  total = (x - reserved) * n       // (x % stride) * n of phantom space
-right:  floor(x, stride) first, then compute
-```
-Phantom space maps to per-unit offsets past the end of the backing device → EIO on
-top-of-device reads (GPT / partition-table scans are a common trigger).
-
-**3. Cross-subsystem invariant propagation.**
-Trace capacity values from supplier to consumer across subsystem boundaries. Example:
-RAID1 leg capacity feeds RAID0's constructor — if RAID1 drops its padding guarantee in a
-new version, RAID0 silently over-reports. The bug is in the consumer (missing floor), not
-the supplier.
-
-**4. Integer division and sector-shift arithmetic.**
-`x >> SECTOR_SHIFT` and `x / stride` truncate; verify that truncation is intentional and
-not a silently-wrong substitute for floor-to-multiple. Check for unit mismatches (bytes
-vs sectors vs chunks).
-
-Agent 6 must read **all `.cpp` files in `src/`** to find every capacity/size formula and
-every cross-subsystem value flow. Pay particular attention to constructors that compute
-`dev_sectors` or `capacity()` from child device values.
-
----
-
 **Agent 3 only** — append a cross-boundary section for anything that doesn't clear the
 Candidate confidence bar but touches `__become_degraded`. Note: the XB channel is the
 **only** path for startup-path findings that straddle the Agent 2/3 boundary — Agent 3
@@ -155,6 +121,35 @@ High-confidence bar, it should write it as an ESCALATE candidate (not suppress i
 **Concern**: [what needs investigating in __become_degraded]
 **Context**: [what Agent 3 observed in __become_active that triggered this]
 ```
+
+**Agent 6 only** — dedicated arithmetic & geometry analysis. Ignore races, power-loss,
+and state-machine issues (Agents 1–5 cover those). Use candidate type `arithmetic`. Focus:
+
+**1. Implicit alignment assumptions.** For every formula `(x - stride) * n` — what supplies
+`x`? Is `x` guaranteed to be a multiple of `stride`? Read the supplier's implementation
+(not just callers), check version history, verify the guarantee holds across all configs.
+
+**2. Remainder amplification.** When a per-unit value is multiplied by a count, any
+remainder is amplified — `(x % stride) * n` of phantom address space past the backing
+device → EIO on top-of-device reads (GPT / partition-table scans are a common trigger):
+```
+wrong:  total = (x - reserved) * n       // remainder × n = phantom space
+right:  floor(x, stride) first, then compute
+```
+
+**3. Cross-subsystem invariant propagation.** Trace capacity values from supplier to
+consumer across subsystem boundaries. The bug lives in the consumer (missing floor), not
+the supplier. Example: RAID1 leg capacity → RAID0 constructor; RAID1 dropping its padding
+guarantee silently breaks RAID0's formula.
+
+**4. Integer division and unit mismatches.** `x >> SECTOR_SHIFT` and `x / stride`
+truncate — verify truncation is intentional and not a silently-wrong substitute for
+floor-to-multiple. Check for bytes vs sectors vs chunks confusion.
+
+Read all `.cpp` and internal `.hpp` files in `src/` (excluding `tests/` subdirectories).
+Pay particular attention to constructors computing `dev_sectors` or `capacity()` from
+child device values. Because Agent 6 reads across subsystems, it can write High-confidence
+arithmetic candidates directly — no XB channel needed.
 
 ---
 
@@ -178,10 +173,10 @@ After all 6 discovery agents complete:
 3. **If the working list is empty**: emit `Bug Hunt Report: 0 candidates found — no bugs
    detected in audited subsystems.` Clean up discovery files (`rm .claude/bugs-hunt/bh-agent*.md`)
    and do not proceed to Phase 3.
-4. **If there are ≥ 20 candidates total**: escalate all Low-confidence candidates directly
+4. **If there are ≥ 24 candidates total**: escalate all Low-confidence candidates directly
    to the report as ESCALATE (without spawning verifiers) — treat discovery-time
    Low-confidence as insufficient evidence when discovery is this broad. <!-- threshold:
-   keep Phase 2 ≤ 4 rounds × 8 agents; recalibrate for larger codebases -->
+   6 agents × ~4 candidates average = ~24; keep Phase 2 ≤ 4 rounds × 8 agents -->
 5. **If High+Medium candidates after step 4 exceed 32**: cap at the top 32 by confidence
    tier then agent number; note the truncation in the Coverage line of the report.
 6. Sort remaining candidates by agent number, then candidate number, then assign a flat
@@ -201,6 +196,10 @@ After all 6 discovery agents complete:
 Each verification agent receives: the candidate text, the full Analysis Framework section
 (**paste verbatim**), and the million-dollar rule. It has **no knowledge of what discovery
 agents found** — no other candidates, no discovery reasoning.
+
+For **Agent 6 (arithmetic) candidates**: the verification agent must read **both** the
+consumer file (where the formula is) and the supplier file (where the input value is
+produced) to verify the cross-subsystem alignment claim. Cite both in Evidence.
 
 The verification agent:
 - Reads the candidate verbatim
