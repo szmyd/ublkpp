@@ -67,7 +67,7 @@ its candidates to a dedicated output file.
 | 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `.claude/bugs-hunt/bh-agent2.md` |
 | 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; log cross-boundary concerns in the XB section (see output format below).** | `.claude/bugs-hunt/bh-agent3.md` |
 | 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/ublk_disk.cpp` | `.claude/bugs-hunt/bh-agent4.md` |
-| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `.claude/bugs-hunt/bh-agent5.md` |
+| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` — **for every capacity/size formula in raid0.cpp, apply the Arithmetic & Geometry Invariants section: identify the alignment assumption, verify the value supplier (e.g. RAID1 leg capacity) actually guarantees it, and check for remainder amplification via multiplication** | `.claude/bugs-hunt/bh-agent5.md` |
 
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
@@ -434,6 +434,44 @@ correctness bug.
 
 ---
 
+### Arithmetic & Geometry Invariants
+
+This class of bug is distinct from races and power-loss violations. It is often **latent** —
+correct when a supplying subsystem produces aligned inputs, silently broken when that
+subsystem changes (e.g. a version bump that drops a historical alignment guarantee).
+
+For every formula that computes a capacity, offset, stride, or count:
+
+**1. Identify the implicit alignment assumption.**
+A formula `(x - stride) * n` is correct only if `x` is a multiple of `stride`. Ask:
+- What supplies `x`? Is the alignment documented and enforced at the call site?
+- Can `x` be non-aligned? Check the full range of values the supplier can produce,
+  including across version changes and configuration paths.
+
+**2. Remainder amplification via multiplication.**
+When a per-unit value is multiplied by a count, any remainder is amplified by the count:
+```
+wrong: total = (x - reserved) * n          // (x % stride) * n of phantom space
+right: total = (floor(x, stride) - reserved) * n  // floor first, then compute
+```
+This phantom tail maps to per-unit offsets past the end of the backing device → EIO.
+
+**3. Cross-subsystem invariant propagation.**
+When function B consumes a value produced by function A and assumes property P (e.g.,
+"capacity is a multiple of stripe_size"), verify:
+- Does A currently guarantee P? Read A's implementation, not just its callers.
+- Has A ever dropped P silently? Look for version fields, reserved-size formulas,
+  or alignment padding that may have changed.
+- The bug is in B (the consumer), not A — B must not silently assume what it doesn't
+  verify.
+
+**4. Phantom address space test.**
+If reported size > actual addressable space: I/O to addresses near the top of the
+device dispatches to per-unit offsets past the end of the backing device → EIO.
+This surfaces as GPT/partition-table scan failures or top-of-device read errors.
+
+---
+
 ### Pattern Checklist
 
 Check each explicitly during both discovery and verification:
@@ -468,3 +506,14 @@ Check each explicitly during both discovery and verification:
   (but see KFP §1 — for ublkpp this is currently structurally blocked by resync drain)
 - One-sided version bounds: `version < N` with no `version > MAX` upper-bound rejection
 - Two writes that must be consistent but have no atomic boundary between them
+
+**Arithmetic & Geometry**
+- Implicit alignment assumption: formula `(x - stride) * n` assumes `x % stride == 0` —
+  verify the value supplier actually guarantees this, including across version changes
+- Remainder amplification: per-unit remainder carried into a multiplication by leg/stripe
+  count produces phantom capacity: `(x % stride) * n` of address space past the backing device
+- Cross-subsystem invariant not enforced at the boundary: Subsystem B assumes Subsystem A's
+  output satisfies property P — verify P holds through A's full version and config space,
+  not just the current implementation
+- Phantom address space: I/O into the over-reported tail dispatches to per-unit offsets ≥
+  backing device capacity → EIO (surfaces as top-of-device GPT / partition-table scan failures)
