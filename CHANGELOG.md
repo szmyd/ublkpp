@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.7] - 2026-06-01
+
+### Fixed
+
+- **H3 (raid0)**: the array capacity was computed as `(min_leg_capacity - stripe_size) * leg_count`, which assumes every leg holds a whole number of stripes. When a leg's capacity is not a multiple of `stripe_size`, the partial trailing stripe (`leg_capacity % stripe_size`) was carried into the per-leg term and then multiplied by the leg count, over-reporting the device size by `(leg_capacity % stripe_size) * leg_count`. Reads into that phantom tail (e.g. backup-GPT / partition-table scans at the top of the device) mapped to a per-leg offset past the end of the backing device and returned EIO. The bug was latent because leg capacities happened to be stripe-aligned; raid1 SuperBlock v2 dropped the 512 KiB user-data alignment that had masked it, surfacing top-of-device read failures on RAID10 arrays (observed on a 50-leg array of 3 TiB legs over-reporting by ~3 MiB). Fixed by flooring the smallest leg to a whole number of stripes before reserving the head stripe and striping.
+
 ## [0.32.6] - 2026-05-26
 
 ### Fixed
