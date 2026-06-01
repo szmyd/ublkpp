@@ -613,9 +613,14 @@ std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > Raid1Dis
     }
 }
 
-void Raid1Disk::__become_clean() {
+// Returns true if the array successfully transitioned to EITHER (clean superblocks written).
+// Returns false if a concurrent backup-fail dirty_region() fired between the resync task's
+// dirty_pages()==0 observation and the CAS: route is reverted to the original degraded state
+// and the caller (the still-ACTIVE resync task) must loop __run() to pick up the dirty bits.
+// Calling toggle_resync() from here would be a no-op — the task is still ACTIVE.
+bool Raid1Disk::__become_clean() {
     auto const state = __capture_route_state();
-    if (read_route::EITHER == state.route) return;
+    if (read_route::EITHER == state.route) return true; // already clean
 
     RLOGI("Device becoming clean [{}] [uuid:{}] ", *state.backup_dev->disk, _str_uuid)
 
@@ -630,21 +635,19 @@ void Raid1Disk::__become_clean() {
     // also improves crash safety — a crash after CAS but before superblocks leaves the
     // on-disk route in the old degraded state, so restart runs resync correctly.
     auto old_route = state.route;
-    if (!_read_route_cache.compare_exchange_strong(old_route, read_route::EITHER)) return;
+    if (!_read_route_cache.compare_exchange_strong(old_route, read_route::EITHER)) return true;
 
     // Double-check: a concurrent backup-fail dirty_region() may have fired between the
     // resync task's dirty_pages()==0 observation and the CAS above. Reverse the
-    // transition so those bits are not stranded with no resync to process them.
+    // transition so those bits are not stranded — the caller loops __run() to re-sync them.
     if (_dirty_bitmap->dirty_pages() > 0) {
         auto either_route = read_route::EITHER;
         if (_read_route_cache.compare_exchange_strong(either_route, state.route)) {
-            RLOGW("Resync complete but found unsynced dirty bits — re-launching resync [uuid:{}]", _str_uuid)
-            if (_resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
-        } else {
-            RLOGD("Route moved by concurrent path during resync completion; dirty bits handled there [uuid:{}]",
-                  _str_uuid)
+            RLOGW("Resync complete but found unsynced dirty bits — reverting to degraded [uuid:{}]", _str_uuid)
+            return false; // caller loops to re-sync
         }
-        return;
+        RLOGD("Route moved by concurrent path during resync completion; dirty bits handled there [uuid:{}]", _str_uuid)
+        return true; // other path took ownership
     }
 
     // Bitmap is empty — safe to write clean superblocks.
@@ -656,6 +659,7 @@ void Raid1Disk::__become_clean() {
         !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
+    return true;
 }
 
 // See the comment above __swap_device for the CAS-based mutual exclusion between this function
@@ -936,7 +940,7 @@ void Raid1Disk::toggle_resync(bool t) {
     if (t) {
         auto const state = __capture_route_state();
         if (read_route::EITHER != state.route && !state.backup_dev->disk->is_missing()) {
-            _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { __become_clean(); });
+            _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { return __become_clean(); });
         }
     } else
         _resync_task->stop();

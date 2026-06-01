@@ -51,7 +51,7 @@ template < typename StateHandler >
 }
 
 void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                             std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete) {
+                             std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< bool() >&& complete) {
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
     // Wait to become Available & IDLE
     auto cur_state = resync_state::IDLE;
@@ -94,7 +94,21 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             _metrics->record_active_resyncs(active_count);
         } // LCOV_EXCL_STOP
 
-        cur_state = __run(clean_mirror, dirty_mirror, &iov);
+        // Loop until the array is confirmed clean or we are stopped. complete() returns
+        // true when the transition to EITHER succeeded with an empty bitmap. It returns
+        // false when a concurrent backup-fail dirty_region() fired during the transition
+        // window: in that case the route is reverted to degraded and we loop so __run()
+        // picks up the newly-dirtied region. State stays ACTIVE throughout — calling
+        // toggle_resync() from inside complete() would be a no-op (task still ACTIVE).
+        while (true) {
+            cur_state = __run(clean_mirror, dirty_mirror, &iov);
+            if (resync_state::STOPPING == cur_state) break;
+            DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state")
+            if (0 != _dirty_bitmap->dirty_pages()) break; // interrupted — not clean yet
+            if (complete()) break;                        // returned true → cleanly became EITHER
+            // returned false → route reverted to degraded, new dirty bits present; loop
+            RLOGD("Resync re-entering after concurrent dirty_region [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
+        }
         free(iov.iov_base);
 
         if (_metrics) { // GCOVR_EXCL_BR_LINE
@@ -119,10 +133,6 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         return;
     }
 
-    // Otherwise we _should_ be active (not paused or idle), if the bitmap is clean call complete
-    DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state");
-    // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
-    if (0 == _dirty_bitmap->dirty_pages()) complete();
     RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
 
     // Open up I/O Again
@@ -132,7 +142,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
-                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
+                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< bool() >&& complete) {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
     // First we must become IDLE
     auto transitioned =

@@ -66,7 +66,7 @@ class Raid1Disk : public ublk_disk {
     bool __backup_writable(RouteState const& state, uint64_t addr, uint32_t len) const noexcept;
 
     // Internal routines
-    void __become_clean();
+    bool __become_clean();
     io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
     disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                            uint32_t nr_vecs, uint64_t addr, uint32_t len);
