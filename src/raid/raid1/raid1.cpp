@@ -849,9 +849,13 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     if (backup_res < 0) {
         _dirty_bitmap->dirty_region(addr, len);
-        if (!state.is_degraded) {
-            if (auto d = __become_degraded(false, &state); !d) co_return -EIO;
-        }
+        // Unconditional, mirroring the active-fail path. __become_degraded CAS-es from EITHER:
+        //   - array still degraded (route != EITHER) -> CAS fails, old == new_route -> returns 0
+        //   - array drifted degraded->clean while write was in-flight -> CAS EITHER->new_route
+        //     succeeds, degrades the correct leg before we ACK. Must use the CAPTURED state:
+        //     failed_is_active is relative to it; a live re-capture would mis-identify the failed
+        //     leg when captured route was DEVB.
+        if (auto d = __become_degraded(false, &state); !d) co_return -EIO;
     } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
         RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
         state.backup_dev->unavail.clear(std::memory_order_release);
@@ -918,10 +922,10 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 
     if (!backup_res) {
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
-        if (!state.is_degraded) {
-            if (auto d = __become_degraded(false, &state); !d)
-                return std::unexpected(std::make_error_condition(std::errc::io_error));
-        }
+        // Unconditional — same logic as async_iov: CAS from EITHER is a no-op when already
+        // degraded, and correctly degrades the captured leg when the array drifted to clean.
+        if (auto d = __become_degraded(false, &state); !d)
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
     } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
         RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
         state.backup_dev->unavail.clear(std::memory_order_release);
