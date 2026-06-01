@@ -45,10 +45,10 @@ in recent commits, re-verify the Known False Positive entries before trusting th
 
 ---
 
-## Phase 1 — Parallel Discovery (5 agents)
+## Phase 1 — Parallel Discovery (6 agents)
 
-Create the working directory, then spawn **5 agents in parallel** using the Agent tool.
-Send all 5 in a single message so they run concurrently.
+Create the working directory, then spawn **6 agents in parallel** using the Agent tool.
+Send all 6 in a single message so they run concurrently.
 
 ```bash
 mkdir -p .claude/bugs-hunt
@@ -67,7 +67,8 @@ its candidates to a dedicated output file.
 | 2 | `src/raid/raid1/raid1.cpp` — **runtime** state transitions only (`__become_degraded`, `__become_clean`, `__swap_device`, `async_iov`, `prepare`); `src/raid/raid1/raid1_resync_task.*`. **Owns `__become_degraded` — Agent 3 treats it as a black box.** | `.claude/bugs-hunt/bh-agent2.md` |
 | 3 | `src/raid/raid1/raid1_superblock.*`; startup path in `raid1.cpp` (`__init_*`, `__load_*`, **`__become_active`**) — pay particular attention to `__become_active` failing mid-startup and delegating to `__become_degraded`. **Treat `__become_degraded` as a black box; log cross-boundary concerns in the XB section (see output format below).** | `.claude/bugs-hunt/bh-agent3.md` |
 | 4 | `src/target/ublkpp_tgt.cpp`, `src/target/ublkpp_tgt_impl.hpp`, `src/lib/ublk_disk.cpp` | `.claude/bugs-hunt/bh-agent4.md` |
-| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` — **for every capacity/size formula in raid0.cpp, apply the Arithmetic & Geometry Invariants section: identify the alignment assumption, verify the value supplier (e.g. RAID1 leg capacity) actually guarantees it, and check for remainder amplification via multiplication** | `.claude/bugs-hunt/bh-agent5.md` |
+| 5 | `src/raid/raid0/raid0.cpp`, `src/driver/`, `src/metrics/` | `.claude/bugs-hunt/bh-agent5.md` |
+| 6 | **All `.cpp` files in `src/`** (every subsystem) — focused exclusively on arithmetic & geometry invariants: capacity formulas, size computations, stride/alignment assumptions, and cross-subsystem invariant propagation. Must read **both** the consumer (e.g. `raid0.cpp`) and the supplier (e.g. `raid1.cpp`) to verify cross-subsystem alignment guarantees hold. See dedicated brief below. | `.claude/bugs-hunt/bh-agent6.md` |
 
 **Discovery agent prompt must include:**
 - Assigned files (read them in full — do not skim)
@@ -104,6 +105,40 @@ its candidates to a dedicated output file.
 The orchestrator uses this to detect truncation — a file that exists but lacks the sentinel
 was interrupted mid-run and should be treated as missing (report explicitly, do not skip).
 
+**Agent 6 only** — dedicated arithmetic & geometry analysis. Ignore races, power-loss,
+and state-machine issues (those are covered by Agents 1–5). Focus entirely on:
+
+**1. Implicit alignment assumptions.**
+For every formula `(x - stride) * n` or `x * n / stride` — what supplies `x`? Is `x`
+guaranteed to be a multiple of `stride`? Read the supplier's implementation (not just its
+callers), check version history, and verify the guarantee holds across all config paths.
+
+**2. Remainder amplification.**
+When a per-unit value is multiplied by a count, any remainder is amplified:
+```
+wrong:  total = (x - reserved) * n       // (x % stride) * n of phantom space
+right:  floor(x, stride) first, then compute
+```
+Phantom space maps to per-unit offsets past the end of the backing device → EIO on
+top-of-device reads (GPT / partition-table scans are a common trigger).
+
+**3. Cross-subsystem invariant propagation.**
+Trace capacity values from supplier to consumer across subsystem boundaries. Example:
+RAID1 leg capacity feeds RAID0's constructor — if RAID1 drops its padding guarantee in a
+new version, RAID0 silently over-reports. The bug is in the consumer (missing floor), not
+the supplier.
+
+**4. Integer division and sector-shift arithmetic.**
+`x >> SECTOR_SHIFT` and `x / stride` truncate; verify that truncation is intentional and
+not a silently-wrong substitute for floor-to-multiple. Check for unit mismatches (bytes
+vs sectors vs chunks).
+
+Agent 6 must read **all `.cpp` files in `src/`** to find every capacity/size formula and
+every cross-subsystem value flow. Pay particular attention to constructors that compute
+`dev_sectors` or `capacity()` from child device values.
+
+---
+
 **Agent 3 only** — append a cross-boundary section for anything that doesn't clear the
 Candidate confidence bar but touches `__become_degraded`. Note: the XB channel is the
 **only** path for startup-path findings that straddle the Agent 2/3 boundary — Agent 3
@@ -125,7 +160,7 @@ High-confidence bar, it should write it as an ESCALATE candidate (not suppress i
 
 ## Phase 2 — Independent Verification
 
-After all 5 discovery agents complete:
+After all 6 discovery agents complete:
 1. Run a pre-read sentinel check before processing any file:
    ```bash
    grep -rL "END AGENT" .claude/bugs-hunt/bh-agent*.md 2>/dev/null
@@ -133,7 +168,7 @@ After all 5 discovery agents complete:
    Any file listed by this command is missing its sentinel (truncated or failed). For each:
    ask the user whether to rerun that agent (with the same output file target) or continue
    without it. If an agent tool call failed entirely (no file at all), treat it the same way.
-   Do not proceed until all 5 files are confirmed or the user explicitly accepts a gap.
+   Do not proceed until all 6 files are confirmed or the user explicitly accepts a gap.
 2. Read the confirmed files and collect every candidate into a working list. Also collect any
    `## Cross-Boundary Concerns` sections from `agent3.md` — **XB items are appended to the
    candidate list before dedup, not after**.
@@ -238,7 +273,7 @@ synthesize into one consolidated report:
 
 **Scope**: [subsystems]
 **Candidates**: N total — Confirmed: X | Rejected: Y | Escalated: Z
-**Coverage**: All 5 agents audited | *or* Agent N unaudited (truncated/missing — [reason])
+**Coverage**: All 6 agents audited | *or* Agent N unaudited (truncated/missing — [reason])
 
 ---
 
@@ -376,8 +411,8 @@ record of the inconsistency. If the ack fires only on the error path (EIO return
 
 ### RAID1 Known False Positives — Verify Before Reporting
 
-**Note for Agent 5**: the KFP entries below are RAID1-specific and do not apply to
-RAID0, driver, or metrics code. Skip this section when scoped to Agent 5.
+**Note for Agents 5 and 6**: the KFP entries below are RAID1-specific and do not apply to
+RAID0, driver, metrics, or arithmetic-geometry analysis. Skip this section.
 
 **Staleness gate**: re-audit this entire section before running after any refactor touching
 `Raid1Disk`, `__become_*`, `write_superblock`, or `SuperBitmap`. There is no automated
@@ -431,44 +466,6 @@ invariant this cannot cause data loss. The fix (local-copy buffer stopping befor
 correctness bug.
 
 **REJECT** any candidate framing this TSan report as a data-loss or corruption risk.
-
----
-
-### Arithmetic & Geometry Invariants
-
-This class of bug is distinct from races and power-loss violations. It is often **latent** —
-correct when a supplying subsystem produces aligned inputs, silently broken when that
-subsystem changes (e.g. a version bump that drops a historical alignment guarantee).
-
-For every formula that computes a capacity, offset, stride, or count:
-
-**1. Identify the implicit alignment assumption.**
-A formula `(x - stride) * n` is correct only if `x` is a multiple of `stride`. Ask:
-- What supplies `x`? Is the alignment documented and enforced at the call site?
-- Can `x` be non-aligned? Check the full range of values the supplier can produce,
-  including across version changes and configuration paths.
-
-**2. Remainder amplification via multiplication.**
-When a per-unit value is multiplied by a count, any remainder is amplified by the count:
-```
-wrong: total = (x - reserved) * n          // (x % stride) * n of phantom space
-right: total = (floor(x, stride) - reserved) * n  // floor first, then compute
-```
-This phantom tail maps to per-unit offsets past the end of the backing device → EIO.
-
-**3. Cross-subsystem invariant propagation.**
-When function B consumes a value produced by function A and assumes property P (e.g.,
-"capacity is a multiple of stripe_size"), verify:
-- Does A currently guarantee P? Read A's implementation, not just its callers.
-- Has A ever dropped P silently? Look for version fields, reserved-size formulas,
-  or alignment padding that may have changed.
-- The bug is in B (the consumer), not A — B must not silently assume what it doesn't
-  verify.
-
-**4. Phantom address space test.**
-If reported size > actual addressable space: I/O to addresses near the top of the
-device dispatches to per-unit offsets past the end of the backing device → EIO.
-This surfaces as GPT/partition-table scan failures or top-of-device read errors.
 
 ---
 
