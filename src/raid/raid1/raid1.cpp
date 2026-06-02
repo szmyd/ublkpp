@@ -683,11 +683,13 @@ bool Raid1Disk::__become_clean() {
             RLOGW("Could not re-write degraded superblock after race [uuid:{}]: {}", _str_uuid,
                   sync_res.error().message())
         }
-        if (auto sync_res =
-                write_superblock(*live_state.backup_dev->disk, _sb.get(), !live_active_is_b, live_state.route);
-            !sync_res) {
-            RLOGW("Could not re-write degraded superblock after race [uuid:{}]: {}", _str_uuid,
-                  sync_res.error().message())
+        if (!live_state.backup_dev->disk->is_missing()) {
+            if (auto sync_res =
+                    write_superblock(*live_state.backup_dev->disk, _sb.get(), !live_active_is_b, live_state.route);
+                !sync_res) {
+                RLOGW("Could not re-write degraded superblock after race [uuid:{}]: {}", _str_uuid,
+                      sync_res.error().message())
+            }
         }
         return false; // caller loops to re-sync the dirty region
     }

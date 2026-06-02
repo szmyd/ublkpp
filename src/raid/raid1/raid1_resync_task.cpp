@@ -95,24 +95,34 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             _metrics->record_active_resyncs(active_count);
         } // LCOV_EXCL_STOP
 
-        // Loop until the array is confirmed clean or we are stopped. complete() returns
-        // true when the transition to EITHER succeeded with an empty bitmap. It returns
-        // false when a concurrent backup-fail dirty_region() fired during the transition
-        // window: in that case the route is reverted to degraded and we loop so __run()
-        // picks up the newly-dirtied region. State stays ACTIVE throughout — calling
-        // toggle_resync() from inside complete() would be a no-op (task still ACTIVE).
-        // If dirty bits appear in the gap between the break and the ACTIVE→IDLE CAS,
-        // on_idle_dirty() re-triggers after the transition (see below).
+        // Loop until the array is confirmed clean or we are stopped.
+        //
+        // complete() returns false in two sub-cases:
+        //   (a) CAS-revert: a backup-fail dirty_region() fired under _clean_transition_mutex
+        //       before __become_clean's CAS — route is reverted to degraded, __run() re-enters
+        //       in degraded mode and syncs the newly-dirtied region.
+        //   (b) Site-2 H1: a backup-unavail dirty_region() fired without the mutex after the
+        //       CAS succeeded but before H1's route re-check — __become_degraded CAS-es
+        //       EITHER→DEVA, route is degraded, __run() re-enters in degraded mode.
+        //
+        // complete() returns true but dirty_pages() > 0:
+        //   Site-2 fired after __become_clean's H1 route-check but before the dirty_pages()
+        //   re-verify here. Route is EITHER; __run() re-enters with route still EITHER (I/O
+        //   is safe — copies go to both legs). The next complete() call sees dirty bits, reverts
+        //   the CAS, and the loop continues in degraded mode.
+        //
+        // State stays ACTIVE throughout — toggle_resync() from complete() would be a no-op.
+        // Dirty bits that appear in the gap between break and the ACTIVE→IDLE CAS are handled
+        // by on_idle_dirty() after the transition (see below).
         while (true) {
             cur_state = __run(clean_mirror, dirty_mirror, &iov);
             if (resync_state::STOPPING == cur_state) break;
             DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state")
             if (0 != _dirty_bitmap->dirty_pages()) continue; // new dirty bits — re-run __run()
-            // complete() may return true via a stale H1 route-check read while a concurrent
-            // __become_degraded set dirty bits after the check. Re-verify dirty_pages() == 0
-            // before breaking so we don't exit with unsynced bits and no resync running.
+            // complete() may return true while a concurrent Site-2 dirty_region set bits after
+            // __become_clean's H1 check. Re-verify dirty_pages() == 0 before breaking so we
+            // don't exit with unsynced bits and no resync running.
             if (complete() && 0 == _dirty_bitmap->dirty_pages()) break;
-            // returned false → route reverted to degraded, new dirty bits present; loop
             if (resync_state::STOPPING == __load_state()) break; // honour stop() without waiting for __run()
             RLOGD("Resync re-entering after concurrent dirty_region [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         }
@@ -180,8 +190,18 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
 
     // The previous resync thread may still be joinable even though state is IDLE — there is a
     // window between _start() setting state to IDLE and the thread actually returning. Assigning
-    // to a joinable std::thread calls std::terminate(), so join here first.
-    if (_resync_task.joinable()) _resync_task.join();
+    // to a joinable std::thread calls std::terminate(), so join (or detach) first.
+    //
+    // Self-join case: on_idle_dirty() calls toggle_resync() → launch() from _start()'s last line,
+    // still on the resync thread. Joining self throws std::system_error; detach is safe — the
+    // detached thread returns from _start() immediately after launch() completes and no longer
+    // touches any Raid1ResyncTask state.
+    if (_resync_task.joinable()) {
+        if (_resync_task.get_id() == std::this_thread::get_id())
+            _resync_task.detach();
+        else
+            _resync_task.join();
+    }
 
     _resync_task =
         sisl::named_thread(fmt::format("r_{}", str_uuid.substr(0, 13)),
