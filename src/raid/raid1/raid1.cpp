@@ -631,11 +631,19 @@ bool Raid1Disk::__become_clean() {
     // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
     bool const active_is_device_b = (state.route == read_route::DEVB);
 
-    // _clean_transition_mutex makes dirty_pages()==0 + CAS(route→EITHER) atomic against the
-    // two cold failure-path dirty_region() sites (active-fail and backup-fail with backup_write
-    // true). Without it there is a nanosecond window after the CAS where a reader captures
-    // route==EITHER, skips the is_dirty guard, and serves stale data for an already-ACK'd write.
-    // Superblock writes happen outside the lock (slow I/O; no co_await under lock).
+    // _clean_transition_mutex is held across check + CAS + both superblock writes.
+    //
+    // Extending the lock to the SB writes closes the crash-recovery P0: the failure-path
+    // dirty_region() + __become_degraded() (which writes the DEVA superblock) also run under
+    // this mutex. Because mutex serializes the two paths, the failure site's DEVA SB write
+    // always happens AFTER our EITHER SB writes — not concurrently. On crash:
+    //   - Before failure site acquires lock: only EITHER SBs on disk, but no dirty bit has
+    //     been set yet (dirty_region is under the lock) → system is genuinely clean.
+    //   - After failure site's DEVA SB write: working_dev=DEVA(age+1), other=EITHER →
+    //     pick_superblock selects by age → DEVA route → resync → safe.
+    //
+    // No co_await under the lock; write_superblock is synchronous. The lock is cold-path
+    // (only acquired on resync completion and on write-leg failures).
     {
         std::lock_guard lock(_clean_transition_mutex);
         if (_dirty_bitmap->dirty_pages() > 0) return false; // bits set under lock → stay degraded
@@ -645,23 +653,24 @@ bool Raid1Disk::__become_clean() {
             // - old_route == EITHER: another __become_clean already won → done.
             // - old_route != EITHER: __swap_device raced, route changed → loop __run() to re-sync.
             return old_route == read_route::EITHER;
-    } // lock released before slow superblock I/O
 
-    // Bitmap is empty — write clean superblocks.
-    if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
-        !sync_res) {
-        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-    }
-    if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
-        !sync_res) {
-        RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-    }
+        // Bitmap is empty and route is EITHER — write clean superblocks under the lock so
+        // the failure-path DEVA write (also under this lock) always serializes after them.
+        if (auto sync_res =
+                write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
+            !sync_res) {
+            RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        }
+        if (auto sync_res =
+                write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
+            !sync_res) {
+            RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        }
+    } // lock released; both EITHER SBs are on disk
 
-    // H1: post-write route check. The write-side __become_degraded (unconditional backup-fail
-    // path) may have CAS-ed EITHER→degraded and written degraded superblocks while our EITHER
-    // writes were in-flight. If so our EITHER writes may have landed last, leaving the on-disk
-    // route as EITHER with dirty bits — a P0 violation on the next crash. Overwrite with the
-    // current degraded route to restore on-disk consistency.
+    // H1 defense-in-depth: if a failure path somehow fired after our lock released (e.g.
+    // __swap_device, or any path that moved route away from EITHER without using the mutex),
+    // overwrite with the current route so the on-disk SBs stay consistent.
     auto const live_route = _read_route_cache.load(std::memory_order_acquire);
     if (live_route != read_route::EITHER) {
         bool const live_active_is_b = (live_route == read_route::DEVB);
