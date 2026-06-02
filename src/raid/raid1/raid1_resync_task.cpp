@@ -137,7 +137,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         } // LCOV_EXCL_STOP
     }
 
-    // If stopped, transition STOPPING → IDLE and return.
+    cur_state = __load_state(); // reflect actual state after IDLE/STOPPING race in the loop
     if (resync_state::STOPPING == cur_state) {
         RLOGI("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         for (auto stopping = resync_state::STOPPING;
@@ -146,9 +146,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         return;
     }
 
-    // IDLE transition was performed inside the while loop (clean-exit path).
-    // If stop() raced IDLE→STOPPING in the IDLE→ACTIVE reclaim gap, cur_state is stale
-    // (ACTIVE) here; stop()'s cleanup for-loop handles STOPPING→IDLE after join().
+    // IDLE transition was performed inside the while loop.
     RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
 }
 
