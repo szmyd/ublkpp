@@ -146,7 +146,9 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         return;
     }
 
-    // IDLE transition was already performed inside the while loop.
+    // IDLE transition was performed inside the while loop (clean-exit path).
+    // If stop() raced IDLE→STOPPING in the IDLE→ACTIVE reclaim gap, cur_state is stale
+    // (ACTIVE) here; stop()'s cleanup for-loop handles STOPPING→IDLE after join().
     RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
 }
 

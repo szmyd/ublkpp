@@ -617,7 +617,8 @@ std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > Raid1Dis
 // Returns true if the array successfully transitioned to EITHER (clean superblocks written),
 // or if another concurrent path already won the EITHER CAS (idempotent).
 // Returns false in three cases that require the caller to keep resyncing:
-//   (a) dirty_region() fired between dirty_pages()==0 and the CAS — route reverted to degraded.
+//   (a) Site-2 dirty_region() set bits before the lock was acquired — dirty_pages() > 0 under
+//       the lock; route stays degraded and the CAS is not attempted.
 //   (b) __swap_device raced and changed the route before our CAS — old_route != EITHER.
 //   (c) post-write: __become_degraded fired during superblock I/O — H1 re-writes with a fresh
 //       route+device capture (coherent across swap races) and returns false.
