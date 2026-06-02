@@ -184,10 +184,12 @@ TEST(Raid1Concurrency, BecomeCleanReturnsFalseLoopsAndDrains) {
     auto mirror_b = std::make_shared< MirrorDevice >(uuid, device_b);
 
     auto superbitmap_buf = make_test_superbitmap();
-    auto bitmap = std::make_shared< Bitmap >(Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
-    bitmap->dirty_region(0, 32 * Ki); // one dirty page so __run() has work to do
+    // chunk_size == io_size so clean_region(addr, sz) receives a chunk-aligned len.
+    constexpr uint32_t chunk_size = 4 * Ki;
+    constexpr uint32_t io_size = chunk_size;
+    auto bitmap = std::make_shared< Bitmap >(Gi, chunk_size, 4 * Ki, superbitmap_buf.get());
+    bitmap->dirty_region(0, chunk_size); // one dirty chunk so __run() has work to do
 
-    constexpr uint32_t io_size = 4 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
 
     std::atomic< int > call_count{0};
@@ -195,7 +197,7 @@ TEST(Raid1Concurrency, BecomeCleanReturnsFalseLoopsAndDrains) {
         if (call_count.fetch_add(1, std::memory_order_relaxed) == 0) {
             // First call: re-dirty to simulate a concurrent backup-fail dirty_region().
             // Returning false tells _start() to loop __run() and drain the new dirty bit.
-            bitmap->dirty_region(0, 32 * Ki);
+            bitmap->dirty_region(0, chunk_size);
             return false;
         }
         return true; // second call: clean
