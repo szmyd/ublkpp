@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <liburing.h>
+#include <sisl/async/cqe_state.hpp> // shared managed-user-data encode/decode/is_managed helpers
 #include <sisl/logging/logging.h>
 #include <ublksrv.h>
 
@@ -27,9 +28,9 @@ namespace ublkpp {
 //   }
 //
 // The queue's CQE loop (run_queue_loop in src/target/ublkpp_tgt.cpp) inspects
-// bit 63 (k_target_bit) of cqe->user_data: if set, the remaining bits are a
-// cqe_state*; the loop writes _result, marks _result_ready, and resumes _waiter.
-// If clear, the CQE is delegated to ublksrv as a command completion.
+// sisl::async::is_managed_user_data(cqe->user_data): if set, the bits decode (via
+// sisl::async::decode_managed_user_data) to a cqe_state*; the loop writes _result, marks
+// _result_ready, and resumes _waiter. If clear, the CQE is delegated to ublksrv.
 //
 // Two flavors of cqe_state:
 //   - Per-IO (build_cqe_state_data path): allocated in async_io::_pool, owned
@@ -37,20 +38,15 @@ namespace ublkpp {
 //     with -EIO if the coroutine throws.
 //   - Stand-alone service loops: coroutine-frame-local, _owner = nullptr, and
 //     callers handle their own errors. Encode the user_data manually with
-//     `reinterpret_cast<uint64_t>(state) | k_target_bit`.
+//     sisl::async::encode_managed_user_data(state).
+//
+// The user_data managed-bit encoding (bit 63) is shared with sisl/iomgr via
+// sisl::async::{encode,decode,is_managed}_user_data; probe-timeout CQEs encode a null pointer
+// (encode_managed_user_data(nullptr)) and run_queue_loop checks state == nullptr to tell them
+// apart from real I/O CQEs.
 //
 // Reference implementation: src/driver/fs_disk.cpp.
 // =============================================================================
-
-// Bit 63 of cqe->user_data distinguishes target SQEs (custom-driver async I/O)
-// from ublksrv command SQEs (FETCH/COMMIT). On x86_64/ARM64, canonical userspace
-// addresses use <=48 bits, so bit 63 is always zero in any valid pointer; the OR
-// is safe and reversible with `& ~k_target_bit`.
-//
-// Probe timeout CQEs reuse k_target_bit with a null pointer (user_data == k_target_bit).
-// run_queue_loop checks state == nullptr after stripping the bit to distinguish them from
-// real I/O CQEs.
-constexpr uint64_t k_target_bit = 1ULL << 63;
 
 struct cqe_state;
 
@@ -99,7 +95,7 @@ inline cqe_state* async_io::next_state() {
 // {state*, encoded_user_data}. The caller co_awaits *state.
 inline std::pair< cqe_state*, uint64_t > build_cqe_state_data(ublk_io_data const* data) {
     auto* state = reinterpret_cast< async_io* >(data->private_data)->next_state();
-    return {state, reinterpret_cast< uint64_t >(state) | k_target_bit};
+    return {state, sisl::async::encode_managed_user_data(state)};
 }
 
 // Acquires an SQE from the queue's io_uring, submitting any pending SQEs first if the ring

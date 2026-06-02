@@ -18,7 +18,6 @@ extern "C" {
 #include <ublksrv.h>
 
 #include <ublkpp/lib/cqe_state.hpp>
-#include <ublkpp/lib/disk_task.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
 #include "fs_disk_impl.hpp"
