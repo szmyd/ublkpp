@@ -21,13 +21,13 @@ UblkFSDiskMetrics::~UblkFSDiskMetrics() { deregister_me_from_farm(); }
 void UblkFSDiskMetrics::record_io_start(ublk_io_data const* data) {
     if (!data) return;
 
-    t_disk_io_timings[static_cast< uint16_t >(data->tag)] = io_timing{std::chrono::steady_clock::now()};
+    t_disk_io_timings[{this, static_cast< uint16_t >(data->tag)}] = io_timing{std::chrono::steady_clock::now()};
 }
 
 void UblkFSDiskMetrics::record_io_complete(ublk_io_data const* data) {
     if (!data) return;
 
-    if (auto it = t_disk_io_timings.find(static_cast< uint16_t >(data->tag)); it != t_disk_io_timings.end()) {
+    if (auto it = t_disk_io_timings.find({this, static_cast< uint16_t >(data->tag)}); it != t_disk_io_timings.end()) {
         auto const& timing = it->second;
         auto const end_time = std::chrono::steady_clock::now();
         auto const latency_us =
