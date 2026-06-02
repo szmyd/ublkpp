@@ -636,14 +636,19 @@ bool Raid1Disk::__become_clean() {
 
     // _clean_transition_mutex is held across check + CAS + both superblock writes.
     //
-    // Extending the lock to the SB writes closes the crash-recovery P0: the failure-path
-    // dirty_region() + __become_degraded() (which writes the DEVA superblock) also run under
-    // this mutex. Because mutex serializes the two paths, the failure site's DEVA SB write
-    // always happens AFTER our EITHER SB writes — not concurrently. On crash:
-    //   - Before failure site acquires lock: only EITHER SBs on disk, but no dirty bit has
-    //     been set yet (dirty_region is under the lock) → system is genuinely clean.
+    // The lock serializes this path against Sites 1 & 3 (backup_write=true failures),
+    // which also hold the lock during dirty_region() + __become_degraded(). Two crash cases:
+    //   - Before failure site acquires lock: only EITHER SBs on disk, no dirty bit set
+    //     (dirty_region is inside the lock) → system is genuinely clean.
     //   - After failure site's DEVA SB write: working_dev=DEVA(age+1), other=EITHER →
     //     pick_superblock selects by age → DEVA route → resync → safe.
+    //
+    // Residual crash window (not closed by the mutex): process crashes after Sites 1/3
+    // acquire the lock and call dirty_region() but before __become_degraded() completes its
+    // write_superblock() I/O. In that window, dirty bits are in-memory only (lost on crash)
+    // and both SBs say EITHER at the same age — no resync is triggered on restart. Closing
+    // this window requires additional on-disk metadata (a "last-active slot" field) to
+    // disambiguate source-of-truth at startup; tracked as a follow-up.
     //
     // No co_await under the lock; write_superblock is synchronous. The lock is cold-path
     // (only acquired on resync completion and on write-leg failures).

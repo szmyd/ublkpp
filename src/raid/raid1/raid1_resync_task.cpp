@@ -111,8 +111,11 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             if (0 != _dirty_bitmap->dirty_pages()) continue;
 
             // Attempt ACTIVE→IDLE; re-check for bits that landed in the transition gap.
-            auto active = resync_state::ACTIVE;
-            __cas_state(active, resync_state::IDLE);
+            // Loop to handle spurious compare_exchange_weak failures (ARM/POWER LL/SC).
+            // A spurious failure leaves state ACTIVE; breaking without the loop would
+            // cause _start() to return with state=ACTIVE and deadlock stop().
+            for (auto active = resync_state::ACTIVE; !__cas_state(active, resync_state::IDLE);)
+                active = resync_state::ACTIVE;
             if (0 == _dirty_bitmap->dirty_pages()) break; // clean exit
 
             // Bits appeared between the dirty_pages() check and the CAS. Try to reclaim
