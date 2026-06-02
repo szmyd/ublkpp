@@ -708,8 +708,13 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     auto& failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
     auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
 
-    auto const old_age = _sb->fields.bitmap.age;
-    _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
+    // _ctrl_lock guards _sb->fields against concurrent __swap_device mutations (same field).
+    auto const old_age = [&] {
+        std::lock_guard lock(_ctrl_lock);
+        auto age = _sb->fields.bitmap.age;
+        _sb->fields.bitmap.age = htobe64(be64toh(age) + 1);
+        return age;
+    }();
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
 
@@ -868,6 +873,14 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     if (!backup_write) {
         _dirty_bitmap->dirty_region(addr, len);
+        // Site 2: no mutex — this path fires when backup is unavail or the region was already
+        // dirty. The mutex was designed to exclude Sites 1 and 3 (which newly dirty a clean
+        // region and need to be atomic with __become_clean). Here we still call __become_degraded
+        // unconditionally so that if __become_clean released the mutex and transitioned to EITHER
+        // before this dirty_region call, we re-degrade before ACKing. __become_degraded's own
+        // CAS(EITHER→DEVA) is the synchronization; no mutex needed because we're already past the
+        // transition window (the lock was already released before this point).
+        std::ignore = __become_degraded(false, &state);
         co_return active_res;
     }
 
@@ -940,6 +953,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 
     if (!backup_write) {
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
+        std::ignore = __become_degraded(false, &state); // Site 2 (sync) — see async_iov comment
         return active_res;
     }
 

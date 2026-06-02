@@ -110,6 +110,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             // before breaking so we don't exit with unsynced bits and no resync running.
             if (complete() && 0 == _dirty_bitmap->dirty_pages()) break;
             // returned false → route reverted to degraded, new dirty bits present; loop
+            if (resync_state::STOPPING == __load_state()) break; // honour stop() without waiting for __run()
             RLOGD("Resync re-entering after concurrent dirty_region [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         }
         free(iov.iov_base);
