@@ -50,6 +50,12 @@ class Raid1Disk : public ublk_disk {
     //         (2) _pending_results - serializes prepare() insertions across queue threads.
     std::mutex _ctrl_lock;
 
+    // Guards the dirty_pages()==0 check + CAS(route→EITHER) in __become_clean() against the
+    // two cold failure-path dirty_region() calls (active-fail and backup-fail when backup_write
+    // is true). Makes check+CAS atomic so no EITHER-with-dirty-bit instant is observable to
+    // lock-free readers. The hot write path (!backup_write re-dirty) must NOT hold this lock.
+    std::mutex _clean_transition_mutex;
+
     // Counts prepare() calls; used to enable resync on the first queue init.
     std::atomic_uint16_t _nr_hw_queues{0};
 
