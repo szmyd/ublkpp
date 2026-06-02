@@ -60,4 +60,5 @@ TEST(Raid1Concurrency, ConcurrentLaunch) {
     t1.join();
     t2.join();
     task.stop();
+    EXPECT_EQ(0UL, bitmap->dirty_pages()) << "bitmap must be empty after concurrent launches with empty input";
 }

@@ -283,6 +283,13 @@ TEST(Raid1, SuperbitmapNonemptyReturnsFalseOnCleanBitmap) {
     EXPECT_FALSE(bitmap.superbitmap_nonempty());
 }
 
+TEST(Raid1, SuperbitmapNonemptyReturnsTrueAfterDirtyRegion) {
+    ublkpp::raid1::SuperBlock sb{};
+    ublkpp::raid1::Bitmap bitmap(Gi, 32 * Ki, 4096, sb.superbitmap_reserved);
+    bitmap.dirty_region(0, 32 * Ki);
+    EXPECT_TRUE(bitmap.superbitmap_nonempty());
+}
+
 // Test 8: Clean degraded startup — route=DEVA, clean_unmount=1, superbitmap has dirty pages.
 // Exercises the load_from(*active_dev) call site and verifies the destructor persists
 // the superbitmap (include_superbitmap=true) so the invariant holds on next startup.

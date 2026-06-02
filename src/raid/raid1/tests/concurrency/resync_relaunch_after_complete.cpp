@@ -161,3 +161,51 @@ TEST(Raid1Concurrency, StopAndRelaunchAfterComplete) {
 
     task->stop();
 }
+
+// Regression test for H4: complete() returning false must cause _start() to re-run __run().
+//
+// Simulates the concurrent-dirty_region race deterministically: the complete callback
+// re-dirties one page before returning false on the first call, then returns true on the
+// second. The test asserts the bitmap drains to zero — proving the loop re-entered __run()
+// and synced the re-dirtied region rather than exiting with dirty bits orphaned.
+TEST(Raid1Concurrency, BecomeCleanReturnsFalseLoopsAndDrains) {
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskA"});
+    auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .id = "DiskB", .is_slot_b = true});
+
+    EXPECT_CALL(*device_a, sync_iov(::testing::_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+    EXPECT_CALL(*device_b, sync_iov(::testing::_, _, _, _))
+        .Times(::testing::AnyNumber())
+        .WillRepeatedly(sync_iov_zero_on_read());
+
+    auto uuid = boost::uuids::string_generator()(test_uuid);
+    auto mirror_a = std::make_shared< MirrorDevice >(uuid, device_a);
+    auto mirror_b = std::make_shared< MirrorDevice >(uuid, device_b);
+
+    auto superbitmap_buf = make_test_superbitmap();
+    auto bitmap = std::make_shared< Bitmap >(Gi, 32 * Ki, 4 * Ki, superbitmap_buf.get());
+    bitmap->dirty_region(0, 32 * Ki); // one dirty page so __run() has work to do
+
+    constexpr uint32_t io_size = 4 * Ki;
+    Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
+
+    std::atomic< int > call_count{0};
+    task.launch(test_uuid, mirror_a, mirror_b, [&bitmap, &call_count]() -> bool {
+        if (call_count.fetch_add(1, std::memory_order_relaxed) == 0) {
+            // First call: re-dirty to simulate a concurrent backup-fail dirty_region().
+            // Returning false tells _start() to loop __run() and drain the new dirty bit.
+            bitmap->dirty_region(0, 32 * Ki);
+            return false;
+        }
+        return true; // second call: clean
+    });
+
+    auto const deadline = std::chrono::steady_clock::now() + 5s;
+    while (call_count.load(std::memory_order_acquire) < 2 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    task.stop();
+    EXPECT_EQ(2, call_count.load(std::memory_order_relaxed)) << "complete() must be called twice";
+    EXPECT_EQ(0UL, bitmap->dirty_pages()) << "bitmap must be empty after both calls complete";
+}

@@ -32,7 +32,9 @@ void SuperBitmap::clear_bit(uint32_t page_idx) noexcept {
     DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
-    // Use atomic fetch_and to safely clear the bit without racing with other bit operations
+    // relaxed: clear_bit does not publish page-word writes; set_bit(release) does.
+    // Asymmetry is intentional — clear_bit clears only the superbitmap index bit,
+    // while the page-word state was already visible via the release/acquire on set_bit.
     std::atomic_ref< uint8_t >(_bits[byte_idx]).fetch_and(~(1U << bit_idx), std::memory_order_relaxed);
 }
 
