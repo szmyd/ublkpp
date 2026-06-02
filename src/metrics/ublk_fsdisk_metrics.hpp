@@ -27,7 +27,9 @@ struct UblkFSDiskMetrics : public sisl::MetricsGroup {
     UblkFSDiskMetrics(std::string const& parent_id, std::string const& disk_path);
     ~UblkFSDiskMetrics();
 
-    static inline thread_local std::map< uint16_t, io_timing > t_disk_io_timings;
+    // Keyed on (instance, tag) so fan-out I/O delivering the same tag to multiple FSDisk
+    // instances on the same queue thread does not alias entries.
+    static inline thread_local std::map< std::pair< const UblkFSDiskMetrics*, uint16_t >, io_timing > t_disk_io_timings;
 
     void record_io_start(ublk_io_data const* data);
     void record_io_complete(ublk_io_data const* data);
