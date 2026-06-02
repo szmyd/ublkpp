@@ -104,8 +104,8 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             cur_state = __run(clean_mirror, dirty_mirror, &iov);
             if (resync_state::STOPPING == cur_state) break;
             DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state")
-            if (0 != _dirty_bitmap->dirty_pages()) break; // interrupted — not clean yet
-            if (complete()) break;                        // returned true → cleanly became EITHER
+            if (0 != _dirty_bitmap->dirty_pages()) continue; // new dirty bits — re-run __run()
+            if (complete()) break;                           // returned true → cleanly became EITHER
             // returned false → route reverted to degraded, new dirty bits present; loop
             RLOGD("Resync re-entering after concurrent dirty_region [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         }

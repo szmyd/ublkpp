@@ -613,10 +613,12 @@ std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > Raid1Dis
     }
 }
 
-// Returns true if the array successfully transitioned to EITHER (clean superblocks written).
-// Returns false if a concurrent backup-fail dirty_region() fired between the resync task's
-// dirty_pages()==0 observation and the CAS: route is reverted to the original degraded state
-// and the caller (the still-ACTIVE resync task) must loop __run() to pick up the dirty bits.
+// Returns true if the array successfully transitioned to EITHER (clean superblocks written),
+// or if another concurrent path already won the EITHER CAS (idempotent).
+// Returns false in two cases that require the caller to keep resyncing:
+//   (a) dirty_region() fired between dirty_pages()==0 and the CAS — route reverted to degraded.
+//   (b) __swap_device raced and changed the route before our CAS — old_route != EITHER.
+//   (c) post-write: __become_degraded fired during superblock I/O — overwrote with degraded SBs.
 // Calling toggle_resync() from here would be a no-op — the task is still ACTIVE.
 bool Raid1Disk::__become_clean() {
     auto const state = __capture_route_state();
@@ -629,13 +631,15 @@ bool Raid1Disk::__become_clean() {
     // - When route == DEVB: active_dev is B (is_device_b=true), backup_dev is A (is_device_b=false)
     bool const active_is_device_b = (state.route == read_route::DEVB);
 
-    // CAS the in-memory route to EITHER before writing superblocks. This ordering is
-    // intentional: superblocks are written only after confirming the bitmap is clean,
-    // which we cannot check atomically with the CAS. Reversing the order (CAS first)
-    // also improves crash safety — a crash after CAS but before superblocks leaves the
-    // on-disk route in the old degraded state, so restart runs resync correctly.
+    // CAS the in-memory route to EITHER before writing superblocks (old code wrote superblocks
+    // first). This improves crash safety: a crash after CAS but before superblocks leaves the
+    // on-disk route in the old degraded state, so restart correctly runs resync.
     auto old_route = state.route;
-    if (!_read_route_cache.compare_exchange_strong(old_route, read_route::EITHER)) return true;
+    if (!_read_route_cache.compare_exchange_strong(old_route, read_route::EITHER))
+        // H3: distinguish the two failure cases.
+        // - old_route == EITHER: another __become_clean already won → done.
+        // - old_route != EITHER: __swap_device raced, route changed → loop __run() to re-sync.
+        return old_route == read_route::EITHER;
 
     // Double-check: a concurrent backup-fail dirty_region() may have fired between the
     // resync task's dirty_pages()==0 observation and the CAS above. Reverse the
@@ -655,7 +659,7 @@ bool Raid1Disk::__become_clean() {
         return true; // other path took ownership
     }
 
-    // Bitmap is empty — safe to write clean superblocks.
+    // Bitmap is empty — write clean superblocks.
     if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER);
         !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
@@ -663,6 +667,27 @@ bool Raid1Disk::__become_clean() {
     if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
         !sync_res) {
         RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+    }
+
+    // H1: post-write route check. The write-side __become_degraded (unconditional backup-fail
+    // path) may have CAS-ed EITHER→degraded and written degraded superblocks while our EITHER
+    // writes were in-flight. If so our EITHER writes may have landed last, leaving the on-disk
+    // route as EITHER with dirty bits — a P0 violation on the next crash. Overwrite with the
+    // current degraded route to restore on-disk consistency.
+    auto const live_route = _read_route_cache.load(std::memory_order_acquire);
+    if (live_route != read_route::EITHER) {
+        bool const live_active_is_b = (live_route == read_route::DEVB);
+        if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), live_active_is_b, live_route);
+            !sync_res) {
+            RLOGW("Could not re-write degraded superblock after race [uuid:{}]: {}", _str_uuid,
+                  sync_res.error().message())
+        }
+        if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !live_active_is_b, live_route);
+            !sync_res) {
+            RLOGW("Could not re-write degraded superblock after race [uuid:{}]: {}", _str_uuid,
+                  sync_res.error().message())
+        }
+        return false; // caller loops to re-sync the dirty region
     }
     return true;
 }
