@@ -663,10 +663,12 @@ bool Raid1Disk::__become_clean() {
             !sync_res) {
             RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         }
-        if (auto sync_res =
-                write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
-            !sync_res) {
-            RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+        if (!state.backup_dev->disk->is_missing()) {
+            if (auto sync_res =
+                    write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER);
+                !sync_res) {
+                RLOGW("Could not become clean [uuid:{}]: {}", _str_uuid, sync_res.error().message())
+            }
         }
     } // lock released; both EITHER SBs are on disk
 
@@ -995,9 +997,7 @@ void Raid1Disk::toggle_resync(bool t) {
     if (t) {
         auto const state = __capture_route_state();
         if (read_route::EITHER != state.route && !state.backup_dev->disk->is_missing()) {
-            _resync_task->launch(
-                _str_uuid, state.active_dev, state.backup_dev, [this] { return __become_clean(); },
-                [this] { toggle_resync(true); });
+            _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { return __become_clean(); });
         }
     } else
         _resync_task->stop();
