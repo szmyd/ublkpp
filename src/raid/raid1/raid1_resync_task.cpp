@@ -51,7 +51,8 @@ template < typename StateHandler >
 }
 
 void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                             std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< bool() >&& complete) {
+                             std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< bool() >&& complete,
+                             std::function< void() > on_idle_dirty) {
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
     // Wait to become Available & IDLE
     auto cur_state = resync_state::IDLE;
@@ -100,6 +101,8 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         // window: in that case the route is reverted to degraded and we loop so __run()
         // picks up the newly-dirtied region. State stays ACTIVE throughout — calling
         // toggle_resync() from inside complete() would be a no-op (task still ACTIVE).
+        // If dirty bits appear in the gap between the break and the ACTIVE→IDLE CAS,
+        // on_idle_dirty() re-triggers after the transition (see below).
         while (true) {
             cur_state = __run(clean_mirror, dirty_mirror, &iov);
             if (resync_state::STOPPING == cur_state) break;
@@ -143,10 +146,16 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
     for (auto active = resync_state::ACTIVE;
          !__cas_state(active, resync_state::IDLE) && active == resync_state::ACTIVE;)
         std::this_thread::yield();
+
+    // A write-fail during the ACTIVE window (free/metrics above) may have called
+    // toggle_resync() while the task was still ACTIVE: launch() no-ops on non-IDLE state.
+    // Now that we are IDLE, re-trigger resync if dirty bits were orphaned in that gap.
+    if (on_idle_dirty && 0 != _dirty_bitmap->dirty_pages()) on_idle_dirty();
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
-                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< bool() >&& complete) {
+                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< bool() >&& complete,
+                             std::function< void() > on_idle_dirty) {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
     // First we must become IDLE
     auto transitioned =
@@ -174,10 +183,12 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
     // to a joinable std::thread calls std::terminate(), so join here first.
     if (_resync_task.joinable()) _resync_task.join();
 
-    _resync_task = sisl::named_thread(
-        fmt::format("r_{}", str_uuid.substr(0, 13)),
-        [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
-         compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
+    _resync_task =
+        sisl::named_thread(fmt::format("r_{}", str_uuid.substr(0, 13)),
+                           [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
+                            compl_cb = std::move(complete), idle_cb = std::move(on_idle_dirty)] mutable {
+                               _start(uuid, clean, dirty, std::move(compl_cb), std::move(idle_cb));
+                           });
 }
 
 void Raid1ResyncTask::__clean(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {

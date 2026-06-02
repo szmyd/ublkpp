@@ -87,7 +87,8 @@ class Raid1ResyncTask {
     [[gnu::noinline]] bool __transition_to(resync_state initial, resync_state target, StateHandler&& handler) noexcept;
 
     void _start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< bool() >&& complete);
+                std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< bool() >&& complete,
+                std::function< void() > on_idle_dirty);
 
     resync_state __yield(std::chrono::microseconds const yield_for, std::chrono::microseconds const spin_time) noexcept;
 
@@ -104,7 +105,8 @@ public:
     static bool probe_mirror(MirrorDevice& mirror, uint64_t reserved_size) noexcept;
 
     void launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
-                std::shared_ptr< MirrorDevice > dirty_mirror, std::function< bool() >&& complete);
+                std::shared_ptr< MirrorDevice > dirty_mirror, std::function< bool() >&& complete,
+                std::function< void() > on_idle_dirty = {});
 
     // Generic method to move Resync StateMachine to STOPPING
     void stop() noexcept;

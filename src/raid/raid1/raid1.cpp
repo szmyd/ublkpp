@@ -357,8 +357,9 @@ Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const i
 // No additional lock is needed between them; the CAS IS the synchronization gate.
 //
 // __swap_device also holds _ctrl_lock so that two concurrent swap_device() callers don't race
-// on the _device_a/_device_b pointer mutations.  __become_degraded does NOT need _ctrl_lock
-// because it only reads those pointers via a captured RouteState snapshot and never mutates them.
+// on the _device_a/_device_b pointer mutations.  __become_degraded does not need _ctrl_lock for
+// those pointer reads (it accesses them via a captured RouteState snapshot), but it does acquire
+// _ctrl_lock for the bitmap.age increment to avoid a data race with __swap_device's +16 bump.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // The order of the _read_route_cache CAS, swap(), and unavail.clear() below must be preserved to keep
@@ -615,10 +616,11 @@ std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > Raid1Dis
 
 // Returns true if the array successfully transitioned to EITHER (clean superblocks written),
 // or if another concurrent path already won the EITHER CAS (idempotent).
-// Returns false in two cases that require the caller to keep resyncing:
+// Returns false in three cases that require the caller to keep resyncing:
 //   (a) dirty_region() fired between dirty_pages()==0 and the CAS — route reverted to degraded.
 //   (b) __swap_device raced and changed the route before our CAS — old_route != EITHER.
-//   (c) post-write: __become_degraded fired during superblock I/O — overwrote with degraded SBs.
+//   (c) post-write: __become_degraded fired during superblock I/O — H1 re-writes with a fresh
+//       route+device capture (coherent across swap races) and returns false.
 // Calling toggle_resync() from here would be a no-op — the task is still ACTIVE.
 bool Raid1Disk::__become_clean() {
     auto const state = __capture_route_state();
@@ -668,18 +670,21 @@ bool Raid1Disk::__become_clean() {
         }
     } // lock released; both EITHER SBs are on disk
 
-    // H1 defense-in-depth: if a failure path somehow fired after our lock released (e.g.
-    // __swap_device, or any path that moved route away from EITHER without using the mutex),
-    // overwrite with the current route so the on-disk SBs stay consistent.
-    auto const live_route = _read_route_cache.load(std::memory_order_acquire);
-    if (live_route != read_route::EITHER) {
-        bool const live_active_is_b = (live_route == read_route::DEVB);
-        if (auto sync_res = write_superblock(*state.active_dev->disk, _sb.get(), live_active_is_b, live_route);
+    // H1 defense-in-depth: if a failure path moved route away from EITHER after our lock
+    // released (e.g. __swap_device, or a Site-2 __become_degraded without the mutex), re-write
+    // the on-disk SBs with the current degraded route. A fresh capture is used so device
+    // pointers are coherent with live_route even if __swap_device raced and remapped the slots.
+    auto const live_state = __capture_route_state();
+    if (live_state.route != read_route::EITHER) {
+        bool const live_active_is_b = (live_state.route == read_route::DEVB);
+        if (auto sync_res =
+                write_superblock(*live_state.active_dev->disk, _sb.get(), live_active_is_b, live_state.route);
             !sync_res) {
             RLOGW("Could not re-write degraded superblock after race [uuid:{}]: {}", _str_uuid,
                   sync_res.error().message())
         }
-        if (auto sync_res = write_superblock(*state.backup_dev->disk, _sb.get(), !live_active_is_b, live_route);
+        if (auto sync_res =
+                write_superblock(*live_state.backup_dev->disk, _sb.get(), !live_active_is_b, live_state.route);
             !sync_res) {
             RLOGW("Could not re-write degraded superblock after race [uuid:{}]: {}", _str_uuid,
                   sync_res.error().message())
@@ -734,7 +739,10 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
         // full recovery on next start will reconcile any inconsistency.
         //
-        _sb->fields.bitmap.age = old_age; // revert age -- not written to disk
+        { // revert age under _ctrl_lock — same guard as the increment above
+            std::lock_guard lock(_ctrl_lock);
+            _sb->fields.bitmap.age = old_age;
+        }
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
@@ -844,23 +852,18 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     if (active_res < 0) {
         // Site 1: active fails with backup_write==true — newly dirties a clean region.
-        // Hold _clean_transition_mutex so dirty_region + become_degraded are atomic against
-        // __become_clean's check+CAS. No co_await under the lock.
-        std::lock_guard lock(_clean_transition_mutex);
-        _dirty_bitmap->dirty_region(addr, len);
-        if (auto d = __become_degraded(true, &state); !d) {
-            // SB write failed or CAS lost. Either way the array is degraded in-memory; disk_b
-            // received the write. Drain the backup and return its result -- returning -EIO here
-            // would be wrong when disk_b succeeded (backup holds valid data, and EITHER-mode reads
-            // could otherwise route to the failed disk_a and serve stale data).
-            if (backup_task) {
-                auto const backup_res = co_await *backup_task;
-                co_return backup_res >= 0 ? backup_res : -EAGAIN;
-            }
-            co_return -EAGAIN;
-        }
-        // become_degraded succeeded → state was EITHER → bm was WRITE → backup_task non-null.
-        DEBUG_ASSERT(backup_task.has_value(),
+        // Lock covers only dirty_region + __become_degraded; co_awaits happen after release.
+        bool const become_degraded_ok = [&] {
+            std::lock_guard lock(_clean_transition_mutex);
+            _dirty_bitmap->dirty_region(addr, len);
+            return bool(__become_degraded(true, &state));
+        }();
+        // CAS lost and no backup to drain — nothing to await.
+        if (!become_degraded_ok && !backup_task) co_return -EAGAIN;
+        // Either __become_degraded succeeded (backup guaranteed by invariant) or failed with a
+        // backup present. Drain backup before returning: serving stale disk_a data in EITHER mode
+        // would be wrong when disk_b received the write successfully.
+        DEBUG_ASSERT(!become_degraded_ok || backup_task.has_value(),
                      "backup_task must exist when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = co_await *backup_task;
         co_return backup_res >= 0 ? backup_res : -EAGAIN;
@@ -880,6 +883,8 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // before this dirty_region call, we re-degrade before ACKing. __become_degraded's own
         // CAS(EITHER→DEVA) is the synchronization; no mutex needed because we're already past the
         // transition window (the lock was already released before this point).
+        // Error intentionally discarded: the CAS already degraded the in-memory route;
+        // any SB write failure is logged inside __become_degraded.
         std::ignore = __become_degraded(false, &state);
         co_return active_res;
     }
@@ -953,7 +958,8 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 
     if (!backup_write) {
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
-        std::ignore = __become_degraded(false, &state); // Site 2 (sync) — see async_iov comment
+        // Site 2 (sync) — see async_iov Site 2 comment; error intentionally discarded.
+        std::ignore = __become_degraded(false, &state);
         return active_res;
     }
 
@@ -987,7 +993,9 @@ void Raid1Disk::toggle_resync(bool t) {
     if (t) {
         auto const state = __capture_route_state();
         if (read_route::EITHER != state.route && !state.backup_dev->disk->is_missing()) {
-            _resync_task->launch(_str_uuid, state.active_dev, state.backup_dev, [this] { return __become_clean(); });
+            _resync_task->launch(
+                _str_uuid, state.active_dev, state.backup_dev, [this] { return __become_clean(); },
+                [this] { toggle_resync(true); });
         }
     } else
         _resync_task->stop();
