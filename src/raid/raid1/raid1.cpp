@@ -655,8 +655,13 @@ bool Raid1Disk::__become_clean() {
             RLOGW("Resync complete but found unsynced dirty bits — reverting to degraded [uuid:{}]", _str_uuid)
             return false; // caller loops to re-sync
         }
-        RLOGD("Route moved by concurrent path during resync completion; dirty bits handled there [uuid:{}]", _str_uuid)
-        return true; // other path took ownership
+        // The concurrent path (__become_degraded) moved the route to degraded and called
+        // toggle_resync(true), but that call was a no-op because this task is still ACTIVE.
+        // Returning true here would cause _start() to break, leaving dirty bits with no
+        // resync task to process them. Return false so _start() re-runs __run() to drain them.
+        RLOGW("Route moved concurrently; looping to drain dirty bits left by concurrent degradation [uuid:{}]",
+              _str_uuid)
+        return false;
     }
 
     // Bitmap is empty — write clean superblocks.
