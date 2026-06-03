@@ -541,10 +541,11 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
         // On violation we log and fall through — device goes DEAD, logged, resources freed.
         bool const will_quiesce = tgt_type && (tgt_type->ublk_flags & UBLK_F_USER_RECOVERY);
         if (!will_quiesce) {
-            if (!tgt_type)
+            if (!tgt_type) {
                 TLOGE("tgt_type is null in destructor for {} — device will go DEAD", str_id)
-            else
+            } else {
                 TLOGE("UBLK_F_USER_RECOVERY not set for {} — device will go DEAD", str_id)
+            }
         }
         TLOGI("Releasing ctrl handle for {}, device will go {}", str_id,
               will_quiesce ? "QUIESCED (recoverable)" : "DEAD")
