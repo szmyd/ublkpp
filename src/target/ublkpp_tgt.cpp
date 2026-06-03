@@ -534,12 +534,15 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     // to all queue io_uring rings, causing run_queue_loop() to exit cleanly.
     // No stop_dev (transitions to DEAD, removes /dev/ublkbN) or del_dev here.
     //
-    // UBLK_F_USER_RECOVERY is always set in run() before ublksrv_ctrl_add_dev(); if the
-    // kernel rejected it the device would never have been created and ctrl_dev stays null.
-    // On the recovery path (device_recovering=true) END_USER_RECOVERY returns the device
-    // to running state, so this dtor path is identical to the normal-exit path.
-    assert(!ctrl_dev || (tgt_type && (tgt_type->ublk_flags & UBLK_F_USER_RECOVERY)));
     if (ctrl_dev) {
+        // Invariant: run() always sets UBLK_F_USER_RECOVERY before ublksrv_ctrl_add_dev();
+        // if the kernel rejected it, ctrl_dev stays null. Without the flag ctrl_deinit
+        // transitions the device to UBLK_S_DEV_DEAD (not QUIESCED), silently defeating the
+        // recovery guarantee — log loudly so this is never silent in production.
+        if (!tgt_type || !(tgt_type->ublk_flags & UBLK_F_USER_RECOVERY)) {
+            TLOGE("UBLK_F_USER_RECOVERY not set for {} — device will not quiesce", str_id)
+            assert(false);
+        }
         TLOGI("Releasing ctrl handle for {}, kernel will quiesce via USER_RECOVERY", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
         ctrl_dev = nullptr;
@@ -557,7 +560,9 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
         ublk_dev = nullptr;
     }
 
-    // Release device; for RAID-1 this flushes the dirty bitmap and writes clean_unmount=1.
+    // Release device. Writes go directly to backing file descriptors (pwritev2), not through
+    // the ublk I/O path, so this is safe after destroy() has left the kernel device dead.
+    // For RAID-1: flushes the dirty bitmap and writes clean_unmount=1 to the superblock.
     device.reset();
 }
 
