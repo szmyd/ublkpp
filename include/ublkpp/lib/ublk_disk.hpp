@@ -8,8 +8,11 @@
 #include <fmt/format.h>
 #include <sisl/logging/logging.h>
 
-#include "disk_task.hpp"
-#include <ublkpp/lib/ublk_params.hpp>
+#include <sisl/async/disk_task.hpp>
+// Kernel UAPI ublk_params types (ublk_params, ublk_param_basic / discard / devt / zoned / dma_align
+// and the UBLK_PARAM_TYPE_* / UBLK_ATTR_* constants) -- external ublk_disk subclasses call params() in
+// their constructors to configure disk geometry.
+#include <ublk_cmd.h>
 
 struct iovec;
 struct ublk_io_data;
@@ -26,6 +29,13 @@ struct params_access;
 } // namespace detail
 
 using io_result = std::expected< size_t, std::error_condition >;
+
+// Per-disk async I/O coroutine task -- the generalized version lives in sisl::async; ublkpp
+// re-exports the names its drivers use (e.g. async_iov returns disk_task< int >).
+template < typename T >
+using disk_task = sisl::async::disk_task< T >;
+template < typename T >
+using hot_task = sisl::async::hot_task< T >;
 
 class ublk_disk;
 using disk_handle = std::shared_ptr< ublk_disk >;

@@ -6,7 +6,6 @@
 #include <ublksrv_utils.h>
 
 #include <ublkpp/lib/cqe_state.hpp>
-#include <ublkpp/lib/disk_task.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
 #include "raid0_impl.hpp"
