@@ -564,8 +564,7 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
         ublk_dev = nullptr;
     }
 
-    // Release device. Writes go directly to backing file descriptors (pwritev2), not through
-    // the ublk I/O path, so this is safe after destroy() has left the kernel device dead.
+    // Safe here because all queue threads have been joined above — no ublk I/O is possible.
     // For RAID-1: flushes the dirty bitmap and writes clean_unmount=1 to the superblock.
     device.reset();
 }
