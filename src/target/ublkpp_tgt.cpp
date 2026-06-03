@@ -422,8 +422,7 @@ ublkpp_tgt::run_result_t ublkpp_tgt::run(boost::uuids::uuid const& vol_id, std::
     auto tgt = std::make_shared< ublkpp_tgt_impl >(vol_id, device);
     if (0 <= device_id) tgt->device_recovering = true;
     auto ublk_flags = unsigned(0);
-    // UBLK_F_QUIESCE requires Linux ≥ 6.15; device creation fails on older kernels.
-    ublk_flags |= (unsigned)(UBLK_F_USER_RECOVERY | UBLK_F_USER_RECOVERY_REISSUE | UBLK_F_QUIESCE);
+    ublk_flags |= (unsigned)(UBLK_F_USER_RECOVERY | UBLK_F_USER_RECOVERY_REISSUE);
     if (0 < SISL_OPTIONS["feature_zero_copy"].count()) {
         TLOGI("Enabling zero-copy support...: {}", to_string(vol_id))
         ublk_flags |= (unsigned)(UBLK_F_SUPPORT_ZERO_COPY);
@@ -529,30 +528,18 @@ void ublkpp_tgt_impl::destroy() {
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
 
-    // Quiesce I/O: halts all block device I/O and transitions the kernel device
-    // to UBLK_S_DEV_QUIESCED without deleting /dev/ublkbN. Queue threads receive
-    // UBLK_IO_RES_ABORT CQEs, which sets UBLKSRV_QUEUE_STOPPING, causing them to
-    // exit their run_queue_loop. This preserves the device for recovery by a new daemon.
-    bool quiesced = false;
-    if (ublk_dev) {
-        TLOGI("Quiescing {} for graceful shutdown", str_id)
-        if (auto ret = ublksrv_ctrl_quiesce_dev(ctrl_dev); ret < 0) {
-            // Fall back to stop_dev so queue threads receive their abort CQEs and
-            // the join() below does not hang. This removes /dev/ublkbN and breaks recovery.
-            if (ret == -ENOTTY || ret == -ENOSYS) {
-                TLOGW("QUIESCE_DEV unsupported by kernel — falling back to STOP_DEV for {}", str_id)
-            } else {
-                TLOGW("QUIESCE_DEV failed ({}) — falling back to STOP_DEV for {}", ret, str_id)
-            }
-            if (auto stop_ret = ublksrv_ctrl_stop_dev(ctrl_dev); stop_ret < 0)
-                TLOGE("STOP_DEV also failed ({}) for {}, queue threads may hang", stop_ret, str_id)
-        } else {
-            quiesced = true;
-        }
+    // Closing the ublk char-device fd (via ctrl_deinit) triggers ublk_ch_release() in the
+    // kernel. With UBLK_F_USER_RECOVERY set the kernel transitions the device to
+    // UBLK_S_DEV_QUIESCED — /dev/ublkbN stays alive — and delivers UBLK_IO_RES_ABORT CQEs
+    // to all queue io_uring rings, causing run_queue_loop() to exit cleanly.
+    // No stop_dev (transitions to DEAD, removes /dev/ublkbN) or del_dev here.
+    if (ctrl_dev) {
+        TLOGI("Releasing ctrl handle for {}, kernel will quiesce via USER_RECOVERY", str_id)
+        ublksrv_ctrl_deinit(ctrl_dev);
+        ctrl_dev = nullptr;
     }
 
-    // Wait for all queue_handler threads to exit after receiving UBLK_IO_RES_ABORT
-    // (or STOP_DEV in the fallback path)
+    // Wait for queue threads to exit after receiving UBLK_IO_RES_ABORT
     TLOGD("Waiting for I/O to stop on {}", str_id)
     for (auto& q : queue_handlers)
         if (q.joinable()) q.join();
@@ -566,18 +553,6 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
 
     // Flush RAID-1 dirty bitmap and write clean_unmount=1 to superblock
     device.reset();
-
-    // Release ctrl handle. If quiesced, /dev/ublkbN remains in QUIESCED state so a new
-    // daemon can recover via START_USER_RECOVERY + END_USER_RECOVERY.
-    // Intentionally no ublksrv_ctrl_del_dev() here.
-    if (ctrl_dev) {
-        if (quiesced)
-            TLOGI("Releasing ctrl handle for {}, device remains QUIESCED for recovery", str_id)
-        else
-            TLOGI("Releasing ctrl handle for {}, device was stopped", str_id)
-        ublksrv_ctrl_deinit(ctrl_dev);
-        ctrl_dev = nullptr;
-    }
 }
 
 } // namespace ublkpp

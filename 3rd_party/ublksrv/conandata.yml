@@ -13,9 +13,6 @@ patches:
     - patch_file: "patches/run_loop_1_5_0.patch"
       patch_description: "expose ublksrv_handle_cmd_cqe and ublksrv_queue_update_idle for custom CQE loop"
       patch_type: "feature"
-    - patch_file: "patches/quiesce_dev_1_5_0.patch"
-      patch_description: "add ublksrv_ctrl_quiesce_dev for graceful shutdown with device preservation"
-      patch_type: "feature"
   "nbi.1.4.1":
     - patch_file: "patches/logging.patch"
       patch_description: "log to SISL"

@@ -8,8 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Graceful quiesce shutdown (target)**: `ublkpp_tgt_impl` destructor now calls `ublksrv_ctrl_quiesce_dev()` instead of the previous no-op stub. The kernel device transitions to `UBLK_S_DEV_QUIESCED` — I/O halts, queue threads exit on `UBLK_IO_RES_ABORT`, and `/dev/ublkbN` is preserved for recovery by a new daemon. A fallback to `ublksrv_ctrl_stop_dev()` handles kernels that do not support `UBLK_F_QUIESCE`. `UBLK_F_QUIESCE` is now advertised in device flags.
-- **ublksrv patch (v1.5.0)**: adds `ublksrv_ctrl_quiesce_dev()` wrapping `UBLK_U_CMD_QUIESCE_DEV` to the vendored ublksrv library.
+- **Graceful quiesce on daemon exit (target)**: `ublkpp_tgt_impl` destructor now implements the `UBLK_F_USER_RECOVERY` daemon-exit protocol instead of calling `stop_dev`. Closing the ublk char-device fd (via `ublksrv_ctrl_deinit`) triggers `ublk_ch_release()` in the kernel, which transitions the device to `UBLK_S_DEV_QUIESCED`, delivers `UBLK_IO_RES_ABORT` CQEs to all queue threads so they exit cleanly, and preserves `/dev/ublkbN` for recovery by a new daemon. `destroy()` (the explicit-removal path called from `ublkpp_tgt::remove()`) is unchanged — it still calls `stop_dev` + `del_dev`.
 
 ## [0.32.8] - 2026-06-01
 
