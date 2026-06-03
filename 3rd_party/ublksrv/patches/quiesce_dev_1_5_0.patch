@@ -21,7 +21,7 @@ diff --git a/include/ublksrv.h b/include/ublksrv.h
 diff --git a/lib/ublksrv_cmd.c b/lib/ublksrv_cmd.c
 --- a/lib/ublksrv_cmd.c
 +++ b/lib/ublksrv_cmd.c
-@@ -472,6 +472,19 @@ int ublksrv_ctrl_stop_dev(struct ublksrv_ctrl_dev *dev)
+@@ -472,6 +472,16 @@ int ublksrv_ctrl_stop_dev(struct ublksrv_ctrl_dev *dev)
  	return ret;
  }
 
@@ -30,12 +30,9 @@ diff --git a/lib/ublksrv_cmd.c b/lib/ublksrv_cmd.c
 +	struct ublksrv_ctrl_cmd_data data = {
 +		.cmd_op	= UBLK_U_CMD_QUIESCE_DEV,
 +	};
-+	int ret;
 +
 +	ublk_un_privileged_prep_data(dev, data);
-+
-+	ret = __ublksrv_ctrl_cmd(dev, &data);
-+	return ret;
++	return __ublksrv_ctrl_cmd(dev, &data);
 +}
 +
  static const char *ublksrv_dev_state_desc(struct ublksrv_ctrl_dev *dev)
