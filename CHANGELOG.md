@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Graceful quiesce on daemon exit (target)**: `ublkpp_tgt_impl` destructor now implements the `UBLK_F_USER_RECOVERY` daemon-exit protocol instead of calling `stop_dev`. Closing the ublk char-device fd (via `ublksrv_ctrl_deinit`) triggers `ublk_ch_release()` in the kernel, which transitions the device to `UBLK_S_DEV_QUIESCED`, delivers `UBLK_IO_RES_ABORT` CQEs to all queue threads so they exit cleanly, and preserves `/dev/ublkbN` for recovery by a new daemon. `destroy()` (the explicit-removal path called from `ublkpp_tgt::remove()`) is unchanged — it still calls `stop_dev` + `del_dev`.
 
+### Fixed
+
+- **`destroy()` missing `ctrl_dev = nullptr`**: after `ublksrv_ctrl_deinit`, `ctrl_dev` was not nulled, leaving the destructor able to call `ctrl_deinit` a second time on the freed pointer. Now nulled immediately after deinit.
+- **Unconditional `join()` in `destroy()`**: queue threads were joined without a `joinable()` guard, which would throw `std::system_error` if a thread was never started (e.g., on a failed queue init). Added `if (q.joinable())` guard, consistent with the destructor.
+
 ## [0.32.8] - 2026-06-01
 
 ### Fixed

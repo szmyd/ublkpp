@@ -537,15 +537,12 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     if (ctrl_dev) {
         // Invariant: run() always sets UBLK_F_USER_RECOVERY before ublksrv_ctrl_add_dev();
         // if the kernel rejected it, ctrl_dev stays null. Without the flag ctrl_deinit
-        // transitions to UBLK_S_DEV_DEAD (not QUIESCED), silently defeating recovery.
-        // std::abort() fires in all build configurations — this is a programming error.
-        if (!tgt_type) {
-            TLOGE("tgt_type is null in destructor for {}", str_id)
-            std::abort();
-        }
-        if (!(tgt_type->ublk_flags & UBLK_F_USER_RECOVERY)) {
-            TLOGE("UBLK_F_USER_RECOVERY not set for {} — device will not quiesce", str_id)
-            std::abort();
+        // transitions to UBLK_S_DEV_DEAD (not QUIESCED), defeating recovery.
+        // assert catches violations in debug; in release we log and fall through —
+        // the device goes DEAD and is no longer recoverable, but resources are freed.
+        if (!tgt_type || !(tgt_type->ublk_flags & UBLK_F_USER_RECOVERY)) {
+            TLOGE("UBLK_F_USER_RECOVERY invariant violated for {} — device will go DEAD", str_id)
+            assert(false);
         }
         TLOGI("Releasing ctrl handle for {}, kernel will quiesce via USER_RECOVERY", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
