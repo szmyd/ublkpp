@@ -539,12 +539,15 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
         // if the kernel rejected it, ctrl_dev stays null. Without the flag ctrl_deinit
         // transitions to UBLK_S_DEV_DEAD (not QUIESCED), defeating recovery.
         // On violation we log and fall through — device goes DEAD, logged, resources freed.
-        if (!tgt_type) {
-            TLOGE("tgt_type is null in destructor for {} — device will go DEAD", str_id)
-        } else if (!(tgt_type->ublk_flags & UBLK_F_USER_RECOVERY)) {
-            TLOGE("UBLK_F_USER_RECOVERY not set for {} — device will go DEAD", str_id)
+        bool const will_quiesce = tgt_type && (tgt_type->ublk_flags & UBLK_F_USER_RECOVERY);
+        if (!will_quiesce) {
+            if (!tgt_type)
+                TLOGE("tgt_type is null in destructor for {} — device will go DEAD", str_id)
+            else
+                TLOGE("UBLK_F_USER_RECOVERY not set for {} — device will go DEAD", str_id)
         }
-        TLOGI("Releasing ctrl handle for {}, kernel will quiesce via USER_RECOVERY", str_id)
+        TLOGI("Releasing ctrl handle for {}, device will go {}", str_id,
+              will_quiesce ? "QUIESCED (recoverable)" : "DEAD")
         ublksrv_ctrl_deinit(ctrl_dev);
         ctrl_dev = nullptr;
     }
