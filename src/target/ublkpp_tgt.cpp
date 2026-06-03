@@ -533,6 +533,10 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     // UBLK_S_DEV_QUIESCED — /dev/ublkbN stays alive — and delivers UBLK_IO_RES_ABORT CQEs
     // to all queue io_uring rings, causing run_queue_loop() to exit cleanly.
     // No stop_dev (transitions to DEAD, removes /dev/ublkbN) or del_dev here.
+    //
+    // UBLK_F_USER_RECOVERY is always set in run() before ublksrv_ctrl_add_dev(); if the
+    // kernel rejected it the device would never have been created and ctrl_dev stays null.
+    assert(!ctrl_dev || (tgt_type && (tgt_type->ublk_flags & UBLK_F_USER_RECOVERY)));
     if (ctrl_dev) {
         TLOGI("Releasing ctrl handle for {}, kernel will quiesce via USER_RECOVERY", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
