@@ -1,7 +1,8 @@
 diff --git a/include/ublksrv.h b/include/ublksrv.h
+index ff233b6..99dcdd4 100644
 --- a/include/ublksrv.h
 +++ b/include/ublksrv.h
-@@ -458,6 +458,16 @@ extern int ublksrv_ctrl_get_info(struct ublksrv_ctrl_dev *dev);
+@@ -476,6 +476,16 @@ extern int ublksrv_ctrl_get_info(struct ublksrv_ctrl_dev *dev);
   */
  extern int ublksrv_ctrl_stop_dev(struct ublksrv_ctrl_dev *dev);
 
@@ -19,6 +20,7 @@ diff --git a/include/ublksrv.h b/include/ublksrv.h
   * Dump this ublk device
   *
 diff --git a/lib/ublksrv_cmd.c b/lib/ublksrv_cmd.c
+index 25ddbbe..90a2694 100644
 --- a/lib/ublksrv_cmd.c
 +++ b/lib/ublksrv_cmd.c
 @@ -472,6 +472,16 @@ int ublksrv_ctrl_stop_dev(struct ublksrv_ctrl_dev *dev)
