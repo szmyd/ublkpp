@@ -497,7 +497,7 @@ void ublkpp_tgt_impl::destroy() {
     // Wait for all queue_handler threads to exit
     TLOGD("Waiting for I/O to stop on {}", str_id)
     for (auto& q : queue_handlers)
-        q.join();
+        if (q.joinable()) q.join();
 
     // De-allocate the ublksrv device and free all unowned memory
     if (ublk_dev) {
@@ -536,6 +536,8 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     //
     // UBLK_F_USER_RECOVERY is always set in run() before ublksrv_ctrl_add_dev(); if the
     // kernel rejected it the device would never have been created and ctrl_dev stays null.
+    // On the recovery path (device_recovering=true) END_USER_RECOVERY returns the device
+    // to running state, so this dtor path is identical to the normal-exit path.
     assert(!ctrl_dev || (tgt_type && (tgt_type->ublk_flags & UBLK_F_USER_RECOVERY)));
     if (ctrl_dev) {
         TLOGI("Releasing ctrl handle for {}, kernel will quiesce via USER_RECOVERY", str_id)
@@ -555,7 +557,7 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
         ublk_dev = nullptr;
     }
 
-    // Flush RAID-1 dirty bitmap and write clean_unmount=1 to superblock
+    // Release device; for RAID-1 this flushes the dirty bitmap and writes clean_unmount=1.
     device.reset();
 }
 
