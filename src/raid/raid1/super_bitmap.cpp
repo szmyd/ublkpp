@@ -22,15 +22,19 @@ void SuperBitmap::set_bit(uint32_t page_idx) noexcept {
     DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
-    // Use atomic fetch_or to safely set the bit without racing with other bit operations
-    std::atomic_ref< uint8_t >(_bits[byte_idx]).fetch_or(1U << bit_idx, std::memory_order_relaxed);
+    // release so that the page-word writes that precede set_bit() (dirty_region's fetch_or
+    // into the bitmap page) are visible to next_dirty()/clean_region() callers that do
+    // acquire-loads on the same page words after observing the superbitmap bit.
+    std::atomic_ref< uint8_t >(_bits[byte_idx]).fetch_or(1U << bit_idx, std::memory_order_release);
 }
 
 void SuperBitmap::clear_bit(uint32_t page_idx) noexcept {
     DEBUG_ASSERT_LT(page_idx, k_superbitmap_bits, "SuperBitmap page_idx out of bounds");
     auto const byte_idx = page_idx / 8;
     auto const bit_idx = page_idx % 8;
-    // Use atomic fetch_and to safely clear the bit without racing with other bit operations
+    // relaxed: clear_bit does not publish page-word writes; set_bit(release) does.
+    // Asymmetry is intentional — clear_bit clears only the superbitmap index bit,
+    // while the page-word state was already visible via the release/acquire on set_bit.
     std::atomic_ref< uint8_t >(_bits[byte_idx]).fetch_and(~(1U << bit_idx), std::memory_order_relaxed);
 }
 

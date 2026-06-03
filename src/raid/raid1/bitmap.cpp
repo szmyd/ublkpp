@@ -262,7 +262,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
                                                                   : (((uint64_t)0b1 << bits_to_read) - 1)
                                                        << (shift_offset - (bits_to_read - 1)));
             bits_left -= bits_to_read;
-            if (0 != (std::atomic_ref< word_t >(*cur_word).load(std::memory_order_relaxed) & bits_to_check))
+            if (0 != (std::atomic_ref< word_t >(*cur_word).load(std::memory_order_acquire) & bits_to_check))
                 return true;
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
