@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.9] - 2026-06-03
+
+### Changed
+
+- **Graceful quiesce shutdown (target)**: `ublkpp_tgt_impl` destructor now calls `ublksrv_ctrl_quiesce_dev()` instead of the previous no-op stub. The kernel device transitions to `UBLK_S_DEV_QUIESCED` — I/O halts, queue threads exit on `UBLK_IO_RES_ABORT`, and `/dev/ublkbN` is preserved for recovery by a new daemon. A fallback to `ublksrv_ctrl_stop_dev()` handles kernels that do not support `UBLK_F_QUIESCE`. `UBLK_F_QUIESCE` is now advertised in device flags.
+- **ublksrv patch (v1.5.0)**: adds `ublksrv_ctrl_quiesce_dev()` wrapping `UBLK_U_CMD_QUIESCE_DEV` to the vendored ublksrv library.
+
 ## [0.32.8] - 2026-06-01
 
 ### Fixed
