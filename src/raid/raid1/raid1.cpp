@@ -285,10 +285,10 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         // whole bitmap and resumes the full resync. Idempotent across crashes.
         //
         // Note: the dirty_region(0, capacity()) call below makes probe_mirror clearing unavail
-        // safe — until the resync makes progress, every read to device_b is redirected back to
+        // safe -- until the resync makes progress, every read to device_b is redirected back to
         // device_a by the dirty-bitmap check in __select_read_devices (100% coverage guarantee).
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
-        RLOGI("Unclean shutdown with both legs present [uuid:{}] — reads pinned to {} (canonical), "
+        RLOGW("Unclean shutdown with both legs present [uuid:{}] -- reads pinned to {} (canonical), "
               "full resync to {} scheduled to restore read-determinism",
               _str_uuid, *_device_a->disk, *_device_b->disk)
         _dirty_bitmap->dirty_region(0, capacity());
