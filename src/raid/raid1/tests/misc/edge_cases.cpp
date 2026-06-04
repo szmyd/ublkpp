@@ -236,6 +236,23 @@ TEST(Raid1, UncleanShutdownBothPresentSelfHeal) {
     EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, state.device_a);
     EXPECT_EQ(ublkpp::raid1::replica_state::ERROR, state.device_b);
     EXPECT_GT(state.bytes_to_sync, 0ULL);
+
+    // Verify read routing: a sync read must dispatch to device_a only.
+    // route=DEVA + device_b->unavail means __select_read_devices never returns device_b.
+    // Run in a fresh thread to avoid contaminating the thread_local last_read state shared
+    // across tests (same pattern used by other tests that exercise __select_read_devices).
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, _)).Times(0);
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+            memset(iov->iov_base, 0, iov->iov_len);
+            return static_cast< int >(iov->iov_len);
+        });
+    RUN_IN_THREAD({
+        alignas(4096) std::array< char, ublkpp::raid1::k_page_size > buf{};
+        auto iov = iovec{.iov_base = buf.data(), .iov_len = buf.size()};
+        EXPECT_TRUE(raid_device.sync_iov(UBLK_IO_OP_READ, &iov, 1, 0).has_value());
+    });
 }
 
 // Test 5b: Crash-mid-resync idempotency — reassembly after a self-heal crash uses the
