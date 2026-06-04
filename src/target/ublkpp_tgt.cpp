@@ -303,8 +303,10 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     // concurrent drain check sees counter > 0 and defers. On rejection we undo immediately.
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
-    // Drain gate: after begin_shutdown(), reject new I/O before it reaches the backing device.
-    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
+    // Drain gate: reject reads/writes during shutdown before they reach the backing device.
+    // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*,
+    // so rejecting it with EIO would cause callers (e.g. filesystem unmount) spurious errors.
+    if (op != UBLK_IO_OP_FLUSH && qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
         qs->tgt->metrics.record_queue_depth_change(q, op, false);
         TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
         ublksrv_complete_io(q, data->tag, -EIO);
@@ -325,7 +327,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
     }
 
-    qs->tgt->metrics.record_queue_depth_change(q, op, false);
+    qs->tgt->metrics.record_queue_depth_change(q, op, false); // normal-path decrement (pairs with increment above)
 
     if (0 > result) [[unlikely]] {
         TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)
@@ -542,7 +544,7 @@ void ublkpp_tgt_impl::destroy() {
     // Wait for all queue_handler threads to exit
     TLOGD("Waiting for I/O to stop on {}", str_id)
     for (auto& q : queue_handlers)
-        q.join();
+        if (q.joinable()) q.join();
 
     // De-allocate the ublksrv device and free all unowned memory
     if (ublk_dev) {
@@ -565,6 +567,7 @@ void ublkpp_tgt_impl::destroy() {
     if (ctrl_dev) {
         TLOGD("De-allocate Control for {}", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
+        ctrl_dev = nullptr;
     }
     TLOGI("Stopped {}", str_id)
 }
