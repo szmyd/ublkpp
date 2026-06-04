@@ -323,8 +323,8 @@ TEST(Raid1, UncleanBothPresentSelfHealIdempotentAfterCrash) {
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .Times(2)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t addr) -> io_result {
-            // init_to: clean bitmap pages written to the new/stale device
-            EXPECT_GE(addr, static_cast< off_t >(ublkpp::raid1::k_page_size));
+            // init_to: first (and only, for 1 GiB) bitmap page at sizeof(SuperBlock) == k_page_size
+            EXPECT_EQ(addr, static_cast< off_t >(ublkpp::raid1::k_page_size));
             return ublkpp::raid1::k_page_size;
         })
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {

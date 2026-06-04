@@ -31,7 +31,9 @@ namespace raid1 {
 
 // Min page-resolution (how much does the smallest page cover?)
 constexpr auto k_min_page_depth = k_min_chunk_size * k_page_size * k_bits_in_byte; // 1GiB from above
-constexpr uint64_t k_age_bump = 16; // must be > 1 (new_device detection threshold in __load_and_select_superblock)
+// > 1: new_device detection threshold in __load_and_select_superblock. 16: matches the bumps used
+// in __swap_device and the existing new_device / unclean-degraded paths so all sites are comparable.
+constexpr uint64_t k_age_bump = 16;
 
 // Max user-data size
 constexpr uint64_t k_max_user_data =
@@ -303,7 +305,12 @@ void Raid1Disk::__become_active() {
     if (state.backup_dev->disk->is_missing()) return;
     // Preserve on-disk age gap for crash-mid-resync idempotency (see __init_bitmap_and_degraded_route).
     if (state.backup_dev->unavail.test(std::memory_order_acquire)) {
-        TLOGD("Skipping backup SB write: device_b marked stale at startup [uuid:{}]", _str_uuid)
+        // Both the SB write and its __become_degraded fallback are intentionally skipped: the array
+        // is already in the correct degraded state from __init_bitmap_and_degraded_route, and the
+        // stale SB must not be updated so the on-disk age gap is preserved. probe_mirror cannot
+        // clear unavail before this point because the resync task only starts after construction
+        // completes and the first queue thread registers.
+        RLOGI("Skipping backup SB write: device_b marked stale at startup [uuid:{}]", _str_uuid)
         return;
     }
     if (!write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
