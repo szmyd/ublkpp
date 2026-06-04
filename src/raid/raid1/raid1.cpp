@@ -310,7 +310,7 @@ void Raid1Disk::__become_active() {
         // stale SB must not be updated so the on-disk age gap is preserved. probe_mirror cannot
         // clear unavail before this point because the resync task only starts after construction
         // completes and the first queue thread registers.
-        RLOGI("Skipping backup SB write: device_b marked stale at startup [uuid:{}]", _str_uuid)
+        RLOGW("Skipping backup SB write: device_b marked stale at startup [uuid:{}]", _str_uuid)
         return;
     }
     if (!write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
