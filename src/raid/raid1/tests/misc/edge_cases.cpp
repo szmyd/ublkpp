@@ -202,8 +202,7 @@ TEST(Raid1, UncleanShutdownBothPresentSelfHeal) {
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
-            EXPECT_EQ(ublkpp::raid1::read_route::DEVA,
-                      static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVA, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
             EXPECT_EQ(htobe64(16), sb->fields.bitmap.age); // age 0 (normal_superblock) + 16
             EXPECT_EQ(0, sb->fields.clean_unmount);
             return ublkpp::raid1::k_page_size;
@@ -222,8 +221,7 @@ TEST(Raid1, UncleanShutdownBothPresentSelfHeal) {
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             EXPECT_EQ(1, sb->fields.clean_unmount);
-            EXPECT_EQ(ublkpp::raid1::read_route::DEVA,
-                      static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVA, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
             return ublkpp::raid1::k_page_size;
         });
     // device_b: no writes — __become_active skips (unavail guard), destructor skips (degraded backup)
@@ -305,8 +303,7 @@ TEST(Raid1, UncleanBothPresentSelfHealIdempotentAfterCrash) {
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t addr) -> io_result {
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
-            EXPECT_EQ(ublkpp::raid1::read_route::DEVA,
-                      static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVA, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
             EXPECT_EQ(htobe64(32), sb->fields.bitmap.age); // 16 + 16 bump from new_device path
             return ublkpp::raid1::k_page_size;
         })
@@ -331,8 +328,7 @@ TEST(Raid1, UncleanBothPresentSelfHealIdempotentAfterCrash) {
             // __become_active SB: no unavail guard in new_device path, backup gets SB
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
-            EXPECT_EQ(ublkpp::raid1::read_route::DEVA,
-                      static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVA, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
             EXPECT_EQ(htobe64(32), sb->fields.bitmap.age);
             return ublkpp::raid1::k_page_size;
         });

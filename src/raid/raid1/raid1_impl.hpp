@@ -20,7 +20,8 @@ struct MirrorDevice {
     MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > device);
     std::shared_ptr< ublk_disk > const disk;
     std::shared_ptr< SuperBlock > sb; // Only used during load_superblock time
-    std::atomic_flag unavail; // not ready for IO; also set at startup self-heal to prevent SB writes that would destroy the age gap
+    std::atomic_flag
+        unavail; // not ready for IO; also set at startup self-heal to prevent SB writes that would destroy the age gap
 
     bool new_device{true};
 };
