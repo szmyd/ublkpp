@@ -31,7 +31,7 @@ namespace raid1 {
 
 // Min page-resolution (how much does the smallest page cover?)
 constexpr auto k_min_page_depth = k_min_chunk_size * k_page_size * k_bits_in_byte; // 1GiB from above
-constexpr uint64_t k_age_bump = 16; // must be > 1 (pick_superblock threshold for new_device detection)
+constexpr uint64_t k_age_bump = 16; // must be > 1 (new_device detection threshold in __load_and_select_superblock)
 
 // Max user-data size
 constexpr uint64_t k_max_user_data =
@@ -394,7 +394,7 @@ bool Raid1Disk::__swap_device(std::string const& outgoing_device_id, std::shared
     if (!_read_route_cache.compare_exchange_strong(orig_route, new_read_route)) return false;
 
     auto old_age = be64toh(_sb->fields.bitmap.age);
-    auto new_age = old_age + 16;
+    auto new_age = old_age + k_age_bump;
 
     auto& outgoing_dev = swapping_device_a ? _device_a : _device_b;
     outgoing_dev.swap(incoming_mirror);
