@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.9] - 2026-06-04
+
+### Fixed
+
+- **RAID1 read-determinism after unclean shutdown (both legs present)**: when both legs were present at startup with equal ages, `clean_unmount=0`, and `read_route=EITHER`, the code previously only logged a warning. Writes in-flight at crash time may have landed on one leg but not the other, so round-robin reads of the same LBA could return different bytes on alternating accesses — a violation of the block-device read-determinism contract that filesystems (XFS, etc.) depend on unconditionally. The fix detects this case and self-heals: manufactures a +16 age gap on the canonical leg (device_a), pins reads to it via `read_route::DEVA`, dirties the whole bitmap, and marks device_b stale (`unavail`) so writes skip it until `probe_mirror` confirms physical health. `__become_active` skips persisting device_b's superblock (new `unavail` guard), preserving the on-disk age gap so any crash mid-resync reassembles through the existing `new_device` path rather than back into this branch. Idempotent across repeated crashes; no new superblock field. Addresses [issue #290](https://github.com/szmyd/ublkpp/issues/290) Phase 1.
+
 ## [0.32.8] - 2026-06-01
 
 ### Fixed

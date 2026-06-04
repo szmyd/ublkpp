@@ -269,7 +269,27 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
             throw std::runtime_error("Invariant violated: previously degraded array has empty superbitmap");
         _dirty_bitmap->load_from(*active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
-        RLOGW("Raid1 was not cleanly shutdown last time [uuid:{}]!", _str_uuid)
+        // Both legs present, equal ages, EITHER route, unclean shutdown. In-flight writes at
+        // crash time may have landed on one leg but not the other; round-robin reads would
+        // return different bytes for the same LBA, violating the block-device read-determinism
+        // contract (filesystem and application code assume a given LBA always reads the same).
+        //
+        // Self-heal by manufacturing a +16 age gap: pin reads to device_a (canonical — the
+        // choice is arbitrary since both are legal post-crash states), dirty the whole bitmap,
+        // and mark device_b stale so writes skip it until probe_mirror confirms physical health.
+        //
+        // __become_active skips persisting device_b's SB (via the unavail guard there),
+        // preserving the on-disk age gap: canonical gets age=N+16, stale keeps age=N (gap 16>1).
+        // On any crash-mid-resync reassembly, pick_superblock selects the canonical, the age
+        // difference routes through the existing new_device path (raid1.cpp:225-232), which
+        // re-dirties the whole bitmap and resumes the full resync. Idempotent across crashes.
+        _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
+        RLOGI("Unclean shutdown with both legs present [uuid:{}] — reads pinned to {} (canonical), "
+              "full resync to {} scheduled to restore read-determinism",
+              _str_uuid, *_device_a->disk, *_device_b->disk)
+        _dirty_bitmap->dirty_region(0, capacity());
+        _read_route_cache.store(read_route::DEVA, std::memory_order_release);
+        _device_b->unavail.test_and_set(std::memory_order_acq_rel);
     }
 }
 
@@ -287,6 +307,13 @@ void Raid1Disk::__become_active() {
         return;
     }
     if (state.backup_dev->disk->is_missing()) return;
+    // Stale-leg guard: when the backup was marked unavailable at startup (both-present unclean
+    // self-heal path in __init_bitmap_and_degraded_route), skip writing its superblock here.
+    // Canonical's SB carries the bumped age (N+16); leaving stale's on-disk SB at age N
+    // preserves the >1 age gap, so any crash-mid-resync reassembly routes through the existing
+    // new_device path (pick_superblock selects canonical, age_diff>1 sets new_device=true)
+    // rather than looping back into the both-present-unclean branch.
+    if (state.backup_dev->unavail.test(std::memory_order_acquire)) return;
     if (!write_superblock(*state.backup_dev->disk, _sb.get(), read_route::DEVB != state.route, state.route)) {
         if (!__become_degraded(false, &state, false)) {
             throw std::runtime_error(fmt::format("Could not initialize superblocks!"));
