@@ -216,12 +216,14 @@ TEST(Raid1, UncleanShutdownBothPresentSelfHeal) {
             return ublkpp::raid1::k_page_size;
         })
         .WillOnce([](uint8_t, iovec* iovecs, uint32_t nr_vecs, off_t addr) -> io_result {
-            // destructor SB: clean_unmount=1
+            // destructor SB: clean_unmount=1, route still DEVA (array remains degraded at shutdown)
             EXPECT_EQ(1U, nr_vecs);
             EXPECT_EQ(ublkpp::raid1::k_page_size, ublkpp::iovec_len(iovecs, iovecs + nr_vecs));
             EXPECT_EQ(0UL, addr);
             auto* sb = reinterpret_cast< ublkpp::raid1::SuperBlock* >(iovecs->iov_base);
             EXPECT_EQ(1, sb->fields.clean_unmount);
+            EXPECT_EQ(ublkpp::raid1::read_route::DEVA,
+                      static_cast< ublkpp::raid1::read_route >(sb->fields.read_route));
             return ublkpp::raid1::k_page_size;
         });
     // device_b: no writes — __become_active skips (unavail guard), destructor skips (degraded backup)

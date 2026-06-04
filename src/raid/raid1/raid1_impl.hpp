@@ -20,6 +20,17 @@ struct MirrorDevice {
     MirrorDevice(boost::uuids::uuid const& uuid, std::shared_ptr< ublk_disk > device);
     std::shared_ptr< ublk_disk > const disk;
     std::shared_ptr< SuperBlock > sb; // Only used during load_superblock time
+    // Three distinct uses, all guarded by the same flag:
+    //   1. I/O routing — reads/writes skip this leg when unavail is set
+    //      (__select_read_devices, __backup_writable).
+    //   2. Physical health probe — probe_mirror clears unavail when the device
+    //      responds to a read, re-enabling writes and eventually reads.
+    //   3. SB persistence skip — __become_active skips writing this leg's
+    //      superblock when unavail is set at startup (both-present unclean
+    //      self-heal path), preserving the on-disk age gap for idempotent
+    //      crash-mid-resync recovery. This use is safe because unavail is set
+    //      in __init_bitmap_and_degraded_route before any queue thread starts,
+    //      so no I/O path can clear it before __become_active runs.
     std::atomic_flag unavail;
 
     bool new_device{true};

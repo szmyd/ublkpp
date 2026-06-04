@@ -281,15 +281,19 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         // __become_active skips persisting device_b's SB (via the unavail guard there),
         // preserving the on-disk age gap: canonical gets age=N+16, stale keeps age=N (gap 16>1).
         // On any crash-mid-resync reassembly, pick_superblock selects the canonical, the age
-        // difference routes through the existing new_device path (raid1.cpp:225-232), which
-        // re-dirties the whole bitmap and resumes the full resync. Idempotent across crashes.
+        // difference routes through the existing one-new-device xor branch, which re-dirties the
+        // whole bitmap and resumes the full resync. Idempotent across crashes.
+        //
+        // Note: the dirty_region(0, capacity()) call below makes probe_mirror clearing unavail
+        // safe — until the resync makes progress, every read to device_b is redirected back to
+        // device_a by the dirty-bitmap check in __select_read_devices (100% coverage guarantee).
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 16);
         RLOGI("Unclean shutdown with both legs present [uuid:{}] — reads pinned to {} (canonical), "
               "full resync to {} scheduled to restore read-determinism",
               _str_uuid, *_device_a->disk, *_device_b->disk)
         _dirty_bitmap->dirty_region(0, capacity());
         _read_route_cache.store(read_route::DEVA, std::memory_order_release);
-        _device_b->unavail.test_and_set(std::memory_order_acq_rel);
+        _device_b->unavail.test_and_set(std::memory_order_release);
     }
 }
 
