@@ -291,18 +291,28 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
 
-    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     auto io = reinterpret_cast< async_io* >(data->private_data);
     io->_pool.clear();
     io->_tag = data->tag;
 
     auto const op = ublksrv_get_op(data->iod);
+
+    // Drain gate: after begin_shutdown(), reject new I/O before it reaches the backing device.
+    // In-flight ops that already passed this check complete normally; only when the last one
+    // decrements the metrics counter to zero does device.reset() fire.
+    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
+        TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
+        ublksrv_complete_io(q, data->tag, -EIO);
+        co_return;
+    }
+
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
     int result;
     if (op == UBLK_IO_OP_FLUSH) {
         result = 0;
     } else {
+        auto* device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
         auto const* iod = data->iod;
         // Frame-local: io_uring reads iov contents at submit time (deferred to the queue loop's
         // submit_and_wait_timeout). thread_local would be overwritten by sibling __handle_io_async
@@ -320,6 +330,21 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, result)
     }
     ublksrv_complete_io(q, data->tag, result);
+
+    // After the last in-flight op drains, flush the backing store exactly once.
+    // _shutting_down ensures no new ops increment the counters, so reaching zero here
+    // means all I/O is settled and device.reset() is safe.
+    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
+        auto& m = qs->tgt->metrics;
+        if (m._queued_reads.load(std::memory_order_acquire) == 0 &&
+            m._queued_writes.load(std::memory_order_acquire) == 0) {
+            bool expected = false;
+            if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                TLOGI("All I/O drained after shutdown signal — flushing backing store")
+                qs->tgt->device.reset();
+            }
+        }
+    }
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -484,6 +509,8 @@ std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; 
 std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
+void ublkpp_tgt::begin_shutdown() { _p->_shutting_down.store(true, std::memory_order_release); }
+
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 
 void ublkpp_tgt_impl::destroy() {
@@ -525,7 +552,9 @@ void ublkpp_tgt_impl::destroy() {
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    // Destructor intentionally left empty - call destroy() explicitly
+    // Intentionally left empty. Resources (ctrl_dev, ublk_dev, queue threads) are reclaimed
+    // by the OS on process exit. Call destroy() explicitly (via remove()) for an orderly
+    // ublk stack teardown. Call begin_shutdown() before exit to flush the backing store.
 }
 
 } // namespace ublkpp
