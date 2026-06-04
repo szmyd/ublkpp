@@ -23,13 +23,22 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
 
     void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment);
 
-    // Returns true when both read and write counters are zero. Two separate loads — safe
-    // because callers pair this with a seq_cst fence that establishes a total order with the
-    // seq_cst fence in __handle_io_async (between its relaxed increment and its acquire gate
-    // check). Any op that increments its counter is ordered to see _shutting_down=true before
-    // reaching device*, so a false-positive drain (both loads see zero, yet an op is about to
-    // increment) cannot cause a use-after-free. The CAS on _device_reset_done prevents
-    // double-execution as a second safety net.
+    // Returns true when both read and write counters are zero. Two separate loads.
+    //
+    // Called from two sites with different safety arguments:
+    //
+    // begin_shutdown(): pairs with a seq_cst store+fence that form a total order S with each
+    //   op's seq_cst fence (between its relaxed increment and its acquire gate check). In any
+    //   execution, either the op's increment is visible here (false positive avoided) or the
+    //   op's gate check sees _shutting_down=true (op rejects, never touches device*). No UAF.
+    //
+    // Drain check in __handle_io_async(): no explicit fence. False negatives (stale non-zero
+    //   from another thread's not-yet-propagated relaxed decrement) just defer device.reset()
+    //   to the last decrementing thread's own drain check — never lost. False positives (seeing
+    //   zero while an op is between its increment and its fence) are still prevented by that
+    //   op's seq_cst fence: the fence makes the op visible either to begin_shutdown's total-order
+    //   read or ensures the op's gate check sees _shutting_down=true. The CAS on
+    //   _device_reset_done prevents double-execution in both cases.
     bool all_idle() const {
         return _queued_reads.load(std::memory_order_acquire) == 0 &&
             _queued_writes.load(std::memory_order_acquire) == 0;

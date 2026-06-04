@@ -334,7 +334,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
     }
 
-    qs->tgt->metrics.record_queue_depth_change(q, op, false); // normal-path decrement (pairs with increment above)
+    qs->tgt->metrics.record_queue_depth_change(q, op, false);
 
     if (0 > result) [[unlikely]] {
         TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)
@@ -344,8 +344,10 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     ublksrv_complete_io(q, data->tag, result);
 
     // After the last in-flight op drains, flush the backing store exactly once.
-    // _shutting_down ensures no new ops pass the gate, so all_idle() here means no actual
-    // device I/O is outstanding (rejected ops decrement immediately without touching device*).
+    // No seq_cst fence needed here: UAF safety comes from each op's own seq_cst fence
+    // (between its increment and gate check), not from a fence at this call site. A stale
+    // non-zero read in all_idle() (false negative) just defers the drain to the last
+    // decrementing thread's drain check — never lost. See all_idle() for the full argument.
     if (qs->tgt->_shutting_down.load(std::memory_order_acquire) && qs->tgt->metrics.all_idle()) {
         bool expected = false;
         if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
