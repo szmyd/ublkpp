@@ -291,18 +291,28 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
 
-    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     auto io = reinterpret_cast< async_io* >(data->private_data);
     io->_pool.clear();
     io->_tag = data->tag;
 
     auto const op = ublksrv_get_op(data->iod);
+
+    // Drain gate: after begin_shutdown(), reject new I/O before it reaches the backing device.
+    // In-flight ops that already passed this check complete normally; only when the last one
+    // decrements the metrics counter to zero does device.reset() fire.
+    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
+        TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
+        ublksrv_complete_io(q, data->tag, -EIO);
+        co_return;
+    }
+
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
     int result;
     if (op == UBLK_IO_OP_FLUSH) {
         result = 0;
     } else {
+        auto* device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
         auto const* iod = data->iod;
         // Frame-local: io_uring reads iov contents at submit time (deferred to the queue loop's
         // submit_and_wait_timeout). thread_local would be overwritten by sibling __handle_io_async
@@ -320,6 +330,21 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, result)
     }
     ublksrv_complete_io(q, data->tag, result);
+
+    // After the last in-flight op drains, flush the backing store exactly once.
+    // _shutting_down ensures no new ops increment the counters, so reaching zero here
+    // means all I/O is settled and device.reset() is safe.
+    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
+        auto& m = qs->tgt->metrics;
+        if (m._queued_reads.load(std::memory_order_acquire) == 0 &&
+            m._queued_writes.load(std::memory_order_acquire) == 0) {
+            bool expected = false;
+            if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                TLOGI("All I/O drained after shutdown signal — flushing backing store")
+                qs->tgt->device.reset();
+            }
+        }
+    }
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -484,6 +509,8 @@ std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; 
 std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
+void ublkpp_tgt::begin_shutdown() { _p->_shutting_down.store(true, std::memory_order_release); }
+
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 
 void ublkpp_tgt_impl::destroy() {
@@ -526,48 +553,9 @@ void ublkpp_tgt_impl::destroy() {
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
-
-    // Closing the ublk char-device fd (via ctrl_deinit) triggers ublk_ch_release() in the
-    // kernel. With UBLK_F_USER_RECOVERY set the kernel transitions the device to
-    // UBLK_S_DEV_QUIESCED — /dev/ublkbN stays alive — and delivers UBLK_IO_RES_ABORT CQEs
-    // to all queue io_uring rings, causing run_queue_loop() to exit cleanly.
-    // No stop_dev (transitions to DEAD, removes /dev/ublkbN) or del_dev here.
-    //
-    if (ctrl_dev) {
-        // Invariant: run() always sets UBLK_F_USER_RECOVERY before ublksrv_ctrl_add_dev();
-        // if the kernel rejected it, ctrl_dev stays null. Without the flag ctrl_deinit
-        // transitions to UBLK_S_DEV_DEAD (not QUIESCED), defeating recovery.
-        // On violation we log and fall through — device goes DEAD, logged, resources freed.
-        bool const will_quiesce = tgt_type && (tgt_type->ublk_flags & UBLK_F_USER_RECOVERY);
-        if (!will_quiesce) {
-            if (!tgt_type) {
-                TLOGE("tgt_type is null in destructor for {} — device will go DEAD", str_id)
-            } else {
-                TLOGE("UBLK_F_USER_RECOVERY not set for {} — device will go DEAD", str_id)
-            }
-        }
-        TLOGI("Releasing ctrl handle for {}, device will go {}", str_id,
-              will_quiesce ? "QUIESCED (recoverable)" : "DEAD")
-        ublksrv_ctrl_deinit(ctrl_dev);
-        ctrl_dev = nullptr;
-    }
-
-    // Wait for queue threads to exit after receiving UBLK_IO_RES_ABORT
-    TLOGD("Waiting for I/O to stop on {}", str_id)
-    for (auto& q : queue_handlers)
-        if (q.joinable()) q.join();
-
-    // De-allocate the ublksrv device
-    if (ublk_dev) {
-        TLOGD("De-allocate {}", str_id)
-        ublksrv_dev_deinit(ublk_dev);
-        ublk_dev = nullptr;
-    }
-
-    // Safe here because all queue threads have been joined above — no ublk I/O is possible.
-    // For RAID-1: flushes the dirty bitmap and writes clean_unmount=1 to the superblock.
-    device.reset();
+    // Intentionally left empty. Resources (ctrl_dev, ublk_dev, queue threads) are reclaimed
+    // by the OS on process exit. Call destroy() explicitly (via remove()) for an orderly
+    // ublk stack teardown. Call begin_shutdown() before exit to flush the backing store.
 }
 
 } // namespace ublkpp

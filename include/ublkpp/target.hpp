@@ -20,11 +20,9 @@ struct ublkpp_tgt_impl;
 struct ublkpp_tgt {
     using run_result_t = std::expected< std::unique_ptr< ublkpp_tgt >, std::error_condition >;
 
-    // Intentionally does NOT call remove(). Dropping the unique_ptr without calling remove()
-    // is the correct path for SIGTERM / pod restart: the kernel preserves the ublk device under
-    // UBLK_F_USER_RECOVERY and the next process reconnects via the recovering path. Calling
-    // remove() with an active mount would deadlock -- del_dev blocks until the mount releases,
-    // but the mount cannot release because the queues are already stopped.
+    // Dropping the unique_ptr without calling remove() leaves the ublk device in whatever
+    // state the kernel assigns on process exit. Call begin_shutdown() first to ensure the
+    // backing store is cleanly flushed (RAID-1 dirty bitmap, clean_unmount flag) before exit.
     ~ublkpp_tgt();
 
     // Brings up the ublk target. `vol_id` identifies the volume (woven into superblock + metric
@@ -33,6 +31,13 @@ struct ublkpp_tgt {
     // Returns the live tgt or an error_condition (system_category from the ublksrv handshake,
     // operation_not_permitted on permission/setup failure, invalid_argument on bad geometry).
     static run_result_t run(boost::uuids::uuid const& vol_id, disk_handle device, int device_id = -1);
+
+    // Signals the target to begin a graceful drain. After this call, __handle_io_async rejects
+    // all new I/O with EIO before it reaches the backing device. When the last in-flight op
+    // completes, device.reset() is called exactly once — flushing the RAID-1 dirty bitmap and
+    // writing clean_unmount=1. Safe to call from a SIGTERM handler (only stores an atomic).
+    // Must be called before dropping the unique_ptr if a clean backing-store flush is required.
+    void begin_shutdown();
 
     // Cleanly stops the device and removes it from the kernel. Only call after the block device
     // has been unmounted. Consuming the unique_ptr prevents accidental double-remove.

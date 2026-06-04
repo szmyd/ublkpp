@@ -6,14 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.32.9] - 2026-06-03
 
-### Changed
+### Added
 
-- **Graceful quiesce on daemon exit (target)**: `ublkpp_tgt_impl` destructor now implements the `UBLK_F_USER_RECOVERY` daemon-exit protocol instead of calling `stop_dev`. Closing the ublk char-device fd (via `ublksrv_ctrl_deinit`) triggers `ublk_ch_release()` in the kernel, which transitions the device to `UBLK_S_DEV_QUIESCED`, delivers `UBLK_IO_RES_ABORT` CQEs to all queue threads so they exit cleanly, and preserves `/dev/ublkbN` for recovery by a new daemon. `destroy()` (the explicit-removal path called from `ublkpp_tgt::remove()`) is unchanged — it still calls `stop_dev` + `del_dev`.
+- **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, `__handle_io_async` rejects all new I/O with `EIO` before it reaches the backing device. When the last in-flight op completes and the metrics counters reach zero, `device.reset()` fires exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1` to the superblock. Safe to call from a SIGTERM handler (stores a single `std::atomic`).
 
 ### Fixed
 
-- **`destroy()` missing `ctrl_dev = nullptr`**: after `ublksrv_ctrl_deinit`, `ctrl_dev` was not nulled, leaving the destructor able to call `ctrl_deinit` a second time on the freed pointer. Now nulled immediately after deinit.
-- **Unconditional `join()` in `destroy()`**: queue threads were joined without a `joinable()` guard, which would throw `std::system_error` if a thread was never started (e.g., on a failed queue init). Added `if (q.joinable())` guard, consistent with the destructor.
+- **`destroy()` missing `ctrl_dev = nullptr`**: after `ublksrv_ctrl_deinit`, `ctrl_dev` was not nulled, leaving a potential double-deinit on the freed pointer. Now nulled immediately after deinit.
+- **Unconditional `join()` in `destroy()`**: queue threads were joined without a `joinable()` guard, which would throw `std::system_error` if a thread was never started (e.g., on a failed queue init). Added `if (q.joinable())` guard.
 
 ## [0.32.8] - 2026-06-01
 
