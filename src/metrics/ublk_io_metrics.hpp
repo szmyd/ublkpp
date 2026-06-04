@@ -22,6 +22,14 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     std::atomic< uint64_t > _queued_writes{0};
 
     void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment);
+
+    // Returns true when both read and write counters are zero. Two separate loads — safe for
+    // drain detection because the CAS on _device_reset_done prevents double-execution even if
+    // the window between the two loads is observed non-atomically.
+    bool all_idle() const {
+        return _queued_reads.load(std::memory_order_acquire) == 0 &&
+            _queued_writes.load(std::memory_order_acquire) == 0;
+    }
 };
 
 } // namespace ublkpp

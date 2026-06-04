@@ -335,17 +335,13 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     ublksrv_complete_io(q, data->tag, result);
 
     // After the last in-flight op drains, flush the backing store exactly once.
-    // _shutting_down ensures no new ops increment the counters, so reaching zero here
-    // means all I/O is settled and device.reset() is safe.
-    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
-        auto& m = qs->tgt->metrics;
-        if (m._queued_reads.load(std::memory_order_acquire) == 0 &&
-            m._queued_writes.load(std::memory_order_acquire) == 0) {
-            bool expected = false;
-            if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                TLOGI("All I/O drained after shutdown signal — flushing backing store")
-                qs->tgt->device.reset();
-            }
+    // _shutting_down ensures no new ops pass the gate, so all_idle() here means no actual
+    // device I/O is outstanding (rejected ops decrement immediately without touching device*).
+    if (qs->tgt->_shutting_down.load(std::memory_order_acquire) && qs->tgt->metrics.all_idle()) {
+        bool expected = false;
+        if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            TLOGI("All I/O drained after shutdown signal — flushing backing store")
+            qs->tgt->device.reset();
         }
     }
 }
@@ -517,9 +513,14 @@ void ublkpp_tgt::begin_shutdown() {
     // Idle-drain: if no I/O is in-flight at the moment the flag is set, no __handle_io_async
     // completion will ever reach the post-decrement drain check. Fire device.reset() here
     // instead so clean_unmount=1 is written even on a quiesced volume.
-    // Note: this may call device.reset() synchronously — do not invoke from a signal handler.
-    auto& m = _p->metrics;
-    if (m._queued_reads.load(std::memory_order_acquire) == 0 && m._queued_writes.load(std::memory_order_acquire) == 0) {
+    //
+    // Safe even in the narrow window where an op arrives after the store but before all_idle():
+    // that op sees _shutting_down=true, decrements immediately (never touches device*), and
+    // returns EIO. counter==0 in that window implies no actual device I/O is outstanding.
+    // The CAS on _device_reset_done prevents double-execution regardless.
+    //
+    // Note: may call device.reset() synchronously — do not invoke from a signal handler.
+    if (_p->metrics.all_idle()) {
         bool expected = false;
         if (_p->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             TLOGI("No I/O in-flight at shutdown — flushing backing store immediately")
