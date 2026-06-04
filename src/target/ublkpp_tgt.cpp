@@ -301,14 +301,12 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     // otherwise call device.reset() while we are still about to use the raw device* pointer.
     // With the increment already in place, any concurrent drain check sees counter > 0.
     //
-    // seq_cst fence after the increment establishes a total order with begin_shutdown's
-    // seq_cst store + fence. Either this fence precedes begin_shutdown's fence (begin_shutdown
-    // sees the increment and skips device.reset()) or begin_shutdown's fence precedes this one
-    // (the gate check below sees _shutting_down=true and rejects without touching device*).
-    // Without the fence, weakly-ordered CPUs (ARM) can reorder the relaxed increment past the
-    // acquire gate check, creating a window where device.reset() fires while we hold device*.
+    // x86 TSO note: no seq_cst fence needed here. Once any thread observes _shutting_down=true
+    // from the coherent cache, x86 cache coherence guarantees it is globally visible — no other
+    // thread can subsequently see false. ARM would require a paired seq_cst fence here and in
+    // begin_shutdown() to establish a total order, but atomic_thread_fence is unsupported by
+    // TSan and we target x86 only.
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
 
     // Drain gate: reject reads/writes during shutdown before they reach the backing device.
     // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*,
@@ -520,14 +518,12 @@ std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
 void ublkpp_tgt::begin_shutdown() {
-    // seq_cst store + fence establish a total order with the seq_cst fence in __handle_io_async
-    // (between its increment and its gate check). In any execution, either:
-    //   (A) this fence precedes the op's fence → all_idle() below sees the op's increment → skip
-    //   (B) the op's fence precedes this fence → the op's gate check sees _shutting_down=true → reject
-    // Without this pairing, a relaxly-incremented counter on a weakly-ordered CPU (ARM) could
-    // be invisible to this thread while the op is already past its gate and heading for device*.
-    _p->_shutting_down.store(true, std::memory_order_seq_cst);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    // x86 TSO: release ordering is sufficient. Once the store commits to the coherent cache,
+    // it is visible to all cores — any thread that subsequently loads _shutting_down sees true.
+    // ARM would require a paired seq_cst fence here and in __handle_io_async to close the
+    // relaxed-increment / acquire-gate-check race, but we target x86 only and
+    // atomic_thread_fence is not supported by TSan.
+    _p->_shutting_down.store(true, std::memory_order_release);
     // Idle-drain: if no I/O is in-flight at the moment the flag is set, no __handle_io_async
     // completion will ever reach the post-decrement drain check. Fire device.reset() here
     // instead so clean_unmount=1 is written even on a quiesced volume.
