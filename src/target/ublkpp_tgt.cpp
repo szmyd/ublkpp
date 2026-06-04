@@ -297,16 +297,19 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
 
     auto const op = ublksrv_get_op(data->iod);
 
+    // Increment before the shutdown gate: a concurrent thread completing its last op could
+    // otherwise see counters==0, win the CAS, and call device.reset() while we are still
+    // about to use the raw device* pointer. With the increment already in place, that
+    // concurrent drain check sees counter > 0 and defers. On rejection we undo immediately.
+    qs->tgt->metrics.record_queue_depth_change(q, op, true);
+
     // Drain gate: after begin_shutdown(), reject new I/O before it reaches the backing device.
-    // In-flight ops that already passed this check complete normally; only when the last one
-    // decrements the metrics counter to zero does device.reset() fire.
     if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
+        qs->tgt->metrics.record_queue_depth_change(q, op, false);
         TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
         ublksrv_complete_io(q, data->tag, -EIO);
         co_return;
     }
-
-    qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
     int result;
     if (op == UBLK_IO_OP_FLUSH) {
@@ -509,7 +512,21 @@ std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; 
 std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
-void ublkpp_tgt::begin_shutdown() { _p->_shutting_down.store(true, std::memory_order_release); }
+void ublkpp_tgt::begin_shutdown() {
+    _p->_shutting_down.store(true, std::memory_order_release);
+    // Idle-drain: if no I/O is in-flight at the moment the flag is set, no __handle_io_async
+    // completion will ever reach the post-decrement drain check. Fire device.reset() here
+    // instead so clean_unmount=1 is written even on a quiesced volume.
+    // Note: this may call device.reset() synchronously — do not invoke from a signal handler.
+    auto& m = _p->metrics;
+    if (m._queued_reads.load(std::memory_order_acquire) == 0 && m._queued_writes.load(std::memory_order_acquire) == 0) {
+        bool expected = false;
+        if (_p->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            TLOGI("No I/O in-flight at shutdown — flushing backing store immediately")
+            _p->device.reset();
+        }
+    }
+}
 
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 

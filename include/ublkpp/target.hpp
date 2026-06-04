@@ -34,9 +34,11 @@ struct ublkpp_tgt {
 
     // Signals the target to begin a graceful drain. After this call, __handle_io_async rejects
     // all new I/O with EIO before it reaches the backing device. When the last in-flight op
-    // completes, device.reset() is called exactly once — flushing the RAID-1 dirty bitmap and
-    // writing clean_unmount=1. Safe to call from a SIGTERM handler (only stores an atomic).
-    // Must be called before dropping the unique_ptr if a clean backing-store flush is required.
+    // completes (or immediately if the system is already idle), device.reset() is called exactly
+    // once — flushing the RAID-1 dirty bitmap and writing clean_unmount=1.
+    // Must be called from a normal thread context, not a signal handler: the idle-drain path
+    // calls device.reset() synchronously. Typical use: set a flag in the SIGTERM handler, then
+    // call begin_shutdown() from the main thread when the flag is observed.
     void begin_shutdown();
 
     // Cleanly stops the device and removes it from the kernel. Only call after the block device
