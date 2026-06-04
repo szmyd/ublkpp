@@ -277,8 +277,10 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         // to preserve the >1 age gap for idempotent crash-mid-resync reassembly.
         DEBUG_ASSERT(_read_route_cache.load(std::memory_order_relaxed) == read_route::EITHER,
                      "self-heal branch reached with non-EITHER route")
-        DEBUG_ASSERT(!_device_a->new_device && !_device_b->new_device,
-                     "self-heal branch reached with new_device set")
+        // The XOR branch above catches exactly one-new-device; if both new_device flags are set
+        // (both SBs corrupt or absent) the XOR is false and we fall through here. That scenario
+        // is not both-present-unclean: skip self-heal and let the caller handle the fresh array.
+        if (_device_a->new_device || _device_b->new_device) return;
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + k_age_bump);
         _dirty_bitmap->dirty_region(0, capacity());
         _read_route_cache.store(read_route::DEVA, std::memory_order_release);
