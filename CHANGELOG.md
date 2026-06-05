@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.10] - 2026-06-05
+
+### Fixed
+
+- **RAID1 remount failure after resync-interrupted-by-stop race**: a race between the resync task and `stop()` in the destructor produced an on-disk state of `DEVB + clean_unmount=1 + empty superbitmap`. On second mount this hit an invariant check and threw `std::runtime_error`, making the volume unassemblable. Fixed with two cooperating changes: (1) `_start()` captures `dirty_pages()` before each `__run()` call; when STOPPING fires, if the count was non-zero and is now zero the resync cleared all chunks but was interrupted in `__yield()` — `complete()` is called immediately so the destructor sees `route=EITHER`; (2) the invariant check at mount time is replaced with a warn + `dirty_region(0, capacity())` fallback, providing defense-in-depth for any residual cases not prevented by (1). Addresses [issue #300](https://github.com/szmyd/ublkpp/issues/300).
+
 ## [0.32.9] - 2026-06-04
 
 ### Fixed

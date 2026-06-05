@@ -103,8 +103,16 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         // between the last dirty_pages() check and the CAS are caught immediately. If another
         // launch() wins the IDLE slot, that new task handles the remaining bits.
         while (true) {
+            auto const pages_before = _dirty_bitmap->dirty_pages();
             cur_state = __run(clean_mirror, dirty_mirror, &iov);
-            if (resync_state::STOPPING == cur_state) break;
+            if (resync_state::STOPPING == cur_state) {
+                // All chunks cleared but stopped in __yield(): commit so destructor sees route=EITHER,
+                // not DEVA/DEVB + empty-superbitmap. Guard: pages_before>0 skips a zero bitmap at launch.
+                if (pages_before > 0 && 0 == _dirty_bitmap->dirty_pages()) {
+                    if (!complete()) { RLOGW("complete() returned false on STOPPING — unexpected [uuid:{}]", str_uuid) }
+                }
+                break;
+            }
             DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state")
             if (0 != _dirty_bitmap->dirty_pages()) continue;
             if (!complete()) continue;
