@@ -264,17 +264,10 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         auto const& active_dev = (route == read_route::DEVB) ? _device_b : _device_a;
         auto const& backup_dev = (route == read_route::DEVB) ? _device_a : _device_b;
         RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *backup_dev->disk)
-        // clean_unmount=1 is implied: the unclean-degraded case was handled above. Normally the
-        // superbitmap is non-empty here because dirty_region fires before __become_degraded and
-        // the destructor persists the superbitmap on clean shutdown. Exception: if the resync task
-        // cleared all bits via clean_region but was stopped before __become_clean committed
-        // route→EITHER, _start() now calls complete() on the STOPPING path so the destructor sees
-        // route=EITHER (making this branch unreachable in practice). The dirty-all fallback below
-        // handles any residual cases defensively.
-        if (!_dirty_bitmap->superbitmap_nonempty()) {
-            RLOGW("Degraded + clean unmount + empty superbitmap; forcing full resync [uuid:{}]", _str_uuid)
-            _dirty_bitmap->dirty_region(0, capacity());
-        }
+        // clean_unmount=1 implied; superbitmap normally non-empty after degraded+stop.
+        // If empty, Fix 1 in _start() (complete() on STOPPING) should have prevented this.
+        if (!_dirty_bitmap->superbitmap_nonempty())
+            RLOGW("Degraded + clean unmount + empty superbitmap [uuid:{}]", _str_uuid)
         _dirty_bitmap->load_from(*active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
         // Both-present unclean: reads may diverge across legs. Pin to device_a (canonical),

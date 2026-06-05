@@ -506,8 +506,8 @@ TEST(Raid1, CleanDegradedStartupLoadsFromActiveDevice) {
 // Test 9: Clean degraded startup with an all-zero superbitmap.
 // Covers the superbitmap_nonempty() guard in the clean-degraded branch (Branch 4) of
 // __init_bitmap_and_degraded_route. Before Fix 2 this threw; after Fix 2 the constructor
-// warns, calls dirty_region(0, capacity()), then load_from reads zeros from disk and clears
-// the bit again — route stays DEVA until the next successful resync.
+// warns and continues. load_from skips all pages (superbitmap empty) so bytes_to_sync=0;
+// route stays DEVA until resync calls complete() on its first pass.
 TEST(Raid1, CleanDegradedStartupEmptySuperbitmap) {
     auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
     auto device_b = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi, .is_slot_b = true});
@@ -526,14 +526,8 @@ TEST(Raid1, CleanDegradedStartupEmptySuperbitmap) {
             // superbitmap_reserved stays zero — simulates the race-produced on-disk state
             return ublkpp::raid1::k_page_size;
         });
-    // load_from reads 1 bitmap page from the active device (device_a) and gets zeros,
-    // clearing the superbitmap bit that dirty_region just set.
-    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, (off_t)ublkpp::raid1::k_page_size))
-        .WillOnce([](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
-            memset(iovecs->iov_base, 0, iovecs->iov_len);
-            return iovecs->iov_len;
-        });
     // device_a gets 2 writes: __become_active (DEVA) then destructor clean_unmount (DEVA).
+    // No bitmap read — superbitmap is empty so load_from skips all pages.
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, 0UL))
         .Times(2)
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
@@ -556,11 +550,11 @@ TEST(Raid1, CleanDegradedStartupEmptySuperbitmap) {
     EXPECT_NO_THROW({
         auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid.toggle_resync(false);
-        // Fix 2 post-conditions: route=DEVA (unchanged), empty bitmap (load_from cleared dirty_region's bit).
+        // Fix 2 post-conditions: route=DEVA (unchanged), empty bitmap (superbitmap empty; load_from skips).
         auto const s = raid.replica_states();
         EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, s.device_a);   // active leg
         EXPECT_EQ(ublkpp::raid1::replica_state::SYNCING, s.device_b); // backup leg, route not yet EITHER
-        EXPECT_EQ(0ULL, s.bytes_to_sync);                             // load_from zeroed the bitmap
+        EXPECT_EQ(0ULL, s.bytes_to_sync);                             // superbitmap empty; nothing to sync
     });
 }
 
