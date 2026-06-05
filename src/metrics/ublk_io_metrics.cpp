@@ -18,6 +18,12 @@ void UblkIOMetrics::record_queue_depth_change(ublksrv_queue const* q, uint8_t op
     if (!q || !q->private_data) return;
 
     // UBLK_IO_OP_READ = 0, UBLK_IO_OP_WRITE = 1
+    //
+    // memory_order_relaxed is correct for the histogram tracking purpose here.
+    // On x86, all atomic RMW operations (fetch_add, fetch_sub) compile to lock-prefixed
+    // instructions (lock xadd) regardless of the requested memory order — the lock prefix
+    // is an implicit full barrier. The drain safety argument in __handle_io_async therefore
+    // holds: the increment is globally visible before any subsequent load from another thread.
     if (op == 0) { // UBLK_IO_OP_READ
         if (is_increment) {
             auto const depth = _queued_reads.fetch_add(1, std::memory_order_relaxed) + 1;

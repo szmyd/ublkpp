@@ -25,15 +25,13 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
 
     // Returns true when both read and write counters are zero. Two separate loads.
     //
-    // Safety on x86 (TSO): once _shutting_down=true is in the coherent cache, all cores see
-    // it — no op can pass the gate and reach device* after that point. False negatives (stale
-    // non-zero from another thread's not-yet-propagated relaxed decrement) just defer
-    // device.reset() to the last decrementing thread's own drain check; never lost. The CAS
-    // on _device_reset_done prevents double-execution.
-    //
-    // ARM note: would require paired seq_cst fences (increment→fence→gate in each op, and
-    // fence→counter-read in begin_shutdown) to close the relaxed-increment / gate-check race.
-    // Not implemented: we target x86 only and atomic_thread_fence is unsupported by TSan.
+    // Safety (x86): begin_shutdown() uses a seq_cst store (MFENCE) before reading the
+    // counters. This drains the store buffer and creates a total order with each op's
+    // lock xadd increment: either the increment is visible here (false positive avoided) or
+    // the op's subsequent acquire load of _shutting_down sees true (op rejects, no device*
+    // access). False negatives (stale non-zero from a not-yet-committed decrement) just defer
+    // device.reset() to the last decrementer's own drain check — never lost. The CAS on
+    // _device_reset_done prevents double-execution in both call sites.
     bool all_idle() const {
         return _queued_reads.load(std::memory_order_acquire) == 0 &&
             _queued_writes.load(std::memory_order_acquire) == 0;

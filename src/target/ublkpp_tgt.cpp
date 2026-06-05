@@ -300,12 +300,10 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     // Increment before the shutdown gate: a concurrent drain check that sees counters==0 would
     // otherwise call device.reset() while we are still about to use the raw device* pointer.
     // With the increment already in place, any concurrent drain check sees counter > 0.
-    //
-    // x86 TSO note: no seq_cst fence needed here. Once any thread observes _shutting_down=true
-    // from the coherent cache, x86 cache coherence guarantees it is globally visible — no other
-    // thread can subsequently see false. ARM would require a paired seq_cst fence here and in
-    // begin_shutdown() to establish a total order, but atomic_thread_fence is unsupported by
-    // TSan and we target x86 only.
+    // The increment is lock xadd on x86 (full barrier), visible globally before any subsequent
+    // load by another thread. begin_shutdown()'s seq_cst MFENCE ensures its counter read is
+    // ordered after our lock xadd: either it sees the increment (skips reset) or its MFENCE'd
+    // store committed first (our acquire gate check below sees true and rejects).
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
     // Drain gate: reject reads/writes during shutdown before they reach the backing device.
@@ -518,21 +516,23 @@ std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
 void ublkpp_tgt::begin_shutdown() {
-    // x86 TSO: release ordering is sufficient. Once the store commits to the coherent cache,
-    // it is visible to all cores — any thread that subsequently loads _shutting_down sees true.
-    // ARM would require a paired seq_cst fence here and in __handle_io_async to close the
-    // relaxed-increment / acquire-gate-check race, but we target x86 only and
-    // atomic_thread_fence is not supported by TSan.
-    _p->_shutting_down.store(true, std::memory_order_release);
+    if (_p->_shutting_down.load(std::memory_order_relaxed)) {
+        TLOGW("begin_shutdown() called again — already shutting down, ignoring")
+        return;
+    }
+    // seq_cst: on x86, release compiles to a plain mov that sits in the store buffer.
+    // The subsequent all_idle() counter reads go straight to cache, so the store may not be
+    // visible to other threads when we read the counter — enabling a UAF. seq_cst uses
+    // MFENCE / lock xchg, draining the store buffer before the counter reads and establishing
+    // the total order the drain safety argument requires.
+    _p->_shutting_down.store(true, std::memory_order_seq_cst);
     // Idle-drain: if no I/O is in-flight at the moment the flag is set, no __handle_io_async
     // completion will ever reach the post-decrement drain check. Fire device.reset() here
     // instead so clean_unmount=1 is written even on a quiesced volume.
     //
-    // Any op that arrives between the store and all_idle() sees _shutting_down=true (its
-    // seq_cst fence is ordered with this fence), decrements immediately without touching
-    // device*, and falls through to its own drain check. The CAS prevents double-execution.
-    //
-    // Note: may call device.reset() synchronously — do not invoke from a signal handler.
+    // device.reset() destroys Raid1Disk inline: its destructor calls _resync_task->stop()
+    // (joins the resync thread) then writes clean_unmount=1. This call may therefore block
+    // until the resync task drains. Do not invoke from a signal handler.
     if (_p->metrics.all_idle()) {
         bool expected = false;
         if (_p->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
