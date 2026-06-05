@@ -84,7 +84,10 @@ TEST(Raid1, ReadingSBProblems) {
 
 // The race between resync completing and stop() in the destructor can produce an on-disk state of
 // DEVB + clean_unmount=1 + empty superbitmap. Before the fix this threw on second mount; after the
-// fix the constructor recovers with dirty-all and the destructor writes EITHER to both devices.
+// fix (Fix 2) the constructor recovers by dirtying-all and then load_from clears the bits again.
+// The route stays DEVB because the resync task finds pages_before=0 (load_from already cleared
+// what dirty_region set) and does not call complete(). A subsequent write brings both devices into
+// sync via the normal resync path on the next startup.
 TEST(Raid1, DegradedCleanEmptySuperbitmap) {
     using ublkpp::raid1::read_route;
     using ublkpp::raid1::SuperBlock;
@@ -100,22 +103,17 @@ TEST(Raid1, DegradedCleanEmptySuperbitmap) {
     auto device_b =
         std::make_shared< testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .is_slot_b = true});
 
-    // disk_a: standard EITHER SB on read; two writes — __become_active (DEVB) then destructor fix (EITHER).
+    // disk_a: standard EITHER SB on read; one write from __become_active (DEVB route).
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, 0UL))
         .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             memcpy(iov->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
             return iov->iov_len;
         });
-    ublkpp::raid1::read_route last_route_a{read_route::DEVB};
     EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, 0UL))
-        .Times(2)
-        .WillRepeatedly([&last_route_a](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
-            last_route_a = static_cast< read_route >(static_cast< SuperBlock* >(iov->iov_base)->fields.read_route);
-            return iov->iov_len;
-        });
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
-    // disk_b: race-state SB on read; one bitmap-page read (load_from, returns zeros to clear the
-    // superbitmap bit that dirty_region set); two writes — __become_active (DEVB) then destructor fix (EITHER).
+    // disk_b: race-state SB on read; one bitmap-page read (load_from clears the bit dirty_region
+    // set); two writes — __become_active (DEVB) and destructor clean_unmount (DEVB).
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, 0UL))
         .WillOnce([&sb_b](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
             memcpy(iov->iov_base, &sb_b, ublkpp::raid1::k_page_size);
@@ -126,19 +124,12 @@ TEST(Raid1, DegradedCleanEmptySuperbitmap) {
             memset(iov->iov_base, 0, iov->iov_len);
             return iov->iov_len;
         });
-    ublkpp::raid1::read_route last_route_b{read_route::DEVB};
     EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, 0UL))
         .Times(2)
-        .WillRepeatedly([&last_route_b](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
-            last_route_b = static_cast< read_route >(static_cast< SuperBlock* >(iov->iov_base)->fields.read_route);
-            return iov->iov_len;
-        });
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     EXPECT_NO_THROW({
         auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid.toggle_resync(false);
     });
-
-    EXPECT_EQ(last_route_a, read_route::EITHER);
-    EXPECT_EQ(last_route_b, read_route::EITHER);
 }
