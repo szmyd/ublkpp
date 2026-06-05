@@ -38,9 +38,11 @@ struct ublkpp_tgt {
     // normally. When the last in-flight op finishes (or immediately if the system is already
     // idle), device.reset() is called exactly once — flushing the RAID-1 dirty bitmap and
     // writing clean_unmount=1. Idempotent: subsequent calls are no-ops (guarded by CAS).
+    // Note: if there are in-flight ops when this is called, it returns immediately and
+    // device.reset() fires later on a queue thread. There is no completion callback; the
+    // intended use is SIGTERM → begin_shutdown() → process exit (OS reclaims threads).
     // Must be called from a normal thread context, not a signal handler: the idle-drain path
-    // calls device.reset() synchronously. Typical use: set a flag in the SIGTERM handler, then
-    // call begin_shutdown() from the main thread when the flag is observed.
+    // calls device.reset() synchronously (blocking until the RAID-1 resync task joins).
     void begin_shutdown();
 
     // Cleanly stops the device and removes it from the kernel. Only call after the block device

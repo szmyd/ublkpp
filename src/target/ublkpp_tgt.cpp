@@ -330,7 +330,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
     }
 
-    qs->tgt->metrics.record_queue_depth_change(q, op, false);
+    qs->tgt->metrics.record_queue_depth_change(q, op, false); // decrement — mirrors increment above
 
     if (0 > result) [[unlikely]] {
         TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)
@@ -516,6 +516,8 @@ std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
 void ublkpp_tgt::begin_shutdown() {
+    // Relaxed load for the idempotency fast-path: benign optimisation. Correctness is
+    // guaranteed by the CAS on _device_reset_done, not by this check.
     if (_p->_shutting_down.load(std::memory_order_relaxed)) {
         TLOGW("begin_shutdown() called again — already shutting down, ignoring")
         return;
