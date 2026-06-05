@@ -111,7 +111,11 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
                 // than leaving DEVA/DEVB + empty-superbitmap on disk.
                 // Guard: pages_before>0 ensures this only fires when the resync actually had
                 // work to do (not when dirty_region+load_from produced a transient zero count).
-                if (pages_before > 0 && 0 == _dirty_bitmap->dirty_pages()) std::ignore = complete();
+                if (pages_before > 0 && 0 == _dirty_bitmap->dirty_pages()) {
+                    // false is impossible here: no I/O after queues stop, so dirty_region()
+                    // cannot fire under _clean_transition_mutex during destruction.
+                    if (!complete()) RLOGW("complete() returned false on STOPPING — unexpected [uuid:{}]", str_uuid)
+                }
                 break;
             }
             DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state")

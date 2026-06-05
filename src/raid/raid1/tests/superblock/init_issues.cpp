@@ -83,19 +83,23 @@ TEST(Raid1, ReadingSBProblems) {
 }
 
 // The race between resync completing and stop() in the destructor can produce an on-disk state of
-// DEVB + clean_unmount=1 + empty superbitmap. Before the fix this threw on second mount; after the
-// fix (Fix 2) the constructor recovers by dirtying-all and then load_from clears the bits again.
-// The route stays DEVB because the resync task finds pages_before=0 (load_from already cleared
-// what dirty_region set) and does not call complete(). A subsequent write brings both devices into
-// sync via the normal resync path on the next startup.
+// DEVB + clean_unmount=1 + empty superbitmap. Before the fix this threw on second mount; after Fix
+// 2 the constructor recovers: dirty_region(0, capacity()) followed by load_from reads zeros from
+// the active device, clearing the superbitmap bit again. The array mounts in degraded mode and
+// completes the clean transition on the next healthy shutdown once the resync task runs.
+// NOTE: this test covers Fix 2 (no-throw on mount) only. Fix 1 (pages_before guard in _start())
+// is not exercised here because toggle_resync(false) prevents the resync thread from running; it
+// is covered by the nublox resiliency-2-0-dense integration test.
 TEST(Raid1, DegradedCleanEmptySuperbitmap) {
     using ublkpp::raid1::read_route;
+    using ublkpp::raid1::replica_state;
     using ublkpp::raid1::SuperBlock;
 
     // disk_b carries the race-state SB: DEVB, age=1 (wins pick_superblock), clean=1, empty superbitmap.
     SuperBlock sb_b = normal_superblock;
     sb_b.fields.read_route = static_cast< uint8_t >(read_route::DEVB);
     sb_b.fields.device_b = 1;
+    sb_b.fields.clean_unmount = 1;       // required to enter the degraded-clean branch (Fix 2)
     sb_b.fields.bitmap.age = htobe64(1); // age_b > age_a=0 so disk_b wins
     memset(sb_b.superbitmap_reserved, 0, sizeof(sb_b.superbitmap_reserved));
 
@@ -131,5 +135,10 @@ TEST(Raid1, DegradedCleanEmptySuperbitmap) {
     EXPECT_NO_THROW({
         auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid.toggle_resync(false);
+        // Fix 2 post-conditions: route=DEVB (unchanged), empty bitmap (load_from cleared dirty_region's bit).
+        auto const s = raid.replica_states();
+        EXPECT_EQ(replica_state::SYNCING, s.device_a); // backup leg, route not yet EITHER
+        EXPECT_EQ(replica_state::CLEAN, s.device_b);   // active leg
+        EXPECT_EQ(0ULL, s.bytes_to_sync);              // load_from zeroed the bitmap
     });
 }

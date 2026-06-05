@@ -556,6 +556,11 @@ TEST(Raid1, CleanDegradedStartupEmptySuperbitmap) {
     EXPECT_NO_THROW({
         auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
         raid.toggle_resync(false);
+        // Fix 2 post-conditions: route=DEVA (unchanged), empty bitmap (load_from cleared dirty_region's bit).
+        auto const s = raid.replica_states();
+        EXPECT_EQ(ublkpp::raid1::replica_state::CLEAN, s.device_a);   // active leg
+        EXPECT_EQ(ublkpp::raid1::replica_state::SYNCING, s.device_b); // backup leg, route not yet EITHER
+        EXPECT_EQ(0ULL, s.bytes_to_sync);                             // load_from zeroed the bitmap
     });
 }
 

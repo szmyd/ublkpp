@@ -268,8 +268,9 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         // superbitmap is non-empty here because dirty_region fires before __become_degraded and
         // the destructor persists the superbitmap on clean shutdown. Exception: if the resync task
         // cleared all bits via clean_region but was stopped before __become_clean committed
-        // route→EITHER, the destructor now writes EITHER SBs (so this branch is unreachable after
-        // the destructor fix). The dirty-all fallback below handles any residual cases defensively.
+        // route→EITHER, _start() now calls complete() on the STOPPING path so the destructor sees
+        // route=EITHER (making this branch unreachable in practice). The dirty-all fallback below
+        // handles any residual cases defensively.
         if (!_dirty_bitmap->superbitmap_nonempty()) {
             RLOGW("Degraded + clean unmount + empty superbitmap; forcing full resync [uuid:{}]", _str_uuid)
             _dirty_bitmap->dirty_region(0, capacity());
