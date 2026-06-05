@@ -36,13 +36,15 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     // decrementer's own drain check; never lost. The CAS on _device_reset_done is the
     // real safeguard against double-execution.
     //
-    // Memory ordering: counter operations use acq_rel (release makes the increment globally
-    // visible; acquire pairs with begin_shutdown's seq_cst store). Together they ensure:
-    // either the increment is visible to begin_shutdown's counter reads (no false drain) or
-    // begin_shutdown's store is visible to the op's gate check (op rejects, no device* access).
+    // Memory ordering: both the counter RMWs and these loads are seq_cst so all three
+    // participate in the C++ total order S alongside begin_shutdown's seq_cst store.
+    // Formal guarantee: if the op's increment precedes begin_shutdown's store in S, these
+    // loads (sequenced after the store in begin_shutdown's thread) see the increment.
+    // If the store precedes the increment in S, the gate check (sequenced after the increment)
+    // sees _shutting_down=true and rejects without touching device*. No UAF in either case.
     bool all_idle() const {
-        return _queued_reads.load(std::memory_order_acquire) == 0 &&
-            _queued_writes.load(std::memory_order_acquire) == 0;
+        return _queued_reads.load(std::memory_order_seq_cst) == 0 &&
+            _queued_writes.load(std::memory_order_seq_cst) == 0;
     }
 };
 

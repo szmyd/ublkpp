@@ -313,10 +313,10 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     // Increment before the shutdown gate: a concurrent drain check that sees counters==0 would
     // otherwise call device.reset() while we are still about to use the raw device* pointer.
     // With the increment already in place, any concurrent drain check sees counter > 0.
-    // The acq_rel increment is globally visible (via the release) before any subsequent acquire
-    // load by another thread. begin_shutdown's seq_cst store pairs with the acquire side:
-    // either its counter reads see this increment (skips reset) or its store was visible first
-    // (our acquire gate check below sees _shutting_down=true and rejects).
+    // The seq_cst increment participates in the C++ total order S alongside begin_shutdown's
+    // seq_cst store and all_idle()'s seq_cst loads. Either the increment precedes the store in
+    // S (begin_shutdown's counter reads see it → skips reset) or the store precedes the
+    // increment in S (our gate check below sees _shutting_down=true → rejects).
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
     // Drain gate: reject reads/writes during shutdown before they reach the backing device.
@@ -598,6 +598,8 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     // stop_dev (which would drop /dev/ublkbN). Detach any joinable threads to prevent
     // std::terminate() when the vector<thread> destructs (e.g. process exit via return 0
     // from main). The threads will be killed by the OS on process exit.
+    // Safe only on process exit: detached threads still hold qs->tgt and will UAF if they
+    // re-enter the event loop after this destructor returns. The process must exit promptly.
     for (auto& q : queue_handlers)
         if (q.joinable()) q.detach();
 }
