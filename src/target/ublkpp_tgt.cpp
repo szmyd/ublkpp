@@ -117,7 +117,13 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     // is_idle=false and preventing the probe from re-arming on subsequent fires.
                     ++probe_count;
                     if (cqe->res == -ETIME) {
-                        qs->tgt->device->probe_tick(q);
+                        // Guard against device.reset() racing this read of the shared_ptr
+                        // under nr_hw_queues > 1: try_drain_device may call device.reset()
+                        // concurrently on another queue thread, causing a concurrent write +
+                        // read on the same shared_ptr instance (UB). Skipping probe_tick after
+                        // shutdown is set eliminates the race in practice (device.reset() is
+                        // only called after _shutting_down=true).
+                        if (!qs->tgt->_shutting_down.load(std::memory_order_acquire)) qs->tgt->device->probe_tick(q);
                         if (qs->is_idle) submit_probe_timeout(q);
                     }
                 } else {
@@ -322,7 +328,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     // Drain gate: reject reads/writes during shutdown before they reach the backing device.
     // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*,
     // so rejecting it with EIO would cause callers (e.g. filesystem unmount) spurious errors.
-    if (op != UBLK_IO_OP_FLUSH && qs->tgt->_shutting_down.load(std::memory_order_acquire)) {
+    if (op != UBLK_IO_OP_FLUSH && qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
         qs->tgt->metrics.record_queue_depth_change(q, op, false);
         TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
         ublksrv_complete_io(q, data->tag, -EIO);
@@ -356,7 +362,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     }
     ublksrv_complete_io(q, data->tag, result);
 
-    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) try_drain_device(qs);
+    if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) try_drain_device(qs);
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -525,7 +531,7 @@ void ublkpp_tgt::begin_shutdown() {
     // Relaxed load for the idempotency fast-path: benign optimisation. Correctness is
     // guaranteed by the CAS on _device_reset_done, not by this check.
     if (_p->_shutting_down.load(std::memory_order_relaxed)) {
-        TLOGW("begin_shutdown() called again — already shutting down, ignoring")
+        TLOGD("begin_shutdown() called again — already shutting down, ignoring")
         return;
     }
     // seq_cst: on x86, release compiles to a plain mov that sits in the store buffer.
