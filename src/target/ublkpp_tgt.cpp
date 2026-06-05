@@ -288,6 +288,19 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     return res;
 }
 
+// Called after decrementing the in-flight counter during shutdown. If this is the last
+// in-flight op, wins the CAS and calls device.reset() to flush the backing store.
+// See all_idle() for the memory-ordering argument.
+static void try_drain_device(ublkpp_queue_state* qs) {
+    if (qs->tgt->metrics.all_idle()) {
+        bool expected = false;
+        if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            TLOGI("All I/O drained after shutdown — flushing backing store")
+            qs->tgt->device.reset();
+        }
+    }
+}
+
 static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
 
@@ -313,6 +326,10 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         qs->tgt->metrics.record_queue_depth_change(q, op, false);
         TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
         ublksrv_complete_io(q, data->tag, -EIO);
+        // The rejected op may be the last in-flight — check drain here too.
+        // Without this, the common case (ops in-flight when begin_shutdown fires) would
+        // decrement to zero in this branch and never trigger device.reset().
+        try_drain_device(qs);
         co_return;
     }
 
@@ -339,18 +356,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     }
     ublksrv_complete_io(q, data->tag, result);
 
-    // After the last in-flight op drains, flush the backing store exactly once.
-    // No seq_cst fence needed here: UAF safety comes from each op's own seq_cst fence
-    // (between its increment and gate check), not from a fence at this call site. A stale
-    // non-zero read in all_idle() (false negative) just defers the drain to the last
-    // decrementing thread's drain check — never lost. See all_idle() for the full argument.
-    if (qs->tgt->_shutting_down.load(std::memory_order_acquire) && qs->tgt->metrics.all_idle()) {
-        bool expected = false;
-        if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            TLOGI("All I/O drained after shutdown signal — flushing backing store")
-            qs->tgt->device.reset();
-        }
-    }
+    if (qs->tgt->_shutting_down.load(std::memory_order_acquire)) try_drain_device(qs);
 }
 
 // I/O Handler, first entry-point to us for all I/O

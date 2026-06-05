@@ -49,7 +49,9 @@ struct ublkpp_tgt {
     //   // ... in main loop:
     //   if (g_shutdown.load(std::memory_order_relaxed)) {
     //       tgt->begin_shutdown();
-    //       _exit(0);  // skip C++ destructors; OS kills queue threads
+    //       _exit(0);  // use _exit to skip C++ destructors (queue threads still alive);
+    //                  // exit() / return 0 also work — the destructor detaches joinable
+    //                  // queue threads to prevent std::terminate() in that case.
     //   }
     void begin_shutdown();
 

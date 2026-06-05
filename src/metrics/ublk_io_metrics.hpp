@@ -25,6 +25,10 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
 
     // Returns true when both read and write counters are zero. Two separate loads.
     //
+    // FLUSH note: UBLK_IO_OP_FLUSH is exempted from the gate and never increments these
+    // counters (record_queue_depth_change is a no-op for op values other than 0/1). A FLUSH
+    // completing while _shutting_down=true therefore cannot produce a spurious drain signal.
+    //
     // TOCTOU between the two loads: between reading _queued_reads and _queued_writes, a new
     // op could increment then decrement one of them (rejected at gate). This produces a false
     // negative (sees non-zero when both are effectively zero), not a false positive — the op
