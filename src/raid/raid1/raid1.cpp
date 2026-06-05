@@ -264,12 +264,16 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
         auto const& active_dev = (route == read_route::DEVB) ? _device_b : _device_a;
         auto const& backup_dev = (route == read_route::DEVB) ? _device_a : _device_b;
         RLOGW("Raid1 is starting in degraded mode [uuid:{}]! Degraded device: {}", _str_uuid, *backup_dev->disk)
-        // clean_unmount=1 is implied: the unclean-degraded case was handled above. The superbitmap
-        // must be non-empty: the array can only reach this point if a write failed (which called
-        // dirty_region before __become_degraded), and the destructor persists the superbitmap on
-        // clean shutdown. An empty superbitmap here indicates a corrupt or pre-persistence disk.
-        if (!_dirty_bitmap->superbitmap_nonempty())
-            throw std::runtime_error("Invariant violated: previously degraded array has empty superbitmap");
+        // clean_unmount=1 is implied: the unclean-degraded case was handled above. Normally the
+        // superbitmap is non-empty here because dirty_region fires before __become_degraded and
+        // the destructor persists the superbitmap on clean shutdown. Exception: if the resync task
+        // cleared all bits via clean_region but was stopped before __become_clean committed
+        // route→EITHER, the destructor now writes EITHER SBs (so this branch is unreachable after
+        // the destructor fix). The dirty-all fallback below handles any residual cases defensively.
+        if (!_dirty_bitmap->superbitmap_nonempty()) {
+            RLOGW("Degraded + clean unmount + empty superbitmap; forcing full resync [uuid:{}]", _str_uuid)
+            _dirty_bitmap->dirty_region(0, capacity());
+        }
         _dirty_bitmap->load_from(*active_dev->disk);
     } else if (0 == _sb->fields.clean_unmount) {
         // Both-present unclean: reads may diverge across legs. Pin to device_a (canonical),
@@ -329,6 +333,20 @@ Raid1Disk::~Raid1Disk() {
     if (!_sb) return;
 
     auto const state = __capture_route_state();
+    // If the resync task cleared all dirty chunks (clean_region emptied the superbitmap) but was
+    // stopped before __become_clean could CAS route→EITHER and write the SBs, complete that
+    // transition here. The data is fully on both devices; only the route metadata needs updating.
+    if (state.is_degraded && !_dirty_bitmap->superbitmap_nonempty()) {
+        RLOGI("Resync completed before stop; completing clean transition [uuid:{}]", _str_uuid)
+        bool const active_is_device_b = (state.route == read_route::DEVB);
+        _sb->fields.clean_unmount = 0x1;
+        std::ignore =
+            write_superblock(*state.active_dev->disk, _sb.get(), active_is_device_b, read_route::EITHER, true);
+        if (!state.backup_dev->disk->is_missing())
+            std::ignore =
+                write_superblock(*state.backup_dev->disk, _sb.get(), !active_is_device_b, read_route::EITHER, true);
+        return;
+    }
     // Write out our dirty bitmap to the active device.
     // M11: flush even when backup_dev is a missing placeholder — the active device still needs
     // the current bitmap so the next startup can do an incremental resync rather than a full one.
