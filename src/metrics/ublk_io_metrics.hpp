@@ -26,16 +26,16 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     // Returns true when both read and write counters are zero. Two separate loads.
     //
     // TOCTOU between the two loads: between reading _queued_reads and _queued_writes, a new
-    // op could increment then decrement one of them (rejected at the gate). This produces a
-    // false negative (sees non-zero when both are effectively zero), not a false positive —
-    // the op never touches device*. False negatives just defer device.reset() to the last
+    // op could increment then decrement one of them (rejected at gate). This produces a false
+    // negative (sees non-zero when both are effectively zero), not a false positive — the op
+    // never touches device*. False negatives just defer device.reset() to the last
     // decrementer's own drain check; never lost. The CAS on _device_reset_done is the
-    // real safeguard against double-execution regardless of race outcomes.
+    // real safeguard against double-execution.
     //
-    // Safety (x86): begin_shutdown() uses a seq_cst store (MFENCE) before reading these
-    // counters. This drains the store buffer and creates a total order with each op's
-    // lock xadd increment: either the increment is visible here (false positive avoided) or
-    // the op's acquire load of _shutting_down sees true (op rejects, no device* access).
+    // Memory ordering: counter operations use acq_rel (release makes the increment globally
+    // visible; acquire pairs with begin_shutdown's seq_cst store). Together they ensure:
+    // either the increment is visible to begin_shutdown's counter reads (no false drain) or
+    // begin_shutdown's store is visible to the op's gate check (op rejects, no device* access).
     bool all_idle() const {
         return _queued_reads.load(std::memory_order_acquire) == 0 &&
             _queued_writes.load(std::memory_order_acquire) == 0;

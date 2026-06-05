@@ -300,10 +300,10 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     // Increment before the shutdown gate: a concurrent drain check that sees counters==0 would
     // otherwise call device.reset() while we are still about to use the raw device* pointer.
     // With the increment already in place, any concurrent drain check sees counter > 0.
-    // The increment is lock xadd on x86 (full barrier), visible globally before any subsequent
-    // load by another thread. begin_shutdown()'s seq_cst MFENCE ensures its counter read is
-    // ordered after our lock xadd: either it sees the increment (skips reset) or its MFENCE'd
-    // store committed first (our acquire gate check below sees true and rejects).
+    // The acq_rel increment is globally visible (via the release) before any subsequent acquire
+    // load by another thread. begin_shutdown's seq_cst store pairs with the acquire side:
+    // either its counter reads see this increment (skips reset) or its store was visible first
+    // (our acquire gate check below sees _shutting_down=true and rejects).
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
     // Drain gate: reject reads/writes during shutdown before they reach the backing device.
@@ -330,7 +330,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
     }
 
-    qs->tgt->metrics.record_queue_depth_change(q, op, false); // decrement — mirrors increment above
+    qs->tgt->metrics.record_queue_depth_change(q, op, false);
 
     if (0 > result) [[unlikely]] {
         TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)
@@ -586,9 +586,14 @@ void ublkpp_tgt_impl::destroy() {
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    // Intentionally left empty. Resources (ctrl_dev, ublk_dev, queue threads) are reclaimed
-    // by the OS on process exit. Call destroy() explicitly (via remove()) for an orderly
-    // ublk stack teardown. Call begin_shutdown() before exit to flush the backing store.
+    // Queue threads release their shared_ptr<ublkpp_tgt_impl> early (ublksrv_queue_handler
+    // calls target.reset()) and thereafter hold only a raw qs->tgt pointer — so this
+    // destructor can fire while threads are still alive. Joining here is impossible without
+    // stop_dev (which would drop /dev/ublkbN). Detach any joinable threads to prevent
+    // std::terminate() when the vector<thread> destructs (e.g. process exit via return 0
+    // from main). The threads will be killed by the OS on process exit.
+    for (auto& q : queue_handlers)
+        if (q.joinable()) q.detach();
 }
 
 } // namespace ublkpp

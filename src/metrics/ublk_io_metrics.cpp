@@ -19,24 +19,23 @@ void UblkIOMetrics::record_queue_depth_change(ublksrv_queue const* q, uint8_t op
 
     // UBLK_IO_OP_READ = 0, UBLK_IO_OP_WRITE = 1
     //
-    // memory_order_relaxed is correct for the histogram tracking purpose here.
-    // On x86, all atomic RMW operations (fetch_add, fetch_sub) compile to lock-prefixed
-    // instructions (lock xadd) regardless of the requested memory order — the lock prefix
-    // is an implicit full barrier. The drain safety argument in __handle_io_async therefore
-    // holds: the increment is globally visible before any subsequent load from another thread.
+    // acq_rel: the acquire side prevents the gate-check load from being reordered before the
+    // increment; the release side makes the increment globally visible before any subsequent
+    // acquire load by another thread. Required for the drain safety argument to hold on
+    // weakly-ordered architectures (ARM: ldaxr+stlxr; x86: lock xadd as before).
     if (op == 0) { // UBLK_IO_OP_READ
         if (is_increment) {
-            auto const depth = _queued_reads.fetch_add(1, std::memory_order_relaxed) + 1;
+            auto const depth = _queued_reads.fetch_add(1, std::memory_order_acq_rel) + 1;
             HISTOGRAM_OBSERVE(*this, ublk_read_queue_distribution, depth);
         } else {
-            _queued_reads.fetch_sub(1, std::memory_order_relaxed);
+            _queued_reads.fetch_sub(1, std::memory_order_acq_rel);
         }
     } else if (op == 1) { // UBLK_IO_OP_WRITE
         if (is_increment) {
-            auto const depth = _queued_writes.fetch_add(1, std::memory_order_relaxed) + 1;
+            auto const depth = _queued_writes.fetch_add(1, std::memory_order_acq_rel) + 1;
             HISTOGRAM_OBSERVE(*this, ublk_write_queue_distribution, depth);
         } else {
-            _queued_writes.fetch_sub(1, std::memory_order_relaxed);
+            _queued_writes.fetch_sub(1, std::memory_order_acq_rel);
         }
     }
 }
