@@ -341,8 +341,7 @@ Raid1Disk::~Raid1Disk() {
     }
     _sb->fields.clean_unmount = 0x1;
     // Only update the superblock to clean devices. Pass include_superbitmap=true so the
-    // on-disk superbitmap reflects the current dirty state. On next startup the call sites
-    // for load_from check superbitmap_nonempty() and reject the volume if it is empty.
+    // on-disk superbitmap reflects the current dirty state for incremental resync on next startup.
     if (auto res =
             write_superblock(*state.active_dev->disk, _sb.get(), read_route::DEVB == state.route, state.route, true);
         !res) {

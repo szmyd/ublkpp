@@ -109,7 +109,10 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
                 // All chunks cleared but stopped in __yield(): commit so destructor sees route=EITHER,
                 // not DEVA/DEVB + empty-superbitmap. Guard: pages_before>0 skips a zero bitmap at launch.
                 if (pages_before > 0 && 0 == _dirty_bitmap->dirty_pages()) {
-                    if (!complete()) { RLOGW("complete() returned false on STOPPING — unexpected [uuid:{}]", str_uuid) }
+                    if (!complete()) {
+                        RLOGW("complete() returned false on STOPPING; clean transition not committed [uuid:{}]",
+                              str_uuid)
+                    }
                 }
                 break;
             }
