@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.12] - 2026-06-06
+
+### Fixed
+
+- **P0 (raid1): data loss when active write fails, backup succeeds, and superblock write fails**: in `async_iov` Site 1, if the active device write failed and `__become_degraded` could not persist the degradation (superblock write failed), the code still returned SUCCESS to the client when the backup write succeeded. On a crash at that point, both on-disk superblocks still showed `route=EITHER` at the pre-degradation age; restart self-healed by resyncing device_a (which held the *old* data) over device_b (which held the *new* data), permanently destroying the client-acked write. Fixed by returning `-EIO` to the client whenever `__become_degraded` fails — forcing a retry rather than acking an unprotected write. The incorrect claim in the `__become_degraded` comment ("dirty bitmap covers the affected region; resync at shutdown will reconcile") is also removed, since the in-memory dirty bitmap does not survive a pod kill. Addresses [issue #302](https://github.com/szmyd/ublkpp/issues/302).
+
 ## [0.32.11] - 2026-06-09
 
 ### Changed
