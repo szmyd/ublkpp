@@ -1,3 +1,5 @@
+#include <thread>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -71,6 +73,28 @@ TEST(Raid1CleanRegion, DirtyCleanDirtyCyclePreservesInvariant) {
     // And clean again
     bitmap.clean_region(0, 32 * Ki);
     EXPECT_EQ(0UL, bitmap.dirty_pages());
+}
+
+// Two threads calling clean_region on different chunks of the same page concurrently must not
+// underflow _dirty_chunks_est to UINT64_MAX. The old load+fetch_sub pair was not jointly atomic:
+// both threads could read the same counter value and both subtract, wrapping to UINT64_MAX.
+TEST(Raid1CleanRegion, ConcurrentCleanDoesNotUnderflowDirtyEst) {
+    auto sb = make_test_superbitmap();
+    auto bitmap = ublkpp::raid1::Bitmap(10 * Gi, 32 * Ki, 4 * Ki, sb.get());
+
+    // Dirty two adjacent chunks so _dirty_chunks_est == 2.
+    bitmap.dirty_region(0, 32 * Ki);
+    bitmap.dirty_region(32 * Ki, 32 * Ki);
+    EXPECT_EQ(2UL * 32 * Ki, bitmap.dirty_data_est());
+
+    // Clean both chunks from separate threads simultaneously.
+    std::thread t1([&] { bitmap.clean_region(0, 32 * Ki); });
+    std::thread t2([&] { bitmap.clean_region(32 * Ki, 32 * Ki); });
+    t1.join();
+    t2.join();
+
+    // Counter must be 0, not UINT64_MAX.
+    EXPECT_EQ(0UL, bitmap.dirty_data_est());
 }
 
 // Cleaning an already-clean page (no page allocated) is a safe no-op.

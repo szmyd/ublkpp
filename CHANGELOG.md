@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.11] - 2026-06-06
+
+### Fixed
+
+- **RAID1 bitmap `_dirty_chunks_est` TOCTOU underflow**: two concurrent `clean_region` callers could both `load()` the same counter value, compute the same delta, and both call `fetch_sub()` — the second subtract underflowed `uint64_t` to `UINT64_MAX`, causing `replica_states().bytes_to_sync` to report a bogus enormous value. Replaced the non-atomic `load + fetch_sub` pair with a CAS loop so each subtract is conditional on the value not having changed. Impact was P2/advisory only (`bytes_to_sync` and log messages); IO routing and resync correctness use `dirty_pages()` (actual bitmap scan) and were unaffected. Self-corrects at the next `dirty_pages()` call regardless. Addresses [issue #303](https://github.com/szmyd/ublkpp/issues/303).
+
 ## [0.32.10] - 2026-06-05
 
 ### Fixed
