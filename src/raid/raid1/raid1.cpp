@@ -750,12 +750,10 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
 
     // _ctrl_lock guards _sb->fields against concurrent __swap_device mutations (same field).
-    auto const old_age = [&] {
+    {
         std::lock_guard lock(_ctrl_lock);
-        auto age = _sb->fields.bitmap.age;
-        _sb->fields.bitmap.age = htobe64(be64toh(age) + 1);
-        return age;
-    }();
+        _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
+    }
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
 
@@ -772,11 +770,13 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // SB write failed -- we cannot persist the degradation, but rolling back to EITHER would
         // allow round-robin reads to the failed device, serving inconsistent data (the backup may
         // have already received the write). Keep the in-memory degraded route and mark the failed
-        // device unavailable. The caller will receive EIO; the client must retry.
-        { // revert age under _ctrl_lock — same guard as the increment above
-            std::lock_guard lock(_ctrl_lock);
-            _sb->fields.bitmap.age = old_age;
-        }
+        // device unavailable.
+        //
+        // The age increment is NOT reverted: any subsequent SB write must carry a higher age than
+        // the stale on-disk SB so pick_superblock selects the surviving device on restart.
+        // _degraded_sb_pending signals that the SB write is still outstanding; the next Site-2 I/O
+        // will retry it via __try_persist_degraded_sb before acking, closing the crash window.
+        _degraded_sb_pending.store(true, std::memory_order_release);
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return sync_res;
@@ -784,6 +784,28 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     failed_device->unavail.test_and_set(std::memory_order_acq_rel);
     if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
     return 0;
+}
+
+bool Raid1Disk::__try_persist_degraded_sb() {
+    if (!_degraded_sb_pending.load(std::memory_order_acquire)) return true;
+
+    auto const rs = __capture_route_state();
+    if (rs.route == read_route::EITHER) {
+        // __become_clean already wrote clean SBs under the lock; the pending degradation SB no
+        // longer needs to be written (the resync task has already reconciled both devices).
+        _degraded_sb_pending.store(false, std::memory_order_release);
+        return true;
+    }
+
+    bool const is_device_b = (rs.route == read_route::DEVB);
+    if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_device_b, rs.route); sb) {
+        _degraded_sb_pending.store(false, std::memory_order_release);
+        RLOGI("Persisted degraded superblock on retry [uuid:{}]", _str_uuid)
+        return true;
+    } else {
+        RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
+        return false;
+    }
 }
 
 disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
@@ -924,6 +946,10 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // Error intentionally discarded: the CAS already degraded the in-memory route;
         // any SB write failure is logged inside __become_degraded.
         std::ignore = __become_degraded(false, &state);
+        // If the initial __become_degraded SB write failed (Site 1 or 3), retry it now before
+        // acking. Without this, a crash leaves both on-disk SBs at EITHER while in-memory is
+        // DEVX, causing self-heal to resync stale data over the surviving device on restart.
+        if (!__try_persist_degraded_sb()) co_return -EIO;
         co_return active_res;
     }
 
@@ -998,6 +1024,8 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         // Site 2 (sync) — see async_iov Site 2 comment; error intentionally discarded.
         std::ignore = __become_degraded(false, &state);
+        // Retry SB persist before acking (mirrors async Site 2 — see that comment).
+        if (!__try_persist_degraded_sb()) return std::unexpected(std::make_error_condition(std::errc::io_error));
         return active_res;
     }
 
