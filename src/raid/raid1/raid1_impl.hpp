@@ -63,6 +63,13 @@ class Raid1Disk : public ublk_disk {
     // Counts prepare() calls; used to enable resync on the first queue init.
     std::atomic_uint16_t _nr_hw_queues{0};
 
+    // Set when __become_degraded updates the in-memory route but fails to persist the new route to
+    // disk (transient SB write failure). The age increment is kept so any eventual SB write carries
+    // a higher age than the stale on-disk SB, ensuring pick_superblock selects the correct device on
+    // restart. Cleared by __try_persist_degraded_sb once the SB write succeeds. If set at shutdown,
+    // the destructor's SB write naturally persists the correct route (it re-reads _read_route_cache).
+    std::atomic< bool > _degraded_sb_pending{false};
+
     // Shared read/write routing helpers used by both async_iov and sync_iov.
     // Returns {primary_dev, failover_dev}. failover_dev is nullopt when the backup holds stale
     // data for this region (degraded array + dirty bitmap) -- callers must not read from it.
@@ -78,6 +85,10 @@ class Raid1Disk : public ublk_disk {
     // Internal routines
     bool __become_clean();
     io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
+    // Retries the SB write when _degraded_sb_pending is set. Returns true if the SB was persisted
+    // (or no retry was needed); returns false if the write failed again, meaning the caller must
+    // not ack the current I/O (client retries on the next request).
+    bool __try_persist_degraded_sb();
     disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                            uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,

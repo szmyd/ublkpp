@@ -66,13 +66,13 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
         .Times(AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
-    // SB writes to disk_b at addr=0: Phase-1 fails, shutdown succeeds.
+    // SB writes to disk_b at addr=0: Phase-1 fails, Phase-2 retry succeeds, destructor succeeds.
     EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
-        .Times(2)
+        .Times(3)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     // Phase 1: active -EIO → SB write fails → disk_a ERROR in-memory; backup result returned.
     {
@@ -137,4 +137,93 @@ TEST_F(AsyncRaid1Fixture, ReadAfterReplicaFail) {
         ASSERT_EQ(comp.size(), 1u);
         EXPECT_EQ(comp[0].result, 4 * Ki);
     }).join();
+}
+
+// Phase 1: active (disk_a) fails; __become_degraded SB write to disk_b fails → _degraded_sb_pending set.
+// Phase 2: degraded write to disk_b succeeds; __try_persist_degraded_sb retries and succeeds → write
+//          is acked with the normal data result (no EIO). _degraded_sb_pending is cleared.
+TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetrySucceeds) {
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    // SB writes to disk_b at addr=0: Phase-1 fails; Phase-2 retry and destructor succeed.
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
+        .Times(3)
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        })
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    // Phase 1: disk_a fails → SB write fails → _degraded_sb_pending set.
+    {
+        auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res.value(), 2u);
+
+        EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
+        auto comp = mock->inject_cqe(0, 4 * Ki);
+        ASSERT_EQ(comp.size(), 1u);
+        EXPECT_EQ(comp[0].result, 4 * Ki);
+    }
+    EXPECT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::ERROR);
+
+    // Phase 2: degraded write → SB retry succeeds → write acked with normal result (not EIO).
+    {
+        auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 8 * Ki / 512, 4 * Ki / 512, nullptr);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res.value(), 1u); // degraded → single cqe_state
+
+        auto comp = mock->inject_cqe(1, 4 * Ki);
+        ASSERT_EQ(comp.size(), 1u);
+        EXPECT_EQ(comp[0].result, 4 * Ki); // SB retry cleared the pending flag; write acked normally
+    }
+
+    EXPECT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::ERROR);
+    EXPECT_EQ(raid->replica_states().device_b, ublkpp::raid1::replica_state::CLEAN);
+}
+
+// Phase 1: active (disk_a) fails; __become_degraded SB write to disk_b fails → _degraded_sb_pending set.
+// Phase 2: degraded write to disk_b succeeds; __try_persist_degraded_sb retries but fails again →
+//          write is NOT acked (EIO returned). _degraded_sb_pending remains set until destructor.
+TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetryFails) {
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    // SB writes to disk_b at addr=0: Phase-1 fails, Phase-2 retry fails, destructor succeeds.
+    EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
+        .Times(3)
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        })
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
+            return std::unexpected(std::make_error_condition(std::errc::io_error));
+        })
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    // Phase 1: disk_a fails → SB write fails → _degraded_sb_pending set.
+    {
+        auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res.value(), 2u);
+
+        EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
+        auto comp = mock->inject_cqe(0, 4 * Ki);
+        ASSERT_EQ(comp.size(), 1u);
+        EXPECT_EQ(comp[0].result, 4 * Ki);
+    }
+    EXPECT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::ERROR);
+
+    // Phase 2: degraded write data succeeds but SB retry fails → EIO returned to caller.
+    // The client will retry; _degraded_sb_pending stays set for the destructor to handle.
+    {
+        auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 8 * Ki / 512, 4 * Ki / 512, nullptr);
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res.value(), 1u);
+
+        auto comp = mock->inject_cqe(1, 4 * Ki); // disk_b data write succeeded
+        ASSERT_EQ(comp.size(), 1u);
+        EXPECT_EQ(comp[0].result, -EIO); // but SB retry failed → not acked
+    }
 }
