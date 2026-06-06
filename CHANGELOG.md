@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, reads and writes are rejected with `EIO` before they reach the backing device; `FLUSH` ops are allowed through (they complete instantly with `result=0` and do not dereference `device*`). When the last in-flight op completes and metrics counters reach zero, `device.reset()` fires exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1`. Idempotent; must be called from a thread context (the idle-drain path calls `device.reset()` synchronously).
+- **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, reads and writes are rejected with `EAGAIN` before they reach the backing device; `FLUSH` ops are allowed through (they complete instantly with `result=0` and do not dereference `device*`). When the last in-flight op completes and metrics counters reach zero, `device.reset()` fires exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1`. Idempotent; must be called from a thread context (the idle-drain path calls `device.reset()` synchronously).
 
 ### Fixed
 

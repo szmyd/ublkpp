@@ -301,7 +301,7 @@ static void try_drain_device(ublkpp_queue_state* qs) {
     if (qs->tgt->metrics.all_idle()) {
         bool expected = false;
         if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            TLOGI("All I/O drained after shutdown — flushing backing store")
+            TLOGI("All I/O drained after shutdown - flushing backing store")
             qs->tgt->device.reset();
         }
     }
@@ -326,12 +326,13 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
     // Drain gate: reject reads/writes during shutdown before they reach the backing device.
-    // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*,
-    // so rejecting it with EIO would cause callers (e.g. filesystem unmount) spurious errors.
+    // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*.
+    // EAGAIN signals "temporarily unavailable, retry" so filesystems back off and retry once
+    // the new process reconnects the device (UBLK_F_USER_RECOVERY hot-restart path).
     if (op != UBLK_IO_OP_FLUSH && qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
         qs->tgt->metrics.record_queue_depth_change(q, op, false);
         TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
-        ublksrv_complete_io(q, data->tag, -EIO);
+        ublksrv_complete_io(q, data->tag, -EAGAIN);
         // The rejected op may be the last in-flight — check drain here too.
         // Without this, the common case (ops in-flight when begin_shutdown fires) would
         // decrement to zero in this branch and never trigger device.reset().
@@ -531,7 +532,7 @@ void ublkpp_tgt::begin_shutdown() {
     // Relaxed load for the idempotency fast-path: benign optimisation. Correctness is
     // guaranteed by the CAS on _device_reset_done, not by this check.
     if (_p->_shutting_down.load(std::memory_order_relaxed)) {
-        TLOGD("begin_shutdown() called again — already shutting down, ignoring")
+        TLOGD("begin_shutdown() called again - already shutting down, ignoring")
         return;
     }
     // seq_cst: on x86, release compiles to a plain mov that sits in the store buffer.
@@ -550,7 +551,7 @@ void ublkpp_tgt::begin_shutdown() {
     if (_p->metrics.all_idle()) {
         bool expected = false;
         if (_p->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            TLOGI("No I/O in-flight at shutdown — flushing backing store immediately")
+            TLOGI("No I/O in-flight at shutdown - flushing backing store immediately")
             _p->device.reset();
         }
     }

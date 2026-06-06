@@ -33,7 +33,7 @@ struct ublkpp_tgt {
     static run_result_t run(boost::uuids::uuid const& vol_id, disk_handle device, int device_id = -1);
 
     // Signals the target to begin a graceful drain. After this call, reads and writes are
-    // rejected with EIO before they reach the backing device; FLUSH ops are allowed through
+    // rejected with EAGAIN before they reach the backing device; FLUSH ops are allowed through
     // (they complete instantly with result=0 and do not access device*). In-flight ops complete
     // normally. When the last in-flight op finishes (or immediately if the system is already
     // idle), device.reset() is called exactly once — flushing the RAID-1 dirty bitmap and
