@@ -57,7 +57,8 @@ TEST_F(AsyncRaid1Fixture, UnknownOpcodeIsRejected) {
 // Phase 1: active (disk_a) fails AND the superblock write to disk_b fails. disk_a is marked ERROR
 // in-memory (no rollback). Because degradation is not on disk the caller receives -EIO, not the
 // backup result — a crash would self-heal from the stale disk_a, destroying disk_b's write.
-// Phase 2: array is now degraded; a subsequent write routes to disk_b only (1 cqe_state).
+// Phase 2: verifies that the failed SB write still leaves correct in-memory degradation state —
+// a subsequent write routes to disk_b only (1 cqe_state) and succeeds.
 TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
     // Catch-all for bitmap-page writes (addr > 0) that occur during shutdown; registered first so
     // the addr=0 EXPECT_CALL (registered second) takes LIFO priority for superblock writes.

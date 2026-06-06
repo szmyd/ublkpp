@@ -903,7 +903,8 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // Degradation not persisted on disk: a crash here would self-heal from the stale active
         // device, overwriting whatever the backup wrote. Return EIO — the client must retry.
         if (!become_degraded_ok) co_return -EIO;
-        co_return backup_res >= 0 ? backup_res : -EAGAIN;
+        co_return backup_res >= 0 ? backup_res
+                                  : -EAGAIN; // -EAGAIN: degradation is durable; retry routes to sole device
     }
 
     if (state.active_dev->unavail.test(std::memory_order_relaxed)) {
