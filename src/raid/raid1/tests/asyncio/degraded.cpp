@@ -1,10 +1,10 @@
 #include "async_raid1_common.hpp"
 
 // When active (disk_a) fails and __become_degraded cannot write the superblock to the surviving
-// device (disk_b), the degradation is NOT rolled back. Rolling back to EITHER would allow
-// round-robin reads to disk_a (which missed the write), serving inconsistent data. Instead,
-// disk_a is marked ERROR in-memory and the backup result is returned to the caller. The dirty
-// bitmap covers the region; shutdown or full recovery will reconcile.
+// device (disk_b), the degradation is NOT persisted on disk. The in-memory route is kept degraded
+// (rolling back to EITHER would allow reads to the failed device) and disk_a is marked ERROR.
+// Because a crash at this point would let restart self-heal from disk_a (stale), overwriting
+// whatever disk_b wrote, the caller receives -EIO rather than the backup result.
 TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
     // Catch-all for bitmap-page writes (addr > 0) that occur during shutdown; registered first so
     // the addr=0 EXPECT_CALL (registered second) takes LIFO priority for superblock writes.
@@ -27,10 +27,10 @@ TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
 
     // Active (disk_a) fails → __become_degraded fires, SB write to disk_b fails.
     EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
-    // Backup (disk_b) succeeded; its result is returned to the caller.
+    // Backup (disk_b) succeeded, but degradation is not on disk → caller gets -EIO.
     auto completions = mock->inject_cqe(0, 4 * Ki);
     ASSERT_EQ(completions.size(), 1u);
-    EXPECT_EQ(completions[0].result, 4 * Ki);
+    EXPECT_EQ(completions[0].result, -EIO);
 
     // disk_a is ERROR in-memory; disk_b is the sole active device.
     auto const states = raid->replica_states();
@@ -55,10 +55,9 @@ TEST_F(AsyncRaid1Fixture, UnknownOpcodeIsRejected) {
 }
 
 // Phase 1: active (disk_a) fails AND the superblock write to disk_b fails. disk_a is marked ERROR
-// in-memory (no rollback); the backup result is returned to the caller.
+// in-memory (no rollback). Because degradation is not on disk the caller receives -EIO, not the
+// backup result — a crash would self-heal from the stale disk_a, destroying disk_b's write.
 // Phase 2: array is now degraded; a subsequent write routes to disk_b only (1 cqe_state).
-// Together these verify that a failed SB write still produces correct in-memory degradation and
-// that writes in the resulting degraded state behave correctly.
 TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
     // Catch-all for bitmap-page writes (addr > 0) that occur during shutdown; registered first so
     // the addr=0 EXPECT_CALL (registered second) takes LIFO priority for superblock writes.
@@ -81,9 +80,9 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
         EXPECT_EQ(res.value(), 2u);
 
         EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty()); // active fails → SB fails → disk_a ERROR
-        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup succeeded → returned to caller
+        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup succeeded but SB failed → -EIO
         ASSERT_EQ(comp.size(), 1u);
-        EXPECT_EQ(comp[0].result, 4 * Ki);
+        EXPECT_EQ(comp[0].result, -EIO);
 
         auto const states = raid->replica_states();
         EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::ERROR);

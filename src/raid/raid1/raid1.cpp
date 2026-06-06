@@ -772,9 +772,7 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // SB write failed -- we cannot persist the degradation, but rolling back to EITHER would
         // allow round-robin reads to the failed device, serving inconsistent data (the backup may
         // have already received the write). Keep the in-memory degraded route and mark the failed
-        // device unavailable. The dirty bitmap covers the affected region; resync at shutdown or a
-        // full recovery on next start will reconcile any inconsistency.
-        //
+        // device unavailable. The caller will receive EIO; the client must retry.
         { // revert age under _ctrl_lock — same guard as the increment above
             std::lock_guard lock(_ctrl_lock);
             _sb->fields.bitmap.age = old_age;
@@ -897,11 +895,14 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // CAS lost and no backup to drain — nothing to await.
         if (!become_degraded_ok && !backup_task) co_return -EAGAIN;
         // Either __become_degraded succeeded (backup guaranteed by invariant) or failed with a
-        // backup present. Drain backup before returning: serving stale disk_a data in EITHER mode
-        // would be wrong when disk_b received the write successfully.
+        // backup present. Always drain backup before returning: leaving it in-flight while the
+        // coroutine exits is unsafe.
         DEBUG_ASSERT(!become_degraded_ok || backup_task.has_value(),
                      "backup_task must exist when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = co_await *backup_task;
+        // Degradation not persisted on disk: a crash here would self-heal from the stale active
+        // device, overwriting whatever the backup wrote. Return EIO — the client must retry.
+        if (!become_degraded_ok) co_return -EIO;
         co_return backup_res >= 0 ? backup_res : -EAGAIN;
     }
 
