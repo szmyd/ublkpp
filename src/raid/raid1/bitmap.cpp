@@ -321,10 +321,15 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
                                                              : (((uint64_t)0b1 << bits_to_write) - 1)
                                                  << (shift_offset - (bits_to_write - 1)));
         auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_and(clear_mask, std::memory_order_relaxed);
-        _dirty_chunks_est.fetch_sub(
-            std::min(_dirty_chunks_est.load(std::memory_order_relaxed),
-                     static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)))),
-            std::memory_order_relaxed);
+        auto const delta = static_cast< uint64_t >(std::popcount(old_word xor (old_word & clear_mask)));
+        // CAS loop: load+fetch_sub is not jointly atomic; two concurrent callers reading the same
+        // value would both subtract, underflowing to UINT64_MAX.
+        for (auto old = _dirty_chunks_est.load(std::memory_order_relaxed); old > 0;) {
+            auto const sub = std::min(old, delta);
+            if (_dirty_chunks_est.compare_exchange_weak(old, old - sub, std::memory_order_relaxed,
+                                                        std::memory_order_relaxed))
+                break;
+        }
         ++cur_word;
         shift_offset = bits_in_word - 1; // Word offset back to the beginning
     }
