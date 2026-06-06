@@ -741,7 +741,10 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
     auto old_route = read_route::EITHER;
     auto const new_route = (failed_is_active == active_is_b) ? read_route::DEVA : read_route::DEVB;
     if (!_read_route_cache.compare_exchange_strong(old_route, new_route)) {
-        if (old_route == new_route) return 0; // Already degraded
+        // CAS lost — either already degraded (idempotent) or __swap_device raced in.
+        // Either branch returns without touching _degraded_sb_pending, so any pending Site-2 retry
+        // in __try_persist_degraded_sb remains valid and will fire on the next I/O.
+        if (old_route == new_route) return 0;
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
@@ -787,6 +790,9 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
 }
 
 bool Raid1Disk::__try_persist_degraded_sb() {
+    // With nr_hw_queues > 1, two coroutines can both pass this check before either stores false.
+    // The resulting concurrent write_superblock calls write identical data to the same address and
+    // are therefore idempotent — the race is benign.
     if (!_degraded_sb_pending.load(std::memory_order_acquire)) return true;
 
     auto const rs = __capture_route_state();
