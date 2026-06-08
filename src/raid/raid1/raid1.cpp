@@ -734,7 +734,7 @@ bool Raid1Disk::__become_clean() {
 // and __swap_device.  The _read_route_cache CAS below is the synchronization gate: if
 // __swap_device wins the CAS first, this call sees old_route != EITHER and returns early (already
 // degraded or concurrent swap in progress).  No additional lock is required.
-io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_state, bool spawn_resync) {
+bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_state, bool spawn_resync) {
     // Surviving device is backup if active failed, active if backup failed.
     // new_route = the physical slot (DEVA/DEVB) of the surviving device.
     bool const active_is_b = (cur_state->route == read_route::DEVB);
@@ -744,8 +744,8 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         // CAS lost — either already degraded (idempotent) or __swap_device raced in.
         // Either branch returns without touching _degraded_sb_pending, so any pending Site-2 retry
         // in __try_persist_degraded_sb remains valid and will fire on the next I/O.
-        if (old_route == new_route) return 0;
-        return std::unexpected(std::make_error_condition(std::errc::io_error));
+        if (old_route == new_route) return true;
+        return false;
     }
 
     auto const backup_clean = (read_route::DEVB == new_route);
@@ -782,11 +782,11 @@ io_result Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* 
         _degraded_sb_pending.store(true, std::memory_order_release);
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-        return sync_res;
+        return false;
     }
     failed_device->unavail.test_and_set(std::memory_order_acq_rel);
     if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
-    return 0;
+    return true;
 }
 
 bool Raid1Disk::__try_persist_degraded_sb() {
@@ -918,7 +918,7 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         bool const become_degraded_ok = [&] {
             std::lock_guard lock(_clean_transition_mutex);
             _dirty_bitmap->dirty_region(addr, len);
-            return bool(__become_degraded(true, &state));
+            return __become_degraded(true, &state);
         }();
         // CAS lost and no backup to drain — nothing to await.
         if (!become_degraded_ok && !backup_task) co_return -EAGAIN;
@@ -929,8 +929,8 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
                      "backup_task must exist when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = co_await *backup_task;
         // Degradation not persisted on disk: a crash here would self-heal from the stale active
-        // device, overwriting whatever the backup wrote. Return EIO — the client must retry.
-        if (!become_degraded_ok) co_return -EIO;
+        // device, overwriting whatever the backup wrote. Return EAGAIN — the client must retry.
+        if (!become_degraded_ok) co_return -EAGAIN;
         co_return backup_res >= 0 ? backup_res
                                   : -EAGAIN; // -EAGAIN: degradation is durable; retry routes to sole device
     }
@@ -955,7 +955,7 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // If the initial __become_degraded SB write failed (Site 1 or 3), retry it now before
         // acking. Without this, a crash leaves both on-disk SBs at EITHER while in-memory is
         // DEVX, causing self-heal to resync stale data over the surviving device on restart.
-        if (!__try_persist_degraded_sb()) co_return -EIO;
+        if (!__try_persist_degraded_sb()) co_return -EAGAIN;
         co_return active_res;
     }
 
@@ -967,7 +967,7 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // __become_clean's check+CAS. No co_await under the lock.
         std::lock_guard lock(_clean_transition_mutex);
         _dirty_bitmap->dirty_region(addr, len);
-        if (auto d = __become_degraded(false, &state); !d) co_return -EIO;
+        if (auto d = __become_degraded(false, &state); !d) co_return -EAGAIN;
     } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
         RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
         state.backup_dev->unavail.clear(std::memory_order_release);
@@ -1031,7 +1031,8 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         // Site 2 (sync) — see async_iov Site 2 comment; error intentionally discarded.
         std::ignore = __become_degraded(false, &state);
         // Retry SB persist before acking (mirrors async Site 2 — see that comment).
-        if (!__try_persist_degraded_sb()) return std::unexpected(std::make_error_condition(std::errc::io_error));
+        if (!__try_persist_degraded_sb())
+            return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         return active_res;
     }
 
@@ -1041,7 +1042,7 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
         std::lock_guard lock(_clean_transition_mutex); // site 3 (sync)
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         if (auto d = __become_degraded(false, &state); !d)
-            return std::unexpected(std::make_error_condition(std::errc::io_error));
+            return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
     } else if (state.backup_dev->unavail.test(std::memory_order_relaxed)) {
         RLOGI("Device {} back online (write succeeded) [uuid:{}]", *state.backup_dev->disk, _str_uuid)
         state.backup_dev->unavail.clear(std::memory_order_release);

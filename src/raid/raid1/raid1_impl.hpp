@@ -84,7 +84,7 @@ class Raid1Disk : public ublk_disk {
 
     // Internal routines
     bool __become_clean();
-    io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
+    bool __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
     // Retries the SB write when _degraded_sb_pending is set. Returns true if the SB was persisted
     // (or no retry was needed); returns false if the write failed again, meaning the caller must
     // not ack the current I/O (client retries on the next request).

@@ -4,7 +4,7 @@
 // device (disk_b), the degradation is NOT persisted on disk. The in-memory route is kept degraded
 // (rolling back to EITHER would allow reads to the failed device) and disk_a is marked ERROR.
 // Because a crash at this point would let restart self-heal from disk_a (stale), overwriting
-// whatever disk_b wrote, the caller receives -EIO rather than the backup result.
+// whatever disk_b wrote, the caller receives -EAGAIN rather than the backup result.
 TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
     // Catch-all for bitmap-page writes (addr > 0) that occur during shutdown; registered first so
     // the addr=0 EXPECT_CALL (registered second) takes LIFO priority for superblock writes.
@@ -27,10 +27,10 @@ TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
 
     // Active (disk_a) fails → __become_degraded fires, SB write to disk_b fails.
     EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
-    // Backup (disk_b) succeeded, but degradation is not on disk → caller gets -EIO.
+    // Backup (disk_b) succeeded, but degradation is not on disk → caller gets -EAGAIN.
     auto completions = mock->inject_cqe(0, 4 * Ki);
     ASSERT_EQ(completions.size(), 1u);
-    EXPECT_EQ(completions[0].result, -EIO);
+    EXPECT_EQ(completions[0].result, -EAGAIN);
 
     // disk_a is ERROR in-memory; disk_b is the sole active device.
     auto const states = raid->replica_states();
@@ -55,7 +55,7 @@ TEST_F(AsyncRaid1Fixture, UnknownOpcodeIsRejected) {
 }
 
 // Phase 1: active (disk_a) fails AND the superblock write to disk_b fails. disk_a is marked ERROR
-// in-memory (no rollback). Because degradation is not on disk the caller receives -EIO, not the
+// in-memory (no rollback). Because degradation is not on disk the caller receives -EAGAIN, not the
 // backup result — a crash would self-heal from the stale disk_a, destroying disk_b's write.
 // Phase 2: verifies that the failed SB write still leaves correct in-memory degradation state —
 // a subsequent write routes to disk_b only (1 cqe_state) and succeeds.
@@ -81,9 +81,9 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
         EXPECT_EQ(res.value(), 2u);
 
         EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty()); // active fails → SB fails → disk_a ERROR
-        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup succeeded but SB failed → -EIO
+        auto comp = mock->inject_cqe(0, 4 * Ki);        // backup succeeded but SB failed → -EAGAIN
         ASSERT_EQ(comp.size(), 1u);
-        EXPECT_EQ(comp[0].result, -EIO);
+        EXPECT_EQ(comp[0].result, -EAGAIN);
 
         auto const states = raid->replica_states();
         EXPECT_EQ(states.device_a, ublkpp::raid1::replica_state::ERROR);
@@ -155,7 +155,7 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetrySucceeds) {
         })
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
-    // Phase 1: disk_a fails → SB write fails → _degraded_sb_pending set. Site 1 returns -EIO
+    // Phase 1: disk_a fails → SB write fails → _degraded_sb_pending set. Site 1 returns -EAGAIN
     //          because the degradation is not yet on disk (client must retry).
     {
         auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
@@ -165,11 +165,11 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetrySucceeds) {
         EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
         auto comp = mock->inject_cqe(0, 4 * Ki);
         ASSERT_EQ(comp.size(), 1u);
-        EXPECT_EQ(comp[0].result, -EIO); // SB write failed → not acked to client
+        EXPECT_EQ(comp[0].result, -EAGAIN); // SB write failed → not acked to client
     }
     EXPECT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::ERROR);
 
-    // Phase 2: degraded write → SB retry succeeds → write acked with normal result (not EIO).
+    // Phase 2: degraded write → SB retry succeeds → write acked with normal result (not EAGAIN).
     {
         auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 8 * Ki / 512, 4 * Ki / 512, nullptr);
         ASSERT_TRUE(res);
@@ -186,7 +186,7 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetrySucceeds) {
 
 // Phase 1: active (disk_a) fails; __become_degraded SB write to disk_b fails → _degraded_sb_pending set.
 // Phase 2: degraded write to disk_b succeeds; __try_persist_degraded_sb retries but fails again →
-//          write is NOT acked (EIO returned). _degraded_sb_pending remains set until destructor.
+//          write is NOT acked (EAGAIN returned). _degraded_sb_pending remains set until destructor.
 TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetryFails) {
     EXPECT_CALL(*disk_b, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Gt((off_t)0)))
         .Times(AnyNumber())
@@ -203,7 +203,7 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetryFails) {
         })
         .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
-    // Phase 1: disk_a fails → SB write fails → _degraded_sb_pending set. Site 1 returns -EIO
+    // Phase 1: disk_a fails → SB write fails → _degraded_sb_pending set. Site 1 returns -EAGAIN
     //          because the degradation is not yet on disk (client must retry).
     {
         auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
@@ -213,11 +213,11 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetryFails) {
         EXPECT_TRUE(mock->inject_cqe(0, -EIO).empty());
         auto comp = mock->inject_cqe(0, 4 * Ki);
         ASSERT_EQ(comp.size(), 1u);
-        EXPECT_EQ(comp[0].result, -EIO); // SB write failed → not acked to client
+        EXPECT_EQ(comp[0].result, -EAGAIN); // SB write failed → not acked to client
     }
     EXPECT_EQ(raid->replica_states().device_a, ublkpp::raid1::replica_state::ERROR);
 
-    // Phase 2: degraded write data succeeds but SB retry fails → EIO returned to caller.
+    // Phase 2: degraded write data succeeds but SB retry fails → EAGAIN returned to caller.
     // The client will retry; _degraded_sb_pending stays set for the destructor to handle.
     {
         auto res = mock->submit_io(1, UBLK_IO_OP_WRITE, 8 * Ki / 512, 4 * Ki / 512, nullptr);
@@ -226,6 +226,6 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetryFails) {
 
         auto comp = mock->inject_cqe(1, 4 * Ki); // disk_b data write succeeded
         ASSERT_EQ(comp.size(), 1u);
-        EXPECT_EQ(comp[0].result, -EIO); // but SB retry failed → not acked
+        EXPECT_EQ(comp[0].result, -EAGAIN); // but SB retry failed → not acked
     }
 }
