@@ -63,11 +63,13 @@ class Raid1Disk : public ublk_disk {
     // Counts prepare() calls; used to enable resync on the first queue init.
     std::atomic_uint16_t _nr_hw_queues{0};
 
-    // Set when __become_degraded updates the in-memory route but fails to persist the new route to
-    // disk (transient SB write failure). The age increment is kept so any eventual SB write carries
-    // a higher age than the stale on-disk SB, ensuring pick_superblock selects the correct device on
-    // restart. Cleared by __try_persist_degraded_sb on the next I/O. If set at shutdown, the
-    // destructor's SB write naturally persists the correct route.
+    // Pessimistically set to true under _ctrl_lock before __become_degraded's write_superblock
+    // call; cleared under the same lock on success. Stays true on failure so subsequent I/Os
+    // retry via __try_persist_degraded_sb, which also checks under _ctrl_lock — no concurrent
+    // queue thread can read false while a write is in-flight and prematurely ack.
+    // The age increment is NOT reverted on failure so any retry carries a higher age than the
+    // stale on-disk SB, ensuring pick_superblock selects the correct device on restart.
+    // If set at shutdown, the destructor's SB write naturally persists the correct route.
     std::atomic< bool > _degraded_sb_pending{false};
 
     // Shared read/write routing helpers used by both async_iov and sync_iov.
