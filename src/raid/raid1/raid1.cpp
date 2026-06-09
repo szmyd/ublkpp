@@ -776,19 +776,23 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         return false; // __swap_device won the CAS
     }
 
-    auto const backup_clean = (read_route::DEVB == new_route);
-    auto& failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
-    auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
-
-    // _ctrl_lock guards _sb->fields against concurrent __swap_device mutations (same field).
-    // Pessimistically set _degraded_sb_pending before the write so any concurrent queue thread
-    // that lost the CAS and enters __try_persist_degraded_sb sees the in-progress state under
-    // the same lock — preventing a premature ack while write_superblock is still in flight.
+    // Acquire _ctrl_lock immediately after the CAS — no code between CAS and lock.
+    // A concurrent queue thread (T2) that lost the CAS and calls __try_persist_degraded_sb
+    // must also acquire _ctrl_lock before reading _degraded_sb_pending; it cannot see false
+    // while we hold the lock with true already stored. Moving the pointer lookups inside is
+    // semantically free: cur_state outlives this call and _ctrl_lock does not guard them.
+    bool backup_clean;
+    std::shared_ptr< MirrorDevice > failed_device;
+    std::shared_ptr< ublk_disk > working_disk;
     {
         std::lock_guard lock(_ctrl_lock);
+        backup_clean = (read_route::DEVB == new_route);
+        failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
+        working_disk = failed_is_active ? cur_state->backup_dev->disk : cur_state->active_dev->disk;
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
         _degraded_sb_pending.store(true, std::memory_order_relaxed);
     }
+    auto& working_device = *working_disk;
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
 
