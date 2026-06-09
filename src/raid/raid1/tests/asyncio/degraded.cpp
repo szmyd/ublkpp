@@ -19,7 +19,8 @@ TEST_F(AsyncRaid1Fixture, BecomeDegradedSbFail) {
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result { // Site-1 retry also fails
+        // Site-1 retry also fails
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
         .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
@@ -108,7 +109,8 @@ TEST_F(AsyncRaid1Fixture, WriteAndSbUpdateBothFail) {
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result { // Site-1 retry also fails
+        // Site-1 retry also fails
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
@@ -193,7 +195,8 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetrySucceeds) {
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result { // Site-1 retry also fails
+        // Site-1 retry also fails
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
@@ -242,7 +245,8 @@ TEST_F(AsyncRaid1Fixture, DegradedSbPersistRetryFails) {
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result { // Site-1 retry also fails
+        // Site-1 retry also fails
+        .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {

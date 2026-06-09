@@ -1,6 +1,6 @@
 // Regression: active write succeeds, backup write fails, and the subsequent __become_degraded
-// SB write to the active device also fails. The I/O must return EIO -- the write reached the
-// active device but the array state could not be persisted to disk.
+// SB write to the active device also fails. The I/O must return resource_unavailable_try_again
+// -- the write reached the active device but degradation is not yet durable on disk.
 
 #include "test_raid1_common.hpp"
 
@@ -59,5 +59,5 @@ TEST(Raid1, SyncIoWriteBackupFailDegradeFail) {
     iovec iov{nullptr, test_sz};
     auto const res = raid_device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, test_off);
     ASSERT_FALSE(res);
-    EXPECT_EQ(std::errc::io_error, res.error());
+    EXPECT_EQ(std::errc::resource_unavailable_try_again, res.error());
 }

@@ -730,6 +730,34 @@ bool Raid1Disk::__become_clean() {
     return true;
 }
 
+// Called from __become_degraded when the array is already in the target degraded state.
+// Retries any pending SB write and, on success, optionally spawns resync.
+//
+// Concurrent retry safety: _sb->fields is stable here — the original __become_degraded
+// returned before toggle_resync(), so _degraded_sb_pending is only set when no resync task
+// is running, and __become_clean cannot race without one. Two coroutines may both pass the
+// load check before either clears the flag; the resulting concurrent write_superblock calls
+// write identical data to the same offset and are therefore idempotent.
+//
+// cur_state may predate this degradation (e.g. a Site-1 retry passes the original EITHER-mode
+// snapshot), so active_dev may point to the failed leg. Re-capture the route state to guarantee
+// we write to the surviving device.
+bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
+    if (_degraded_sb_pending.load(std::memory_order_acquire)) {
+        auto const rs = __capture_route_state();
+        bool const is_b = (rs.route == read_route::DEVB);
+        if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {
+            _degraded_sb_pending.store(false, std::memory_order_release);
+            RLOGW("Persisted degraded superblock on retry (pending cleared) [uuid:{}]", _str_uuid)
+            if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
+        } else {
+            RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
+            return false;
+        }
+    }
+    return true;
+}
+
 // See the comment above __swap_device for the CAS-based mutual exclusion between this function
 // and __swap_device.  The _read_route_cache CAS below is the synchronization gate: if
 // __swap_device wins the CAS first, this call sees old_route != EITHER and returns early (already
@@ -742,33 +770,7 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
     auto const new_route = (failed_is_active == active_is_b) ? read_route::DEVA : read_route::DEVB;
     if (!_read_route_cache.compare_exchange_strong(old_route, new_route)) {
         // CAS lost — either already degraded (no-op) or __swap_device raced in.
-        if (old_route == new_route) {
-            // Already degraded. If the initial SB write failed, retry it now so the caller can
-            // safely ack without forcing a client round-trip.
-            //
-            // Concurrent retry safety: _sb->fields is stable here — the original
-            // __become_degraded returned before toggle_resync(), so _degraded_sb_pending is
-            // only set when no resync task is running, and __become_clean cannot race without
-            // one. Two coroutines may both pass the load check before either clears the flag;
-            // the resulting concurrent write_superblock calls write identical data to the same
-            // offset and are therefore idempotent.
-            //
-            // cur_state may predate this degradation (e.g. a Site-1 retry passes the original
-            // EITHER-mode snapshot), so active_dev may point to the failed leg. Re-capture
-            // the route state to guarantee we write to the surviving device.
-            if (_degraded_sb_pending.load(std::memory_order_acquire)) {
-                auto const rs = __capture_route_state();
-                bool const is_b = (rs.route == read_route::DEVB);
-                if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {
-                    _degraded_sb_pending.store(false, std::memory_order_release);
-                    RLOGW("Persisted degraded superblock on retry [uuid:{}]", _str_uuid)
-                } else {
-                    RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
-                    return false;
-                }
-            }
-            return true;
-        }
+        if (old_route == new_route) return __try_persist_degraded_sb(spawn_resync);
         return false; // __swap_device won the CAS
     }
 
