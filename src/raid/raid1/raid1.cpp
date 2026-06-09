@@ -741,11 +741,35 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
     auto old_route = read_route::EITHER;
     auto const new_route = (failed_is_active == active_is_b) ? read_route::DEVA : read_route::DEVB;
     if (!_read_route_cache.compare_exchange_strong(old_route, new_route)) {
-        // CAS lost — either already degraded (idempotent) or __swap_device raced in.
-        // Either branch returns without touching _degraded_sb_pending, so any pending Site-2 retry
-        // in __try_persist_degraded_sb remains valid and will fire on the next I/O.
-        if (old_route == new_route) return true;
-        return false;
+        // CAS lost — either already degraded (no-op) or __swap_device raced in.
+        if (old_route == new_route) {
+            // Already degraded. If the initial SB write failed, retry it now so the caller can
+            // safely ack without forcing a client round-trip.
+            //
+            // Concurrent retry safety: _sb->fields is stable here — the original
+            // __become_degraded returned before toggle_resync(), so _degraded_sb_pending is
+            // only set when no resync task is running, and __become_clean cannot race without
+            // one. Two coroutines may both pass the load check before either clears the flag;
+            // the resulting concurrent write_superblock calls write identical data to the same
+            // offset and are therefore idempotent.
+            //
+            // cur_state may predate this degradation (e.g. a Site-1 retry passes the original
+            // EITHER-mode snapshot), so active_dev may point to the failed leg. Re-capture
+            // the route state to guarantee we write to the surviving device.
+            if (_degraded_sb_pending.load(std::memory_order_acquire)) {
+                auto const rs = __capture_route_state();
+                bool const is_b = (rs.route == read_route::DEVB);
+                if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {
+                    _degraded_sb_pending.store(false, std::memory_order_release);
+                    RLOGW("Persisted degraded superblock on retry [uuid:{}]", _str_uuid)
+                } else {
+                    RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false; // __swap_device won the CAS
     }
 
     auto const backup_clean = (read_route::DEVB == new_route);
@@ -777,8 +801,8 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         //
         // The age increment is NOT reverted: any subsequent SB write must carry a higher age than
         // the stale on-disk SB so pick_superblock selects the surviving device on restart.
-        // _degraded_sb_pending signals that the SB write is still outstanding; the next Site-2 I/O
-        // will retry it via __try_persist_degraded_sb before acking, closing the crash window.
+        // _degraded_sb_pending signals that the SB write is still outstanding; the next I/O
+        // that reaches the already-degraded path will retry it before acking.
         _degraded_sb_pending.store(true, std::memory_order_release);
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
@@ -787,31 +811,6 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
     failed_device->unavail.test_and_set(std::memory_order_acq_rel);
     if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
     return true;
-}
-
-bool Raid1Disk::__try_persist_degraded_sb() {
-    // With nr_hw_queues > 1, two coroutines can both pass this check before either stores false.
-    // The resulting concurrent write_superblock calls write identical data to the same address and
-    // are therefore idempotent — the race is benign.
-    if (!_degraded_sb_pending.load(std::memory_order_acquire)) return true;
-
-    auto const rs = __capture_route_state();
-    if (rs.route == read_route::EITHER) {
-        // __become_clean already wrote clean SBs under the lock; the pending degradation SB no
-        // longer needs to be written (the resync task has already reconciled both devices).
-        _degraded_sb_pending.store(false, std::memory_order_release);
-        return true;
-    }
-
-    bool const is_device_b = (rs.route == read_route::DEVB);
-    if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_device_b, rs.route); sb) {
-        _degraded_sb_pending.store(false, std::memory_order_release);
-        RLOGI("Persisted degraded superblock on retry [uuid:{}]", _str_uuid)
-        return true;
-    } else {
-        RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
-        return false;
-    }
 }
 
 disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
@@ -918,9 +917,12 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         DEBUG_ASSERT(!become_degraded_ok || backup_task.has_value(),
                      "backup_task must exist when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = co_await *backup_task;
-        // Degradation not persisted on disk: a crash here would self-heal from the stale active
-        // device, overwriting whatever the backup wrote. Return EAGAIN — the client must retry.
-        if (!become_degraded_ok) co_return -EAGAIN;
+        if (!become_degraded_ok) {
+            // Backup write landed but SB wasn't persisted. Attempt one retry before returning
+            // EAGAIN — avoids an unnecessary client round-trip for a transient SB write failure.
+            // __become_degraded sees the already-degraded route and fires the pending-retry path.
+            if (!__become_degraded(true, &state)) co_return -EAGAIN;
+        }
         co_return backup_res >= 0 ? backup_res
                                   : -EAGAIN; // -EAGAIN: degradation is durable; retry routes to sole device
     }
@@ -937,15 +939,9 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // region and need to be atomic with __become_clean). Here we still call __become_degraded
         // unconditionally so that if __become_clean released the mutex and transitioned to EITHER
         // before this dirty_region call, we re-degrade before ACKing. __become_degraded's own
-        // CAS(EITHER→DEVA) is the synchronization; no mutex needed because we're already past the
-        // transition window (the lock was already released before this point).
-        // Error intentionally discarded: the CAS already degraded the in-memory route;
-        // any SB write failure is logged inside __become_degraded.
-        std::ignore = __become_degraded(false, &state);
-        // If the initial __become_degraded SB write failed (Site 1 or 3), retry it now before
-        // acking. Without this, a crash leaves both on-disk SBs at EITHER while in-memory is
-        // DEVX, causing self-heal to resync stale data over the surviving device on restart.
-        if (!__try_persist_degraded_sb()) co_return -EAGAIN;
+        // CAS handles idempotency; if already degraded with a pending SB write, it retries the
+        // SB write before returning — ensuring the SB is durable before we ack.
+        if (!__become_degraded(false, &state)) co_return -EAGAIN;
         co_return active_res;
     }
 
@@ -1018,10 +1014,8 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
 
     if (!backup_write) {
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
-        // Site 2 (sync) — see async_iov Site 2 comment; error intentionally discarded.
-        std::ignore = __become_degraded(false, &state);
-        // Retry SB persist before acking (mirrors async Site 2 — see that comment).
-        if (!__try_persist_degraded_sb())
+        // Site 2 (sync) — mirrors async_iov Site 2; see that comment.
+        if (!__become_degraded(false, &state))
             return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         return active_res;
     }
