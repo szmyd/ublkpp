@@ -66,8 +66,8 @@ class Raid1Disk : public ublk_disk {
     // Set when __become_degraded updates the in-memory route but fails to persist the new route to
     // disk (transient SB write failure). The age increment is kept so any eventual SB write carries
     // a higher age than the stale on-disk SB, ensuring pick_superblock selects the correct device on
-    // restart. Cleared by __become_degraded's already-degraded path on the next I/O. If set at
-    // shutdown, the destructor's SB write naturally persists the correct route.
+    // restart. Cleared by __try_persist_degraded_sb on the next I/O. If set at shutdown, the
+    // destructor's SB write naturally persists the correct route.
     std::atomic< bool > _degraded_sb_pending{false};
 
     // Shared read/write routing helpers used by both async_iov and sync_iov.
@@ -87,8 +87,12 @@ class Raid1Disk : public ublk_disk {
     // Transitions in-memory route from EITHER→DEVA/DEVB and persists the superblock. Returns true
     // if the array is durably degraded (ack is safe); false if the SB write failed (caller must
     // return -EAGAIN — a crash before the SB is written would corrupt self-heal direction).
-    // Idempotent when already degraded: retries a pending SB write if _degraded_sb_pending is set.
+    // Idempotent when already degraded: delegates to __try_persist_degraded_sb.
     bool __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
+    // Called from __become_degraded when the array is already degraded. Retries any pending SB
+    // write (_degraded_sb_pending) and, on success, optionally spawns resync. Returns true if the
+    // SB is now durable (no write was pending, or the retry succeeded); false if the retry failed.
+    bool __try_persist_degraded_sb(bool spawn_resync);
     disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                            uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,

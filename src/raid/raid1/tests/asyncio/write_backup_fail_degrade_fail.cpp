@@ -1,6 +1,6 @@
 // Regression: active write succeeds, backup write fails, and the subsequent __become_degraded
-// SB write to the active device also fails. The I/O must return -EIO -- the write reached the
-// active device but the array state could not be persisted to disk.
+// SB write to the active device also fails. The I/O must return -EAGAIN -- the write reached the
+// active device but the degradation is not yet durable; a crash would self-heal incorrectly.
 
 #include "async_raid1_common.hpp"
 
@@ -27,8 +27,8 @@ TEST_F(AsyncRaid1Fixture, WriteBackupFailDegradeFail) {
 
     // Active (disk_a) succeeds → coroutine awaits backup.
     EXPECT_TRUE(mock->inject_cqe(0, 4 * Ki).empty());
-    // Backup (disk_b) fails → __become_degraded(false) fires → SB write to disk_a fails → -EIO.
+    // Backup (disk_b) fails → __become_degraded(false) fires → SB write to disk_a fails → -EAGAIN.
     auto completions = mock->inject_cqe(0, -EIO);
     ASSERT_EQ(completions.size(), 1u);
-    EXPECT_EQ(completions[0].result, -EIO);
+    EXPECT_EQ(completions[0].result, -EAGAIN);
 }
