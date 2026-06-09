@@ -730,30 +730,32 @@ bool Raid1Disk::__become_clean() {
     return true;
 }
 
-// Called from __become_degraded when the array is already in the target degraded state.
-// Retries any pending SB write and, on success, optionally spawns resync.
-//
-// Concurrent retry safety: _sb->fields is stable here — the original __become_degraded
-// returned before toggle_resync(), so _degraded_sb_pending is only set when no resync task
-// is running, and __become_clean cannot race without one. Two coroutines may both pass the
-// load check before either clears the flag; the resulting concurrent write_superblock calls
-// write identical data to the same offset and are therefore idempotent.
+// _degraded_sb_pending is read/written under _ctrl_lock. __become_degraded sets it to true
+// inside the lock before calling write_superblock, so any concurrent queue thread that lost
+// the CAS and enters here sees the in-progress state — preventing a premature ack.
+// Two coroutines may both pass the check before either clears the flag; the resulting
+// concurrent write_superblock calls write identical data to the same offset and are idempotent.
 //
 // cur_state may predate this degradation (e.g. a Site-1 retry passes the original EITHER-mode
 // snapshot), so active_dev may point to the failed leg. Re-capture the route state to guarantee
 // we write to the surviving device.
 bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
-    if (_degraded_sb_pending.load(std::memory_order_acquire)) {
-        auto const rs = __capture_route_state();
-        bool const is_b = (rs.route == read_route::DEVB);
-        if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {
-            _degraded_sb_pending.store(false, std::memory_order_release);
-            RLOGW("Persisted degraded superblock on retry (pending cleared) [uuid:{}]", _str_uuid)
-            if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
-        } else {
-            RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
-            return false;
+    {
+        std::lock_guard lock(_ctrl_lock);
+        if (!_degraded_sb_pending.load(std::memory_order_relaxed)) return true;
+    }
+    auto const rs = __capture_route_state();
+    bool const is_b = (rs.route == read_route::DEVB);
+    if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {
+        {
+            std::lock_guard lock(_ctrl_lock);
+            _degraded_sb_pending.store(false, std::memory_order_relaxed);
         }
+        RLOGW("Persisted degraded superblock on retry (pending cleared) [uuid:{}]", _str_uuid)
+        if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
+    } else {
+        RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
+        return false;
     }
     return true;
 }
@@ -779,9 +781,13 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
     auto& working_device = failed_is_active ? *cur_state->backup_dev->disk : *cur_state->active_dev->disk;
 
     // _ctrl_lock guards _sb->fields against concurrent __swap_device mutations (same field).
+    // Pessimistically set _degraded_sb_pending before the write so any concurrent queue thread
+    // that lost the CAS and enters __try_persist_degraded_sb sees the in-progress state under
+    // the same lock — preventing a premature ack while write_superblock is still in flight.
     {
         std::lock_guard lock(_ctrl_lock);
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
+        _degraded_sb_pending.store(true, std::memory_order_relaxed);
     }
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
           static_cast< uint64_t >(be64toh(_sb->fields.bitmap.age)), _str_uuid);
@@ -794,7 +800,6 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         _raid_metrics->record_device_degraded(device_name);
     } // LCOV_EXCL_STOP
 
-    // Must update age first; we do this synchronously to gate pending retry results
     if (auto sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route); !sync_res) {
         // SB write failed -- we cannot persist the degradation, but rolling back to EITHER would
         // allow round-robin reads to the failed device, serving inconsistent data (the backup may
@@ -803,12 +808,15 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         //
         // The age increment is NOT reverted: any subsequent SB write must carry a higher age than
         // the stale on-disk SB so pick_superblock selects the surviving device on restart.
-        // _degraded_sb_pending signals that the SB write is still outstanding; the next I/O
-        // that reaches the already-degraded path will retry it before acking.
-        _degraded_sb_pending.store(true, std::memory_order_release);
+        // _degraded_sb_pending stays true; the next I/O that hits the already-degraded path
+        // retries the write before acking.
         failed_device->unavail.test_and_set(std::memory_order_acq_rel);
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
         return false;
+    }
+    {
+        std::lock_guard lock(_ctrl_lock);
+        _degraded_sb_pending.store(false, std::memory_order_relaxed);
     }
     failed_device->unavail.test_and_set(std::memory_order_acq_rel);
     if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
@@ -920,9 +928,11 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
                      "backup_task must exist when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = co_await *backup_task;
         if (!become_degraded_ok) {
-            // Backup write landed but SB wasn't persisted. Attempt one retry before returning
-            // EAGAIN — avoids an unnecessary client round-trip for a transient SB write failure.
-            // __become_degraded sees the already-degraded route and fires the pending-retry path.
+            // Backup write landed but SB wasn't persisted. Attempt one inline retry before
+            // returning EAGAIN — avoids an unnecessary client round-trip for a transient failure.
+            // No _clean_transition_mutex needed: SB write failed so toggle_resync was never called
+            // → no resync task running → __become_clean cannot race.
+            // (Sites 2/3 return to the caller immediately; their retry fires on the next I/O.)
             if (!__become_degraded(true, &state)) co_return -EAGAIN;
         }
         co_return backup_res >= 0 ? backup_res
