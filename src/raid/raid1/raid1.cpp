@@ -730,9 +730,10 @@ bool Raid1Disk::__become_clean() {
     return true;
 }
 
-// _degraded_sb_pending is read/written under _ctrl_lock. __become_degraded sets it to true
-// inside the lock before calling write_superblock, so any concurrent queue thread that lost
-// the CAS and enters here sees the in-progress state — preventing a premature ack.
+// _degraded_sb_pending is guarded by _ctrl_lock. __become_degraded acquires the lock immediately
+// after the CAS and stores true before calling write_superblock, so any concurrent queue thread
+// that lost the CAS and enters here must also acquire the lock before reading the flag — it
+// cannot see false while T1's write is in flight.
 // Two coroutines may both pass the check before either clears the flag; the resulting
 // concurrent write_superblock calls write identical data to the same offset and are idempotent.
 //
@@ -742,16 +743,16 @@ bool Raid1Disk::__become_clean() {
 bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
     {
         std::lock_guard lock(_ctrl_lock);
-        if (!_degraded_sb_pending.load(std::memory_order_relaxed)) return true;
+        if (!_degraded_sb_pending) return true;
     }
     auto const rs = __capture_route_state();
     bool const is_b = (rs.route == read_route::DEVB);
     if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {
         {
             std::lock_guard lock(_ctrl_lock);
-            _degraded_sb_pending.store(false, std::memory_order_relaxed);
+            _degraded_sb_pending = false;
         }
-        RLOGW("Persisted degraded superblock on retry (pending cleared) [uuid:{}]", _str_uuid)
+        RLOGI("Persisted degraded superblock on retry (pending cleared) [uuid:{}]", _str_uuid)
         if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
     } else {
         RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
@@ -776,21 +777,21 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         return false; // __swap_device won the CAS
     }
 
+    // backup_clean is a pure function of new_route, which is fixed before the lock.
+    bool const backup_clean = (read_route::DEVB == new_route);
     // Acquire _ctrl_lock immediately after the CAS — no code between CAS and lock.
     // A concurrent queue thread (T2) that lost the CAS and calls __try_persist_degraded_sb
     // must also acquire _ctrl_lock before reading _degraded_sb_pending; it cannot see false
-    // while we hold the lock with true already stored. Moving the pointer lookups inside is
-    // semantically free: cur_state outlives this call and _ctrl_lock does not guard them.
-    bool backup_clean;
+    // while we hold the lock with true already stored. Pointer lookups are moved inside;
+    // they are semantically free there: cur_state outlives this call.
     std::shared_ptr< MirrorDevice > failed_device;
     std::shared_ptr< ublk_disk > working_disk;
     {
         std::lock_guard lock(_ctrl_lock);
-        backup_clean = (read_route::DEVB == new_route);
         failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
         working_disk = failed_is_active ? cur_state->backup_dev->disk : cur_state->active_dev->disk;
         _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
-        _degraded_sb_pending.store(true, std::memory_order_relaxed);
+        _degraded_sb_pending = true;
     }
     auto& working_device = *working_disk;
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
@@ -820,7 +821,7 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
     }
     {
         std::lock_guard lock(_ctrl_lock);
-        _degraded_sb_pending.store(false, std::memory_order_relaxed);
+        _degraded_sb_pending = false;
     }
     failed_device->unavail.test_and_set(std::memory_order_acq_rel);
     if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task

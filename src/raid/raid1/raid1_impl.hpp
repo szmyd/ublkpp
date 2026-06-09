@@ -70,7 +70,8 @@ class Raid1Disk : public ublk_disk {
     // The age increment is NOT reverted on failure so any retry carries a higher age than the
     // stale on-disk SB, ensuring pick_superblock selects the correct device on restart.
     // If set at shutdown, the destructor's SB write naturally persists the correct route.
-    std::atomic< bool > _degraded_sb_pending{false};
+    // Guarded by _ctrl_lock — all accesses are inside lock_guard scopes.
+    bool _degraded_sb_pending{false};
 
     // Shared read/write routing helpers used by both async_iov and sync_iov.
     // Returns {primary_dev, failover_dev}. failover_dev is nullopt when the backup holds stale
