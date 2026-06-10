@@ -195,6 +195,7 @@ static inline size_t stripes_for_io(size_t io_size, size_t stripe_size, size_t n
 
 Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     prepare_result result;
+    result.max_sqes_per_io = 0;
     // Sum all N children: DISCARD/WRITE_ZEROES always fans out to every disk via merged_subcmds,
     // consuming one pool slot per disk regardless of I/O size. The READ/WRITE path caps fan-out
     // at k = stripes_for_io(max_tx) ≤ N, so the pool is over-allocated by at most (N-k) slots
