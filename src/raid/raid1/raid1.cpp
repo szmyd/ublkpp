@@ -752,7 +752,7 @@ bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
             std::lock_guard lock(_ctrl_lock);
             _degraded_sb_pending = false;
         }
-        RLOGI("Persisted degraded superblock on retry (pending cleared) [uuid:{}]", _str_uuid)
+        RLOGI("Persisted degraded superblock on retry [uuid:{}]", _str_uuid)
         if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
     } else {
         RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
@@ -779,7 +779,7 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
 
     // backup_clean is a pure function of new_route, which is fixed before the lock.
     bool const backup_clean = (read_route::DEVB == new_route);
-    // Acquire _ctrl_lock immediately after the CAS — no code between CAS and lock.
+    // No concurrency-sensitive code between the CAS and lock.
     // A concurrent queue thread (T2) that lost the CAS and calls __try_persist_degraded_sb
     // must also acquire _ctrl_lock before reading _degraded_sb_pending; it cannot see false
     // while we hold the lock with true already stored. Pointer lookups are moved inside;
@@ -805,27 +805,26 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         _raid_metrics->record_device_degraded(device_name);
     } // LCOV_EXCL_STOP
 
-    if (auto sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route); !sync_res) {
-        // SB write failed -- we cannot persist the degradation, but rolling back to EITHER would
-        // allow round-robin reads to the failed device, serving inconsistent data (the backup may
-        // have already received the write). Keep the in-memory degraded route and mark the failed
-        // device unavailable.
+    auto const sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route);
+    if (sync_res) {
+        {
+            std::lock_guard lock(_ctrl_lock);
+            _degraded_sb_pending = false;
+        }
+    } else {
+        // SB write failed — cannot persist the degradation, but rolling back to EITHER would
+        // allow round-robin reads to the failed device, serving inconsistent data (the backup
+        // may have already received the write). Keep the in-memory degraded route.
         //
-        // The age increment is NOT reverted: any subsequent SB write must carry a higher age than
-        // the stale on-disk SB so pick_superblock selects the surviving device on restart.
-        // _degraded_sb_pending stays true; the next I/O that hits the already-degraded path
-        // retries the write before acking.
-        failed_device->unavail.test_and_set(std::memory_order_acq_rel);
+        // The age increment is NOT reverted: any subsequent SB write must carry a higher age
+        // than the stale on-disk SB so pick_superblock selects the surviving device on restart.
+        // _degraded_sb_pending stays true; the next I/O on the already-degraded path retries
+        // the write before acking.
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
-        return false;
-    }
-    {
-        std::lock_guard lock(_ctrl_lock);
-        _degraded_sb_pending = false;
     }
     failed_device->unavail.test_and_set(std::memory_order_acq_rel);
-    if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true); // Launch a Resync Task
-    return true;
+    if (sync_res && spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
+    return bool(sync_res);
 }
 
 disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
