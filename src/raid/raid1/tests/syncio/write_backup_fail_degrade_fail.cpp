@@ -1,6 +1,6 @@
 // Regression: active write succeeds, backup write fails, and the subsequent __become_degraded
-// SB write to the active device also fails. The I/O must return EIO -- the write reached the
-// active device but the array state could not be persisted to disk.
+// SB write to the active device also fails. The I/O must return resource_unavailable_try_again
+// -- the write reached the active device but degradation is not yet durable on disk.
 
 #include "test_raid1_common.hpp"
 
@@ -49,15 +49,17 @@ TEST(Raid1, SyncIoWriteBackupFailDegradeFail) {
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
-    // __become_degraded writes the degraded SB to raw_a at offset 0 -- fail it. Destructor retries succeed.
+    // __become_degraded writes the degraded SB to raw_a at offset 0 -- fail it. Destructor write
+    // succeeds: 2 SB writes total.
     EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
+        .Times(2)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     iovec iov{nullptr, test_sz};
     auto const res = raid_device.sync_iov(UBLK_IO_OP_WRITE, &iov, 1, test_off);
     ASSERT_FALSE(res);
-    EXPECT_EQ(std::errc::io_error, res.error());
+    EXPECT_EQ(std::errc::resource_unavailable_try_again, res.error());
 }
