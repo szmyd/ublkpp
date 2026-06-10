@@ -40,8 +40,20 @@ TEST(Raid1, SyncIoDegradedSbPersistRetryFails) {
             }
             return ublkpp::raid1::k_page_size;
         });
-    // Catch-all for bitmap and data writes to raw_a (addr != 0); registered before the addr=0
-    // expectation so LIFO matching gives priority to the specific SB override below.
+    // Pre-construction write catch-alls: absorb the two SB init writes the constructor makes.
+    // Post-construction expectations (registered after the constructor) override via GMock LIFO.
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
+    raid_device.toggle_resync(false);
+
+    // Post-construction: specific expectations take LIFO priority over the catch-alls above.
+    // Bitmap and data writes to raw_a at non-SB offsets always succeed.
     EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ne((off_t)0)))
         .Times(AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
@@ -60,9 +72,6 @@ TEST(Raid1, SyncIoDegradedSbPersistRetryFails) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
         .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
-
-    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
-    raid_device.toggle_resync(false);
 
     auto const test_sz = static_cast< size_t >(4 * Ki);
 
@@ -102,9 +111,22 @@ TEST(Raid1, SyncIoDegradedSbPersistRetrySucceeds) {
             }
             return ublkpp::raid1::k_page_size;
         });
+    // Pre-construction write catch-alls: absorb the two SB init writes the constructor makes.
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
+    raid_device.toggle_resync(false);
+
+    // Post-construction: specific expectations take LIFO priority over the catch-alls above.
     EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ne((off_t)0)))
         .Times(AnyNumber())
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+    // Phase 1: backup write fails (triggers __become_degraded; raw_b is marked ERROR afterwards).
     EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -116,9 +138,6 @@ TEST(Raid1, SyncIoDegradedSbPersistRetrySucceeds) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
-
-    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
-    raid_device.toggle_resync(false);
 
     auto const test_sz = static_cast< size_t >(4 * Ki);
 
@@ -158,9 +177,21 @@ TEST(Raid1, SyncIoBecomeDegradedSbFailRetrySucceeds) {
             }
             return ublkpp::raid1::k_page_size;
         });
+    // Pre-construction write catch-alls: absorb the two SB init writes the constructor makes.
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+    EXPECT_CALL(*raw_b, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(AnyNumber())
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
+    raid_device.toggle_resync(false);
+
+    // Post-construction: specific expectations take LIFO priority over the catch-alls above.
     // Phase 1: active (raw_a) data write fails; no backup data write occurs (Site 1 returns EAGAIN
     // when __become_degraded fails before the backup write). Destructor writes nothing to raw_a.
-    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+    EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, testing::Ne((off_t)0)))
         .Times(1)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
@@ -176,9 +207,6 @@ TEST(Raid1, SyncIoBecomeDegradedSbFailRetrySucceeds) {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
-
-    auto raid_device = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), raw_a, raw_b);
-    raid_device.toggle_resync(false);
 
     auto const test_sz = static_cast< size_t >(4 * Ki);
 
