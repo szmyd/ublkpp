@@ -823,8 +823,11 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         // allow round-robin reads to the failed device, serving inconsistent data (the backup
         // may have already received the write). Keep the in-memory degraded route.
         //
-        // The age increment is NOT reverted: any subsequent SB write must carry a higher age
-        // than the stale on-disk SB so pick_superblock selects the surviving device on restart.
+        // The age increment is NOT reverted: any subsequent live-process SB retry carries the
+        // incremented age, ensuring pick_superblock selects the surviving device once the SB is
+        // written. NOTE: this guarantee covers only the live-process retry path. If the process
+        // crashes before a successful SB write, both on-disk SBs retain equal ages and restart
+        // falls back to the physical-slot tie-breaker rather than age-based selection.
         // _degraded_sb_pending stays true; the next I/O on the already-degraded path retries
         // the write before acking.
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
