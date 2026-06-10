@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.14] - 2026-06-10
+
+### Fixed
+
+- **P0 (raid1): data loss when backup is unavailable and __become_clean races __become_degraded**: in `async_iov` Site 2 (backup-unavail path), `dirty_region()` and `__become_degraded()` were not guarded by `_clean_transition_mutex`. A concurrent `__become_clean` (T1) could CAS DEVA→EITHER and write EITHER superblocks inside its mutex, then have those writes land on disk *after* T2's `__become_degraded` DEVA write — because T2 was not serialised. If the process crashed before H1 (the post-mutex defense-in-depth) re-wrote the DEVA SBs, both devices held EITHER at the same age; restart opened in round-robin mode with B returning stale data against an acknowledged write. Fixed by wrapping Site 2's `dirty_region() + __become_degraded()` in a `std::lock_guard` on `_clean_transition_mutex`, matching Sites 1 and 3. With the mutex, T2's DEVA write always lands after T1's EITHER writes, so `pick_superblock` selects the DEVA device by age on any crash, eliminating the stale-B read path.
+
 ## [0.32.13] - 2026-06-10
 
 ### Fixed

@@ -662,7 +662,7 @@ bool Raid1Disk::__become_clean() {
 
     // _clean_transition_mutex is held across check + CAS + both superblock writes.
     //
-    // The lock serializes this path against Sites 1 & 3 (backup_write=true failures),
+    // The lock serializes this path against Sites 1, 2 & 3 (all three failure paths),
     // which also hold the lock during dirty_region() + __become_degraded(). Two crash cases:
     //   - Before failure site acquires lock: only EITHER SBs on disk, no dirty bit set
     //     (dirty_region is inside the lock) → system is genuinely clean.
@@ -705,9 +705,9 @@ bool Raid1Disk::__become_clean() {
     } // lock released; both EITHER SBs are on disk
 
     // H1 defense-in-depth: if a failure path moved route away from EITHER after our lock
-    // released (e.g. __swap_device, or a Site-2 __become_degraded without the mutex), re-write
-    // the on-disk SBs with the current degraded route. A fresh capture is used so device
-    // pointers are coherent with live_route even if __swap_device raced and remapped the slots.
+    // released (e.g. __swap_device raced and remapped the slots), re-write the on-disk SBs
+    // with the current degraded route. A fresh capture is used so device pointers are
+    // coherent with live_route.
     auto const live_state = __capture_route_state();
     if (live_state.route != read_route::EITHER) {
         bool const live_active_is_b = (live_state.route == read_route::DEVB);
@@ -962,15 +962,19 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     }
 
     if (!backup_write) {
-        _dirty_bitmap->dirty_region(addr, len);
-        // Site 2: no mutex — this path fires when backup is unavail or the region was already
-        // dirty. The mutex was designed to exclude Sites 1 and 3 (which newly dirty a clean
-        // region and need to be atomic with __become_clean). Here we still call __become_degraded
-        // unconditionally so that if __become_clean released the mutex and transitioned to EITHER
-        // before this dirty_region call, we re-degrade before ACKing. __become_degraded's own
-        // CAS handles idempotency; if already degraded with a pending SB write, it retries the
-        // SB write before returning — ensuring the SB is durable before we ack.
-        if (!__become_degraded(false, &state)) co_return -EAGAIN;
+        // Site 2: hold _clean_transition_mutex — matches Sites 1 and 3. Without it,
+        // __become_clean's EITHER SB writes (inside its mutex) can overwrite
+        // __become_degraded's DEVA write on disk, leaving EITHER on both devices if
+        // the process crashes before H1 corrects it — stale reads from B against an
+        // acknowledged write (data loss). Serialising under the mutex guarantees T2's
+        // DEVA write lands after T1's EITHER writes, so pick_superblock selects the
+        // DEVA device by age on restart.
+        bool const become_degraded_ok = [&] {
+            std::lock_guard lock(_clean_transition_mutex);
+            _dirty_bitmap->dirty_region(addr, len);
+            return __become_degraded(false, &state);
+        }();
+        if (!become_degraded_ok) co_return -EAGAIN;
         co_return active_res;
     }
 
