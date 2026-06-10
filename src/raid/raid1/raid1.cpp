@@ -382,10 +382,10 @@ Raid1Disk::prepare_result Raid1Disk::prepare(ublksrv_queue const* q, int const i
 // If both race, the loser sees the CAS fail and returns early - no further state is mutated.
 // No additional lock is needed between them; the CAS IS the synchronization gate.
 //
-// __swap_device also holds _ctrl_lock so that two concurrent swap_device() callers don't race
-// on the _device_a/_device_b pointer mutations.  __become_degraded does not need _ctrl_lock for
-// those pointer reads (it accesses them via a captured RouteState snapshot), but it does acquire
-// _ctrl_lock for the bitmap.age increment to avoid a data race with __swap_device's +16 bump.
+// Both __swap_device and __become_degraded hold _ctrl_lock across their CAS so the CAS, age
+// increment, and flag mutations are atomic with respect to each other. __swap_device holds the
+// lock for its entire SB write; __become_degraded releases after marking _degraded_sb_pending=true
+// and writes the SB outside the lock.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // The order of the _read_route_cache CAS, swap(), and unavail.clear() below must be preserved to keep
@@ -730,12 +730,14 @@ bool Raid1Disk::__become_clean() {
     return true;
 }
 
-// _degraded_sb_pending is guarded by _ctrl_lock. __become_degraded acquires the lock immediately
-// after the CAS and stores true before calling write_superblock, so any concurrent queue thread
-// that lost the CAS and enters here must also acquire the lock before reading the flag — it
-// cannot see false while T1's write is in flight.
-// Two coroutines may both pass the check before either clears the flag; the resulting
-// concurrent write_superblock calls write identical data to the same offset and are idempotent.
+// _degraded_sb_pending is guarded by _ctrl_lock. __become_degraded does its CAS and stores
+// true under the same lock scope, so any concurrent caller that loses the CAS and enters here
+// must also acquire the lock before reading the flag — it sees true or waits.
+// Two coroutines may both pass the initial check before either clears the flag; both
+// write_superblock calls are idempotent (same data, same offset). Only the first to clear the
+// flag calls toggle_resync; a second concurrent launch() on an already-running task would
+// acquire _launch_lock, see state==IDLE (thread not yet transitioned), join the running thread,
+// and relaunch — stalling an I/O-path coroutine for the full resync duration.
 //
 // cur_state may predate this degradation (e.g. a Site-1 retry passes the original EITHER-mode
 // snapshot), so active_dev may point to the failed leg. Re-capture the route state to guarantee
@@ -748,12 +750,16 @@ bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
     auto const rs = __capture_route_state();
     bool const is_b = (rs.route == read_route::DEVB);
     if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {
+        bool was_pending;
         {
             std::lock_guard lock(_ctrl_lock);
+            was_pending = _degraded_sb_pending;
             _degraded_sb_pending = false;
         }
         RLOGI("Persisted degraded superblock on retry [uuid:{}]", _str_uuid)
-        if (spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
+        // Only the first coroutine to clear the flag triggers resync; a second concurrent
+        // launch() could otherwise join a running resync thread from an I/O-path coroutine.
+        if (was_pending && spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
     } else {
         RLOGE("SB persist retry failed [uuid:{}]: {}", _str_uuid, sb.error().message())
         return false;
@@ -761,37 +767,39 @@ bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
     return true;
 }
 
-// See the comment above __swap_device for the CAS-based mutual exclusion between this function
-// and __swap_device.  The _read_route_cache CAS below is the synchronization gate: if
-// __swap_device wins the CAS first, this call sees old_route != EITHER and returns early (already
-// degraded or concurrent swap in progress).  No additional lock is required.
+// See the comment above __swap_device for the lock-based mutual exclusion between this function
+// and __swap_device. Both hold _ctrl_lock across their CAS, so the winner is determined under
+// the lock. The loser sees old_route != EITHER and returns early (already degraded or swap
+// in progress).
 bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_state, bool spawn_resync) {
     // Surviving device is backup if active failed, active if backup failed.
     // new_route = the physical slot (DEVA/DEVB) of the surviving device.
     bool const active_is_b = (cur_state->route == read_route::DEVB);
     auto old_route = read_route::EITHER;
     auto const new_route = (failed_is_active == active_is_b) ? read_route::DEVA : read_route::DEVB;
-    if (!_read_route_cache.compare_exchange_strong(old_route, new_route)) {
-        // CAS lost — either already degraded (no-op) or __swap_device raced in.
-        if (old_route == new_route) return __try_persist_degraded_sb(spawn_resync);
-        return false; // __swap_device won the CAS
-    }
-
-    // backup_clean is a pure function of new_route, which is fixed before the lock.
     bool const backup_clean = (read_route::DEVB == new_route);
-    // No concurrency-sensitive code between the CAS and lock.
-    // A concurrent queue thread (T2) that lost the CAS and calls __try_persist_degraded_sb
-    // must also acquire _ctrl_lock before reading _degraded_sb_pending; it cannot see false
-    // while we hold the lock with true already stored. Pointer lookups are moved inside;
-    // they are semantically free there: cur_state outlives this call.
+
+    // CAS and _degraded_sb_pending=true are done under the same _ctrl_lock scope so there is
+    // no window where a concurrent __try_persist_degraded_sb caller could acquire the lock,
+    // read _degraded_sb_pending==false, and prematurely ack while our SB write is in-flight.
+    // __swap_device also holds _ctrl_lock for its CAS, so both state-machine transitions are
+    // fully serialized through the lock. old_route holds the actual route on CAS failure.
     std::shared_ptr< MirrorDevice > failed_device;
     std::shared_ptr< ublk_disk > working_disk;
     {
         std::lock_guard lock(_ctrl_lock);
-        failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
-        working_disk = failed_is_active ? cur_state->backup_dev->disk : cur_state->active_dev->disk;
-        _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
-        _degraded_sb_pending = true;
+        if (_read_route_cache.compare_exchange_strong(old_route, new_route)) {
+            failed_device = failed_is_active ? cur_state->active_dev : cur_state->backup_dev;
+            working_disk = failed_is_active ? cur_state->backup_dev->disk : cur_state->active_dev->disk;
+            _sb->fields.bitmap.age = htobe64(be64toh(_sb->fields.bitmap.age) + 1);
+            _degraded_sb_pending = true;
+        }
+        // else: CAS lost — old_route holds the actual current value; failed_device stays null.
+    }
+    if (old_route != read_route::EITHER) {
+        // CAS lost — either already degraded (no-op) or __swap_device raced in.
+        if (old_route == new_route) return __try_persist_degraded_sb(spawn_resync);
+        return false; // __swap_device won the CAS
     }
     auto& working_device = *working_disk;
     RLOGW("Device became degraded {} [age:{}] [uuid:{}]", *failed_device->disk,
