@@ -101,3 +101,22 @@ TEST(Raid1, NewArrayWritesV2Superblock) {
     EXPECT_TO_WRITE_SB(device_a);
     EXPECT_TO_WRITE_SB(device_b);
 }
+
+// A superblock with version > k_sb_version must be rejected — mirrors RAID0's M3 guard.
+// device_b is StrictMock: the constructor must throw before ever reaching it.
+TEST(Raid1, FutureSuperblockVersionThrows) {
+    auto future_sb = normal_superblock;
+    future_sb.header.version = htobe16(ublkpp::raid1::k_sb_version + 1);
+
+    auto device_a = std::make_shared< ublkpp::TestDisk >(TestParams{.capacity = Gi});
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, _))
+        .Times(1)
+        .WillOnce([&future_sb](uint8_t, iovec* iovecs, uint32_t, off_t) -> io_result {
+            memcpy(iovecs->iov_base, &future_sb, ublkpp::raid1::k_page_size);
+            return ublkpp::raid1::k_page_size;
+        });
+    auto device_b = std::make_shared< ::testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+
+    EXPECT_THROW(ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b),
+                 std::runtime_error);
+}

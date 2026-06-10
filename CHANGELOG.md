@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.13] - 2026-06-10
+
+### Fixed
+
+- **P1 (raid0): DISCARD/WRITE_ZEROES crashes file-backed arrays with more disks than the read/write stripe count**: `prepare()` sized the CQE pool using the read/write fan-out formula `stripes_for_io(max_tx, stripe_size, N)`, which caps at `k = min(ceil(max_tx/stripe_size)+1, N)`. The DISCARD path in `async_iov` always fans out to all N disks via `merged_subcmds`, consuming one pool slot per disk. For N > k (e.g., 10 disks, stripe_size=128 KiB, max_tx=512 KiB → k=5), `RELEASE_ASSERT_LT(_pool.size(), _pool.capacity())` fired on the (k+1)th disk's `next_state()` call — process crash. Fixed by removing the k-bound from `prepare()`: all N children contribute to `max_sqes_per_io`. Over-allocation by (N-k) slots in the read/write path is harmless.
+- **Latent (raid1): superblock with version > current not rejected at open**: `load_superblock` had no upper-bound version check, silently accepting a disk formatted by a future binary. `__init_params`'s one-sided `if (sb_version < 2)` branch would compute `_reserved_size` using the v2 formula, placing all I/O at the wrong on-disk offset on a hypothetical v3 disk. Fixed by adding the M3 guard (mirrors RAID0's existing check): any superblock with `version > k_sb_version` is now rejected with `errc::not_supported`. Also exports `k_sb_version` from `raid1_superblock.hpp` so tests can reference it.
+
 ## [0.32.12] - 2026-06-06
 
 ### Fixed

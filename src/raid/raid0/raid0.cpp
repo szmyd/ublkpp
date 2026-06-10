@@ -195,16 +195,14 @@ static inline size_t stripes_for_io(size_t io_size, size_t stripe_size, size_t n
 
 Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     prepare_result result;
-    result.max_sqes_per_io = 0;
-    // At most k stripes are active concurrently per max-size I/O. Each active stripe dispatches
-    // one child async_iov that submits child.max_sqes_per_io SQEs into the shared pool. Sum the
-    // first k contributions (homogeneous arrays: all equal, so order is irrelevant).
-    auto const k = stripes_for_io(max_tx(), _stripe_size, _stripe_array.size());
-    size_t counted = 0;
+    // Sum all N children: DISCARD/WRITE_ZEROES always fans out to every disk via merged_subcmds,
+    // consuming one pool slot per disk regardless of I/O size. The READ/WRITE path caps fan-out
+    // at k = stripes_for_io(max_tx) ≤ N, so the pool is over-allocated by at most (N-k) slots
+    // in the read/write case — harmless; under-allocation on DISCARD is a P1 crash.
     for (auto& stripe : _stripe_array) {
         auto child = stripe->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
         result.fds.insert(result.fds.end(), child.fds.begin(), child.fds.end());
-        if (counted++ < k) result.max_sqes_per_io += child.max_sqes_per_io;
+        result.max_sqes_per_io += child.max_sqes_per_io;
     }
     return result;
 }
