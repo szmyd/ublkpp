@@ -14,12 +14,13 @@ TEST_F(AsyncRaid1Fixture, WriteBackupFailDegradeFail) {
         .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     // __become_degraded(false) writes the degraded SB to disk_a at offset 0; fail it once.
-    // Destructor retry must succeed so the test exits cleanly.
+    // Destructor write succeeds: 2 SB writes total.
     EXPECT_CALL(*disk_a, sync_iov(UBLK_IO_OP_WRITE, _, _, (off_t)0))
+        .Times(2)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         })
-        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
 
     auto res = mock->submit_io(0, UBLK_IO_OP_WRITE, 0, 4 * Ki / 512, nullptr);
     ASSERT_TRUE(res);

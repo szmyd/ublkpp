@@ -739,8 +739,7 @@ bool Raid1Disk::__become_clean() {
 // acquire _launch_lock, see state==IDLE (thread not yet transitioned), join the running thread,
 // and relaunch — stalling an I/O-path coroutine for the full resync duration.
 //
-// cur_state may predate this degradation (e.g. a Site-1 retry passes the original EITHER-mode
-// snapshot), so active_dev may point to the failed leg. Re-capture the route state to guarantee
+// cur_state passed to __become_degraded may be stale; re-capture the route state to guarantee
 // we write to the surviving device.
 bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
     {
@@ -939,16 +938,8 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         DEBUG_ASSERT(!become_degraded_ok || backup_task.has_value(),
                      "backup_task must exist when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
         auto const backup_res = co_await *backup_task;
-        if (!become_degraded_ok) {
-            // Backup write landed but SB wasn't persisted. Attempt one inline retry before
-            // returning EAGAIN — avoids an unnecessary client round-trip for a transient failure.
-            // No _clean_transition_mutex needed: SB write failed so toggle_resync was never called
-            // → no resync task running → __become_clean cannot race.
-            // (Sites 2/3 return to the caller immediately; their retry fires on the next I/O.)
-            if (!__become_degraded(true, &state)) co_return -EAGAIN;
-        }
-        co_return backup_res >= 0 ? backup_res
-                                  : -EAGAIN; // -EAGAIN: degradation is durable; retry routes to sole device
+        if (!become_degraded_ok) co_return -EAGAIN;
+        co_return backup_res >= 0 ? backup_res : -EAGAIN;
     }
 
     if (state.active_dev->unavail.test(std::memory_order_relaxed)) {
