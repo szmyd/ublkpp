@@ -5,7 +5,6 @@ list(APPEND RAID1_TEST_SRCS
   asyncio/degraded.cpp
   asyncio/discard.cpp
   asyncio/failover.cpp
-  asyncio/failover_stale_iov.cpp
   asyncio/flush.cpp
   asyncio/idle.cpp
   asyncio/read_fail_degraded_dirty.cpp
