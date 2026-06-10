@@ -817,9 +817,15 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
     } // LCOV_EXCL_STOP
 
     auto const sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route);
+    // Mirror the was_pending snapshot from __try_persist_degraded_sb: the winner's _ctrl_lock
+    // clear-section and the loser's clear-section serialize, so exactly one of them observes
+    // pending==true and calls toggle_resync — preventing a second launch() from joining a still-
+    // IDLE resync thread and stalling an I/O-path coroutine.
+    bool was_pending = false;
     if (sync_res) {
         {
             std::lock_guard lock(_ctrl_lock);
+            was_pending = _degraded_sb_pending;
             _degraded_sb_pending = false;
         }
     } else {
@@ -837,7 +843,7 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         RLOGE("Could not persist degradation [uuid:{}]: {}", _str_uuid, sync_res.error().message())
     }
     failed_device->unavail.test_and_set(std::memory_order_acq_rel);
-    if (sync_res && spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
+    if (was_pending && spawn_resync && _resync_enabled.load(std::memory_order_relaxed)) toggle_resync(true);
     return bool(sync_res);
 }
 
