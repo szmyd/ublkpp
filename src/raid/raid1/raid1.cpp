@@ -1046,9 +1046,13 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     }
 
     if (!backup_write) {
-        _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
-        // Site 2 (sync) — mirrors async_iov Site 2; see that comment.
-        if (!__become_degraded(false, &state))
+        // Site 2 (sync): hold _clean_transition_mutex — same race as async_iov Site 2.
+        bool const become_degraded_ok = [&] {
+            std::lock_guard lock(_clean_transition_mutex);
+            _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
+            return __become_degraded(false, &state);
+        }();
+        if (!become_degraded_ok)
             return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         return active_res;
     }
