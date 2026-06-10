@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.11] - 2026-06-09
+
+### Changed
+
+- **RAID0 per-stripe iovec accumulators moved to coroutine frame**: `__distribute`'s
+  `StripeAccum` buffer (previously a `thread_local` with `std::vector<iovec>` per slot) is
+  now a caller-owned `std::array<StripeAccum, 64>` with a fixed `std::array<iovec, 16>` per
+  slot (bound: max_io_size 1 MiB / min_stripe_size 64 KiB = 16). In `async_iov` the buffer
+  lives in the coroutine frame (heap, stable for child lifetimes); in `sync_iov` it is a
+  plain stack local. Eliminates the iovec lifetime hazard that required the eager
+  `io_uring_submit` workaround in `async_iov` and the `iov_snap` copy in
+  `Raid1Disk::__failover_read_async`. Removes `DirtyGuard`, `_max_iovecs_per_stripe`, and
+  the `thread_local`; introduces `k_max_iovecs_per_stripe = 16` as a file-scope constant.
+
 ## [0.32.10] - 2026-06-05
 
 ### Fixed
