@@ -733,11 +733,10 @@ bool Raid1Disk::__become_clean() {
 // _degraded_sb_pending is guarded by _ctrl_lock. __become_degraded does its CAS and stores
 // true under the same lock scope, so any concurrent caller that loses the CAS and enters here
 // must also acquire the lock before reading the flag — it sees true or waits.
-// Two coroutines may both pass the initial check before either clears the flag; both
-// write_superblock calls are idempotent (same data, same offset). Only the first to clear the
-// flag calls toggle_resync; a second concurrent launch() on an already-running task would
-// acquire _launch_lock, see state==IDLE (thread not yet transitioned), join the running thread,
-// and relaunch — stalling an I/O-path coroutine for the full resync duration.
+// Two concurrent calls may both pass this check; both writes carry identical content
+// and are safe (idempotent). The was_pending snapshot below ensures only one calls
+// toggle_resync. If one succeeds and the other fails, the failing caller gets an unnecessary
+// -EAGAIN — corrected on the next I/O when _degraded_sb_pending == false.
 //
 // cur_state passed to __become_degraded may be stale; re-capture the route state to guarantee
 // we write to the surviving device.
@@ -817,6 +816,8 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
     } // LCOV_EXCL_STOP
 
     auto const sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route);
+    // A concurrent __try_persist_degraded_sb call may race write_superblock here; both writes
+    // carry identical content (same _sb, route, age) so the interleaving is safe/idempotent.
     // Mirror the was_pending snapshot from __try_persist_degraded_sb: the winner's _ctrl_lock
     // clear-section and the loser's clear-section serialize, so exactly one of them observes
     // pending==true and calls toggle_resync — preventing a second launch() from joining a still-
