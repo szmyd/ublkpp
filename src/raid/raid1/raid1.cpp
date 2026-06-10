@@ -746,6 +746,10 @@ bool Raid1Disk::__try_persist_degraded_sb(bool spawn_resync) {
         std::lock_guard lock(_ctrl_lock);
         if (!_degraded_sb_pending) return true;
     }
+    // __swap_device cannot race with this function here: __swap_device's CAS requires
+    // route == EITHER, but _degraded_sb_pending == true implies __become_degraded already won
+    // its CAS (EITHER → DEVA/DEVB), so route is no longer EITHER. __swap_device's CAS would
+    // fail immediately, before it touches _sb. The _sb read below is therefore uncontested.
     auto const rs = __capture_route_state();
     bool const is_b = (rs.route == read_route::DEVB);
     if (auto sb = write_superblock(*rs.active_dev->disk, _sb.get(), is_b, rs.route); sb) {

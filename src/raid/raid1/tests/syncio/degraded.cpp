@@ -161,6 +161,7 @@ TEST(Raid1, SyncIoBecomeDegradedSbFailRetrySucceeds) {
     // Phase 1: active (raw_a) data write fails; no backup data write occurs (Site 1 returns EAGAIN
     // when __become_degraded fails before the backup write). Destructor writes nothing to raw_a.
     EXPECT_CALL(*raw_a, sync_iov(UBLK_IO_OP_WRITE, _, _, _))
+        .Times(1)
         .WillOnce([](uint8_t, iovec*, uint32_t, off_t) -> io_result {
             return std::unexpected(std::make_error_condition(std::errc::io_error));
         });
