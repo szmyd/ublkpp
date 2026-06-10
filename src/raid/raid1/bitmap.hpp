@@ -91,6 +91,7 @@ public:
 
     void init_to(std::shared_ptr< ublk_disk > device);
     io_result sync_to(ublk_disk& device, uint64_t offset = 0UL);
+    bool superbitmap_nonempty() const noexcept;
     void load_from(ublk_disk& device);
 };
 

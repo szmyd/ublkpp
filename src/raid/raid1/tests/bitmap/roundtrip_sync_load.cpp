@@ -70,7 +70,7 @@ TEST(Raid1BitmapRoundtrip, BasicSyncAndLoad) {
     EXPECT_TRUE(bitmap1.sync_to(*device, ublkpp::raid1::Bitmap::page_size()));
 
     auto write_sb_res = ublkpp::raid1::write_superblock(
-        *device, sb1.get(), false, static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route));
+        *device, sb1.get(), false, static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route), true);
     EXPECT_TRUE(write_sb_res);
 
     // Phase 3: Load SuperBlock and then load bitmap from disk
@@ -129,7 +129,7 @@ TEST(Raid1BitmapRoundtrip, LargeBitmapWithBatching) {
     EXPECT_TRUE(bitmap1.sync_to(*device, ublkpp::raid1::Bitmap::page_size()));
 
     auto write_sb_res = ublkpp::raid1::write_superblock(
-        *device, sb1.get(), false, static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route));
+        *device, sb1.get(), false, static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route), true);
     EXPECT_TRUE(write_sb_res);
 
     // Phase 3: Load SuperBlock and bitmap
@@ -185,8 +185,8 @@ TEST(Raid1BitmapRoundtrip, ModifyAfterLoad) {
         auto bitmap = ublkpp::raid1::Bitmap(8 * ublkpp::Gi, 32 * ublkpp::Ki, 4 * ublkpp::Ki, sb->superbitmap_reserved);
         bitmap.dirty_region(0, page_width);
         EXPECT_TRUE(bitmap.sync_to(*device, ublkpp::raid1::Bitmap::page_size()));
-        EXPECT_TRUE(ublkpp::raid1::write_superblock(*device, sb.get(), false,
-                                                    static_cast< ublkpp::raid1::read_route >(sb->fields.read_route)));
+        EXPECT_TRUE(ublkpp::raid1::write_superblock(
+            *device, sb.get(), false, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route), true));
     }
 
     // Round 2: Load SuperBlock, load bitmap, modify, sync
@@ -202,8 +202,8 @@ TEST(Raid1BitmapRoundtrip, ModifyAfterLoad) {
 
         bitmap.dirty_region(1 * page_width, page_width); // Dirty page 1
         EXPECT_TRUE(bitmap.sync_to(*device, ublkpp::raid1::Bitmap::page_size()));
-        EXPECT_TRUE(ublkpp::raid1::write_superblock(*device, sb.get(), false,
-                                                    static_cast< ublkpp::raid1::read_route >(sb->fields.read_route)));
+        EXPECT_TRUE(ublkpp::raid1::write_superblock(
+            *device, sb.get(), false, static_cast< ublkpp::raid1::read_route >(sb->fields.read_route), true));
     }
 
     // Round 3: Load and verify both pages are dirty
@@ -262,7 +262,7 @@ TEST(Raid1BitmapRoundtrip, CleanedRegionsDontPersist) {
     EXPECT_TRUE(bitmap1.sync_to(*device, ublkpp::raid1::Bitmap::page_size()));
 
     auto write_sb_res = ublkpp::raid1::write_superblock(
-        *device, sb1.get(), false, static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route));
+        *device, sb1.get(), false, static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route), true);
     EXPECT_TRUE(write_sb_res);
 
     // Phase 3: Load should find no dirty pages
@@ -319,8 +319,8 @@ TEST(Raid1BitmapRoundtrip, WithSuperBlockOffset) {
     bitmap1.dirty_region(0, page_width);
 
     EXPECT_TRUE(bitmap1.sync_to(*device, OFFSET));
-    EXPECT_TRUE(ublkpp::raid1::write_superblock(*device, sb1.get(), false,
-                                                static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route)));
+    EXPECT_TRUE(ublkpp::raid1::write_superblock(
+        *device, sb1.get(), false, static_cast< ublkpp::raid1::read_route >(sb1->fields.read_route), true));
 
     // Phase 2: Load SuperBlock and bitmap
     auto load_res = ublkpp::raid1::load_superblock(*device, uuid, 32 * ublkpp::Ki);

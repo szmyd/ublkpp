@@ -76,16 +76,16 @@ Bitmap::calc_bitmap_region(uint64_t addr, uint64_t len, uint32_t chunk_size) noe
 }
 
 void Bitmap::init_to(std::shared_ptr< ublk_disk > device) {
-    // Clear the SuperBitmap when initializing a new bitmap
-    _super_bitmap.clear_all();
-
     // Skip if the device passed to us is a missing-leg placeholder. Missing disks will never
-    // succeed WRITEs and *must* be swapped with another disk for the RAID1 to begin resync. So
-    // we just return rather than inevitably throw below.
+    // succeed WRITEs and *must* be swapped with another disk for the RAID1 to begin resync.
+    // Check before clear_all() so a missing device does not wipe superbitmap bits loaded from
+    // the live device's on-disk superblock.
     if (device->is_missing()) [[unlikely]] {
         RLOGD("Device is MISSING, skipping init_to")
         return;
     }
+    // Clear the SuperBitmap only when actually initializing a real device.
+    _super_bitmap.clear_all();
 
     auto proto = iovec{.iov_base = _clean_page.get(), .iov_len = k_page_size};
 
@@ -165,6 +165,8 @@ io_result Bitmap::sync_to(ublk_disk& device, uint64_t offset) {
     return 0;
 }
 
+bool Bitmap::superbitmap_nonempty() const noexcept { return _super_bitmap.next_set_bit(0) < _num_pages; }
+
 void Bitmap::load_from(ublk_disk& device) {
     // Note: SuperBitmap must be loaded from SuperBlock BEFORE calling this function.
     // load_from is called during single-threaded init — no concurrent access, no lock needed.
@@ -241,7 +243,14 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
         auto [page_offset, word_offset, shift_offset, nr_bits, sz] =
             calc_bitmap_region(addr + off, len - off, _chunk_size);
         off += sz;
-        if (!_super_bitmap.test_bit(page_offset)) continue;
+        // No superbitmap fast-path here: is_dirty must read page bits directly.
+        // The superbitmap can transiently show "clean" while the page has dirty bits —
+        // dirty_region writes page bits (release) before setting the superbitmap bit, and
+        // clean_region clears the superbitmap bit before its double-check restore. Either
+        // window would cause is_dirty to skip a dirty page and route a degraded-mode read
+        // to the stale backup device. Reading page bits directly avoids this entirely.
+        // next_dirty() and dirty_pages() still use the superbitmap safely (a missed dirty
+        // page there means a later resync pass picks it up, not a stale read).
         auto page = _page_map[page_offset].page.load(std::memory_order_acquire);
         if (!page) continue;
         auto cur_word = page + word_offset;
@@ -253,7 +262,7 @@ bool Bitmap::is_dirty(uint64_t addr, uint32_t len) noexcept {
                                                                   : (((uint64_t)0b1 << bits_to_read) - 1)
                                                        << (shift_offset - (bits_to_read - 1)));
             bits_left -= bits_to_read;
-            if (0 != (std::atomic_ref< word_t >(*cur_word).load(std::memory_order_relaxed) & bits_to_check))
+            if (0 != (std::atomic_ref< word_t >(*cur_word).load(std::memory_order_acquire) & bits_to_check))
                 return true;
             ++cur_word;
             shift_offset = bits_in_word - 1; // Word offset back to the beginning
@@ -326,8 +335,24 @@ std::tuple< Bitmap::word_t*, uint32_t, uint32_t > Bitmap::clean_region(uint64_t 
 
     // Check if page became completely clean, and update superbitmap if so
     if (0 == isal_zero_detect(page, k_page_size)) {
-        // Clear superbitmap bit for this now-clean page
         _super_bitmap.clear_bit(page_offset);
+        // Race guard: dirty_region may have called fetch_or (setting bits) and then set_bit
+        // (marking superbitmap) between our isal_zero_detect and clear_bit above. Re-scan the
+        // page with acquire loads to synchronize with dirty_region's release fetch_or: if any
+        // word is non-zero the concurrent write is now visible, and we restore the superbitmap
+        // bit. If dirty_region's set_bit runs after our clear_bit it wins and sets the bit
+        // itself — either way the superbitmap is correct.
+        // Using acquire loads (rather than atomic_thread_fence) keeps TSan happy and makes the
+        // fix portable to ARM/POWER: the release/acquire pair creates the required happens-before.
+        auto const nwords = k_page_size / sizeof(word_t);
+        auto* words = page;
+        bool still_clean = true;
+        for (size_t i = 0; i < nwords && still_clean; ++i)
+            still_clean = (std::atomic_ref< word_t >(words[i]).load(std::memory_order_acquire) == 0);
+        if (!still_clean) {
+            _super_bitmap.set_bit(page_offset);
+            return std::make_tuple(nullptr, page_offset, sz);
+        }
         return std::make_tuple(_clean_page.get(), page_offset, sz);
     }
     return std::make_tuple(nullptr, page_offset, sz);
@@ -421,7 +446,7 @@ void Bitmap::dirty_region(uint64_t addr, uint64_t len) {
                                                                  : (((uint64_t)0b1 << bits_to_write) - 1)
                                                      << (shift_offset - (bits_to_write - 1)));
             bits_left -= bits_to_write;
-            auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_or(bits_to_set, std::memory_order_relaxed);
+            auto old_word = std::atomic_ref< word_t >(*cur_word).fetch_or(bits_to_set, std::memory_order_release);
             _dirty_chunks_est.fetch_add(std::popcount(old_word xor (old_word | bits_to_set)),
                                         std::memory_order_relaxed);
             ++cur_word;

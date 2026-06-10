@@ -7,7 +7,6 @@
 #include <ublksrv_utils.h>
 
 #include <ublkpp/lib/cqe_state.hpp>
-#include <ublkpp/lib/disk_task.hpp>
 #include <ublkpp/lib/ublk_disk.hpp>
 
 #include "raid0_impl.hpp"
@@ -15,6 +14,14 @@
 
 namespace ublkpp {
 constexpr uint32_t _max_stripe_cnt{64};
+// max(max_io_size) / min(stripe_size) = 1 MiB / 64 KiB = 16
+constexpr uint32_t k_max_iovecs_per_stripe{16};
+
+struct StripeAccum {
+    uint64_t io_addr{0};
+    uint32_t nr_vecs{0};
+    std::array< iovec, k_max_iovecs_per_stripe > io_array{};
+};
 
 class StripeDevice {
     struct destroy_sb {
@@ -43,10 +50,10 @@ class Raid0Disk : public ublk_disk {
     std::vector< std::unique_ptr< StripeDevice > > _stripe_array;
 
     uint32_t _stripe_size{0};
-    uint64_t _stride_width{0};          // L1: widened to uint64_t; large configs (e.g. 128MiB × 64) overflow uint32_t
-    uint32_t _max_iovecs_per_stripe{0}; // ceil(max_tx / stripe_size): max iovecs a single stripe accumulates
+    uint64_t _stride_width{0}; // L1: widened to uint64_t; large configs (e.g. 128MiB × 64) overflow uint32_t
 
-    io_result __distribute(iovec* iov, uint64_t addr, auto&& func) const;
+    io_result __distribute(std::array< StripeAccum, _max_stripe_cnt >& sub_cmds, iovec* iov, uint64_t addr,
+                           auto&& func) const;
 
 public:
     Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_bytes,
@@ -130,6 +137,15 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
 
     // H2: guard against device capacity <= stripe_size which would underflow the unsigned subtraction.
     auto const stripe_size_sectors = static_cast< uint64_t >(_stripe_size >> SECTOR_SHIFT);
+    // H3: floor the smallest leg to a whole number of stripes before striping. RAID0 can only use
+    // stripes that are fully present on EVERY leg; a partial trailing stripe (when a leg's capacity
+    // is not a multiple of stripe_size) is unusable. Without flooring, that remainder stays in the
+    // per-leg term and is then multiplied by the leg count, so the array over-reports its size by
+    // (leg_capacity % stripe_size) * leg_count. I/O into that phantom tail maps to a per-leg offset
+    // past the end of the backing device, returning EIO. This was latent for years because leg
+    // capacities happened to be stripe-aligned; raid1 SuperBlock v2 dropped the 512 KiB user-data
+    // alignment that masked it, exposing top-of-device read failures on RAID10 arrays.
+    our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % stripe_size_sectors);
     if (our_params.basic.dev_sectors <= stripe_size_sectors)
         throw std::runtime_error(
             fmt::format("Raid0Disk: device capacity ({} sectors) is too small for stripe_size ({} sectors)",
@@ -139,14 +155,24 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // M2: guard against division by zero if max_sectors is 0 (e.g. child device reported max_tx()==0).
     if (our_params.basic.max_sectors == 0)
         throw std::runtime_error("Raid0Disk: max_sectors is zero; child device reported max_tx() == 0");
-    // Per-stripe iovec bound: worst case is N=1 (single stripe), where one I/O can touch at most
-    // ceil(max_tx / stripe_size) stripes of the same device before the early-dispatch fires.
-    _max_iovecs_per_stripe = static_cast< uint32_t >((max_tx() + _stripe_size - 1) / _stripe_size);
+    if ((max_tx() + _stripe_size - 1) / _stripe_size > k_max_iovecs_per_stripe)
+        throw std::invalid_argument(
+            fmt::format("Raid0Disk: ceil(max_io_size/stripe_size)={} exceeds k_max_iovecs_per_stripe={}; "
+                        "reduce max_io_size or increase stripe_size",
+                        (max_tx() + _stripe_size - 1) / _stripe_size, k_max_iovecs_per_stripe));
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
-    if (can_discard())
+    if (can_discard()) {
         our_params.discard.discard_granularity = std::max(our_params.discard.discard_granularity, block_size());
+        // Propagate the tightest per-stripe max_discard_sectors across all child devices, scaled
+        // by stripe count (a top-level discard of N sectors distributes ~N/stripes per child).
+        uint32_t child_min = UINT32_MAX;
+        for (auto const& s : _stripe_array)
+            child_min = std::min(child_min, s->disk->max_discard_sectors());
+        our_params.discard.max_discard_sectors = static_cast< uint32_t >(
+            std::min< uint64_t >(static_cast< uint64_t >(child_min) * _stripe_array.size(), UINT32_MAX));
+    }
 }
 
 Raid0Disk::~Raid0Disk() = default;
@@ -195,32 +221,9 @@ void Raid0Disk::probe_tick(ublksrv_queue const* q) noexcept {
 //  RAID0 is primarily responsible for splitting an I/O request across several stripes. These operations can cross
 //  stripe boundaries and even wrap around several strides. This routine handles this calculation and calls
 //  the given routine `func` for each stripe that it has collected scatter (struct iovec) operations for.
-io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) const {
+io_result Raid0Disk::__distribute(std::array< StripeAccum, _max_stripe_cnt >& sub_cmds, iovec* iovecs, uint64_t addr,
+                                  auto&& func) const {
     DEBUG_ASSERT_GT(_stride_width, 0ULL) // LCOV_EXCL_LINE
-    // Per-stripe iovec accumulator. io_array is sized lazily to _max_iovecs_per_stripe
-    // (= ceil(max_tx / stripe_size)) on first touch per stripe; the thread_local vector
-    // grows to fit and is never shrunk, so cost is amortised to zero after warm-up.
-    struct StripeAccum {
-        uint64_t io_addr{0};           // Starting address
-        uint32_t nr_vecs{0};           // How many iovecs are valid
-        std::vector< iovec > io_array; // The scatter-list
-    };
-    static_assert(_max_stripe_cnt == 64, "dirty_mask must be exactly uint64_t");
-
-    thread_local auto sub_cmds = std::array< StripeAccum, _max_stripe_cnt >();
-
-    // Reset only touched stripes on exit; a failed call leaves non-zero nr_vecs that would corrupt the next I/O.
-    uint64_t dirty_mask{0};
-    struct DirtyGuard {
-        decltype(sub_cmds)& cmds;
-        uint64_t& mask;
-        ~DirtyGuard() noexcept {
-            while (mask) {
-                cmds[std::countr_zero(mask)].nr_vecs = 0;
-                mask &= mask - 1; // clear lowest set bit
-            }
-        }
-    } guard{sub_cmds, dirty_mask};
 
     if (1 == _stripe_array.size()) return func(0, iovecs, 1, addr);
 
@@ -233,12 +236,9 @@ io_result Raid0Disk::__distribute(iovec* iovecs, uint64_t addr, auto&& func) con
         auto buf_cursor = static_cast< uint8_t* >(iovecs->iov_base) + off;
         off += sz;
 
-        dirty_mask |= 1ULL << stripe_off;
         auto& acc = sub_cmds[stripe_off];
-        if (!acc.nr_vecs) {
-            acc.io_addr = logical_off;
-            if (acc.io_array.size() < _max_iovecs_per_stripe) acc.io_array.resize(_max_iovecs_per_stripe);
-        }
+        if (!acc.nr_vecs) acc.io_addr = logical_off;
+        DEBUG_ASSERT_LT(acc.nr_vecs, k_max_iovecs_per_stripe) // LCOV_EXCL_LINE
         acc.io_array[acc.nr_vecs++] = {buf_cursor, sz};
 
         // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
@@ -259,7 +259,8 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     addr += _stride_width;
 
-    return __distribute(iovecs, addr,
+    std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
+    return __distribute(sub_cmds, iovecs, addr,
                         [op, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
                                   "[stripe_off:{}|logical_sector:{}|logical_len:{:#0x}]",
@@ -285,6 +286,11 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         stripe_tasks.reserve(stripes_for_io(iovec_len(iovecs, iovecs + nr_vecs), _stripe_size, _stripe_array.size()));
     } catch (std::bad_alloc const&) { co_return -EAGAIN; } // LCOV_EXCL_LINE
 
+    // sub_cmds is declared at function scope (not inside the else block) so its lifetime extends
+    // past the if/else and covers the co_await loop below; iovec pointers into io_array remain
+    // valid for the lifetime of all child tasks.
+    std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
+
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
 
@@ -300,7 +306,7 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     } else {
         // READ / WRITE: fan out across stripes via __distribute.
         auto res = __distribute(
-            iovecs, addr,
+            sub_cmds, iovecs, addr,
             [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
                                            uint64_t logical_off) -> io_result {
                 stripe_tasks.push_back(
@@ -313,25 +319,6 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         // to avoid dangling cqe_state::_waiter handles in the CQE ring.
         if (!res) co_return -EIO;
     }
-
-    // Submit now so the kernel snapshots leaf-staged iovecs before this coroutine suspends.
-    // The iovec buffers live in heap storage owned by thread_local sub_cmds (in __distribute);
-    // a sibling Raid0 IO on the same thread can trigger a vector resize (via DirtyGuard reset +
-    // re-entry) that frees those buffers before the kernel reads them. Submit hands them to the
-    // kernel before __distribute's DirtyGuard fires, eliminating the window. One extra syscall per
-    // multi-stripe RAID0 IO; FSDisk-only and single-stripe paths are unaffected.
-    //
-    // H1: Retry once on failure: the ring can be transiently full if the kernel hasn't drained CQEs
-    // yet. A second failure means the ring is genuinely broken (EBADF, ENOMEM, …) — abort rather
-    // than attempt recovery. Recovery would require synthetically completing every suspended
-    // cqe_state to unblock the drain loop; that is complex machinery for an effectively-zero-
-    // probability path. Aborting also prevents a stale-SQE UAF: the staged SQEs left in the ring
-    // would be flushed by the next io_uring_submit on this queue, delivering CQEs into an
-    // already-freed coroutine frame.
-    if (q && q->ring_ptr && io_uring_submit(q->ring_ptr) < 0) [[unlikely]] { // LCOV_EXCL_START
-        RELEASE_ASSERT_GE(io_uring_submit(q->ring_ptr), 0,
-                          "io_uring_submit failed twice; ring is broken ({}). Aborting.", strerror(errno))
-    } // LCOV_EXCL_STOP
 
     int total = 0;
     int err = 0;

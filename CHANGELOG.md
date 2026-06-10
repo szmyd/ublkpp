@@ -14,6 +14,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pairs legs in order; assigns per-pair partition UUIDs via `name_generator("partition_K")`,
   matching the convention used by `make_md_raid10_disk` for UUID consistency.
 
+## [0.32.11] - 2026-06-09
+
+### Changed
+
+- **RAID0 per-stripe iovec accumulators moved to coroutine frame**: `__distribute`'s
+  `StripeAccum` buffer (previously a `thread_local` with `std::vector<iovec>` per slot) is
+  now a caller-owned `std::array<StripeAccum, 64>` with a fixed `std::array<iovec, 16>` per
+  slot (bound: max_io_size 1 MiB / min_stripe_size 64 KiB = 16). In `async_iov` the buffer
+  lives in the coroutine frame (heap, stable for child lifetimes); in `sync_iov` it is a
+  plain stack local. Eliminates the iovec lifetime hazard that required the eager
+  `io_uring_submit` workaround in `async_iov` and the `iov_snap` copy in
+  `Raid1Disk::__failover_read_async`. Removes `DirtyGuard`, `_max_iovecs_per_stripe`, and
+  the `thread_local`; introduces `k_max_iovecs_per_stripe = 16` as a file-scope constant.
+
+## [0.32.10] - 2026-06-05
+
+### Fixed
+
+- **RAID1 remount failure after resync-interrupted-by-stop race**: a race between the resync task and `stop()` in the destructor produced an on-disk state of `DEVB + clean_unmount=1 + empty superbitmap`. On second mount this hit an invariant check and threw `std::runtime_error`, making the volume unassemblable. Fixed with two cooperating changes: (1) `_start()` captures `dirty_pages()` before each `__run()` call; when STOPPING fires, if the count was non-zero and is now zero the resync cleared all chunks but was interrupted in `__yield()` — `complete()` is called immediately so the destructor sees `route=EITHER`; (2) the invariant check at mount time is replaced with a warn + `dirty_region(0, capacity())` fallback, providing defense-in-depth for any residual cases not prevented by (1). Addresses [issue #300](https://github.com/szmyd/ublkpp/issues/300).
+
+## [0.32.9] - 2026-06-04
+
+### Fixed
+
+- **RAID1 read-determinism after unclean shutdown (both legs present)**: when both legs were present at startup with equal ages, `clean_unmount=0`, and `read_route=EITHER`, the code previously only logged a warning. Writes in-flight at crash time may have landed on one leg but not the other, so round-robin reads of the same LBA could return different bytes on alternating accesses — a violation of the block-device read-determinism contract that filesystems (XFS, etc.) depend on unconditionally. The fix detects this case and self-heals: manufactures a +16 age gap on the canonical leg (device_a), pins reads to it via `read_route::DEVA`, dirties the whole bitmap, and marks device_b stale (`unavail`) so writes skip it until `probe_mirror` confirms physical health. `__become_active` skips persisting device_b's superblock (new `unavail` guard), preserving the on-disk age gap so any crash mid-resync reassembles through the existing `new_device` path rather than back into this branch. Idempotent across repeated crashes; no new superblock field. Addresses [issue #290](https://github.com/szmyd/ublkpp/issues/290) Phase 1.
+
+## [0.32.8] - 2026-06-01
+
+### Fixed
+
+- **P0 (raid1)**: `__become_clean()` could transition the route to `EITHER` while dirty bits remained in the bitmap, with no resync task to process them. A concurrent write whose backup leg fails calls `dirty_region()` after the resync task's `dirty_pages()==0` observation but before the CAS. Subsequent reads skipped the `is_dirty` guard (only active in degraded mode) and could be served from the stale backup — a write-acknowledgment boundary violation. Fixed by: (1) inverting the CAS/superblock write ordering; (2) re-checking `dirty_pages()` after the CAS — if dirty bits are found the transition is reversed and `__become_clean()` returns `false`; (3) `_start()` loops on the return value so the still-ACTIVE resync task re-runs `__run()` to pick up the newly-dirtied region, converging without requiring a re-launch.
+- **SuperBitmap::set_bit()** now uses `memory_order_release` (was `relaxed`) to pair correctly with the `memory_order_acquire` loads in `next_set_bit()` and `dirty_pages()`, ensuring the dirty_pages() double-check in `__become_clean` sees concurrent `set_bit()` calls on all architectures.
+- **bitmap.age revert** under SB write failure in `__become_degraded` was not guarded by `_ctrl_lock`, creating a data race with `__swap_device`'s concurrent `+16` age bump. The increment was already guarded; added the same guard to the revert.
+- **`_clean_transition_mutex` in `async_iov` Site 1** was held across two `co_await *backup_task` suspensions. Narrowed the lock to cover only `dirty_region()` + `__become_degraded()`; backup drain `co_await` calls happen after lock release.
+- **Liveness gap between `complete()==true` break and `ACTIVE→IDLE` CAS**: a write-fail during this window called `toggle_resync()` which `launch()`-EARLY_EXITs on `ACTIVE` state; dirty bits could be stranded with no resync running. Fixed by moving the `ACTIVE→IDLE` CAS inside the `_start()` while loop: after `complete()` confirms a clean bitmap the task CAS-es itself to IDLE, re-checks `dirty_pages()`, and if bits appeared in the gap attempts an `IDLE→ACTIVE` reclaim CAS to stay alive and drain them. If another `launch()` or `stop()` wins the IDLE slot, the new task handles the remaining bits.
+- **H1 in `__become_clean()`** no longer attempts `write_superblock` on a missing-disk placeholder for the backup device.
+
+## [0.32.7] - 2026-06-01
+
+### Fixed
+
+- **H3 (raid0)**: the array capacity was computed as `(min_leg_capacity - stripe_size) * leg_count`, which assumes every leg holds a whole number of stripes. When a leg's capacity is not a multiple of `stripe_size`, the partial trailing stripe (`leg_capacity % stripe_size`) was carried into the per-leg term and then multiplied by the leg count, over-reporting the device size by `(leg_capacity % stripe_size) * leg_count`. Reads into that phantom tail (e.g. backup-GPT / partition-table scans at the top of the device) mapped to a per-leg offset past the end of the backing device and returned EIO. The bug was latent because leg capacities happened to be stripe-aligned; raid1 SuperBlock v2 dropped the 512 KiB user-data alignment that had masked it, surfacing top-of-device read failures on RAID10 arrays (observed on a 50-leg array of 3 TiB legs over-reporting by ~3 MiB). Fixed by flooring the smallest leg to a whole number of stripes before reserving the head stripe and striping.
+
 ## [0.32.6] - 2026-05-26
 
 ### Fixed

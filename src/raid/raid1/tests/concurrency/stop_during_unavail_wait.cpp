@@ -52,7 +52,7 @@ TEST(Raid1Concurrency, StopDuringUnavailWait) {
 
     constexpr uint32_t io_size = 4 * Ki;
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
 
     std::this_thread::sleep_for(50ms);
 
