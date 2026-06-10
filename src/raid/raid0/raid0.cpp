@@ -154,9 +154,11 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // M2: guard against division by zero if max_sectors is 0 (e.g. child device reported max_tx()==0).
     if (our_params.basic.max_sectors == 0)
         throw std::runtime_error("Raid0Disk: max_sectors is zero; child device reported max_tx() == 0");
-    RELEASE_ASSERT_LE((max_tx() + _stripe_size - 1) / _stripe_size, k_max_iovecs_per_stripe,
-                      "ceil(max_io_size/stripe_size)={} exceeds k_max_iovecs_per_stripe={}; increase the constant",
-                      (max_tx() + _stripe_size - 1) / _stripe_size, k_max_iovecs_per_stripe)
+    if ((max_tx() + _stripe_size - 1) / _stripe_size > k_max_iovecs_per_stripe)
+        throw std::invalid_argument(
+            fmt::format("Raid0Disk: ceil(max_io_size/stripe_size)={} exceeds k_max_iovecs_per_stripe={}; "
+                        "reduce max_io_size or increase stripe_size",
+                        (max_tx() + _stripe_size - 1) / _stripe_size, k_max_iovecs_per_stripe));
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
