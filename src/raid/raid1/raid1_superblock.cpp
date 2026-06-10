@@ -49,8 +49,6 @@ raid1::SuperBlock* pick_superblock(raid1::SuperBlock* dev_a, raid1::SuperBlock* 
 static const uint8_t magic_bytes[16] = {0123, 045, 0377, 012, 064,  0231, 076, 0305,
                                         0147, 072, 0310, 027, 0111, 0256, 033, 0144};
 
-constexpr auto SB_VERSION = 2;
-
 static raid1::SuperBlock* read_superblock(ublk_disk& device) {
     auto const sb_size = sizeof(raid1::SuperBlock);
     DEBUG_ASSERT_EQ(0, sb_size % device.block_size(), "Device {} blocksize does not support alignment of [{}B]", device,
@@ -128,6 +126,11 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
         RLOGE("Superblock did not have a matching UUID expected: {} read: {}", to_string(uuid), to_string(read_uuid))
         return std::unexpected(std::make_error_condition(std::errc::invalid_argument));
     }
+    if (be16toh(sb->header.version) > k_sb_version) {
+        RLOGE("Superblock version {:#0x} is newer than supported {:#0x} — refusing to open",
+              be16toh(sb->header.version), k_sb_version)
+        return std::unexpected(std::make_error_condition(std::errc::not_supported));
+    }
     if (chunk_size != be32toh(sb->fields.bitmap.chunk_size)) {
         RLOGW("Superblock was created with different chunk_size: [{}B] will not use runtime config of [{}B] "
               "[uuid:{}] ",
@@ -136,7 +139,7 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t cons
 
     if (was_new) {
         // Fresh device — stamp with current version.
-        sb->header.version = htobe16(SB_VERSION);
+        sb->header.version = htobe16(k_sb_version);
     }
     // Existing disks keep their on-disk version. __init_params branches on version to reconstruct
     // the original _reserved_size formula (v1: capacity-proportional, v2+: fixed k_superbitmap_bits).
