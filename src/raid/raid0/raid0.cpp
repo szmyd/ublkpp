@@ -154,6 +154,9 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
     // M2: guard against division by zero if max_sectors is 0 (e.g. child device reported max_tx()==0).
     if (our_params.basic.max_sectors == 0)
         throw std::runtime_error("Raid0Disk: max_sectors is zero; child device reported max_tx() == 0");
+    RELEASE_ASSERT_LE((max_tx() + _stripe_size - 1) / _stripe_size, k_max_iovecs_per_stripe,
+                      "ceil(max_io_size/stripe_size)={} exceeds k_max_iovecs_per_stripe={}; increase the constant",
+                      (max_tx() + _stripe_size - 1) / _stripe_size, k_max_iovecs_per_stripe)
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
@@ -232,6 +235,7 @@ io_result Raid0Disk::__distribute(std::array< StripeAccum, _max_stripe_cnt >& su
 
         auto& acc = sub_cmds[stripe_off];
         if (!acc.nr_vecs) acc.io_addr = logical_off;
+        DEBUG_ASSERT_LT(acc.nr_vecs, k_max_iovecs_per_stripe) // LCOV_EXCL_LINE
         acc.io_array[acc.nr_vecs++] = {buf_cursor, sz};
 
         // Dispatch once the remaining bytes fit within a single (N-1)-stripe remainder,
@@ -279,6 +283,11 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         stripe_tasks.reserve(stripes_for_io(iovec_len(iovecs, iovecs + nr_vecs), _stripe_size, _stripe_array.size()));
     } catch (std::bad_alloc const&) { co_return -EAGAIN; } // LCOV_EXCL_LINE
 
+    // sub_cmds is declared at function scope (not inside the else block) so its lifetime extends
+    // past the if/else and covers the co_await loop below; iovec pointers into io_array remain
+    // valid for the lifetime of all child tasks.
+    std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
+
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
 
@@ -293,9 +302,6 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         }
     } else {
         // READ / WRITE: fan out across stripes via __distribute.
-        // sub_cmds lives in the coroutine frame (heap-allocated once per I/O) so iovec pointers
-        // into io_array remain valid for the lifetime of all child tasks.
-        std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
         auto res = __distribute(
             sub_cmds, iovecs, addr,
             [q, data, &stripe_tasks, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs,
