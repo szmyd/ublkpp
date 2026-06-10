@@ -1,6 +1,7 @@
 #include "ublkpp/raid.hpp"
 
 #include <bit>
+#include <boost/uuid/name_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <ublksrv.h>
 #include <ublksrv_utils.h>
@@ -430,6 +431,20 @@ load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t& str
 std::shared_ptr< ublk_disk > make_raid0_disk(boost::uuids::uuid const& uuid, uint32_t stripe_size_bytes,
                                              std::vector< std::shared_ptr< ublk_disk > >&& disks) {
     return std::make_shared< Raid0Disk >(uuid, stripe_size_bytes, std::move(disks));
+}
+
+std::shared_ptr< ublk_disk > make_raid10_disk(boost::uuids::uuid const& uuid, uint32_t stripe_size_bytes,
+                                              std::vector< std::shared_ptr< ublk_disk > >&& legs,
+                                              std::string const& parent_id) {
+    if (legs.size() < 4 || legs.size() % 2 != 0)
+        throw std::runtime_error(fmt::format("make_raid10_disk: expected even number >= 4 legs, got {}", legs.size()));
+    auto name_gen = boost::uuids::name_generator(uuid);
+    auto mirrors = std::vector< std::shared_ptr< ublk_disk > >();
+    mirrors.reserve(legs.size() / 2);
+    for (auto i = 0u; i < legs.size(); i += 2)
+        mirrors.push_back(make_raid1_disk(name_gen(fmt::format("partition_{}", i / 2)), std::move(legs[i]),
+                                          std::move(legs[i + 1]), parent_id));
+    return make_raid0_disk(uuid, stripe_size_bytes, std::move(mirrors));
 }
 
 namespace raid0 {

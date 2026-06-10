@@ -33,6 +33,21 @@ static const ublkpp::raid1::SuperBlock normal_superblock = {
                .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = 0}},
     .superbitmap_reserved = {0x00}};
 
+// Same UUID/magic as normal_superblock, but with the legacy v1 version. Used to verify
+// that arrays created under the old (max_sectors-aligned) reservation formula keep their
+// on-disk layout exactly when re-attached by the new code.
+static const ublkpp::raid1::SuperBlock legacy_v1_superblock = {
+    .header = {.magic = {0x53, 0x25, 0xff, 0x0a, 0x34, 0x99, 0x3e, 0xc5, 0x67, 0x3a, 0xc8, 0x17, 0x49, 0xae, 0x1b,
+                         0x64},
+               .version = htobe16(1),
+               .uuid = {0xad, 0xa4, 0x07, 0x37, 0x30, 0xe3, 0x49, 0xfe, 0x99, 0x42, 0x5a, 0x28, 0x7d, 0x71, 0xeb,
+                        0x3f}},
+    .fields = {.clean_unmount = 1,
+               .read_route = static_cast< uint8_t >(ublkpp::raid1::read_route::EITHER),
+               .device_b = 0,
+               .bitmap = {._reserved = {0x00}, .chunk_size = htobe32(32 * Ki), .age = 0}},
+    .superbitmap_reserved = {0x00}};
+
 static std::string const test_uuid("ada40737-30e3-49fe-9942-5a287d71eb3f");
 
 // Helper for tests that create MirrorDevice directly: zero the buffer on READ so that

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0]
+### Added
+- md_disk support: One-way transformation to ublkpp RAID0+1 device.
+- `ublkpp::md::probe(disk_handle)`: non-destructive superblock probe returning `disk_type`
+  (`md_none`, `md_native`, `md_stamped`, `md_dirty`) so callers can route to the correct
+  factory without external signalling.
+- `ublkpp::make_raid10_disk`: RAID10 factory (RAID0 of RAID1 pairs) from a flat leaf vector.
+  Pairs legs in order; assigns per-pair partition UUIDs via `name_generator("partition_K")`,
+  matching the convention used by `make_md_raid10_disk` for UUID consistency.
+
 ## [0.32.11] - 2026-06-09
 
 ### Changed
@@ -83,7 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no forward progress. Valid range is 1–32.
 
 ## [0.32.1] - 2026-05-24
-- Some fixes for gcc-16 compilation
+### Fixed
+- Gcc-16 compilation errors
 
 ## [0.32.0] - 2026-05-20
 
