@@ -982,9 +982,8 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     auto const backup_res = co_await *backup_task;
 
     if (backup_res < 0) {
-        // Site 3: backup fails with backup_write==true — newly dirties a clean region.
-        // dirty_region() is lock-free; __become_degraded() needs the mutex to order its
-        // DEVA SB write after __become_clean's EITHER SB writes. No co_await under the lock.
+        // Site 3: dirty_region() is lock-free; direct lock_guard is fine here — no co_await
+        // follows, so the mutex scopes naturally to the end of this if-block.
         _dirty_bitmap->dirty_region(addr, len);
         std::lock_guard lock(_clean_transition_mutex);
         if (auto d = __become_degraded(false, &state); !d) co_return -EAGAIN;
@@ -1029,15 +1028,15 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
     if (!active_res) {
-        // Site 1 (sync): dirty_region() is lock-free; only __become_degraded() needs the mutex.
-        // Narrow the lock scope so the backup disk I/O runs outside _clean_transition_mutex,
-        // matching the async_iov Site 1 pattern.
+        // Site 1 (sync): dirty_region() is lock-free; lambda scopes the mutex so the backup
+        // disk I/O runs outside _clean_transition_mutex, matching async_iov Site 1.
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
-        {
+        bool const become_degraded_ok = [&] {
             std::lock_guard lock(_clean_transition_mutex);
-            if (auto d = __become_degraded(true, &state); !d)
-                return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
-        }
+            return __become_degraded(true, &state);
+        }();
+        if (!become_degraded_ok)
+            return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         // become_degraded succeeded → state was EITHER → bm was WRITE → backup is reachable.
         DEBUG_ASSERT(backup_write,
                      "backup_write must be true when become_degraded succeeds"); // LCOV_EXCL_BR_LINE
@@ -1067,7 +1066,8 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     auto const backup_res = state.backup_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
     if (!backup_res) {
-        // Site 3 (sync): dirty_region() is lock-free; only __become_degraded() needs the mutex.
+        // Site 3 (sync): dirty_region() is lock-free; direct lock_guard is fine here — no
+        // disk I/O follows, so the mutex scopes naturally to the end of this if-block.
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         std::lock_guard lock(_clean_transition_mutex);
         if (auto d = __become_degraded(false, &state); !d)
