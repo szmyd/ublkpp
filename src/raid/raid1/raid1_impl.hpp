@@ -52,13 +52,13 @@ class Raid1Disk : public ublk_disk {
     std::mutex _ctrl_lock;
 
     // Guards __become_clean's check + CAS + superblock writes against all three cold failure-path
-    // dirty_region() + __become_degraded() sites: active-fail (Site 1, backup_write=true),
-    // backup-unavail (Site 2, backup_write=false), and backup-fail (Site 3, backup_write=true).
+    // __become_degraded() calls: active-fail (Site 1), backup-unavail (Site 2), backup-fail
+    // (Site 3). dirty_region() is always called lock-free before the mutex is acquired.
     // Holding the lock across both the check+CAS and the SB writes ensures:
     //   (a) No EITHER-with-dirty-bit instant visible to lock-free readers (live P0).
     //   (b) Failure-path DEVA SB writes always serialize after EITHER SB writes, so the
     //       on-disk SBs cannot show EITHER+dirty on crash (crash-recovery P0).
-    // The success path (both legs succeed) must NOT hold this lock.
+    // Neither the success path (both legs succeed) nor dirty_region() must hold this lock.
     std::mutex _clean_transition_mutex;
 
     // Counts prepare() calls; used to enable resync on the first queue init.
