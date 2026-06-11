@@ -668,14 +668,14 @@ bool Raid1Disk::__become_clean() {
     // The on-disk ordering guarantee: T2 cannot write DEVX SBs until T1 releases, so
     // EITHER SBs always land before any DEVX SBs.
     // Two crash cases:
-    //   - Before failure site acquires lock for __become_degraded(): only EITHER SBs on
-    //     disk; dirty bits are in-memory only and lost on crash — see residual crash window
-    //     below. The system APPEARS clean on restart even if one device has newer data.
+    //   - Before failure site acquires the lock: only EITHER SBs on disk; dirty bits are
+    //     in-memory only and lost on crash — see residual crash window below. The system
+    //     APPEARS clean on restart even if one device has newer data.
     //   - After failure site's DEVA SB write: working_dev=DEVA(age+1), other=EITHER →
     //     pick_superblock selects by age → DEVA route → resync → safe.
     //
     // Residual crash window (not closed by the mutex): process crashes after a failure site
-    // calls dirty_region() (lock-free) but before __become_degraded() completes its
+    // acquires the lock and calls dirty_region() but before __become_degraded() completes its
     // write_superblock() I/O. In that window, dirty bits are in-memory only (lost on crash)
     // and both SBs say EITHER at the same age — no resync is triggered on restart. Closing
     // this window requires additional on-disk metadata (a "last-active slot" field) to
