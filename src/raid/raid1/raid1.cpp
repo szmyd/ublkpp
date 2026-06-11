@@ -706,9 +706,10 @@ bool Raid1Disk::__become_clean() {
     } // lock released; both EITHER SBs are on disk
 
     // H1 defense-in-depth: if a failure path moved route away from EITHER after our lock
-    // released (e.g. __swap_device raced and remapped the slots), re-write the on-disk SBs
-    // with the current degraded route. A fresh capture is used so device pointers are
-    // coherent with live_route.
+    // released (e.g. __swap_device raced and remapped the slots, or a failure site won the
+    // EITHER→DEVA CAS between our release and this check), re-write the on-disk SBs with
+    // the current degraded route. A fresh capture is used so device pointers are coherent
+    // with live_route.
     auto const live_state = __capture_route_state();
     if (live_state.route != read_route::EITHER) {
         bool const live_active_is_b = (live_state.route == read_route::DEVB);

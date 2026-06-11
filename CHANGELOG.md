@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **P0 (raid1): data loss when backup is unavailable and __become_clean races __become_degraded**: in `async_iov` Site 2 (backup-unavail path), `dirty_region()` and `__become_degraded()` were not guarded by `_clean_transition_mutex`. A concurrent `__become_clean` (T1) could CAS DEVA→EITHER and write EITHER superblocks inside its mutex, then have those writes land on disk *after* T2's `__become_degraded` DEVA write — because T2 was not serialised. If the process crashed before H1 (the post-mutex defense-in-depth) re-wrote the DEVA SBs, both devices held EITHER at the same age; restart opened in round-robin mode with B returning stale data against an acknowledged write. Fixed by wrapping Site 2's `dirty_region() + __become_degraded()` in a `std::lock_guard` on `_clean_transition_mutex`, matching Sites 1 and 3. With the mutex, T2's DEVA write always lands after T1's EITHER writes, so `pick_superblock` selects the DEVA device by age on any crash, eliminating the stale-B read path.
+- **P0 (raid1): data loss when backup is unavailable and `__become_clean` races `__become_degraded`**:
+  - **Race**: in `async_iov` and `sync_iov` Site 2 (backup-unavail path), `__become_degraded()` was not guarded by `_clean_transition_mutex`. A concurrent `__become_clean` (T1) could CAS DEVA→EITHER and write EITHER superblocks inside its mutex, then have those writes land on disk *after* T2's `__become_degraded` DEVA write — because T2 was not serialised.
+  - **Crash window**: if the process crashed before H1 (the post-mutex defense-in-depth) re-wrote the DEVA SBs, both devices held EITHER at the same age; restart opened in round-robin mode with B returning stale data against an acknowledged write.
+  - **Fix**: `__become_degraded()` at all six failure sites (async + sync, Sites 1/2/3) now holds `_clean_transition_mutex`; `dirty_region()` is called lock-free immediately before. With the mutex, T2's DEVA write always lands after T1's EITHER writes, so `pick_superblock` selects the DEVA device by age on any crash, eliminating the stale-B read path.
 
 ## [0.32.13] - 2026-06-10
 
