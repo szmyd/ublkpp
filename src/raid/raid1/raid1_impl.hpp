@@ -51,13 +51,15 @@ class Raid1Disk : public ublk_disk {
     //         (2) _pending_results - serializes prepare() insertions across queue threads.
     std::mutex _ctrl_lock;
 
-    // Guards __become_clean's check + CAS + superblock writes against the two cold failure-path
-    // dirty_region() + __become_degraded() sites (active-fail and backup-fail with backup_write
-    // true). Holding the lock across both the check+CAS and the SB writes ensures:
-    //   (a) No EITHER-with-dirty-bit instant visible to lock-free readers (live P0).
+    // Guards __become_clean's check + CAS + superblock writes against all three cold failure-path
+    // dirty_region() + __become_degraded() calls: active-fail (Site 1), backup-unavail (Site 2),
+    // backup-fail (Site 3). dirty_region() is called inside the mutex at all failure sites so
+    // dirty_pages() is a hard gate — no in-flight region can slip past the check.
+    // Holding the lock across both the check+CAS and the SB writes ensures:
+    //   (a) dirty_pages() sees all in-flight regions — prevents premature clean transition.
     //   (b) Failure-path DEVA SB writes always serialize after EITHER SB writes, so the
     //       on-disk SBs cannot show EITHER+dirty on crash (crash-recovery P0).
-    // The hot write path (!backup_write re-dirty) must NOT hold this lock.
+    // The success path (both legs succeed) does not hold this lock.
     std::mutex _clean_transition_mutex;
 
     // Counts prepare() calls; used to enable resync on the first queue init.

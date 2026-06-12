@@ -643,8 +643,8 @@ std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > Raid1Dis
 // Returns true if the array successfully transitioned to EITHER (clean superblocks written),
 // or if another concurrent path already won the EITHER CAS (idempotent).
 // Returns false in three cases that require the caller to keep resyncing:
-//   (a) Site-2 dirty_region() set bits before the lock was acquired — dirty_pages() > 0 under
-//       the lock; route stays degraded and the CAS is not attempted.
+//   (a) A failure site's dirty_region() set bits before the lock was acquired —
+//       dirty_pages() > 0 under the lock; route stays degraded and the CAS is not attempted.
 //   (b) __swap_device raced and changed the route before our CAS — old_route != EITHER.
 //   (c) post-write: __become_degraded fired during superblock I/O — H1 re-writes with a fresh
 //       route+device capture (coherent across swap races) and returns false.
@@ -662,15 +662,20 @@ bool Raid1Disk::__become_clean() {
 
     // _clean_transition_mutex is held across check + CAS + both superblock writes.
     //
-    // The lock serializes this path against Sites 1 & 3 (backup_write=true failures),
-    // which also hold the lock during dirty_region() + __become_degraded(). Two crash cases:
-    //   - Before failure site acquires lock: only EITHER SBs on disk, no dirty bit set
-    //     (dirty_region is inside the lock) → system is genuinely clean.
+    // The lock serializes this path against Sites 1, 2 & 3 (all three failure paths),
+    // whose dirty_region() + __become_degraded() are also inside the lock. dirty_pages()
+    // is therefore a hard gate: no in-flight region can be set after this check returns 0.
+    // The on-disk ordering guarantee: T2 cannot write DEVX SBs until T1 releases, so
+    // EITHER SBs always land before any DEVX SBs.
+    // Two crash cases:
+    //   - Before failure site acquires the lock: only EITHER SBs on disk; dirty bits are
+    //     in-memory only and lost on crash — see residual crash window below. The system
+    //     APPEARS clean on restart even if one device has newer data.
     //   - After failure site's DEVA SB write: working_dev=DEVA(age+1), other=EITHER →
     //     pick_superblock selects by age → DEVA route → resync → safe.
     //
-    // Residual crash window (not closed by the mutex): process crashes after Sites 1/3
-    // acquire the lock and call dirty_region() but before __become_degraded() completes its
+    // Residual crash window (not closed by the mutex): process crashes after a failure site
+    // acquires the lock and calls dirty_region() but before __become_degraded() completes its
     // write_superblock() I/O. In that window, dirty bits are in-memory only (lost on crash)
     // and both SBs say EITHER at the same age — no resync is triggered on restart. Closing
     // this window requires additional on-disk metadata (a "last-active slot" field) to
@@ -680,7 +685,7 @@ bool Raid1Disk::__become_clean() {
     // (only acquired on resync completion and on write-leg failures).
     {
         std::lock_guard lock(_clean_transition_mutex);
-        if (_dirty_bitmap->dirty_pages() > 0) return false; // bits set under lock → stay degraded
+        if (_dirty_bitmap->dirty_pages() > 0) return false; // bits already set → stay degraded
 
         auto old_route = state.route;
         if (!_read_route_cache.compare_exchange_strong(old_route, read_route::EITHER))
@@ -705,9 +710,10 @@ bool Raid1Disk::__become_clean() {
     } // lock released; both EITHER SBs are on disk
 
     // H1 defense-in-depth: if a failure path moved route away from EITHER after our lock
-    // released (e.g. __swap_device, or a Site-2 __become_degraded without the mutex), re-write
-    // the on-disk SBs with the current degraded route. A fresh capture is used so device
-    // pointers are coherent with live_route even if __swap_device raced and remapped the slots.
+    // released (e.g. __swap_device raced and remapped the slots, or a failure site won the
+    // EITHER→DEVA CAS between our release and this check), re-write the on-disk SBs with
+    // the current degraded route. A fresh capture is used so device pointers are coherent
+    // with live_route.
     auto const live_state = __capture_route_state();
     if (live_state.route != read_route::EITHER) {
         bool const live_active_is_b = (live_state.route == read_route::DEVB);
@@ -938,7 +944,8 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     if (active_res < 0) {
         // Site 1: active fails with backup_write==true — newly dirties a clean region.
-        // Lock covers only dirty_region + __become_degraded; co_awaits happen after release.
+        // dirty_region() is inside the mutex so __become_clean's dirty_pages() gate
+        // cannot pass while this region is in-flight.
         bool const become_degraded_ok = [&] {
             std::lock_guard lock(_clean_transition_mutex);
             _dirty_bitmap->dirty_region(addr, len);
@@ -962,24 +969,22 @@ disk_task< int > Raid1Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
     }
 
     if (!backup_write) {
-        _dirty_bitmap->dirty_region(addr, len);
-        // Site 2: no mutex — this path fires when backup is unavail or the region was already
-        // dirty. The mutex was designed to exclude Sites 1 and 3 (which newly dirty a clean
-        // region and need to be atomic with __become_clean). Here we still call __become_degraded
-        // unconditionally so that if __become_clean released the mutex and transitioned to EITHER
-        // before this dirty_region call, we re-degrade before ACKing. __become_degraded's own
-        // CAS handles idempotency; if already degraded with a pending SB write, it retries the
-        // SB write before returning — ensuring the SB is durable before we ack.
-        if (!__become_degraded(false, &state)) co_return -EAGAIN;
+        // Site 2: backup unavailable — dirty_region() is inside the mutex so
+        // __become_clean's dirty_pages() gate cannot pass while this region is in-flight.
+        bool const become_degraded_ok = [&] {
+            std::lock_guard lock(_clean_transition_mutex);
+            _dirty_bitmap->dirty_region(addr, len);
+            return __become_degraded(false, &state);
+        }();
+        if (!become_degraded_ok) co_return -EAGAIN;
         co_return active_res;
     }
 
     auto const backup_res = co_await *backup_task;
 
     if (backup_res < 0) {
-        // Site 3: backup fails with backup_write==true — newly dirties a clean region.
-        // Hold _clean_transition_mutex so dirty_region + become_degraded are atomic against
-        // __become_clean's check+CAS. No co_await under the lock.
+        // Site 3: backup write failed — dirty_region() is inside the mutex so
+        // __become_clean's dirty_pages() gate cannot pass while this region is in-flight.
         std::lock_guard lock(_clean_transition_mutex);
         _dirty_bitmap->dirty_region(addr, len);
         if (auto d = __become_degraded(false, &state); !d) co_return -EAGAIN;
@@ -1024,9 +1029,14 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     auto const active_res = state.active_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
     if (!active_res) {
-        std::lock_guard lock(_clean_transition_mutex); // site 1 (sync)
-        _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
-        if (auto d = __become_degraded(true, &state); !d)
+        // Site 1 (sync): active fails — dirty_region() is inside the mutex so
+        // __become_clean's dirty_pages() gate cannot pass while this region is in-flight.
+        bool const become_degraded_ok = [&] {
+            std::lock_guard lock(_clean_transition_mutex);
+            _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
+            return __become_degraded(true, &state);
+        }();
+        if (!become_degraded_ok)
             return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         // become_degraded succeeded → state was EITHER → bm was WRITE → backup is reachable.
         DEBUG_ASSERT(backup_write,
@@ -1042,9 +1052,14 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     }
 
     if (!backup_write) {
-        _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
-        // Site 2 (sync) — mirrors async_iov Site 2; see that comment.
-        if (!__become_degraded(false, &state))
+        // Site 2 (sync): backup unavailable — dirty_region() is inside the mutex so
+        // __become_clean's dirty_pages() gate cannot pass while this region is in-flight.
+        bool const become_degraded_ok = [&] {
+            std::lock_guard lock(_clean_transition_mutex);
+            _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
+            return __become_degraded(false, &state);
+        }();
+        if (!become_degraded_ok)
             return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
         return active_res;
     }
@@ -1052,7 +1067,9 @@ io_result Raid1Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     auto const backup_res = state.backup_dev->disk->sync_iov(op, iovecs, nr_vecs, adj_addr);
 
     if (!backup_res) {
-        std::lock_guard lock(_clean_transition_mutex); // site 3 (sync)
+        // Site 3 (sync): backup write failed — dirty_region() is inside the mutex so
+        // __become_clean's dirty_pages() gate cannot pass while this region is in-flight.
+        std::lock_guard lock(_clean_transition_mutex);
         _dirty_bitmap->dirty_region(static_cast< uint64_t >(addr), len);
         if (auto d = __become_degraded(false, &state); !d)
             return std::unexpected(std::make_error_condition(std::errc::resource_unavailable_try_again));
