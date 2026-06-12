@@ -49,8 +49,7 @@ class Raid0Disk : public ublk_disk {
     std::vector< std::unique_ptr< StripeDevice > > _stripe_array;
 
     uint32_t _stripe_size{0};
-    uint64_t _stride_width{0};       // L1: widened to uint64_t; large configs (e.g. 128MiB × 64) overflow uint32_t
-    uint32_t _max_stripes_per_io{0}; // min(N, ceil(max_tx/stripe_size) + 1): sub_cmds slots touched per IO
+    uint64_t _stride_width{0}; // L1: widened to uint64_t; large configs (e.g. 128MiB × 64) overflow uint32_t
 
     io_result __distribute(std::array< StripeAccum, _max_stripe_cnt >& sub_cmds, iovec* iov, uint64_t addr,
                            auto&& func) const;
@@ -160,9 +159,6 @@ Raid0Disk::Raid0Disk(boost::uuids::uuid const& uuid, uint32_t const stripe_size_
             fmt::format("Raid0Disk: ceil(max_io_size/stripe_size)={} exceeds k_max_iovecs_per_stripe={}; "
                         "reduce max_io_size or increase stripe_size",
                         (max_tx() + _stripe_size - 1) / _stripe_size, k_max_iovecs_per_stripe));
-    // +1 for worst-case misalignment: an IO starting 1 byte into a stripe spills into one extra slot.
-    _max_stripes_per_io = static_cast< uint32_t >(
-        std::min< size_t >(_stripe_array.size(), (max_tx() + _stripe_size - 1) / _stripe_size + 1));
     // Align size to max_sector size
     our_params.basic.dev_sectors -= (our_params.basic.dev_sectors % our_params.basic.max_sectors);
 
@@ -232,6 +228,7 @@ io_result Raid0Disk::__distribute(std::array< StripeAccum, _max_stripe_cnt >& su
     DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
     auto const len = static_cast< uint32_t >(iovecs->iov_len);
     uint32_t cnt{0};
+    uint64_t dirty_mask{0};
     for (auto off = 0U; len > off;) {
         auto const [stripe_off, logical_off, sz] =
             raid0::next_subcmd(_stride_width, _stripe_size, addr + off, len - off);
@@ -239,7 +236,11 @@ io_result Raid0Disk::__distribute(std::array< StripeAccum, _max_stripe_cnt >& su
         off += sz;
 
         auto& acc = sub_cmds[stripe_off];
-        if (!acc.nr_vecs) acc.io_addr = logical_off;
+        if (!(dirty_mask & (1ULL << stripe_off))) {
+            dirty_mask |= 1ULL << stripe_off;
+            acc.nr_vecs = 0;
+            acc.io_addr = logical_off;
+        }
         DEBUG_ASSERT_LT(acc.nr_vecs, k_max_iovecs_per_stripe) // LCOV_EXCL_LINE
         acc.io_array[acc.nr_vecs++] = {buf_cursor, sz};
 
@@ -262,7 +263,6 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     addr += _stride_width;
 
     std::array< StripeAccum, _max_stripe_cnt > sub_cmds;
-    memset(sub_cmds.data(), 0, _max_stripes_per_io * sizeof(StripeAccum));
     return __distribute(sub_cmds, iovecs, addr,
                         [op, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
@@ -291,10 +291,9 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     // sub_cmds is declared at function scope (not inside the else block) so its lifetime extends
     // past the if/else and covers the co_await loop below; iovec pointers into io_array remain
-    // valid for the lifetime of all child tasks. Only the [0, _stripe_array.size()) slots are
-    // ever indexed by __distribute, so only those are initialized.
+    // valid for the lifetime of all child tasks. Slots are initialized lazily in __distribute
+    // via dirty_mask on first touch, so no upfront zeroing is needed here.
     std::array< StripeAccum, _max_stripe_cnt > sub_cmds;
-    memset(sub_cmds.data(), 0, _max_stripes_per_io * sizeof(StripeAccum));
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
