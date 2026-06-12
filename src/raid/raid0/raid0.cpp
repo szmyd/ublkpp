@@ -17,9 +17,9 @@ constexpr uint32_t _max_stripe_cnt{64};
 constexpr uint32_t k_max_iovecs_per_stripe{16};
 
 struct StripeAccum {
-    uint64_t io_addr{0};
-    uint32_t nr_vecs{0};
-    std::array< iovec, k_max_iovecs_per_stripe > io_array{};
+    uint64_t io_addr;
+    uint32_t nr_vecs;
+    std::array< iovec, k_max_iovecs_per_stripe > io_array; // filled before read; no zero-init needed
 };
 
 class StripeDevice {
@@ -257,7 +257,8 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     addr += _stride_width;
 
-    std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
+    std::array< StripeAccum, _max_stripe_cnt > sub_cmds;
+    memset(sub_cmds.data(), 0, _stripe_array.size() * sizeof(StripeAccum));
     return __distribute(sub_cmds, iovecs, addr,
                         [op, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
@@ -286,8 +287,10 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     // sub_cmds is declared at function scope (not inside the else block) so its lifetime extends
     // past the if/else and covers the co_await loop below; iovec pointers into io_array remain
-    // valid for the lifetime of all child tasks.
-    std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
+    // valid for the lifetime of all child tasks. Only the [0, _stripe_array.size()) slots are
+    // ever indexed by __distribute, so only those are initialized.
+    std::array< StripeAccum, _max_stripe_cnt > sub_cmds;
+    memset(sub_cmds.data(), 0, _stripe_array.size() * sizeof(StripeAccum));
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;
