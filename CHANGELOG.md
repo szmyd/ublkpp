@@ -4,11 +4,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.32.14] - 2026-06-12
+## [0.32.15] - 2026-06-12
 
 ### Improved
 
 - (raid0): Only init parts of StripeAccumulator that i/o will actually touch.
+
+## [0.32.14] - 2026-06-10
+
+### Fixed
+
+- **RAID1 (P0)**: Site 2 (`async_iov`/`sync_iov`, backup-unavail path) called `dirty_region()` and `__become_degraded()` without holding `_clean_transition_mutex`, unlike Sites 1 and 3.
+- A concurrent `__become_clean` could write EITHER superblocks after Site 2's DEVA write, leaving both devices at EITHER+equal-age on crash; `pick_superblock` tie-broke to round-robin, serving stale data from B against an acknowledged write.
+- Fixed by wrapping `dirty_region()` + `__become_degraded()` together inside `_clean_transition_mutex` at all six failure sites (async + sync, Sites 1–3), making `dirty_pages()` a hard gate against premature clean transitions.
 
 ## [0.32.13] - 2026-06-10
 
