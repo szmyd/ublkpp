@@ -117,13 +117,16 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     // is_idle=false and preventing the probe from re-arming on subsequent fires.
                     ++probe_count;
                     if (cqe->res == -ETIME) {
-                        // Guard against device.reset() racing this read of the shared_ptr
-                        // under nr_hw_queues > 1: try_drain_device may call device.reset()
-                        // concurrently on another queue thread, causing a concurrent write +
-                        // read on the same shared_ptr instance (UB). Skipping probe_tick after
-                        // shutdown is set eliminates the race in practice (device.reset() is
-                        // only called after _shutting_down=true).
-                        if (!qs->tgt->_shutting_down.load(std::memory_order_acquire)) qs->tgt->device->probe_tick(q);
+                        // Take a local shared_ptr reference before the gate check so the
+                        // device cannot be destroyed while probe_tick is running. device.reset()
+                        // only fires after _shutting_down=true, so the seq_cst load and the
+                        // read of qs->tgt->device are never truly concurrent with device.reset()
+                        // — if the load sees false, begin_shutdown's seq_cst store (and hence
+                        // device.reset()) has not committed yet. The local copy keeps the object
+                        // alive even if device.reset() fires immediately after we capture it.
+                        if (auto dev = qs->tgt->_shutting_down.load(std::memory_order_seq_cst) ? disk_handle{}
+                                                                                               : qs->tgt->device)
+                            dev->probe_tick(q);
                         if (qs->is_idle) submit_probe_timeout(q);
                     }
                 } else {

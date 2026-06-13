@@ -49,9 +49,18 @@ struct ublkpp_tgt {
     //   // ... in main loop:
     //   if (g_shutdown.load(std::memory_order_relaxed)) {
     //       tgt->begin_shutdown();
-    //       _exit(0);  // use _exit to skip C++ destructors (queue threads still alive);
-    //                  // exit() / return 0 also work — the destructor detaches joinable
-    //                  // queue threads to prevent std::terminate() in that case.
+    //       // For the common case (no I/O in-flight at SIGTERM time), begin_shutdown()
+    //       // calls device.reset() synchronously before returning — clean_unmount=1 is
+    //       // already written. Any exit form is safe at this point.
+    //       //
+    //       // For the rare non-idle case (ops in-flight), begin_shutdown() returns
+    //       // immediately; device.reset() fires later on a queue thread. Using _exit(0)
+    //       // here kills those threads before they can flush — clean_unmount=1 may not
+    //       // be written. Prefer exit() / return 0: the destructor detaches queue threads
+    //       // so the process exits cleanly without std::terminate(), giving threads a
+    //       // brief window to complete. For a guaranteed flush under in-flight I/O, wait
+    //       // for an out-of-band drain signal before exiting (not currently provided).
+    //       _exit(0);
     //   }
     void begin_shutdown();
 
