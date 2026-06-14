@@ -17,6 +17,8 @@ UblkIOMetrics::UblkIOMetrics(std::string const& uuid) : sisl::MetricsGroup{"ublk
                        HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_HISTOGRAM(ublk_write_queue_distribution, "Write queue depth distribution",
                        HistogramBucketsType(ExponentialOfTwoBuckets));
+    REGISTER_COUNTER(read_bytes_total, "Total bytes read", "ublk_read_bytes_total");
+    REGISTER_COUNTER(write_bytes_total, "Total bytes written", "ublk_write_bytes_total");
     register_me_to_farm();
 }
 
@@ -83,6 +85,16 @@ void UblkIOMetrics::record_queue_depth_change(ublksrv_queue const* q, uint8_t op
         } else {
             _queued_other.fetch_sub(1, std::memory_order_seq_cst);
         }
+    }
+}
+
+void UblkIOMetrics::record_io_bytes(uint8_t op, uint32_t bytes) {
+    if (op == 0) { // UBLK_IO_OP_READ
+        _read_bytes_total.fetch_add(bytes, std::memory_order_relaxed);
+        COUNTER_INCREMENT(*this, read_bytes_total, bytes);
+    } else if (op == 1) { // UBLK_IO_OP_WRITE
+        _write_bytes_total.fetch_add(bytes, std::memory_order_relaxed);
+        COUNTER_INCREMENT(*this, write_bytes_total, bytes);
     }
 }
 

@@ -355,6 +355,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         co_return;
     }
 
+    uint32_t bytes_transferred = 0;
     int result;
     if (op == UBLK_IO_OP_FLUSH) {
         result = 0;
@@ -367,9 +368,11 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         // frame is alive across co_await, so the iov is valid through the whole IO lifetime.
         iovec iov{.iov_base = reinterpret_cast< void* >(iod->addr), .iov_len = iod->nr_sectors << SECTOR_SHIFT};
         result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
+        if (result >= 0) bytes_transferred = static_cast< uint32_t >(iov.iov_len);
     }
 
     qs->tgt->metrics.record_queue_depth_change(q, op, false);
+    if (bytes_transferred > 0) qs->tgt->metrics.record_io_bytes(op, bytes_transferred);
 
     if (0 > result) [[unlikely]] {
         TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)

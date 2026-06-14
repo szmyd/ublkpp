@@ -315,6 +315,32 @@ TEST(ApplyOpForTest, FlushOpDoesNotTouchAnyCounter) {
     EXPECT_TRUE(m.all_idle());
 }
 
+// ---------------------------------------------------------------------------
+// record_io_bytes: byte counter accumulation
+// ---------------------------------------------------------------------------
+
+TEST(IOBytes, ReadBytesAccumulate) {
+    ublkpp::UblkIOMetrics m{"test-bytes-read"};
+    m.record_io_bytes(0, 4096);
+    m.record_io_bytes(0, 8192);
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 12288u);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOBytes, WriteBytesAccumulate) {
+    ublkpp::UblkIOMetrics m{"test-bytes-write"};
+    m.record_io_bytes(1, 16384);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 16384u);
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOBytes, NonDataOpIgnored) {
+    ublkpp::UblkIOMetrics m{"test-bytes-flush"};
+    m.record_io_bytes(2, 512); // op=2 (FLUSH), not 0 or 1
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
 int main(int argc, char* argv[]) {
     int parsed_argc = argc;
     ::testing::InitGoogleTest(&parsed_argc, argv);
