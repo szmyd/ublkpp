@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.32.10] - 2026-06-04
+## [0.33.0] - 2026-06-14
 
 ### Added
 
@@ -14,6 +14,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`destroy()` missing `ctrl_dev = nullptr`**: after `ublksrv_ctrl_deinit`, `ctrl_dev` was not nulled, leaving a potential double-deinit on the freed pointer. Now nulled immediately after deinit.
 - **Unconditional `join()` in `destroy()`**: queue threads were joined without a `joinable()` guard, which would throw `std::system_error` if a thread was never started (e.g., on a failed queue init). Added `if (q.joinable())` guard.
+
+## [0.32.13] - 2026-06-10
+
+### Fixed
+
+- **P1 (raid0): DISCARD/WRITE_ZEROES crashes file-backed arrays with more disks than the read/write stripe count**: `prepare()` sized the CQE pool using the read/write fan-out formula `stripes_for_io(max_tx, stripe_size, N)`, which caps at `k = min(ceil(max_tx/stripe_size)+1, N)`. The DISCARD path in `async_iov` always fans out to all N disks via `merged_subcmds`, consuming one pool slot per disk. For N > k (e.g., 10 disks, stripe_size=128 KiB, max_tx=512 KiB → k=5), `RELEASE_ASSERT_LT(_pool.size(), _pool.capacity())` fired on the (k+1)th disk's `next_state()` call — process crash. Fixed by removing the k-bound from `prepare()`: all N children contribute to `max_sqes_per_io`. Over-allocation by (N-k) slots in the read/write path is harmless.
+- **Latent (raid1): superblock with version > current not rejected at open**: `load_superblock` had no upper-bound version check, silently accepting a disk formatted by a future binary. `__init_params`'s one-sided `if (sb_version < 2)` branch would compute `_reserved_size` using the v2 formula, placing all I/O at the wrong on-disk offset on a hypothetical v3 disk. Fixed by adding the M3 guard (mirrors RAID0's existing check): any superblock with `version > k_sb_version` is now rejected with `errc::not_supported`. Also exports `k_sb_version` from `raid1_superblock.hpp` so tests can reference it.
+
+## [0.32.12] - 2026-06-06
+
+### Fixed
+
+- **P0 (raid1): data loss when active write fails, backup succeeds, and superblock write fails**: in `async_iov` Site 1, if the active device write failed and `__become_degraded` could not persist the degradation (superblock write failed), the code still returned SUCCESS to the client when the backup write succeeded. On a crash at that point, both on-disk superblocks still showed `route=EITHER` at the pre-degradation age; restart self-healed by resyncing device_a (which held the *old* data) over device_b (which held the *new* data), permanently destroying the client-acked write. Fixed by returning `-EAGAIN` to the client whenever `__become_degraded` fails — forcing a retry rather than acking an unprotected write. The incorrect claim in the `__become_degraded` comment ("dirty bitmap covers the affected region; resync at shutdown will reconcile") is also removed, since the in-memory dirty bitmap does not survive a pod kill. Addresses [issue #302](https://github.com/szmyd/ublkpp/issues/302).
+- **RAID1 SB-EITHER crash window in degraded mode**: when `__become_degraded` updated the in-memory route to `DEVX` but its superblock write failed, both on-disk SBs remained at `EITHER`. A crash before a subsequent write reached the device left `pick_superblock` with no age gap to distinguish legs, potentially resyncing the stale leg over the surviving one — silent data loss. Fixed by: (1) retaining the age increment on SB write failure (so any eventual retry carries a higher age than the stale on-disk SB, letting `pick_superblock` select the correct leg); (2) adding `_degraded_sb_pending` flag set pessimistically under `_ctrl_lock` before the SB write; (3) retrying the SB write via `__try_persist_degraded_sb` before acking the next I/O that reaches the array in degraded state.
+- **RAID1 `_degraded_sb_pending` premature-ack race with `nr_hw_queues > 1`**: the `_read_route_cache` CAS and `_degraded_sb_pending = true` were not atomic with respect to `_ctrl_lock`. A concurrent I/O thread (T2) that lost the CAS could enter `__try_persist_degraded_sb`, acquire `_ctrl_lock`, read `_degraded_sb_pending == false` (T1 had won the CAS but not yet set the flag), and prematurely ack its I/O while T1's SB write was still in-flight. Fixed by moving the CAS inside `_ctrl_lock` in `__become_degraded` so the CAS win and the `_degraded_sb_pending = true` store are a single atomic transaction under the lock. `__swap_device` already held `_ctrl_lock` for its CAS; this unifies both state-machine transitions under the same serialisation point.
+- **RAID1 double `toggle_resync` with concurrent `nr_hw_queues > 1` SB retries**: two I/O coroutines could both pass the `_degraded_sb_pending` fast-path check in `__try_persist_degraded_sb`, both write the SB successfully, and both call `toggle_resync`. A second concurrent `launch()` on a resync task that had not yet transitioned from `IDLE` to `ACTIVE` would join the running thread, stalling an I/O-path coroutine for the full resync duration. Fixed by snapshotting `was_pending = _degraded_sb_pending; _degraded_sb_pending = false` atomically under `_ctrl_lock`; only the coroutine that observes `was_pending == true` calls `toggle_resync`.
+
+## [0.32.11] - 2026-06-09
+
+### Changed
+
+- **RAID0 per-stripe iovec accumulators moved to coroutine frame**: `__distribute`'s
+  `StripeAccum` buffer (previously a `thread_local` with `std::vector<iovec>` per slot) is
+  now a caller-owned `std::array<StripeAccum, 64>` with a fixed `std::array<iovec, 16>` per
+  slot (bound: max_io_size 1 MiB / min_stripe_size 64 KiB = 16). In `async_iov` the buffer
+  lives in the coroutine frame (heap, stable for child lifetimes); in `sync_iov` it is a
+  plain stack local. Eliminates the iovec lifetime hazard that required the eager
+  `io_uring_submit` workaround in `async_iov` and the `iov_snap` copy in
+  `Raid1Disk::__failover_read_async`. Removes `DirtyGuard`, `_max_iovecs_per_stripe`, and
+  the `thread_local`; introduces `k_max_iovecs_per_stripe = 16` as a file-scope constant.
+
+## [0.32.10] - 2026-06-05
+
+### Fixed
+
+- **RAID1 remount failure after resync-interrupted-by-stop race**: a race between the resync task and `stop()` in the destructor produced an on-disk state of `DEVB + clean_unmount=1 + empty superbitmap`. On second mount this hit an invariant check and threw `std::runtime_error`, making the volume unassemblable. Fixed with two cooperating changes: (1) `_start()` captures `dirty_pages()` before each `__run()` call; when STOPPING fires, if the count was non-zero and is now zero the resync cleared all chunks but was interrupted in `__yield()` — `complete()` is called immediately so the destructor sees `route=EITHER`; (2) the invariant check at mount time is replaced with a warn + `dirty_region(0, capacity())` fallback, providing defense-in-depth for any residual cases not prevented by (1). Addresses [issue #300](https://github.com/szmyd/ublkpp/issues/300).
 
 ## [0.32.9] - 2026-06-04
 

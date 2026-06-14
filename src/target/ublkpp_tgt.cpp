@@ -366,6 +366,9 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     }
     ublksrv_complete_io(q, data->tag, result);
 
+    // FLUSH reaches here too: it skips the gate and the counter, so this load is the only
+    // shutdown check it sees. Calling try_drain_device after FLUSH is safe — if counters are
+    // already zero the CAS protects against double-reset; if not, it is a benign early check.
     if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) try_drain_device(qs);
 }
 
@@ -610,8 +613,17 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     // from main). The threads will be killed by the OS on process exit.
     // Safe only on process exit: detached threads still hold qs->tgt and will UAF if they
     // re-enter the event loop after this destructor returns. The process must exit promptly.
-    for (auto& q : queue_handlers)
-        if (q.joinable()) q.detach();
+    for (auto& q : queue_handlers) {
+        if (q.joinable()) {
+            // If we are detaching without begin_shutdown(), the caller dropped the tgt without
+            // a graceful drain — backing store may be dirty and threads will UAF on the stale
+            // qs->tgt pointer if they re-enter the event loop after this destructor returns.
+            if (!_shutting_down.load(std::memory_order_relaxed))
+                TLOGE("ublkpp_tgt destroyed with live queue thread; begin_shutdown() was not called — backing store "
+                      "may be dirty")
+            q.detach();
+        }
+    }
 }
 
 } // namespace ublkpp

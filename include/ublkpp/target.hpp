@@ -54,13 +54,13 @@ struct ublkpp_tgt {
     //       // already written. Any exit form is safe at this point.
     //       //
     //       // For the rare non-idle case (ops in-flight), begin_shutdown() returns
-    //       // immediately; device.reset() fires later on a queue thread. Using _exit(0)
-    //       // here kills those threads before they can flush — clean_unmount=1 may not
-    //       // be written. Prefer exit() / return 0: the destructor detaches queue threads
-    //       // so the process exits cleanly without std::terminate(), giving threads a
-    //       // brief window to complete. For a guaranteed flush under in-flight I/O, wait
-    //       // for an out-of-band drain signal before exiting (not currently provided).
-    //       _exit(0);
+    //       // immediately; device.reset() fires later on a queue thread. The destructor
+    //       // detaches queue threads so exit() / return 0 exits cleanly without
+    //       // std::terminate(), giving threads a brief window to complete. Do NOT use
+    //       // _exit(): it bypasses atexit handlers and kills threads before the flush.
+    //       // For a guaranteed flush under in-flight I/O, wait for an out-of-band drain
+    //       // signal before exiting (not currently provided).
+    //       return 0;
     //   }
     void begin_shutdown();
 
