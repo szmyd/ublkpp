@@ -38,6 +38,13 @@ struct ublkpp_tgt_impl {
     std::unique_ptr< ublksrv_dev_data > dev_data;
     std::vector< std::thread > queue_handlers;
 
+    // Shutdown drain: set by begin_shutdown(); gates __handle_io_async so no new I/O reaches
+    // the backing device. When the last in-flight op decrements the metrics counter to zero,
+    // the thread that wins the CAS on _device_reset_done calls device.reset() exactly once,
+    // flushing the RAID-1 dirty bitmap and writing clean_unmount=1 before process exit.
+    std::atomic< bool > _shutting_down{false};
+    std::atomic< bool > _device_reset_done{false};
+
     ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d);
     ~ublkpp_tgt_impl();
     void destroy();

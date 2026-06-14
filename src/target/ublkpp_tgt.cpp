@@ -117,7 +117,14 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     // is_idle=false and preventing the probe from re-arming on subsequent fires.
                     ++probe_count;
                     if (cqe->res == -ETIME) {
-                        qs->tgt->device->probe_tick(q);
+                        // Gate check before capturing device: if _shutting_down is false,
+                        // begin_shutdown's seq_cst store has not committed yet — so
+                        // device.reset() has not been called. The local shared_ptr copy
+                        // keeps the object alive even if device.reset() fires immediately
+                        // after we capture it.
+                        if (!qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
+                            if (auto dev = qs->tgt->device) dev->probe_tick(q);
+                        }
                         if (qs->is_idle) submit_probe_timeout(q);
                     }
                 } else {
@@ -288,21 +295,57 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     return res;
 }
 
+// Called after decrementing the in-flight counter during shutdown. If this is the last
+// in-flight op, wins the CAS and calls device.reset() to flush the backing store.
+// See all_idle() for the memory-ordering argument.
+static void try_drain_device(ublkpp_queue_state* qs) {
+    if (qs->tgt->metrics.all_idle()) {
+        bool expected = false;
+        if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            TLOGI("All I/O drained after shutdown - flushing backing store")
+            qs->tgt->device.reset();
+        }
+    }
+}
+
 static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
 
-    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     auto io = reinterpret_cast< async_io* >(data->private_data);
     io->_pool.clear();
     io->_tag = data->tag;
 
     auto const op = ublksrv_get_op(data->iod);
+
+    // Increment before the shutdown gate: a concurrent drain check that sees counters==0 would
+    // otherwise call device.reset() while we are still about to use the raw device* pointer.
+    // With the increment already in place, any concurrent drain check sees counter > 0.
+    // The seq_cst increment participates in the C++ total order S alongside begin_shutdown's
+    // seq_cst store and all_idle()'s seq_cst loads. Either the increment precedes the store in
+    // S (begin_shutdown's counter reads see it → skips reset) or the store precedes the
+    // increment in S (our gate check below sees _shutting_down=true → rejects).
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
+
+    // Drain gate: reject reads/writes during shutdown before they reach the backing device.
+    // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*.
+    // EAGAIN signals "temporarily unavailable, retry" so filesystems back off and retry once
+    // the new process reconnects the device (UBLK_F_USER_RECOVERY hot-restart path).
+    if (op != UBLK_IO_OP_FLUSH && qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
+        qs->tgt->metrics.record_queue_depth_change(q, op, false);
+        TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
+        ublksrv_complete_io(q, data->tag, -EAGAIN);
+        // The rejected op may be the last in-flight — check drain here too.
+        // Without this, the common case (ops in-flight when begin_shutdown fires) would
+        // decrement to zero in this branch and never trigger device.reset().
+        try_drain_device(qs);
+        co_return;
+    }
 
     int result;
     if (op == UBLK_IO_OP_FLUSH) {
         result = 0;
     } else {
+        auto* device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
         auto const* iod = data->iod;
         // Frame-local: io_uring reads iov contents at submit time (deferred to the queue loop's
         // submit_and_wait_timeout). thread_local would be overwritten by sibling __handle_io_async
@@ -320,6 +363,11 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, result)
     }
     ublksrv_complete_io(q, data->tag, result);
+
+    // FLUSH reaches here too: it skips the gate and the counter, so this load is the only
+    // shutdown check it sees. Calling try_drain_device after FLUSH is safe — if counters are
+    // already zero the CAS protects against double-reset; if not, it is a benign early check.
+    if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) try_drain_device(qs);
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -484,6 +532,35 @@ std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; 
 std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
 int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
 
+void ublkpp_tgt::begin_shutdown() {
+    // Relaxed load for the idempotency fast-path: benign optimisation. Correctness is
+    // guaranteed by the CAS on _device_reset_done, not by this check.
+    if (_p->_shutting_down.load(std::memory_order_relaxed)) {
+        TLOGD("begin_shutdown() called again - already shutting down, ignoring")
+        return;
+    }
+    // seq_cst: on x86, release compiles to a plain mov that sits in the store buffer.
+    // The subsequent all_idle() counter reads go straight to cache, so the store may not be
+    // visible to other threads when we read the counter — enabling a UAF. seq_cst uses
+    // MFENCE / lock xchg, draining the store buffer before the counter reads and establishing
+    // the total order the drain safety argument requires.
+    _p->_shutting_down.store(true, std::memory_order_seq_cst);
+    // Idle-drain: if no I/O is in-flight at the moment the flag is set, no __handle_io_async
+    // completion will ever reach the post-decrement drain check. Fire device.reset() here
+    // instead so clean_unmount=1 is written even on a quiesced volume.
+    //
+    // device.reset() destroys Raid1Disk inline: its destructor calls _resync_task->stop()
+    // (joins the resync thread) then writes clean_unmount=1. This call may therefore block
+    // until the resync task drains. Do not invoke from a signal handler.
+    if (_p->metrics.all_idle()) {
+        bool expected = false;
+        if (_p->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            TLOGI("No I/O in-flight at shutdown - flushing backing store immediately")
+            _p->device.reset();
+        }
+    }
+}
+
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 
 void ublkpp_tgt_impl::destroy() {
@@ -497,7 +574,7 @@ void ublkpp_tgt_impl::destroy() {
     // Wait for all queue_handler threads to exit
     TLOGD("Waiting for I/O to stop on {}", str_id)
     for (auto& q : queue_handlers)
-        q.join();
+        if (q.joinable()) q.join();
 
     // De-allocate the ublksrv device and free all unowned memory
     if (ublk_dev) {
@@ -520,12 +597,31 @@ void ublkpp_tgt_impl::destroy() {
     if (ctrl_dev) {
         TLOGD("De-allocate Control for {}", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
+        ctrl_dev = nullptr;
     }
     TLOGI("Stopped {}", str_id)
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    // Destructor intentionally left empty - call destroy() explicitly
+    // Queue threads release their shared_ptr<ublkpp_tgt_impl> early (ublksrv_queue_handler
+    // calls target.reset()) and thereafter hold only a raw qs->tgt pointer — so this
+    // destructor can fire while threads are still alive. Joining here is impossible without
+    // stop_dev (which would drop /dev/ublkbN). Detach any joinable threads to prevent
+    // std::terminate() when the vector<thread> destructs (e.g. process exit via return 0
+    // from main). The threads will be killed by the OS on process exit.
+    // Safe only on process exit: detached threads still hold qs->tgt and will UAF if they
+    // re-enter the event loop after this destructor returns. The process must exit promptly.
+    for (auto& q : queue_handlers) {
+        if (q.joinable()) {
+            // If we are detaching without begin_shutdown(), the caller dropped the tgt without
+            // a graceful drain — backing store may be dirty and threads will UAF on the stale
+            // qs->tgt pointer if they re-enter the event loop after this destructor returns.
+            if (!_shutting_down.load(std::memory_order_relaxed))
+                TLOGE("ublkpp_tgt destroyed with live queue thread; begin_shutdown() was not called — backing store "
+                      "may be dirty")
+            q.detach();
+        }
+    }
 }
 
 } // namespace ublkpp

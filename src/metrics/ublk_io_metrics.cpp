@@ -18,19 +18,27 @@ void UblkIOMetrics::record_queue_depth_change(ublksrv_queue const* q, uint8_t op
     if (!q || !q->private_data) return;
 
     // UBLK_IO_OP_READ = 0, UBLK_IO_OP_WRITE = 1
+    //
+    // seq_cst: makes these RMWs participate in the C++ total order S alongside the seq_cst
+    // store in begin_shutdown(). Under the C++ abstract machine, seq_cst operations on
+    // different objects are formally ordered via S — either this increment precedes
+    // begin_shutdown's store in S (begin_shutdown's counter read sees it) or the store
+    // precedes the increment in S (the gate check that follows sees _shutting_down=true).
+    // acq_rel alone does not participate in S and gives no formal cross-variable guarantee.
+    // On x86, seq_cst compiles to the same lock xadd as acq_rel; no performance difference.
     if (op == 0) { // UBLK_IO_OP_READ
         if (is_increment) {
-            auto const depth = _queued_reads.fetch_add(1, std::memory_order_relaxed) + 1;
+            auto const depth = _queued_reads.fetch_add(1, std::memory_order_seq_cst) + 1;
             HISTOGRAM_OBSERVE(*this, ublk_read_queue_distribution, depth);
         } else {
-            _queued_reads.fetch_sub(1, std::memory_order_relaxed);
+            _queued_reads.fetch_sub(1, std::memory_order_seq_cst);
         }
     } else if (op == 1) { // UBLK_IO_OP_WRITE
         if (is_increment) {
-            auto const depth = _queued_writes.fetch_add(1, std::memory_order_relaxed) + 1;
+            auto const depth = _queued_writes.fetch_add(1, std::memory_order_seq_cst) + 1;
             HISTOGRAM_OBSERVE(*this, ublk_write_queue_distribution, depth);
         } else {
-            _queued_writes.fetch_sub(1, std::memory_order_relaxed);
+            _queued_writes.fetch_sub(1, std::memory_order_seq_cst);
         }
     }
 }
