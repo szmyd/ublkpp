@@ -341,6 +341,52 @@ TEST(IOBytes, NonDataOpIgnored) {
     EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
 }
 
+// ---------------------------------------------------------------------------
+// record_io_latency: dispatches to read or write histogram; flush is ignored
+// ---------------------------------------------------------------------------
+
+TEST(IOLatency, ReadLatencyObserved) {
+    ublkpp::UblkIOMetrics m{"test-latency-read"};
+    EXPECT_NO_THROW(m.record_io_latency(0, 1000));
+    EXPECT_NO_THROW(m.record_io_latency(0, 512));
+}
+
+TEST(IOLatency, WriteLatencyObserved) {
+    ublkpp::UblkIOMetrics m{"test-latency-write"};
+    EXPECT_NO_THROW(m.record_io_latency(1, 2048));
+}
+
+TEST(IOLatency, FlushOpIgnored) {
+    ublkpp::UblkIOMetrics m{"test-latency-flush"};
+    EXPECT_NO_THROW(m.record_io_latency(2, 9999)); // op=2 (FLUSH) — no histogram to observe
+}
+
+// ---------------------------------------------------------------------------
+// record_io_error: error counters accumulate per op type
+// ---------------------------------------------------------------------------
+
+TEST(IOError, ReadErrorAccumulates) {
+    ublkpp::UblkIOMetrics m{"test-error-read"};
+    m.record_io_error(0);
+    m.record_io_error(0);
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 2u);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOError, WriteErrorAccumulates) {
+    ublkpp::UblkIOMetrics m{"test-error-write"};
+    m.record_io_error(1);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOError, FlushOpIgnored) {
+    ublkpp::UblkIOMetrics m{"test-error-flush"};
+    m.record_io_error(2); // op=2 (FLUSH), not counted
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
+}
+
 int main(int argc, char* argv[]) {
     int parsed_argc = argc;
     ::testing::InitGoogleTest(&parsed_argc, argv);

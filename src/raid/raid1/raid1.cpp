@@ -733,6 +733,10 @@ bool Raid1Disk::__become_clean() {
         }
         return false; // caller loops to re-sync the dirty region
     }
+    if (_raid_metrics) { // GCOVR_EXCL_BR_LINE
+        // LCOV_EXCL_START
+        _raid_metrics->record_degraded_state(false);
+    } // LCOV_EXCL_STOP
     return true;
 }
 
@@ -819,6 +823,7 @@ bool Raid1Disk::__become_degraded(bool failed_is_active, RouteState const* cur_s
         // LCOV_EXCL_START
         auto device_name = (new_route == read_route::DEVA) ? "device_b" : "device_a";
         _raid_metrics->record_device_degraded(device_name);
+        _raid_metrics->record_degraded_state(true);
     } // LCOV_EXCL_STOP
 
     auto const sync_res = write_superblock(working_device, _sb.get(), backup_clean, new_route);

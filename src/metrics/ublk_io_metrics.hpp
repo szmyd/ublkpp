@@ -25,10 +25,14 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     std::atomic< uint64_t > _queued_other{0};
     std::atomic< uint64_t > _read_bytes_total{0};
     std::atomic< uint64_t > _write_bytes_total{0};
+    std::atomic< uint64_t > _read_errors{0};
+    std::atomic< uint64_t > _write_errors{0};
 
     void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment);
     void apply_op_for_test(uint8_t op, bool is_increment);
     void record_io_bytes(uint8_t op, uint32_t bytes);
+    void record_io_latency(uint8_t op, uint64_t microseconds);
+    void record_io_error(uint8_t op);
 
     // Returns true when all in-flight op counters are zero (reads, writes, and other ops).
     //

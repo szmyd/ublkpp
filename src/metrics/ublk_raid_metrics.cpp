@@ -30,6 +30,8 @@ UblkRaidMetrics::UblkRaidMetrics(std::string const& parent_id, std::string const
                    "ublk_resync_remaining_kib", {"parent_id", parent_id});
     REGISTER_GAUGE(resync_initial_kib, "Estimated total bytes to resync at resync start (KiB)",
                    "ublk_resync_initial_kib", {"parent_id", parent_id});
+    REGISTER_GAUGE(raid_is_degraded, "1 if RAID array is currently degraded, 0 if healthy", "ublk_raid_is_degraded",
+                   {"parent_id", parent_id});
     register_me_to_farm();
 }
 
@@ -71,6 +73,10 @@ void UblkRaidMetrics::record_last_resync_size(uint64_t bytes) {
 
 void UblkRaidMetrics::record_resync_initial_size(uint64_t bytes) {
     GAUGE_UPDATE(*this, resync_initial_kib, bytes / 1024);
+}
+
+void UblkRaidMetrics::record_degraded_state(bool is_degraded) {
+    GAUGE_UPDATE(*this, raid_is_degraded, is_degraded ? 1 : 0);
 }
 
 } // namespace ublkpp
