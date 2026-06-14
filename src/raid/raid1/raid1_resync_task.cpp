@@ -94,6 +94,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
             _metrics->record_resync_start();
             _metrics->record_active_resyncs(active_count);
+            _metrics->record_resync_initial_size(initial_resync_size);
         } // LCOV_EXCL_STOP
 
         // Loop until the array is confirmed clean or we are stopped.
@@ -147,6 +148,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             // Record the size of data that was resynced (initial size before resync started)
             _metrics->record_last_resync_size(initial_resync_size);
             _metrics->record_active_resyncs(final_count);
+            _metrics->record_resync_initial_size(0); // clear ETA denominator when resync finishes
         } // LCOV_EXCL_STOP
     }
 
@@ -245,7 +247,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
     uint32_t consecutive_unavail = 0;
 
     auto nr_pages = _dirty_bitmap->dirty_pages();
-    if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
+    if (_metrics) { _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); } // GCOVR_EXCL_BR_LINE
 
     // When a dirty run is entirely blocked by in-flight writes (!any_copy), skip past it on
     // the next sweep so higher-LBA dirty runs are not starved. Reset after use within each
@@ -261,7 +263,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
             if (cur_state = __yield(unavail_delay, avail_delay); resync_state::STOPPING == cur_state) break;
             probe_mirror(*dirty_mirror, _offset);
             nr_pages = _dirty_bitmap->dirty_pages();
-            if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
+            if (_metrics) _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); // GCOVR_EXCL_BR_LINE
             continue;
         }
         consecutive_unavail = 0;
@@ -339,7 +341,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
 
         // Sweep and count dirty pages left
         nr_pages = _dirty_bitmap->dirty_pages();
-        if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
+        if (_metrics) _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); // GCOVR_EXCL_BR_LINE
     }
     return cur_state;
 }
