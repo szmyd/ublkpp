@@ -20,8 +20,11 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
 
     std::atomic< uint64_t > _queued_reads{0};
     std::atomic< uint64_t > _queued_writes{0};
-    // Tracks UBLK_IO_OP_DISCARD (op=3) and UBLK_IO_OP_WRITE_ZEROES (op=5). Both ops call
-    // device->async_iov just like reads/writes, so they must participate in the idle gate.
+    // Tracks DISCARD (op=3) and WRITE_ZEROES (op=5) in-flight ops. These ops access device*
+    // via async_iov just like reads/writes, but record_queue_depth_change is a no-op for their
+    // op codes. Without this counter, all_idle() could return true while a DISCARD/WRITE_ZEROES
+    // coroutine is suspended at co_await device->async_iov — causing a UAF when device.reset()
+    // fires. Same seq_cst protocol as _queued_reads/_queued_writes.
     std::atomic< uint64_t > _queued_other{0};
     std::atomic< uint64_t > _read_bytes_total{0};
     std::atomic< uint64_t > _write_bytes_total{0};
@@ -34,25 +37,18 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     void record_io_latency(uint8_t op, uint64_t microseconds);
     void record_io_error(uint8_t op);
 
-    // Returns true when all in-flight op counters are zero (reads, writes, and other ops).
+    // Returns true when no ops that access device* are in flight.
     //
-    // FLUSH note: UBLK_IO_OP_FLUSH completes instantly (result=0) and never dereferences
-    // device*, so it is exempted from all counters. A FLUSH completing while
-    // _shutting_down=true cannot produce a spurious drain signal.
+    // Covered ops: READ (0), WRITE (1), DISCARD (3), WRITE_ZEROES (5). All four access
+    // device* via async_iov. FLUSH (2) is excluded: it short-circuits before the else-branch
+    // and never dereferences device*. Three separate seq_cst loads; the TOCTOU between them
+    // produces only false negatives (deferred drain) never false positives (premature reset).
+    // The CAS on _device_reset_done is the real guard against double-execution.
     //
-    // TOCTOU between loads: between reading _queued_reads and _queued_writes, a new op could
-    // increment then decrement one of them (rejected at gate). This produces a false negative
-    // (sees non-zero when all are effectively zero), not a false positive — the op never
-    // touches device*. False negatives just defer device.reset() to the last decrementer's
-    // own drain check; never lost. The CAS on _device_reset_done is the real safeguard
-    // against double-execution.
-    //
-    // Memory ordering: all counter RMWs and these loads are seq_cst so all participate in
-    // the C++ total order S alongside begin_shutdown's seq_cst store. Formal guarantee: if
-    // an op's increment precedes begin_shutdown's store in S, these loads (sequenced after
-    // the store in begin_shutdown's thread) see the increment. If the store precedes the
-    // increment in S, the gate check (sequenced after the increment) sees _shutting_down=true
-    // and rejects without touching device*. No UAF in either case.
+    // Memory ordering: all counter RMWs and these loads are seq_cst, participating in the
+    // C++ total order S alongside begin_shutdown's seq_cst store. Either an op's increment
+    // precedes the store in S (begin_shutdown's counter reads see it → skip reset) or the
+    // store precedes the increment in S (the gate check sees _shutting_down=true → reject).
     bool all_idle() const {
         return _queued_reads.load(std::memory_order_seq_cst) == 0 &&
             _queued_writes.load(std::memory_order_seq_cst) == 0 && _queued_other.load(std::memory_order_seq_cst) == 0;

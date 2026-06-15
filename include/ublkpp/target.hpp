@@ -82,6 +82,11 @@ struct ublkpp_tgt {
     // Asserts (RELEASE_ASSERT) if called on a make_for_test() target (dev_data is null).
     int device_id() const;
 
+    // Factory for unit-testing shutdown paths without kernel infrastructure (no ublk device,
+    // no queue threads, no ublksrv handshake). The returned target supports begin_shutdown()
+    // and wait_for_drain(). Calling run() or remove() on the result is undefined behaviour.
+    static ublkpp_tgt make_for_test(disk_handle dev);
+
 private:
     explicit ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p);
     std::shared_ptr< ublkpp_tgt_impl > _p;
