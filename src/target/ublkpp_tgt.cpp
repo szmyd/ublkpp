@@ -125,7 +125,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                         if (!qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
                             if (auto dev = qs->tgt->device) dev->probe_tick(q);
                         }
-                        if (qs->is_idle) submit_probe_timeout(q);
+                        if (qs->is_idle && !qs->tgt->_shutting_down.load(std::memory_order_relaxed))
+                            submit_probe_timeout(q);
                     }
                 } else {
                     // target io_uring CQE — resume the coroutine waiting on this cqe_state
