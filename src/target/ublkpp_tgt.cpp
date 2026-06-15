@@ -297,17 +297,15 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     return res;
 }
 
-// Called after decrementing the in-flight counter during shutdown. If this is the last
-// in-flight op, wins the CAS and calls device.reset() to flush the backing store.
 // See all_idle() for the memory-ordering argument.
-static void try_drain_device(ublkpp_queue_state* qs) {
-    if (qs->tgt->metrics.all_idle()) {
+void ublkpp_tgt_impl::try_drain() {
+    if (metrics.all_idle()) {
         bool expected = false;
-        if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        if (_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             TLOGI("All I/O drained after shutdown - flushing backing store")
-            qs->tgt->device.reset();
-            qs->tgt->_drain_complete.store(true, std::memory_order_release);
-            qs->tgt->_drain_complete.notify_all();
+            device.reset();
+            _drain_complete.store(true, std::memory_order_release);
+            _drain_complete.notify_all();
         }
     }
 }
@@ -341,7 +339,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         // The rejected op may be the last in-flight — check drain here too.
         // Without this, the common case (ops in-flight when begin_shutdown fires) would
         // decrement to zero in this branch and never trigger device.reset().
-        try_drain_device(qs);
+        qs->tgt->try_drain();
         co_return;
     }
 
@@ -369,9 +367,9 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     ublksrv_complete_io(q, data->tag, result);
 
     // FLUSH reaches here too: it skips the gate and the counter, so this load is the only
-    // shutdown check it sees. Calling try_drain_device after FLUSH is safe — if counters are
-    // already zero the CAS protects against double-reset; if not, it is a benign early check.
-    if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) try_drain_device(qs);
+    // shutdown check it sees. try_drain() after FLUSH is safe — if counters are already zero
+    // the CAS protects against double-reset; if not, it is a benign early check.
+    if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) qs->tgt->try_drain();
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -568,6 +566,10 @@ void ublkpp_tgt::begin_shutdown() {
 }
 
 void ublkpp_tgt::wait_for_drain() { _p->_drain_complete.wait(false, std::memory_order_acquire); }
+
+void ublkpp_tgt::try_drain() { _p->try_drain(); }
+
+UblkIOMetrics& ublkpp_tgt::test_metrics() { return _p->metrics; }
 
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 

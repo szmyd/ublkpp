@@ -160,6 +160,29 @@ TEST(ShutdownDrain, WaitForDrainReturnsImmediatelyAfterIdleShutdown) {
     EXPECT_EQ(destroy_count.load(), 1);
 }
 
+TEST(ShutdownDrain, NonIdlePathFiresDeviceResetWhenLastOpCompletes) {
+    // Exercises try_drain(): the non-idle drain path normally reached via __handle_io_async()
+    // which requires kernel infrastructure. Here we simulate the path directly:
+    //   1. increment counter → system appears non-idle
+    //   2. begin_shutdown() → sees counter > 0, skips device.reset(), returns immediately
+    //   3. decrement counter → simulate op completion
+    //   4. try_drain() → the same check queue threads perform; should fire device.reset()
+    std::atomic< int > destroy_count{0};
+    auto disk = std::make_shared< TrackedDisk >(destroy_count);
+    auto tgt = ublkpp::ublkpp_tgt::make_for_test(disk);
+    disk.reset(); // release local ref; only tgt->device holds the last reference
+
+    // Simulate one in-flight op
+    tgt.test_metrics()._queued_reads.fetch_add(1, std::memory_order_relaxed);
+    tgt.begin_shutdown(); // non-idle: skips device.reset()
+    EXPECT_EQ(destroy_count.load(), 0) << "device.reset() should not fire while op is in-flight";
+
+    // Op completes: decrement counter then trigger the drain check
+    tgt.test_metrics()._queued_reads.fetch_sub(1, std::memory_order_seq_cst);
+    tgt.try_drain();
+    EXPECT_EQ(destroy_count.load(), 1) << "device.reset() should fire when last in-flight op completes";
+}
+
 TEST(ShutdownDrain, BeginShutdownIdempotentDoesNotDoubleReset) {
     std::atomic< int > destroy_count{0};
     auto disk = std::make_shared< TrackedDisk >(destroy_count);

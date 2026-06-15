@@ -52,6 +52,9 @@ struct ublkpp_tgt_impl {
     ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d);
     ~ublkpp_tgt_impl();
     void destroy();
+    // Fires device.reset() if all counters are zero and the CAS has not fired yet.
+    // Called by queue threads after decrementing counters; exposed for testing.
+    void try_drain();
 };
 
 } // namespace ublkpp

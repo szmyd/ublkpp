@@ -15,6 +15,7 @@ namespace ublkpp {
 
 class ublk_disk;
 using disk_handle = std::shared_ptr< ublk_disk >;
+struct UblkIOMetrics;
 struct ublkpp_tgt_impl;
 
 struct ublkpp_tgt {
@@ -74,10 +75,22 @@ struct ublkpp_tgt {
 
     // Test-only factory: constructs a ublkpp_tgt with the given device and no ublksrv state.
     // Queue handlers are empty, so begin_shutdown() fires device.reset() synchronously.
+    // Calling run(), remove(), or device_id() on the returned target is undefined behaviour.
     static ublkpp_tgt make_for_test(disk_handle dev);
+
+    // Triggers the drain check that queue threads perform after each counter decrement.
+    // Useful in tests to exercise the non-idle drain path without kernel infrastructure:
+    // manually increment a counter via test_metrics(), call begin_shutdown() (skips reset),
+    // decrement the counter, then call try_drain() to fire device.reset(). Idempotent via CAS.
+    void try_drain();
+
+    // Returns the I/O metrics for direct counter manipulation in tests.
+    // Only meaningful on make_for_test() targets.
+    UblkIOMetrics& test_metrics();
 
     std::filesystem::path device_path() const;
     disk_handle device() const;
+    // Undefined behaviour on make_for_test() targets (dev_data is null).
     int device_id() const;
 
 private:
