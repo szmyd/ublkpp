@@ -40,6 +40,12 @@ void UblkIOMetrics::record_queue_depth_change(ublksrv_queue const* q, uint8_t op
         } else {
             _queued_writes.fetch_sub(1, std::memory_order_seq_cst);
         }
+    } else if (op == 3 || op == 5) { // UBLK_IO_OP_DISCARD, UBLK_IO_OP_WRITE_ZEROES
+        if (is_increment) {
+            _queued_other.fetch_add(1, std::memory_order_seq_cst);
+        } else {
+            _queued_other.fetch_sub(1, std::memory_order_seq_cst);
+        }
     }
 }
 

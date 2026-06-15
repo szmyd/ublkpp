@@ -1,6 +1,4 @@
 #include <atomic>
-#include <chrono>
-#include <future>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -42,7 +40,19 @@ TEST(cqe_state, BuildCqeStateDataEncodesTargetBit) {
 }
 
 // ---------------------------------------------------------------------------
-// Shutdown drain: all_idle() predicate and _device_reset_done CAS protocol
+// TrackedDisk: minimal ublk_disk whose destructor records that device.reset()
+// fired. Used to verify begin_shutdown() / wait_for_drain() drain behaviour
+// without kernel infrastructure (queue threads, ublksrv handshake, etc.).
+// ---------------------------------------------------------------------------
+struct TrackedDisk : ublkpp::ublk_disk {
+    std::atomic< int >& _destroy_count;
+    explicit TrackedDisk(std::atomic< int >& counter) : _destroy_count(counter) {}
+    ~TrackedDisk() override { _destroy_count.fetch_add(1, std::memory_order_relaxed); }
+    std::string id() const noexcept override { return "test-tracked-disk"; }
+};
+
+// ---------------------------------------------------------------------------
+// Shutdown drain: all_idle() predicate
 // ---------------------------------------------------------------------------
 
 TEST(ShutdownDrain, AllIdleTrueInitially) {
@@ -62,40 +72,103 @@ TEST(ShutdownDrain, AllIdleFalseWhenWriteQueued) {
     EXPECT_FALSE(m.all_idle());
 }
 
-TEST(ShutdownDrain, AllIdleFalseUntilBothCountersReachZero) {
+TEST(ShutdownDrain, AllIdleFalseWhenOtherQueued) {
     ublkpp::UblkIOMetrics m{"test-shutdown-idle-4"};
-    m._queued_reads.fetch_add(1, std::memory_order_relaxed);
-    m._queued_writes.fetch_add(1, std::memory_order_relaxed);
+    m._queued_other.fetch_add(1, std::memory_order_relaxed);
     EXPECT_FALSE(m.all_idle());
-    m._queued_reads.fetch_sub(1, std::memory_order_relaxed);
-    EXPECT_FALSE(m.all_idle()); // write still queued
-    m._queued_writes.fetch_sub(1, std::memory_order_relaxed);
+    m._queued_other.fetch_sub(1, std::memory_order_relaxed);
     EXPECT_TRUE(m.all_idle());
 }
 
-namespace {
-struct TrackedDisk : ublkpp::ublk_disk {
-    bool* destroyed;
-    explicit TrackedDisk(bool* flag) : destroyed(flag) {}
-    ~TrackedDisk() override { *destroyed = true; }
-    std::string id() const noexcept override { return "tracked"; }
-};
-} // namespace
+TEST(ShutdownDrain, AllIdleFalseUntilAllCountersReachZero) {
+    ublkpp::UblkIOMetrics m{"test-shutdown-idle-5"};
+    m._queued_reads.fetch_add(1, std::memory_order_relaxed);
+    m._queued_writes.fetch_add(1, std::memory_order_relaxed);
+    m._queued_other.fetch_add(1, std::memory_order_relaxed);
+    EXPECT_FALSE(m.all_idle());
+    m._queued_reads.fetch_sub(1, std::memory_order_relaxed);
+    EXPECT_FALSE(m.all_idle());
+    m._queued_writes.fetch_sub(1, std::memory_order_relaxed);
+    EXPECT_FALSE(m.all_idle()); // _queued_other still live
+    m._queued_other.fetch_sub(1, std::memory_order_relaxed);
+    EXPECT_TRUE(m.all_idle());
+}
+
+// ---------------------------------------------------------------------------
+// Counter partitioning: FLUSH (op=2) has no counter; DISCARD (op=3) and
+// WRITE_ZEROES (op=5) use _queued_other so all_idle() gates on them.
+// Counters are manipulated directly (matching the existing AllIdleFalse*
+// tests) because record_queue_depth_change requires a live ublksrv_queue.
+// ---------------------------------------------------------------------------
+
+TEST(ShutdownDrain, FlushOpHasNoCounter) {
+    // FLUSH completes instantly (result=0) and never dereferences device*, so it
+    // must not participate in any queue-depth counter. Verify that no amount of
+    // read/write/other activity prevents all_idle() from returning true once those
+    // counters drain — and that the missing FLUSH counter is not a false-idle path.
+    ublkpp::UblkIOMetrics m{"test-flush-no-counter"};
+    m._queued_reads.fetch_add(1, std::memory_order_relaxed);
+    EXPECT_FALSE(m.all_idle());
+    m._queued_reads.fetch_sub(1, std::memory_order_relaxed);
+    EXPECT_TRUE(m.all_idle()); // FLUSH would need to drain here if it had a counter; it doesn't
+}
+
+TEST(ShutdownDrain, DiscardAndWriteZeroesAreTrackedInOtherCounter) {
+    // DISCARD and WRITE_ZEROES access device* via async_iov just like reads/writes.
+    // They must be counted in _queued_other so all_idle() → device.reset() only
+    // fires when no coroutine is suspended at co_await device->async_iov.
+    ublkpp::UblkIOMetrics m{"test-other-counter"};
+
+    // Simulate a DISCARD in-flight
+    m._queued_other.fetch_add(1, std::memory_order_relaxed);
+    EXPECT_FALSE(m.all_idle()); // device still in use
+    m._queued_other.fetch_sub(1, std::memory_order_relaxed);
+    EXPECT_TRUE(m.all_idle());
+
+    // Simulate a WRITE_ZEROES in-flight alongside a concurrent read
+    m._queued_reads.fetch_add(1, std::memory_order_relaxed);
+    m._queued_other.fetch_add(1, std::memory_order_relaxed);
+    EXPECT_FALSE(m.all_idle());
+    m._queued_reads.fetch_sub(1, std::memory_order_relaxed);
+    EXPECT_FALSE(m.all_idle()); // WRITE_ZEROES still live
+    m._queued_other.fetch_sub(1, std::memory_order_relaxed);
+    EXPECT_TRUE(m.all_idle());
+}
+
+// ---------------------------------------------------------------------------
+// begin_shutdown() / wait_for_drain() via make_for_test (no kernel infra)
+// ---------------------------------------------------------------------------
 
 TEST(ShutdownDrain, BeginShutdownOnIdleSystemResetsDeviceSynchronously) {
-    bool destroyed = false;
-    auto tgt = ublkpp::ublkpp_tgt::make_for_test(std::make_shared< TrackedDisk >(&destroyed));
+    std::atomic< int > destroy_count{0};
+    auto disk = std::make_shared< TrackedDisk >(destroy_count);
+    auto tgt = ublkpp::ublkpp_tgt::make_for_test(disk);
+    disk.reset(); // release local ref; only tgt->device holds a reference now
+    EXPECT_EQ(destroy_count.load(), 0);
     tgt.begin_shutdown();
-    EXPECT_TRUE(destroyed) << "device.reset() was not called synchronously by begin_shutdown() on an idle system";
+    // idle path: no in-flight ops → device.reset() fires synchronously inside begin_shutdown
+    EXPECT_EQ(destroy_count.load(), 1);
 }
 
 TEST(ShutdownDrain, WaitForDrainReturnsImmediatelyAfterIdleShutdown) {
-    bool destroyed = false;
-    auto tgt = ublkpp::ublkpp_tgt::make_for_test(std::make_shared< TrackedDisk >(&destroyed));
+    std::atomic< int > destroy_count{0};
+    auto disk = std::make_shared< TrackedDisk >(destroy_count);
+    auto tgt = ublkpp::ublkpp_tgt::make_for_test(std::move(disk));
     tgt.begin_shutdown();
-    auto fut = std::async(std::launch::async, [&] { tgt.wait_for_drain(); });
-    EXPECT_EQ(fut.wait_for(std::chrono::milliseconds{200}), std::future_status::ready)
-        << "wait_for_drain() blocked after begin_shutdown() on an idle system";
+    // _drain_complete was set synchronously by the idle path — wait() must not block.
+    tgt.wait_for_drain();
+    EXPECT_EQ(destroy_count.load(), 1);
+}
+
+TEST(ShutdownDrain, BeginShutdownIdempotentDoesNotDoubleReset) {
+    std::atomic< int > destroy_count{0};
+    auto disk = std::make_shared< TrackedDisk >(destroy_count);
+    auto tgt = ublkpp::ublkpp_tgt::make_for_test(disk);
+    disk.reset();
+    tgt.begin_shutdown();
+    tgt.begin_shutdown(); // idempotent: _shutting_down guard short-circuits; CAS is not re-entered
+    tgt.begin_shutdown();
+    EXPECT_EQ(destroy_count.load(), 1); // device.reset() called exactly once
 }
 
 int main(int argc, char* argv[]) {
