@@ -1,4 +1,5 @@
 #include <atomic>
+#include <thread>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -8,8 +9,7 @@
 
 #include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
-#include "ublkpp/target.hpp"
-#include "metrics/ublk_io_metrics.hpp"
+#include "ublkpp/target_testing.hpp"
 
 SISL_LOGGING_INIT(ublk_tgt)
 
@@ -142,18 +142,18 @@ TEST(ShutdownDrain, DiscardAndWriteZeroesAreTrackedInOtherCounter) {
 TEST(ShutdownDrain, BeginShutdownOnIdleSystemResetsDeviceSynchronously) {
     std::atomic< int > destroy_count{0};
     auto disk = std::make_shared< TrackedDisk >(destroy_count);
-    auto tgt = ublkpp::ublkpp_tgt::make_for_test(disk);
+    auto tgt = ublkpp::ublkpp_tgt_test_peer::make(disk);
     disk.reset(); // release local ref; only tgt->device holds a reference now
     EXPECT_EQ(destroy_count.load(), 0);
     tgt.begin_shutdown();
-    // idle path: no in-flight ops → device.reset() fires synchronously inside begin_shutdown
+    // idle path: no in-flight ops → device = {} fires synchronously inside begin_shutdown
     EXPECT_EQ(destroy_count.load(), 1);
 }
 
 TEST(ShutdownDrain, WaitForDrainReturnsImmediatelyAfterIdleShutdown) {
     std::atomic< int > destroy_count{0};
     auto disk = std::make_shared< TrackedDisk >(destroy_count);
-    auto tgt = ublkpp::ublkpp_tgt::make_for_test(std::move(disk));
+    auto tgt = ublkpp::ublkpp_tgt_test_peer::make(std::move(disk));
     tgt.begin_shutdown();
     // _drain_complete was set synchronously by the idle path — wait() must not block.
     tgt.wait_for_drain();
@@ -164,34 +164,119 @@ TEST(ShutdownDrain, NonIdlePathFiresDeviceResetWhenLastOpCompletes) {
     // Exercises try_drain(): the non-idle drain path normally reached via __handle_io_async()
     // which requires kernel infrastructure. Here we simulate the path directly:
     //   1. increment counter → system appears non-idle
-    //   2. begin_shutdown() → sees counter > 0, skips device.reset(), returns immediately
+    //   2. begin_shutdown() → sees counter > 0, skips device = {}, returns immediately
     //   3. decrement counter → simulate op completion
-    //   4. try_drain() → the same check queue threads perform; should fire device.reset()
+    //   4. try_drain() → the same check queue threads perform; should fire device = {}
     std::atomic< int > destroy_count{0};
     auto disk = std::make_shared< TrackedDisk >(destroy_count);
-    auto tgt = ublkpp::ublkpp_tgt::make_for_test(disk);
+    auto tgt = ublkpp::ublkpp_tgt_test_peer::make(disk);
     disk.reset(); // release local ref; only tgt->device holds the last reference
 
     // Simulate one in-flight op
-    tgt.test_metrics()._queued_reads.fetch_add(1, std::memory_order_relaxed);
-    tgt.begin_shutdown(); // non-idle: skips device.reset()
-    EXPECT_EQ(destroy_count.load(), 0) << "device.reset() should not fire while op is in-flight";
+    ublkpp::ublkpp_tgt_test_peer::metrics(tgt)._queued_reads.fetch_add(1, std::memory_order_relaxed);
+    tgt.begin_shutdown(); // non-idle: skips device = {}
+    EXPECT_EQ(destroy_count.load(), 0) << "device = {} should not fire while op is in-flight";
 
     // Op completes: decrement counter then trigger the drain check
-    tgt.test_metrics()._queued_reads.fetch_sub(1, std::memory_order_seq_cst);
-    tgt.try_drain();
-    EXPECT_EQ(destroy_count.load(), 1) << "device.reset() should fire when last in-flight op completes";
+    ublkpp::ublkpp_tgt_test_peer::metrics(tgt)._queued_reads.fetch_sub(1, std::memory_order_seq_cst);
+    ublkpp::ublkpp_tgt_test_peer::try_drain(tgt);
+    EXPECT_EQ(destroy_count.load(), 1) << "device = {} should fire when last in-flight op completes";
 }
 
 TEST(ShutdownDrain, BeginShutdownIdempotentDoesNotDoubleReset) {
     std::atomic< int > destroy_count{0};
     auto disk = std::make_shared< TrackedDisk >(destroy_count);
-    auto tgt = ublkpp::ublkpp_tgt::make_for_test(disk);
+    auto tgt = ublkpp::ublkpp_tgt_test_peer::make(disk);
     disk.reset();
     tgt.begin_shutdown();
     tgt.begin_shutdown(); // idempotent: _shutting_down guard short-circuits; CAS is not re-entered
     tgt.begin_shutdown();
-    EXPECT_EQ(destroy_count.load(), 1); // device.reset() called exactly once
+    EXPECT_EQ(destroy_count.load(), 1); // device = {} called exactly once
+}
+
+TEST(ShutdownDrain, ConcurrentTryDrainFiresDeviceResetExactlyOnce) {
+    // Two threads simultaneously decrement counters and call try_drain(). The CAS in
+    // try_drain() guarantees the device = {} fires exactly once regardless of interleaving.
+    std::atomic< int > destroy_count{0};
+    auto disk = std::make_shared< TrackedDisk >(destroy_count);
+    auto tgt = ublkpp::ublkpp_tgt_test_peer::make(disk);
+    disk.reset();
+
+    auto& m = ublkpp::ublkpp_tgt_test_peer::metrics(tgt);
+    m._queued_reads.fetch_add(1, std::memory_order_relaxed);
+    m._queued_writes.fetch_add(1, std::memory_order_relaxed);
+    tgt.begin_shutdown();
+    ASSERT_EQ(destroy_count.load(), 0);
+
+    std::atomic< int > ready{0};
+    std::atomic< bool > go{false};
+    auto decrement_and_drain = [&](std::atomic< uint64_t >& counter) {
+        ready.fetch_add(1, std::memory_order_release);
+        while (!go.load(std::memory_order_acquire)) {}
+        counter.fetch_sub(1, std::memory_order_seq_cst);
+        ublkpp::ublkpp_tgt_test_peer::try_drain(tgt);
+    };
+
+    std::thread t1{decrement_and_drain, std::ref(m._queued_reads)};
+    std::thread t2{decrement_and_drain, std::ref(m._queued_writes)};
+    while (ready.load(std::memory_order_acquire) < 2) {}
+    go.store(true, std::memory_order_release);
+    t1.join();
+    t2.join();
+
+    EXPECT_EQ(destroy_count.load(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// apply_op_for_test: verifies op → counter routing without a live queue
+// ---------------------------------------------------------------------------
+
+TEST(ApplyOpForTest, ReadOpIncrementsAndDecrementsQueuedReads) {
+    ublkpp::UblkIOMetrics m{"test-apply-op-read"};
+    EXPECT_EQ(m._queued_reads.load(), 0u);
+    m.apply_op_for_test(0, true);
+    EXPECT_EQ(m._queued_reads.load(), 1u);
+    EXPECT_EQ(m._queued_writes.load(), 0u);
+    EXPECT_EQ(m._queued_other.load(), 0u);
+    m.apply_op_for_test(0, false);
+    EXPECT_EQ(m._queued_reads.load(), 0u);
+}
+
+TEST(ApplyOpForTest, WriteOpIncrementsAndDecrementsQueuedWrites) {
+    ublkpp::UblkIOMetrics m{"test-apply-op-write"};
+    m.apply_op_for_test(1, true);
+    EXPECT_EQ(m._queued_writes.load(), 1u);
+    EXPECT_EQ(m._queued_reads.load(), 0u);
+    EXPECT_EQ(m._queued_other.load(), 0u);
+    m.apply_op_for_test(1, false);
+    EXPECT_EQ(m._queued_writes.load(), 0u);
+}
+
+TEST(ApplyOpForTest, DiscardOpUsesOtherCounter) {
+    ublkpp::UblkIOMetrics m{"test-apply-op-discard"};
+    m.apply_op_for_test(3, true); // UBLK_IO_OP_DISCARD
+    EXPECT_EQ(m._queued_other.load(), 1u);
+    EXPECT_EQ(m._queued_reads.load(), 0u);
+    EXPECT_EQ(m._queued_writes.load(), 0u);
+    m.apply_op_for_test(3, false);
+    EXPECT_EQ(m._queued_other.load(), 0u);
+}
+
+TEST(ApplyOpForTest, WriteZeroesOpUsesOtherCounter) {
+    ublkpp::UblkIOMetrics m{"test-apply-op-write-zeroes"};
+    m.apply_op_for_test(5, true); // UBLK_IO_OP_WRITE_ZEROES
+    EXPECT_EQ(m._queued_other.load(), 1u);
+    m.apply_op_for_test(5, false);
+    EXPECT_EQ(m._queued_other.load(), 0u);
+}
+
+TEST(ApplyOpForTest, FlushOpDoesNotTouchAnyCounter) {
+    ublkpp::UblkIOMetrics m{"test-apply-op-flush"};
+    m.apply_op_for_test(2, true); // UBLK_IO_OP_FLUSH — no counter
+    EXPECT_EQ(m._queued_reads.load(), 0u);
+    EXPECT_EQ(m._queued_writes.load(), 0u);
+    EXPECT_EQ(m._queued_other.load(), 0u);
+    EXPECT_TRUE(m.all_idle());
 }
 
 int main(int argc, char* argv[]) {

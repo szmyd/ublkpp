@@ -131,7 +131,8 @@ class UBlkPPConan(ConanFile):
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)
-        copy(self, "*.h*", join(self.source_folder, "include"), join(self.package_folder, "include"), keep_path=True)
+        copy(self, "*.h*", join(self.source_folder, "include"), join(self.package_folder, "include"), keep_path=True,
+             excludes=["*testing*"])
         copy(self, "*.a", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 

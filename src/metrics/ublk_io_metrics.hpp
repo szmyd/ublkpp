@@ -25,6 +25,10 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     std::atomic< uint64_t > _queued_other{0};
 
     void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment);
+    // Test-only: same counter dispatch as record_queue_depth_change but without the
+    // ublksrv_queue null guard and without histogram observation. Allows unit tests to verify
+    // the op→counter mapping (op 0→reads, 1→writes, 3/5→other) without a live queue.
+    void apply_op_for_test(uint8_t op, bool is_increment);
 
     // Returns true when all in-flight op counters are zero (reads, writes, and other ops).
     //

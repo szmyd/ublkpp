@@ -15,7 +15,6 @@ namespace ublkpp {
 
 class ublk_disk;
 using disk_handle = std::shared_ptr< ublk_disk >;
-struct UblkIOMetrics;
 struct ublkpp_tgt_impl;
 
 struct ublkpp_tgt {
@@ -63,39 +62,30 @@ struct ublkpp_tgt {
     //   }
     void begin_shutdown();
 
-    // Blocks until the backing device has been destroyed (i.e., the RAID-1 dirty bitmap and
-    // clean_unmount flag have been written). Returns immediately if begin_shutdown()
-    // already destroyed the backing device synchronously (idle case). Must be called after
-    // begin_shutdown(); calling without begin_shutdown() blocks forever.
+    // Blocks until this target has released its backing device reference and all in-flight I/O
+    // has been rejected or completed. Returns immediately if begin_shutdown() already destroyed
+    // the backing device synchronously (idle case). Must be called after begin_shutdown();
+    // calling without begin_shutdown() blocks forever.
+    //
+    // The RAID-1 dirty bitmap flush and clean_unmount=1 write are guaranteed to have completed
+    // by the time this ublkpp_tgt is destroyed (which joins queue threads). Do not assume the
+    // flush is complete the moment wait_for_drain() returns; always drop the ublkpp_tgt
+    // immediately after (or use begin_shutdown() + wait_for_drain() + drop as an atomic unit).
     void wait_for_drain();
 
     // Cleanly stops the device and removes it from the kernel. Only call after the block device
     // has been unmounted. Consuming the unique_ptr prevents accidental double-remove.
     static void remove(std::unique_ptr< ublkpp_tgt > tgt);
 
-    // Test-only factory: constructs a ublkpp_tgt with the given device and no ublksrv state.
-    // Queue handlers are empty, so begin_shutdown() destroys the backing device synchronously.
-    // Calling run(), remove(), or device_id() on the returned target is undefined behaviour.
-    static ublkpp_tgt make_for_test(disk_handle dev);
-
-    // Triggers the drain check that queue threads perform after each counter decrement.
-    // Useful in tests to exercise the non-idle drain path without kernel infrastructure:
-    // manually increment a counter via test_metrics(), call begin_shutdown() (skips reset),
-    // decrement the counter, then call try_drain() to destroy the backing device. Idempotent via CAS.
-    void try_drain();
-
-    // Returns the I/O metrics for direct counter manipulation in tests.
-    // Only meaningful on make_for_test() targets.
-    UblkIOMetrics& test_metrics();
-
     std::filesystem::path device_path() const;
     disk_handle device() const;
-    // Undefined behaviour on make_for_test() targets (dev_data is null).
+    // Asserts (RELEASE_ASSERT) if called on a make_for_test() target (dev_data is null).
     int device_id() const;
 
 private:
     explicit ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p);
     std::shared_ptr< ublkpp_tgt_impl > _p;
+    friend struct ublkpp_tgt_test_peer;
 };
 
 } // namespace ublkpp

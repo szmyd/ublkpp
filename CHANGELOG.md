@@ -6,9 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.33.0] - 2026-06-14
 
+### Breaking
+
+- **`ublkpp_tgt` destructor now aborts if `begin_shutdown()` was not called before drop**: previously, dropping an `ublkpp_tgt` without calling `begin_shutdown()` was silent, leaving queue threads running until process exit. The destructor now `RELEASE_ASSERT`s on any joinable queue thread, aborting the process with a diagnostic. **Migration**: always call `tgt->begin_shutdown(); tgt->wait_for_drain();` before dropping the `unique_ptr`. This ensures the RAID-1 bitmap is flushed and `clean_unmount=1` is written before exit.
+
 ### Added
 
-- **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, reads and writes are rejected with `EAGAIN` before they reach the backing device; `FLUSH` ops are allowed through (they complete instantly with `result=0` and do not dereference `device*`). When the last in-flight op completes and metrics counters reach zero, `device.reset()` fires exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1`. Idempotent; must be called from a thread context (the idle-drain path calls `device.reset()` synchronously).
+- **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, reads and writes are rejected with `EAGAIN` before they reach the backing device; `FLUSH` ops are allowed through (they complete instantly with `result=0` and do not dereference `device*`). When the last in-flight op completes and metrics counters reach zero, the backing device is destroyed exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1`. Idempotent; must be called from a thread context (the idle-drain path destroys the backing device synchronously).
 
 ### Fixed
 

@@ -1,4 +1,5 @@
 #include "ublkpp/target.hpp"
+#include "ublkpp/target_testing.hpp"
 
 #include <ranges>
 #include <semaphore.h>
@@ -533,7 +534,10 @@ ublkpp_tgt::~ublkpp_tgt() = default;
 
 std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; }
 std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device.load(); }
-int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
+int ublkpp_tgt::device_id() const {
+    RELEASE_ASSERT(_p->dev_data != nullptr, "device_id() called on a make_for_test() target (dev_data is null)");
+    return _p->dev_data->dev_id;
+}
 
 void ublkpp_tgt::begin_shutdown() {
     // Relaxed load for the idempotency fast-path: benign optimisation. Correctness is
@@ -568,15 +572,13 @@ void ublkpp_tgt::begin_shutdown() {
 
 void ublkpp_tgt::wait_for_drain() { _p->_drain_complete.wait(false, std::memory_order_acquire); }
 
-void ublkpp_tgt::try_drain() { _p->try_drain(); }
-
-UblkIOMetrics& ublkpp_tgt::test_metrics() { return _p->metrics; }
-
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 
-ublkpp_tgt ublkpp_tgt::make_for_test(disk_handle dev) {
+ublkpp_tgt ublkpp_tgt_test_peer::make(disk_handle dev) {
     return ublkpp_tgt{std::make_shared< ublkpp_tgt_impl >(boost::uuids::uuid{}, std::move(dev))};
 }
+void ublkpp_tgt_test_peer::try_drain(ublkpp_tgt& tgt) { tgt._p->try_drain(); }
+UblkIOMetrics& ublkpp_tgt_test_peer::metrics(ublkpp_tgt& tgt) { return tgt._p->metrics; }
 
 void ublkpp_tgt_impl::destroy() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
