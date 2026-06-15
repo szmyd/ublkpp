@@ -37,12 +37,12 @@ struct ublkpp_tgt {
     // rejected with EAGAIN before they reach the backing device; FLUSH ops are allowed through
     // (they complete instantly with result=0 and do not access device*). In-flight ops complete
     // normally. When the last in-flight op finishes (or immediately if the system is already
-    // idle), device.reset() is called exactly once — flushing the RAID-1 dirty bitmap and
+    // idle), the backing device is destroyed exactly once — flushing the RAID-1 dirty bitmap and
     // writing clean_unmount=1. Idempotent: subsequent calls are no-ops (guarded by CAS).
     // Note: if there are in-flight ops when this is called, it returns immediately and
-    // device.reset() fires later on a queue thread; there is no completion callback.
+    // the backing device is destroyed later on a queue thread; there is no completion callback.
     // Must be called from a normal thread context, not a signal handler: the idle-drain path
-    // calls device.reset() synchronously (may block until the RAID-1 resync task joins).
+    // destroys the backing device synchronously (may block until the RAID-1 resync task joins).
     //
     // Canonical SIGTERM bridge:
     //   static std::atomic<bool> g_shutdown{false};
@@ -51,21 +51,21 @@ struct ublkpp_tgt {
     //   if (g_shutdown.load(std::memory_order_relaxed)) {
     //       tgt->begin_shutdown();
     //       // For the common case (no I/O in-flight at SIGTERM time), begin_shutdown()
-    //       // calls device.reset() synchronously before returning — clean_unmount=1 is
+    //       // destroys the backing device synchronously before returning — clean_unmount=1 is
     //       // already written. Any exit form is safe at this point.
     //       //
     //       // For the rare non-idle case (ops in-flight), begin_shutdown() returns
-    //       // immediately; device.reset() fires later on a queue thread. Call
-    //       // wait_for_drain() after begin_shutdown() to block until device.reset()
-    //       // has completed — giving a guaranteed flush before process exit.
+    //       // immediately; the backing device is destroyed later on a queue thread. Call
+    //       // wait_for_drain() after begin_shutdown() to block until the flush has completed,
+    //       // giving a guaranteed clean_unmount=1 before process exit.
     //       tgt->wait_for_drain();
     //       return 0;
     //   }
     void begin_shutdown();
 
-    // Blocks until device.reset() has fired (i.e., the RAID-1 dirty bitmap and
+    // Blocks until the backing device has been destroyed (i.e., the RAID-1 dirty bitmap and
     // clean_unmount flag have been written). Returns immediately if begin_shutdown()
-    // already called device.reset() synchronously (idle case). Must be called after
+    // already destroyed the backing device synchronously (idle case). Must be called after
     // begin_shutdown(); calling without begin_shutdown() blocks forever.
     void wait_for_drain();
 
@@ -74,14 +74,14 @@ struct ublkpp_tgt {
     static void remove(std::unique_ptr< ublkpp_tgt > tgt);
 
     // Test-only factory: constructs a ublkpp_tgt with the given device and no ublksrv state.
-    // Queue handlers are empty, so begin_shutdown() fires device.reset() synchronously.
+    // Queue handlers are empty, so begin_shutdown() destroys the backing device synchronously.
     // Calling run(), remove(), or device_id() on the returned target is undefined behaviour.
     static ublkpp_tgt make_for_test(disk_handle dev);
 
     // Triggers the drain check that queue threads perform after each counter decrement.
     // Useful in tests to exercise the non-idle drain path without kernel infrastructure:
     // manually increment a counter via test_metrics(), call begin_shutdown() (skips reset),
-    // decrement the counter, then call try_drain() to fire device.reset(). Idempotent via CAS.
+    // decrement the counter, then call try_drain() to destroy the backing device. Idempotent via CAS.
     void try_drain();
 
     // Returns the I/O metrics for direct counter manipulation in tests.
