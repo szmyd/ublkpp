@@ -42,8 +42,12 @@ struct ublkpp_tgt_impl {
     // the backing device. When the last in-flight op decrements the metrics counter to zero,
     // the thread that wins the CAS on _device_reset_done calls device.reset() exactly once,
     // flushing the RAID-1 dirty bitmap and writing clean_unmount=1 before process exit.
+    // _drain_complete is set and notified (notify_all) by both device.reset() call sites
+    // (idle path in begin_shutdown and non-idle path in try_drain_device) so wait_for_drain()
+    // unblocks in the idle case without special-casing.
     std::atomic< bool > _shutting_down{false};
     std::atomic< bool > _device_reset_done{false};
+    std::atomic< bool > _drain_complete{false};
 
     ublkpp_tgt_impl(boost::uuids::uuid const& vol_id, std::shared_ptr< ublk_disk > d);
     ~ublkpp_tgt_impl();

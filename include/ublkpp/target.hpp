@@ -54,15 +54,19 @@ struct ublkpp_tgt {
     //       // already written. Any exit form is safe at this point.
     //       //
     //       // For the rare non-idle case (ops in-flight), begin_shutdown() returns
-    //       // immediately; device.reset() fires later on a queue thread. The destructor
-    //       // detaches queue threads so exit() / return 0 exits cleanly without
-    //       // std::terminate(), giving threads a brief window to complete. Do NOT use
-    //       // _exit(): it bypasses atexit handlers and kills threads before the flush.
-    //       // For a guaranteed flush under in-flight I/O, wait for an out-of-band drain
-    //       // signal before exiting (not currently provided).
+    //       // immediately; device.reset() fires later on a queue thread. Call
+    //       // wait_for_drain() after begin_shutdown() to block until device.reset()
+    //       // has completed — giving a guaranteed flush before process exit.
+    //       tgt->wait_for_drain();
     //       return 0;
     //   }
     void begin_shutdown();
+
+    // Blocks until device.reset() has fired (i.e., the RAID-1 dirty bitmap and
+    // clean_unmount flag have been written). Returns immediately if begin_shutdown()
+    // already called device.reset() synchronously (idle case). Must be called after
+    // begin_shutdown(); calling without begin_shutdown() blocks forever.
+    void wait_for_drain();
 
     // Cleanly stops the device and removes it from the kernel. Only call after the block device
     // has been unmounted. Consuming the unique_ptr prevents accidental double-remove.

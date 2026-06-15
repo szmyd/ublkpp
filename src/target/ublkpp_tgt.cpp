@@ -68,11 +68,11 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
 static constexpr int k_io_idle_secs = 20;
 
 struct ublkpp_queue_state {
-    ublkpp_tgt_impl* tgt;
+    std::shared_ptr< ublkpp_tgt_impl > tgt;
     exec::async_scope scope;
     bool is_idle{false};
 
-    explicit ublkpp_queue_state(ublkpp_tgt_impl* t) : tgt(t) {}
+    explicit ublkpp_queue_state(std::shared_ptr< ublkpp_tgt_impl > t) : tgt(std::move(t)) {}
 };
 
 static void submit_probe_timeout(ublksrv_queue const* q) {
@@ -158,7 +158,7 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem,
                                    int* queue_ok) {
-    auto qs = std::make_unique< ublkpp_queue_state >(target.get());
+    auto qs = std::make_unique< ublkpp_queue_state >(target);
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
     // NOTE: Removed IORING_SETUP_DEFER_TASK as it was blocking ublksrv_ctrl_del_dev,
@@ -272,8 +272,9 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    // All queues started; let go of our shared_ptr (each queue thread released its own copy
-    // immediately after signalling, so the impl is now owned solely by queue_handlers)
+    // Drop start()'s reference; the impl is now owned by ublkpp_tgt._p and each queue
+    // thread's qs->tgt (shared_ptr<ublkpp_tgt_impl>). The impl stays alive until both
+    // ublkpp_tgt is destroyed AND all queue threads exit and their qs destructs.
     tgt.reset();
 
     // Start processing I/Os
@@ -305,6 +306,8 @@ static void try_drain_device(ublkpp_queue_state* qs) {
         if (qs->tgt->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             TLOGI("All I/O drained after shutdown - flushing backing store")
             qs->tgt->device.reset();
+            qs->tgt->_drain_complete.store(true, std::memory_order_release);
+            qs->tgt->_drain_complete.notify_all();
         }
     }
 }
@@ -558,9 +561,13 @@ void ublkpp_tgt::begin_shutdown() {
         if (_p->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             TLOGI("No I/O in-flight at shutdown - flushing backing store immediately")
             _p->device.reset();
+            _p->_drain_complete.store(true, std::memory_order_release);
+            _p->_drain_complete.notify_all();
         }
     }
 }
+
+void ublkpp_tgt::wait_for_drain() { _p->_drain_complete.wait(false, std::memory_order_acquire); }
 
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 
@@ -608,14 +615,13 @@ void ublkpp_tgt_impl::destroy() {
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    // Queue threads release their shared_ptr<ublkpp_tgt_impl> early (ublksrv_queue_handler
-    // calls target.reset()) and thereafter hold only a raw qs->tgt pointer — so this
-    // destructor can fire while threads are still alive. Joining here is impossible without
-    // stop_dev (which would drop /dev/ublkbN). Detach any joinable threads to prevent
-    // std::terminate() when the vector<thread> destructs (e.g. process exit via return 0
-    // from main). The threads will be killed by the OS on process exit.
-    // Safe only on process exit: detached threads still hold qs->tgt and will UAF if they
-    // re-enter the event loop after this destructor returns. The process must exit promptly.
+    // Queue threads hold qs->tgt (shared_ptr<ublkpp_tgt_impl>) for their entire lifetime, so
+    // this destructor fires only when both ublkpp_tgt._p and every qs->tgt have been released.
+    // The most common case: the last queue thread to exit destructs qs, releasing its copy and
+    // triggering this destructor from inside ublksrv_queue_handler. At that point the thread
+    // is finishing but queue_handlers[i].joinable() is still true (not yet joined/detached).
+    // Joining from within the thread itself would deadlock; detach marks it as self-managed.
+    // The RELEASE_ASSERT ensures begin_shutdown() was called before this point.
     for (auto& q : queue_handlers) {
         if (q.joinable()) {
             RELEASE_ASSERT(_shutting_down.load(std::memory_order_relaxed),

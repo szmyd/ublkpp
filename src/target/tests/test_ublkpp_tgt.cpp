@@ -1,4 +1,6 @@
 #include <atomic>
+#include <chrono>
+#include <future>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -85,6 +87,15 @@ TEST(ShutdownDrain, BeginShutdownOnIdleSystemResetsDeviceSynchronously) {
     auto tgt = ublkpp::ublkpp_tgt::make_for_test(std::make_shared< TrackedDisk >(&destroyed));
     tgt.begin_shutdown();
     EXPECT_TRUE(destroyed) << "device.reset() was not called synchronously by begin_shutdown() on an idle system";
+}
+
+TEST(ShutdownDrain, WaitForDrainReturnsImmediatelyAfterIdleShutdown) {
+    bool destroyed = false;
+    auto tgt = ublkpp::ublkpp_tgt::make_for_test(std::make_shared< TrackedDisk >(&destroyed));
+    tgt.begin_shutdown();
+    auto fut = std::async(std::launch::async, [&] { tgt.wait_for_drain(); });
+    EXPECT_EQ(fut.wait_for(std::chrono::milliseconds{200}), std::future_status::ready)
+        << "wait_for_drain() blocked after begin_shutdown() on an idle system";
 }
 
 int main(int argc, char* argv[]) {
