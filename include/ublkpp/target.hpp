@@ -68,6 +68,10 @@ struct ublkpp_tgt {
     // has been unmounted. Consuming the unique_ptr prevents accidental double-remove.
     static void remove(std::unique_ptr< ublkpp_tgt > tgt);
 
+    // Test-only factory: constructs a ublkpp_tgt with the given device and no ublksrv state.
+    // Queue handlers are empty, so begin_shutdown() fires device.reset() synchronously.
+    static ublkpp_tgt make_for_test(disk_handle dev);
+
     std::filesystem::path device_path() const;
     disk_handle device() const;
     int device_id() const;

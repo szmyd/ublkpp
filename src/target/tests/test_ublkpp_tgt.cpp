@@ -7,6 +7,8 @@
 #include <sisl/options/options.h>
 
 #include "ublkpp/lib/cqe_state.hpp"
+#include "ublkpp/lib/ublk_disk.hpp"
+#include "ublkpp/target.hpp"
 #include "metrics/ublk_io_metrics.hpp"
 
 SISL_LOGGING_INIT(ublk_tgt)
@@ -69,25 +71,20 @@ TEST(ShutdownDrain, AllIdleFalseUntilBothCountersReachZero) {
     EXPECT_TRUE(m.all_idle());
 }
 
-// _device_reset_done CAS: the protocol used by both begin_shutdown() and try_drain_device()
-// to ensure device.reset() is called exactly once across concurrent queue threads.
-TEST(ShutdownDrain, DeviceResetDoneCasWinsOnFirstAttempt) {
-    std::atomic< bool > done{false};
-    bool expected = false;
-    EXPECT_TRUE(done.compare_exchange_strong(expected, true, std::memory_order_acq_rel));
-    EXPECT_TRUE(done.load(std::memory_order_relaxed));
-}
+namespace {
+struct TrackedDisk : ublkpp::ublk_disk {
+    bool* destroyed;
+    explicit TrackedDisk(bool* flag) : destroyed(flag) {}
+    ~TrackedDisk() override { *destroyed = true; }
+    std::string id() const noexcept override { return "tracked"; }
+};
+} // namespace
 
-TEST(ShutdownDrain, DeviceResetDoneCasLosesOnSecondAttempt) {
-    std::atomic< bool > done{false};
-
-    bool exp1 = false;
-    done.compare_exchange_strong(exp1, true, std::memory_order_acq_rel); // first wins
-    EXPECT_TRUE(done.load(std::memory_order_relaxed));
-
-    bool exp2 = false;
-    EXPECT_FALSE(done.compare_exchange_strong(exp2, true, std::memory_order_acq_rel)); // second loses
-    EXPECT_TRUE(exp2);                                                                 // updated to the current value
+TEST(ShutdownDrain, BeginShutdownOnIdleSystemResetsDeviceSynchronously) {
+    bool destroyed = false;
+    auto tgt = ublkpp::ublkpp_tgt::make_for_test(std::make_shared< TrackedDisk >(&destroyed));
+    tgt.begin_shutdown();
+    EXPECT_TRUE(destroyed) << "device.reset() was not called synchronously by begin_shutdown() on an idle system";
 }
 
 int main(int argc, char* argv[]) {

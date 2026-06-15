@@ -563,6 +563,10 @@ void ublkpp_tgt::begin_shutdown() {
 
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 
+ublkpp_tgt ublkpp_tgt::make_for_test(disk_handle dev) {
+    return ublkpp_tgt{std::make_shared< ublkpp_tgt_impl >(boost::uuids::uuid{}, std::move(dev))};
+}
+
 void ublkpp_tgt_impl::destroy() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
     // First send a signal to stop the ublk device and exit all I/O queues
@@ -613,12 +617,8 @@ ublkpp_tgt_impl::~ublkpp_tgt_impl() {
     // re-enter the event loop after this destructor returns. The process must exit promptly.
     for (auto& q : queue_handlers) {
         if (q.joinable()) {
-            // If we are detaching without begin_shutdown(), the caller dropped the tgt without
-            // a graceful drain — backing store may be dirty and threads will UAF on the stale
-            // qs->tgt pointer if they re-enter the event loop after this destructor returns.
-            if (!_shutting_down.load(std::memory_order_relaxed))
-                TLOGE("ublkpp_tgt destroyed with live queue thread; begin_shutdown() was not called — backing store "
-                      "may be dirty")
+            RELEASE_ASSERT(_shutting_down.load(std::memory_order_relaxed),
+                           "ublkpp_tgt destroyed with live queue thread; begin_shutdown() was not called");
             q.detach();
         }
     }
