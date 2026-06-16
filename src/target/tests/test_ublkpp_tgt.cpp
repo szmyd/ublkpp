@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 #include <gmock/gmock.h>
@@ -181,6 +182,33 @@ TEST(ShutdownDrain, NonIdlePathFiresDeviceResetWhenLastOpCompletes) {
     ublkpp::ublkpp_tgt_test_peer::metrics(tgt)._queued_reads.fetch_sub(1, std::memory_order_seq_cst);
     ublkpp::ublkpp_tgt_test_peer::try_drain(tgt);
     EXPECT_EQ(destroy_count.load(), 1) << "device = {} should fire when last in-flight op completes";
+}
+
+TEST(ShutdownDrain, WaitForDrainBlocksUntilNonIdleDrainCompletes) {
+    // End-to-end non-idle path: begin_shutdown() returns immediately (non-idle), then
+    // wait_for_drain() must block until a second thread fires the drain via try_drain().
+    // The drainer sleeps briefly to allow wait_for_drain() to enter its wait before signaling
+    // _drain_complete. If wait_for_drain() returned early (before drain), destroy_count would
+    // be 0 on the EXPECT below.
+    std::atomic< int > destroy_count{0};
+    auto disk = std::make_shared< TrackedDisk >(destroy_count);
+    auto tgt = ublkpp::ublkpp_tgt_test_peer::make(disk);
+    disk.reset();
+
+    auto& m = ublkpp::ublkpp_tgt_test_peer::metrics(tgt);
+    m._queued_reads.fetch_add(1, std::memory_order_relaxed);
+    tgt.begin_shutdown(); // non-idle: _drain_complete not yet signaled
+
+    std::thread drainer{[&] {
+        // Sleep to let wait_for_drain() enter the condvar wait before we signal it.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        m._queued_reads.fetch_sub(1, std::memory_order_seq_cst);
+        ublkpp::ublkpp_tgt_test_peer::try_drain(tgt); // signals _drain_complete
+    }};
+
+    tgt.wait_for_drain(); // must block until drainer calls try_drain()
+    EXPECT_EQ(destroy_count.load(), 1);
+    drainer.join();
 }
 
 TEST(ShutdownDrain, BeginShutdownIdempotentDoesNotDoubleReset) {

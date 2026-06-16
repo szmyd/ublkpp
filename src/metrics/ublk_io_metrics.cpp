@@ -2,6 +2,14 @@
 
 #include <ublksrv.h>
 
+// Lock op-code values so a silent ublksrv ABI change surfaces at compile time.
+// If these fire, update record_queue_depth_change and apply_op_for_test to match.
+static_assert(UBLK_IO_OP_READ == 0, "UBLK_IO_OP_READ value changed");
+static_assert(UBLK_IO_OP_WRITE == 1, "UBLK_IO_OP_WRITE value changed");
+static_assert(UBLK_IO_OP_FLUSH == 2, "UBLK_IO_OP_FLUSH value changed");
+static_assert(UBLK_IO_OP_DISCARD == 3, "UBLK_IO_OP_DISCARD value changed");
+static_assert(UBLK_IO_OP_WRITE_ZEROES == 5, "UBLK_IO_OP_WRITE_ZEROES value changed");
+
 namespace ublkpp {
 
 UblkIOMetrics::UblkIOMetrics(std::string const& uuid) : sisl::MetricsGroup{"ublk_io_metrics", uuid} {
@@ -39,6 +47,13 @@ void UblkIOMetrics::apply_op_for_test(uint8_t op, bool is_increment) {
 void UblkIOMetrics::record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment) {
     if (!q || !q->private_data) return;
 
+    // TRACKED OPS (must be exhaustive for ops that call device->async_iov()):
+    //   READ=0, WRITE=1, DISCARD=3, WRITE_ZEROES=5 → incremented here, counted by all_idle()
+    //   FLUSH=2 → completes synchronously (result=0), never touches device*, not counted
+    // If a new op calls device->async_iov() but is absent from this switch, all_idle() will
+    // return true while it is still in-flight, allowing device = {} to fire prematurely.
+    // Add it here AND in apply_op_for_test() and lock its constant above with static_assert.
+    //
     // UBLK_IO_OP_READ = 0, UBLK_IO_OP_WRITE = 1
     //
     // seq_cst: makes these RMWs participate in the C++ total order S alongside the seq_cst
