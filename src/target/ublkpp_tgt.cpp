@@ -570,7 +570,11 @@ void ublkpp_tgt::begin_shutdown() {
     }
 }
 
-void ublkpp_tgt::wait_for_drain() { _p->_drain_complete.wait(false, std::memory_order_acquire); }
+void ublkpp_tgt::wait_for_drain() {
+    RELEASE_ASSERT(_p->_shutting_down.load(std::memory_order_relaxed),
+                   "wait_for_drain() called without begin_shutdown() — would block forever");
+    _p->_drain_complete.wait(false, std::memory_order_acquire);
+}
 
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
 

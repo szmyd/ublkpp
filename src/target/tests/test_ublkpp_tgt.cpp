@@ -161,6 +161,14 @@ TEST(ShutdownDrain, WaitForDrainReturnsImmediatelyAfterIdleShutdown) {
     EXPECT_EQ(destroy_count.load(), 1);
 }
 
+TEST(ShutdownDrainDeathTest, WaitForDrainWithoutBeginShutdownAsserts) {
+    // Without begin_shutdown(), _drain_complete is never set and wait_for_drain()
+    // would block forever. The RELEASE_ASSERT detects this misuse and aborts.
+    std::atomic< int > destroy_count{0};
+    auto tgt = ublkpp::ublkpp_tgt_test_peer::make(std::make_shared< TrackedDisk >(destroy_count));
+    ASSERT_DEATH(tgt.wait_for_drain(), "wait_for_drain.*begin_shutdown");
+}
+
 TEST(ShutdownDrain, NonIdlePathFiresDeviceResetWhenLastOpCompletes) {
     // Exercises try_drain(): the non-idle drain path normally reached via __handle_io_async()
     // which requires kernel infrastructure. Here we simulate the path directly:

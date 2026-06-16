@@ -65,7 +65,7 @@ struct ublkpp_tgt {
     // Blocks until this target has released its backing device reference and all in-flight I/O
     // has been rejected or completed. Returns immediately if begin_shutdown() already destroyed
     // the backing device synchronously (idle case). Must be called after begin_shutdown();
-    // calling without begin_shutdown() blocks forever.
+    // calling without begin_shutdown() aborts (RELEASE_ASSERT).
     //
     // The RAID-1 dirty bitmap flush and clean_unmount=1 write are guaranteed to have completed
     // by the time this ublkpp_tgt is destroyed (which joins queue threads). Do not assume the
