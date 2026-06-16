@@ -102,16 +102,14 @@ TEST(ShutdownDrain, AllIdleFalseUntilAllCountersReachZero) {
 // tests) because record_queue_depth_change requires a live ublksrv_queue.
 // ---------------------------------------------------------------------------
 
-TEST(ShutdownDrain, FlushOpHasNoCounter) {
-    // FLUSH completes instantly (result=0) and never dereferences device*, so it
-    // must not participate in any queue-depth counter. Verify that no amount of
-    // read/write/other activity prevents all_idle() from returning true once those
-    // counters drain — and that the missing FLUSH counter is not a false-idle path.
+TEST(ShutdownDrain, SingleReadCounterGatesAllIdle) {
+    // A single in-flight read prevents all_idle() from returning true; decrementing
+    // it allows drain to proceed. FLUSH ops have no counter and need no drain step.
     ublkpp::UblkIOMetrics m{"test-flush-no-counter"};
     m._queued_reads.fetch_add(1, std::memory_order_relaxed);
     EXPECT_FALSE(m.all_idle());
     m._queued_reads.fetch_sub(1, std::memory_order_relaxed);
-    EXPECT_TRUE(m.all_idle()); // FLUSH would need to drain here if it had a counter; it doesn't
+    EXPECT_TRUE(m.all_idle());
 }
 
 TEST(ShutdownDrain, DiscardAndWriteZeroesAreTrackedInOtherCounter) {
@@ -318,6 +316,9 @@ TEST(ApplyOpForTest, FlushOpDoesNotTouchAnyCounter) {
 int main(int argc, char* argv[]) {
     int parsed_argc = argc;
     ::testing::InitGoogleTest(&parsed_argc, argv);
+    // Death tests use fork() which is unsafe in a multi-threaded process. "threadsafe"
+    // mode re-execs the binary instead, giving the child a clean single-threaded start.
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
     SISL_OPTIONS_LOAD(parsed_argc, argv, logging);
     sisl::logging::SetLogger(std::string(argv[0]));
     spdlog::set_pattern("[%D %T.%e] [%n] [%^%l%$] [%t] %v");
