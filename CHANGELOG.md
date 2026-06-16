@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-06-14
+
+### Breaking
+
+- **`ublkpp_tgt` destructor now aborts if `begin_shutdown()` was not called before drop**: previously, dropping an `ublkpp_tgt` without calling `begin_shutdown()` was silent, leaving queue threads running until process exit. The destructor now `RELEASE_ASSERT`s on any joinable queue thread, aborting the process with a diagnostic. **Migration**: always call `tgt->begin_shutdown(); tgt->wait_for_drain();` before dropping the `unique_ptr`. This ensures the RAID-1 bitmap is flushed and `clean_unmount=1` is written before exit.
+
+### Added
+
+- **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, reads and writes are rejected with `EAGAIN` before they reach the backing device; `FLUSH` ops are allowed through (they complete instantly with `result=0` and do not dereference `device*`). When the last in-flight op completes and metrics counters reach zero, the backing device is destroyed exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1`. Idempotent; must be called from a thread context (the idle-drain path destroys the backing device synchronously).
+
+### Fixed
+
+- **`destroy()` missing `ctrl_dev = nullptr`**: after `ublksrv_ctrl_deinit`, `ctrl_dev` was not nulled, leaving a potential double-deinit on the freed pointer. Now nulled immediately after deinit.
+- **Unconditional `join()` in `destroy()`**: queue threads were joined without a `joinable()` guard, which would throw `std::system_error` if a thread was never started (e.g., on a failed queue init). Added `if (q.joinable())` guard.
+
 ## [0.32.15] - 2026-06-12
 
 ### Improved

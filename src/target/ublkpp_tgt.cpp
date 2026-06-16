@@ -1,4 +1,5 @@
 #include "ublkpp/target.hpp"
+#include "ublkpp/target_testing.hpp"
 
 #include <ranges>
 #include <semaphore.h>
@@ -68,11 +69,11 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
 static constexpr int k_io_idle_secs = 20;
 
 struct ublkpp_queue_state {
-    ublkpp_tgt_impl* tgt;
+    std::shared_ptr< ublkpp_tgt_impl > tgt;
     exec::async_scope scope;
     bool is_idle{false};
 
-    explicit ublkpp_queue_state(ublkpp_tgt_impl* t) : tgt(t) {}
+    explicit ublkpp_queue_state(std::shared_ptr< ublkpp_tgt_impl > t) : tgt(std::move(t)) {}
 };
 
 static void submit_probe_timeout(ublksrv_queue const* q) {
@@ -117,8 +118,16 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                     // is_idle=false and preventing the probe from re-arming on subsequent fires.
                     ++probe_count;
                     if (cqe->res == -ETIME) {
-                        qs->tgt->device->probe_tick(q);
-                        if (qs->is_idle) submit_probe_timeout(q);
+                        // Gate check before capturing device: if _shutting_down is false,
+                        // begin_shutdown's seq_cst store has not committed yet — so
+                        // device = {} has not been called. Atomic load gives a well-defined
+                        // shared_ptr copy; the local ref keeps the disk alive if device = {}
+                        // fires on another thread immediately after.
+                        if (!qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
+                            if (auto dev = qs->tgt->device.load()) dev->probe_tick(q);
+                        }
+                        if (qs->is_idle && !qs->tgt->_shutting_down.load(std::memory_order_relaxed))
+                            submit_probe_timeout(q);
                     }
                 } else {
                     // target io_uring CQE — resume the coroutine waiting on this cqe_state
@@ -150,7 +159,7 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem,
                                    int* queue_ok) {
-    auto qs = std::make_unique< ublkpp_queue_state >(target.get());
+    auto qs = std::make_unique< ublkpp_queue_state >(target);
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
     // NOTE: Removed IORING_SETUP_DEFER_TASK as it was blocking ublksrv_ctrl_del_dev,
@@ -182,24 +191,24 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     TLOGD("Initializing Ctrl Device")
     if (!tgt->device_recovering) { // NORMAL Path
         if (tgt->ctrl_dev = ublksrv_ctrl_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
-            TLOGE("Cannot init disk {}", tgt->device)
+            TLOGE("Cannot init disk {}", tgt->device.load())
             return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
         }
         if (auto ret = ublksrv_ctrl_add_dev(tgt->ctrl_dev); 0 > ret) {
-            TLOGE("Cannot add disk {}: {}", tgt->device, ret)
+            TLOGE("Cannot add disk {}: {}", tgt->device.load(), ret)
             return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
         }
     } else { // RECOVERY Path
         if (tgt->ctrl_dev = ublksrv_ctrl_recover_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
-            TLOGE("Cannot recover disk {}", tgt->device)
+            TLOGE("Cannot recover disk {}", tgt->device.load())
             return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
         }
         if (auto ret = ublksrv_ctrl_get_info(tgt->ctrl_dev); ret < 0) {
-            TLOGE("Cannot get Ctrl Info for disk {}", tgt->device)
+            TLOGE("Cannot get Ctrl Info for disk {}", tgt->device.load())
             return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
         }
         if (auto ret = ublksrv_ctrl_start_recovery(tgt->ctrl_dev); ret < 0) {
-            TLOGE("Cannot start recovery for disk {}: {}", tgt->device, ret)
+            TLOGE("Cannot start recovery for disk {}: {}", tgt->device.load(), ret)
             return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
         }
     }
@@ -248,10 +257,11 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
                                                          ublksrv_queue_handler, tgt, i, &queue_sem, &queue_ok[i]));
     }
     auto const recovery = tgt->device_recovering;
-    auto const dev_name = fmt::format("{}", *tgt->device);
+    auto const dev_name = fmt::format("{}", *tgt->device.load());
 
     auto ctrl_dev = tgt->ctrl_dev;
-    auto dev_ptr = tgt->device.get();
+    auto dev_sptr = tgt->device.load(); // keep disk alive through start() after tgt.reset()
+    auto dev_ptr = dev_sptr.get();
     auto const dev_id = tgt->dev_data->dev_id;
 
     // Wait for Queues to start
@@ -264,8 +274,9 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    // All queues started; let go of our shared_ptr (each queue thread released its own copy
-    // immediately after signalling, so the impl is now owned solely by queue_handlers)
+    // Drop start()'s reference; the impl is now owned by ublkpp_tgt._p and each queue
+    // thread's qs->tgt (shared_ptr<ublkpp_tgt_impl>). The impl stays alive until both
+    // ublkpp_tgt is destroyed AND all queue threads exit and their qs destructs.
     tgt.reset();
 
     // Start processing I/Os
@@ -288,21 +299,58 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
     return res;
 }
 
+// See all_idle() for the memory-ordering argument.
+void ublkpp_tgt_impl::try_drain() {
+    if (!_shutting_down.load(std::memory_order_acquire)) return;
+    if (metrics.all_idle()) {
+        bool expected = false;
+        if (_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            TLOGI("All I/O drained after shutdown - flushing backing store")
+            device = disk_handle{};
+            _drain_complete.store(true, std::memory_order_release);
+            _drain_complete.notify_all();
+        }
+    }
+}
+
 static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data const* data) {
     auto* qs = static_cast< ublkpp_queue_state* >(q->private_data);
 
-    auto device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
     auto io = reinterpret_cast< async_io* >(data->private_data);
     io->_pool.clear();
     io->_tag = data->tag;
 
     auto const op = ublksrv_get_op(data->iod);
+
+    // Increment before the shutdown gate: a concurrent drain check that sees counters==0 would
+    // otherwise assign device = {} while we are still about to use the raw device* pointer.
+    // With the increment already in place, any concurrent drain check sees counter > 0.
+    // The seq_cst increment participates in the C++ total order S alongside begin_shutdown's
+    // seq_cst store and all_idle()'s seq_cst loads. Either the increment precedes the store in
+    // S (begin_shutdown's counter reads see it → skips reset) or the store precedes the
+    // increment in S (our gate check below sees _shutting_down=true → rejects).
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
+
+    // Drain gate: reject reads/writes during shutdown before they reach the backing device.
+    // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*.
+    // EAGAIN signals "temporarily unavailable, retry" so filesystems back off and retry once
+    // the new process reconnects the device (UBLK_F_USER_RECOVERY hot-restart path).
+    if (op != UBLK_IO_OP_FLUSH && qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
+        qs->tgt->metrics.record_queue_depth_change(q, op, false);
+        TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
+        ublksrv_complete_io(q, data->tag, -EAGAIN);
+        // The rejected op may be the last in-flight — check drain here too.
+        // Without this, the common case (ops in-flight when begin_shutdown fires) would
+        // decrement to zero in this branch and never trigger device = {}.
+        qs->tgt->try_drain();
+        co_return;
+    }
 
     int result;
     if (op == UBLK_IO_OP_FLUSH) {
         result = 0;
     } else {
+        auto* device = reinterpret_cast< ublk_disk* >(q->dev->tgt.tgt_data);
         auto const* iod = data->iod;
         // Frame-local: io_uring reads iov contents at submit time (deferred to the queue loop's
         // submit_and_wait_timeout). thread_local would be overwritten by sibling __handle_io_async
@@ -320,6 +368,11 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, result)
     }
     ublksrv_complete_io(q, data->tag, result);
+
+    // FLUSH reaches here too: it skips the gate and the counter, so this load is the only
+    // shutdown check it sees. try_drain() after FLUSH is safe — if counters are already zero
+    // the CAS protects against double-reset; if not, it is a benign early check.
+    if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) qs->tgt->try_drain();
 }
 
 // I/O Handler, first entry-point to us for all I/O
@@ -356,7 +409,7 @@ static int init_tgt(ublksrv_dev* dev, int, int, char*[]) {
         TLOGE("Disk not found in map!")
         return -2;
     }
-    auto ublk_disk = tgt->device;
+    auto ublk_disk = tgt->device.load();
     dev->tgt.tgt_data = ublk_disk.get();
 
     // TODO Ublk Recovery
@@ -481,10 +534,56 @@ ublkpp_tgt::ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p) : _p(p) {}
 ublkpp_tgt::~ublkpp_tgt() = default;
 
 std::filesystem::path ublkpp_tgt::device_path() const { return _p->device_path; }
-std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device; }
-int ublkpp_tgt::device_id() const { return _p->dev_data->dev_id; }
+std::shared_ptr< ublk_disk > ublkpp_tgt::device() const { return _p->device.load(); }
+int ublkpp_tgt::device_id() const {
+    RELEASE_ASSERT(_p->dev_data != nullptr, "device_id() called on a make_for_test() target (dev_data is null)");
+    return _p->dev_data->dev_id;
+}
+
+void ublkpp_tgt::begin_shutdown() {
+    // Relaxed load for the idempotency fast-path: benign optimisation. Correctness is
+    // guaranteed by the CAS on _device_reset_done, not by this check.
+    if (_p->_shutting_down.load(std::memory_order_relaxed)) {
+        TLOGD("begin_shutdown() called again - already shutting down, ignoring")
+        return;
+    }
+    // seq_cst: on x86, release compiles to a plain mov that sits in the store buffer.
+    // The subsequent all_idle() counter reads go straight to cache, so the store may not be
+    // visible to other threads when we read the counter — enabling a UAF. seq_cst uses
+    // MFENCE / lock xchg, draining the store buffer before the counter reads and establishing
+    // the total order the drain safety argument requires.
+    _p->_shutting_down.store(true, std::memory_order_seq_cst);
+    // Idle-drain: if no I/O is in-flight at the moment the flag is set, no __handle_io_async
+    // completion will ever reach the post-decrement drain check. Assign device = {} here
+    // instead so clean_unmount=1 is written even on a quiesced volume.
+    //
+    // device = {} destroys Raid1Disk inline: its destructor calls _resync_task->stop()
+    // (joins the resync thread) then writes clean_unmount=1. This call may therefore block
+    // until the resync task drains. Do not invoke from a signal handler.
+    if (_p->metrics.all_idle()) {
+        bool expected = false;
+        if (_p->_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            TLOGI("No I/O in-flight at shutdown - flushing backing store immediately")
+            _p->device = disk_handle{};
+            _p->_drain_complete.store(true, std::memory_order_release);
+            _p->_drain_complete.notify_all();
+        }
+    }
+}
+
+void ublkpp_tgt::wait_for_drain() {
+    RELEASE_ASSERT(_p->_shutting_down.load(std::memory_order_relaxed),
+                   "wait_for_drain() called without begin_shutdown() — would block forever");
+    _p->_drain_complete.wait(false, std::memory_order_acquire);
+}
 
 void ublkpp_tgt::remove(std::unique_ptr< ublkpp_tgt > tgt) { tgt->_p->destroy(); }
+
+ublkpp_tgt ublkpp_tgt_test_peer::make(disk_handle dev) {
+    return ublkpp_tgt{std::make_shared< ublkpp_tgt_impl >(boost::uuids::uuid{}, std::move(dev))};
+}
+void ublkpp_tgt_test_peer::try_drain(ublkpp_tgt& tgt) { tgt._p->try_drain(); }
+UblkIOMetrics& ublkpp_tgt_test_peer::metrics(ublkpp_tgt& tgt) { return tgt._p->metrics; }
 
 void ublkpp_tgt_impl::destroy() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
@@ -497,7 +596,7 @@ void ublkpp_tgt_impl::destroy() {
     // Wait for all queue_handler threads to exit
     TLOGD("Waiting for I/O to stop on {}", str_id)
     for (auto& q : queue_handlers)
-        q.join();
+        if (q.joinable()) q.join();
 
     // De-allocate the ublksrv device and free all unowned memory
     if (ublk_dev) {
@@ -508,7 +607,7 @@ void ublkpp_tgt_impl::destroy() {
 
     // De-allocate our devices now, will cause things like RAID-1 to flush Bitmaps
     // and all FSDisk will close their fd's
-    device.reset();
+    device = disk_handle{};
 
     // Delete the ublk control object (ublkc must be closed!)
     if (device_added) {
@@ -520,12 +619,26 @@ void ublkpp_tgt_impl::destroy() {
     if (ctrl_dev) {
         TLOGD("De-allocate Control for {}", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
+        ctrl_dev = nullptr;
     }
     TLOGI("Stopped {}", str_id)
 }
 
 ublkpp_tgt_impl::~ublkpp_tgt_impl() {
-    // Destructor intentionally left empty - call destroy() explicitly
+    // Queue threads hold qs->tgt (shared_ptr<ublkpp_tgt_impl>) for their entire lifetime, so
+    // this destructor fires only when both ublkpp_tgt._p and every qs->tgt have been released.
+    // The most common case: the last queue thread to exit destructs qs, releasing its copy and
+    // triggering this destructor from inside ublksrv_queue_handler. At that point the thread
+    // is finishing but queue_handlers[i].joinable() is still true (not yet joined/detached).
+    // Joining from within the thread itself would deadlock; detach marks it as self-managed.
+    // The RELEASE_ASSERT ensures begin_shutdown() was called before this point.
+    for (auto& q : queue_handlers) {
+        if (q.joinable()) {
+            RELEASE_ASSERT(_shutting_down.load(std::memory_order_relaxed),
+                           "ublkpp_tgt destroyed with live queue thread; begin_shutdown() was not called");
+            q.detach();
+        }
+    }
 }
 
 } // namespace ublkpp
