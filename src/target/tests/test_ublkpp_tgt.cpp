@@ -164,7 +164,9 @@ TEST(ShutdownDrainDeathTest, WaitForDrainWithoutBeginShutdownAsserts) {
     // would block forever. The RELEASE_ASSERT detects this misuse and aborts.
     std::atomic< int > destroy_count{0};
     auto tgt = ublkpp::ublkpp_tgt_test_peer::make(std::make_shared< TrackedDisk >(destroy_count));
-    ASSERT_DEATH(tgt.wait_for_drain(), "wait_for_drain.*begin_shutdown");
+    // RELEASE_ASSERT routes its message through SISL's spdlog logger, not stderr,
+    // so we can't match the message text. Verify the process aborts (any death).
+    ASSERT_DEATH(tgt.wait_for_drain(), "");
 }
 
 TEST(ShutdownDrain, NonIdlePathFiresDeviceResetWhenLastOpCompletes) {
