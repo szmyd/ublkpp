@@ -301,7 +301,7 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
 
 // See all_idle() for the memory-ordering argument.
 void ublkpp_tgt_impl::try_drain() {
-    if (!_shutting_down.load(std::memory_order_relaxed)) return;
+    if (!_shutting_down.load(std::memory_order_acquire)) return;
     if (metrics.all_idle()) {
         bool expected = false;
         if (_device_reset_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {

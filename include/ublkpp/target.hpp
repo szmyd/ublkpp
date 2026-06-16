@@ -67,10 +67,10 @@ struct ublkpp_tgt {
     // the backing device synchronously (idle case). Must be called after begin_shutdown();
     // calling without begin_shutdown() aborts (RELEASE_ASSERT).
     //
-    // The RAID-1 dirty bitmap flush and clean_unmount=1 write are guaranteed to have completed
-    // by the time this ublkpp_tgt is destroyed (which joins queue threads). Do not assume the
-    // flush is complete the moment wait_for_drain() returns; always drop the ublkpp_tgt
-    // immediately after (or use begin_shutdown() + wait_for_drain() + drop as an atomic unit).
+    // The RAID-1 dirty bitmap flush and clean_unmount=1 write are guaranteed complete when this
+    // returns: _drain_complete is notified only after device = disk_handle{} destructs the
+    // backing store synchronously. Drop the ublkpp_tgt immediately after to join queue threads
+    // (or use begin_shutdown() + wait_for_drain() + drop as an atomic unit).
     void wait_for_drain();
 
     // Cleanly stops the device and removes it from the kernel. Only call after the block device
