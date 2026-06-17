@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0] - 2026-06-17
+
+### Added
+
+- **`ublkpp_tgt::make_for_test(disk_handle)`**: static factory that constructs a `ublkpp_tgt` without kernel infrastructure (no ublk device, no queue threads). Supports `begin_shutdown()` and `wait_for_drain()` for unit-testing shutdown paths.
+- **`ublk_read_bytes_total` / `ublk_write_bytes_total` Prometheus counters**: `UblkIOMetrics` now accumulates bytes transferred on successful IO completion. Counters carry the `entity=<volume_uuid>` label and enable throughput queries via `rate(ublk_read_bytes_total[5m])` / `rate(ublk_write_bytes_total[5m])`.
+- **`ublk_resync_remaining_kib` / `ublk_resync_initial_kib` Prometheus gauges**: expose `dirty_data_est()` at resync start and after each sweep, enabling ETA (`remaining / rate(progress_sum)`) and progress-percentage queries in Grafana. Both gauges reset to 0 when resync completes.
+- **`ublk_read_latency_us` / `ublk_write_latency_us` histograms**: per-IO latency measured from just before `async_iov` to just after, recorded for both successful and failed IOs.
+- **`ublk_read_errors_total` / `ublk_write_errors_total` counters**: incremented whenever `async_iov` returns a negative result, enabling alerting on backing-device failures.
+- **`ublk_raid_is_degraded` gauge**: set to 1 in `__become_degraded` and 0 in `__become_clean`, enabling point-in-time degraded-state queries and Grafana alerts.
+
+### Fixed
+
+- **DISCARD/WRITE_ZEROES UAF on shutdown**: `_queued_other` counter now tracks ops 3 (DISCARD) and 5 (WRITE_ZEROES) in `all_idle()`. Without this, `device = {}` could fire while a coroutine was suspended at `co_await device->async_iov`, causing a use-after-free when the device pointer was dereferenced after destruction.
+
 ## [0.33.2] - 2026-06-17
 ### De-prioritize Resync threads to SCHED_OTHER
 
@@ -24,13 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, reads and writes are rejected with `EAGAIN` before they reach the backing device; `FLUSH` ops are allowed through (they complete instantly with `result=0` and do not dereference `device*`). When the last in-flight op completes and metrics counters reach zero, the backing device is destroyed exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1`. Idempotent; must be called from a thread context (the idle-drain path destroys the backing device synchronously).
-- **`ublkpp_tgt::wait_for_drain()`**: blocks until the backing-store flush triggered by `begin_shutdown()` completes. Returns immediately for the common idle case. Precondition: `begin_shutdown()` must have been called; violation aborts the process (`RELEASE_ASSERT`) rather than hanging.
-- **`ublkpp_tgt::make_for_test(disk_handle)`**: static factory that constructs a `ublkpp_tgt` without kernel infrastructure (no ublk device, no queue threads). Supports `begin_shutdown()` and `wait_for_drain()` for unit-testing shutdown paths.
-- **`ublk_read_bytes_total` / `ublk_write_bytes_total` Prometheus counters**: `UblkIOMetrics` now accumulates bytes transferred on successful IO completion. Counters carry the `entity=<volume_uuid>` label and enable throughput queries via `rate(ublk_read_bytes_total[5m])` / `rate(ublk_write_bytes_total[5m])`.
-- **`ublk_resync_remaining_kib` / `ublk_resync_initial_kib` Prometheus gauges**: expose `dirty_data_est()` at resync start and after each sweep, enabling ETA (`remaining / rate(progress_sum)`) and progress-percentage queries in Grafana. Both gauges reset to 0 when resync completes.
-- **`ublk_read_latency_us` / `ublk_write_latency_us` histograms**: per-IO latency measured from just before `async_iov` to just after, recorded for both successful and failed IOs.
-- **`ublk_read_errors_total` / `ublk_write_errors_total` counters**: incremented whenever `async_iov` returns a negative result, enabling alerting on backing-device failures.
-- **`ublk_raid_is_degraded` gauge**: set to 1 in `__become_degraded` and 0 in `__become_clean`, enabling point-in-time degraded-state queries and Grafana alerts.
 
 ### Fixed
 
