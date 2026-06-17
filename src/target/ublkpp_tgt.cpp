@@ -1,7 +1,9 @@
 #include "ublkpp/target.hpp"
 #include "ublkpp/target_testing.hpp"
 
+#include <pthread.h>
 #include <ranges>
+#include <sched.h>
 #include <semaphore.h>
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
@@ -35,7 +37,9 @@ SISL_OPTION_GROUP(ublkpp_tgt,
                    cxxopts::value< std::uint16_t >()->default_value("1"), "<queue_cnt>"),
                   (qdepth, "", "qdepth", "I/O Queue Depth per target",
                    cxxopts::value< std::uint16_t >()->default_value("128"), "<qd>"),
-                  (feature_zero_copy, "", "feature_zero_copy", "Enable ZeroCopy Feature", cxxopts::value< bool >(), ""))
+                  (feature_zero_copy, "", "feature_zero_copy", "Enable ZeroCopy Feature", cxxopts::value< bool >(), ""),
+                  (sched, "", "sched", "Queue thread scheduler policy (other, fifo)",
+                   cxxopts::value< std::string >()->default_value("fifo"), "<policy>"))
 
 using namespace std::chrono_literals;
 
@@ -159,6 +163,11 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem,
                                    int* queue_ok) {
+    if (SISL_OPTIONS["sched"].as< std::string >() == "fifo") {
+        sched_param sp{.sched_priority = sched_get_priority_max(SCHED_FIFO)};
+        if (int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp); rc != 0)
+            TLOGE("queue {}: failed to set SCHED_FIFO: {}", q_id, strerror(rc))
+    }
     auto qs = std::make_unique< ublkpp_queue_state >(target);
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
