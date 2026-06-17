@@ -1,7 +1,9 @@
 #include "ublkpp/target.hpp"
 #include "ublkpp/target_testing.hpp"
 
+#include <pthread.h>
 #include <ranges>
+#include <sched.h>
 #include <semaphore.h>
 #include <exec/async_scope.hpp>
 #include <exec/inline_scheduler.hpp>
@@ -159,6 +161,8 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
 
 static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, int q_id, sem_t* queue_sem,
                                    int* queue_ok) {
+    sched_param sp{.sched_priority = sched_get_priority_max(SCHED_FIFO)};
+    pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
     auto qs = std::make_unique< ublkpp_queue_state >(target);
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
