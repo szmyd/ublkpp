@@ -1,5 +1,7 @@
 #include "raid1_resync_task.hpp"
 
+#include <pthread.h>
+#include <sched.h>
 #include <ublksrv.h>
 #include <sisl/utility/thread_factory.hpp>
 
@@ -190,10 +192,14 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
     // to a joinable std::thread calls std::terminate(), so join here first.
     if (_resync_task.joinable()) _resync_task.join();
 
-    _resync_task = sisl::named_thread(
-        fmt::format("r_{}", str_uuid.substr(0, 13)),
-        [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
-         compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
+    _resync_task = sisl::named_thread(fmt::format("r_{}", str_uuid.substr(0, 13)),
+                                      [this, uuid = str_uuid, clean = std::move(clean_mirror),
+                                       dirty = std::move(dirty_mirror), compl_cb = std::move(complete)] mutable {
+                                          sched_param sp{.sched_priority = 0};
+                                          if (int rc = pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp); rc != 0)
+                                              RLOGE("resync thread: failed to reset to SCHED_OTHER: {}", strerror(rc))
+                                          _start(uuid, clean, dirty, std::move(compl_cb));
+                                      });
 }
 
 void Raid1ResyncTask::__clean(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {
