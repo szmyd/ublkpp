@@ -344,6 +344,16 @@ TEST(IOBytes, NonDataOpIgnored) {
     EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
 }
 
+TEST(IOBytes, DiscardAndWriteZeroesNotCounted) {
+    // __handle_io_async calls record_io_bytes for all non-FLUSH ops (including DISCARD=3 and
+    // WRITE_ZEROES=5). The function must silently ignore them — only READ/WRITE move bytes.
+    ublkpp::UblkIOMetrics m{"test-bytes-discard"};
+    m.record_io_bytes(3, 4096); // UBLK_IO_OP_DISCARD
+    m.record_io_bytes(5, 4096); // UBLK_IO_OP_WRITE_ZEROES
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
 // ---------------------------------------------------------------------------
 // record_io_latency: dispatches to read or write histogram; flush is ignored.
 // SISL histograms have no shadow atomic so EXPECT_NO_THROW is the only
@@ -388,6 +398,17 @@ TEST(IOError, WriteErrorAccumulates) {
 TEST(IOError, FlushOpIgnored) {
     ublkpp::UblkIOMetrics m{"test-error-flush"};
     m.record_io_error(2); // op=2 (FLUSH), not counted
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOError, DiscardAndWriteZeroesNotCounted) {
+    // __handle_io_async calls record_io_error for all non-FLUSH ops on failure (including
+    // DISCARD=3 and WRITE_ZEROES=5). The function must silently ignore them — errors are
+    // only attributed to READ/WRITE, matching the byte counters.
+    ublkpp::UblkIOMetrics m{"test-error-discard"};
+    m.record_io_error(3); // UBLK_IO_OP_DISCARD
+    m.record_io_error(5); // UBLK_IO_OP_WRITE_ZEROES
     EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
 }
