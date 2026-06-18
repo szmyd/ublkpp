@@ -11,6 +11,7 @@
 #include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "ublkpp/target_testing.hpp"
+#include "metrics/ublk_raid_metrics.hpp"
 
 SISL_LOGGING_INIT(ublk_tgt)
 
@@ -135,7 +136,9 @@ TEST(ShutdownDrain, DiscardAndWriteZeroesAreTrackedInOtherCounter) {
 }
 
 // ---------------------------------------------------------------------------
-// begin_shutdown() / wait_for_drain() via ublkpp_tgt_test_peer (no kernel infra)
+// begin_shutdown() / wait_for_drain() (no kernel infra)
+// make_for_test() is the public factory; tests that also need metrics() or
+// try_drain() use ublkpp_tgt_test_peer directly.
 // ---------------------------------------------------------------------------
 
 TEST(ShutdownDrain, BeginShutdownOnIdleSystemResetsDeviceSynchronously) {
@@ -342,7 +345,9 @@ TEST(IOBytes, NonDataOpIgnored) {
 }
 
 // ---------------------------------------------------------------------------
-// record_io_latency: dispatches to read or write histogram; flush is ignored
+// record_io_latency: dispatches to read or write histogram; flush is ignored.
+// SISL histograms have no shadow atomic so EXPECT_NO_THROW is the only
+// observable here — the bytes/error tests above use atomics instead.
 // ---------------------------------------------------------------------------
 
 TEST(IOLatency, ReadLatencyObserved) {
@@ -385,6 +390,31 @@ TEST(IOError, FlushOpIgnored) {
     m.record_io_error(2); // op=2 (FLUSH), not counted
     EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// UblkRaidMetrics: smoke tests for new methods.
+// SISL gauges have no readable back-channel, so EXPECT_NO_THROW verifies
+// dispatch without value verification — same constraint as the latency tests above.
+// ---------------------------------------------------------------------------
+
+TEST(RaidMetrics, RecordDegradedStateDoesNotThrow) {
+    ublkpp::UblkRaidMetrics m{"test-parent", "test-raid-degraded"};
+    EXPECT_NO_THROW(m.record_degraded_state(true));
+    EXPECT_NO_THROW(m.record_degraded_state(false));
+    EXPECT_NO_THROW(m.record_degraded_state(true)); // toggle is idempotent
+}
+
+TEST(RaidMetrics, RecordResyncInitialSizeDoesNotThrow) {
+    ublkpp::UblkRaidMetrics m{"test-parent", "test-raid-initial-size"};
+    EXPECT_NO_THROW(m.record_resync_initial_size(1024 * 1024)); // 1 MiB at resync start
+    EXPECT_NO_THROW(m.record_resync_initial_size(0));           // clear when resync completes
+}
+
+TEST(RaidMetrics, RecordDirtyPagesWithRemainingBytesDoesNotThrow) {
+    ublkpp::UblkRaidMetrics m{"test-parent", "test-raid-dirty-pages"};
+    EXPECT_NO_THROW(m.record_dirty_pages(10, 10 * 32 * 1024)); // 10 pages × 32 KiB chunks
+    EXPECT_NO_THROW(m.record_dirty_pages(0, 0));               // all clean after resync
 }
 
 int main(int argc, char* argv[]) {
