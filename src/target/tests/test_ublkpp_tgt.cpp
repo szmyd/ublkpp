@@ -17,13 +17,6 @@ SISL_LOGGING_INIT(ublk_tgt)
 
 SISL_OPTIONS_ENABLE(logging)
 
-struct TrackedDisk : ublkpp::ublk_disk {
-    std::atomic< int >& _destroy_count;
-    explicit TrackedDisk(std::atomic< int >& counter) : _destroy_count(counter) {}
-    ~TrackedDisk() override { _destroy_count.fetch_add(1, std::memory_order_relaxed); }
-    std::string id() const noexcept override { return "test-tracked-disk"; }
-};
-
 TEST(cqe_state, NextStateAllocatesDistinctStates) {
     ublkpp::async_io io{};
     io._pool.reserve(2);
@@ -47,6 +40,18 @@ TEST(cqe_state, BuildCqeStateDataEncodesTargetBit) {
     EXPECT_EQ(state, decoded);
     EXPECT_EQ(state->_owner, &io);
 }
+
+// ---------------------------------------------------------------------------
+// TrackedDisk: minimal ublk_disk whose destructor records that device.reset()
+// fired. Used to verify begin_shutdown() / wait_for_drain() drain behaviour
+// without kernel infrastructure (queue threads, ublksrv handshake, etc.).
+// ---------------------------------------------------------------------------
+struct TrackedDisk : ublkpp::ublk_disk {
+    std::atomic< int >& _destroy_count;
+    explicit TrackedDisk(std::atomic< int >& counter) : _destroy_count(counter) {}
+    ~TrackedDisk() override { _destroy_count.fetch_add(1, std::memory_order_relaxed); }
+    std::string id() const noexcept override { return "test-tracked-disk"; }
+};
 
 // ---------------------------------------------------------------------------
 // Shutdown drain: all_idle() predicate
@@ -105,12 +110,12 @@ TEST(ShutdownDrain, SingleReadCounterGatesAllIdle) {
     m._queued_reads.fetch_add(1, std::memory_order_relaxed);
     EXPECT_FALSE(m.all_idle());
     m._queued_reads.fetch_sub(1, std::memory_order_relaxed);
-    EXPECT_TRUE(m.all_idle()); // FLUSH would need to drain here if it had a counter; it doesn't
+    EXPECT_TRUE(m.all_idle());
 }
 
 TEST(ShutdownDrain, DiscardAndWriteZeroesAreTrackedInOtherCounter) {
     // DISCARD and WRITE_ZEROES access device* via async_iov just like reads/writes.
-    // They must be counted in _queued_other so all_idle() → device = {} only
+    // They must be counted in _queued_other so all_idle() → device.reset() only
     // fires when no coroutine is suspended at co_await device->async_iov.
     ublkpp::UblkIOMetrics m{"test-other-counter"};
 
@@ -131,9 +136,7 @@ TEST(ShutdownDrain, DiscardAndWriteZeroesAreTrackedInOtherCounter) {
 }
 
 // ---------------------------------------------------------------------------
-// begin_shutdown() / wait_for_drain() (no kernel infra)
-// make_for_test() is the public factory; tests that also need metrics() or
-// try_drain() use ublkpp_tgt_test_peer directly.
+// begin_shutdown() / wait_for_drain() via make_for_test (no kernel infra)
 // ---------------------------------------------------------------------------
 
 TEST(ShutdownDrain, BeginShutdownOnIdleSystemResetsDeviceSynchronously) {

@@ -74,9 +74,6 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
 static constexpr int k_io_idle_secs = 20;
 
 struct ublkpp_queue_state {
-    // shared_ptr keeps the impl alive through the full queue-thread lifetime so the destructor
-    // fires only after ALL queue threads have exited — enabling the RELEASE_ASSERT in
-    // ~ublkpp_tgt_impl() and preventing UAF on qs->tgt after device = {}.
     std::shared_ptr< ublkpp_tgt_impl > tgt;
     exec::async_scope scope;
     bool is_idle{false};
@@ -172,9 +169,6 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
         if (int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp); rc != 0)
             TLOGE("queue {}: failed to set SCHED_FIFO: {}", q_id, strerror(rc))
     }
-    // qs->tgt holds a shared_ptr copy so the impl stays alive for the thread's full lifetime.
-    // After sem_post, start() may drop ublkpp_tgt and destroy _p; without qs->tgt the impl
-    // would be freed while this thread is still running.
     auto qs = std::make_unique< ublkpp_queue_state >(target);
 
     // Initialize UBlkSrv IOUring queue and bind queue state pointer
@@ -290,9 +284,9 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         return std::unexpected(std::make_error_condition(std::errc::io_error));
     }
 
-    // Drop start()'s reference; the impl is now co-owned by ublkpp_tgt._p (set by run() after
-    // we return) and each queue thread's qs->tgt. The impl stays alive until both ublkpp_tgt
-    // is destroyed AND all queue threads exit and their qs destructs.
+    // Drop start()'s reference; the impl is now owned by ublkpp_tgt._p and each queue
+    // thread's qs->tgt (shared_ptr<ublkpp_tgt_impl>). The impl stays alive until both
+    // ublkpp_tgt is destroyed AND all queue threads exit and their qs destructs.
     tgt.reset();
 
     // Start processing I/Os
