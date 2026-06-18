@@ -82,7 +82,6 @@ struct ublkpp_tgt {
     // Asserts (RELEASE_ASSERT) if called on a make_for_test() target (dev_data is null).
     int device_id() const;
 
-    // Calling run() or remove() on the result is undefined behaviour.
     static ublkpp_tgt make_for_test(disk_handle dev);
 
 private:
