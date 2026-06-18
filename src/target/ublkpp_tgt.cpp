@@ -134,8 +134,6 @@ static exec::task< void > run_queue_loop(ublksrv_queue const* q, ublkpp_queue_st
                         if (!qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
                             if (auto dev = qs->tgt->device.load()) dev->probe_tick(q);
                         }
-                        // Do not re-arm probe timeout after shutdown: prevents spurious
-                        // queue-thread wakeups during drain.
                         if (qs->is_idle && !qs->tgt->_shutting_down.load(std::memory_order_relaxed))
                             submit_probe_timeout(q);
                     }
@@ -190,7 +188,7 @@ static void* ublksrv_queue_handler(std::shared_ptr< ublkpp_tgt_impl > target, in
     // atomic needed: start() reads queue_ok[] only after all sem_waits complete.
     if (!q) *queue_ok = 0;
     sem_post(queue_sem);
-    target.reset(); // drop the function-parameter copy; qs->tgt still holds the impl alive
+    target.reset();
 
     // If queue initialization failed, exit
     if (!q) {
