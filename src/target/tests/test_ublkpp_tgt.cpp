@@ -17,11 +17,6 @@ SISL_LOGGING_INIT(ublk_tgt)
 
 SISL_OPTIONS_ENABLE(logging)
 
-// ---------------------------------------------------------------------------
-// TrackedDisk: minimal ublk_disk whose destructor records that device = {}
-// fired. Used to verify begin_shutdown() / wait_for_drain() drain behaviour
-// without kernel infrastructure (queue threads, ublksrv handshake, etc.).
-// ---------------------------------------------------------------------------
 struct TrackedDisk : ublkpp::ublk_disk {
     std::atomic< int >& _destroy_count;
     explicit TrackedDisk(std::atomic< int >& counter) : _destroy_count(counter) {}
