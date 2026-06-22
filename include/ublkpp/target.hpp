@@ -79,7 +79,7 @@ struct ublkpp_tgt {
 
     std::filesystem::path device_path() const;
     disk_handle device() const;
-    // Asserts (RELEASE_ASSERT) if dev_data is null (e.g. targets created via ublkpp_tgt_test_peer).
+    // Asserts (RELEASE_ASSERT) if called on a make_for_test() target (dev_data is null).
     int device_id() const;
 
 private:
