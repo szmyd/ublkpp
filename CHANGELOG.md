@@ -8,16 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`ublkpp_tgt::make_for_test(disk_handle)`**: static factory that constructs a `ublkpp_tgt` without kernel infrastructure (no ublk device, no queue threads). Supports `begin_shutdown()` and `wait_for_drain()` for unit-testing shutdown paths.
 - **`ublk_read_bytes_total` / `ublk_write_bytes_total` Prometheus counters**: `UblkIOMetrics` now accumulates bytes transferred on successful IO completion. Counters carry the `entity=<volume_uuid>` label and enable throughput queries via `rate(ublk_read_bytes_total[5m])` / `rate(ublk_write_bytes_total[5m])`.
 - **`ublk_resync_remaining_kib` / `ublk_resync_initial_kib` Prometheus gauges**: expose `dirty_data_est()` at resync start and after each sweep, enabling ETA (`remaining / rate(progress_sum)`) and progress-percentage queries in Grafana. Both gauges reset to 0 when resync completes.
 - **`ublk_read_latency_us` / `ublk_write_latency_us` histograms**: per-IO latency measured from just before `async_iov` to just after, recorded for both successful and failed IOs.
 - **`ublk_read_errors_total` / `ublk_write_errors_total` counters**: incremented whenever `async_iov` returns a negative result, enabling alerting on backing-device failures.
 - **`ublk_raid_is_degraded` gauge**: set to 1 in `__become_degraded` and 0 in `__become_clean`, enabling point-in-time degraded-state queries and Grafana alerts.
-
-### Fixed
-
-- **DISCARD/WRITE_ZEROES UAF on shutdown**: `_queued_other` counter now tracks ops 3 (DISCARD) and 5 (WRITE_ZEROES) in `all_idle()`. Without this, `device = {}` could fire while a coroutine was suspended at `co_await device->async_iov`, causing a use-after-free when the device pointer was dereferenced after destruction.
 
 ## [0.33.2] - 2026-06-17
 ### De-prioritize Resync threads to SCHED_OTHER

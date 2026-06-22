@@ -603,7 +603,6 @@ ublkpp_tgt ublkpp_tgt_test_peer::make(disk_handle dev) {
 }
 void ublkpp_tgt_test_peer::try_drain(ublkpp_tgt& tgt) { tgt._p->try_drain(); }
 UblkIOMetrics& ublkpp_tgt_test_peer::metrics(ublkpp_tgt& tgt) { return tgt._p->metrics; }
-ublkpp_tgt ublkpp_tgt::make_for_test(disk_handle dev) { return ublkpp_tgt_test_peer::make(std::move(dev)); }
 
 void ublkpp_tgt_impl::destroy() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
