@@ -36,4 +36,9 @@ public:
     const uint8_t* data() const noexcept;
 };
 
+// Race-free per-byte acquire snapshot of the live superbitmap into dst.
+// NEVER use memcpy for this: the source is offset-74 misaligned, 4022 bytes long,
+// and concurrently mutated by set_bit's atomic fetch_or (UB + TSan).
+void snapshot_superbitmap(uint8_t const* src, uint8_t* dst) noexcept;
+
 } // namespace ublkpp::raid1

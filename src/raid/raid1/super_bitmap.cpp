@@ -80,4 +80,12 @@ uint8_t* SuperBitmap::data() noexcept { return _bits; }
 
 const uint8_t* SuperBitmap::data() const noexcept { return _bits; }
 
+void snapshot_superbitmap(uint8_t const* src, uint8_t* dst) noexcept {
+    // Acquire pairs per-object with set_bit's release fetch_or on src[i]:
+    // any bit observed set is guaranteed to be in the durable image (superset —
+    // at worst a redundant resync, never a missed resync).
+    for (size_t i = 0; i < k_superbitmap_size; ++i)
+        dst[i] = std::atomic_ref< uint8_t const >(src[i]).load(std::memory_order_acquire);
+}
+
 } // namespace ublkpp::raid1

@@ -384,6 +384,93 @@ TEST_F(SuperBitmapTest, NextSetBitByteBoundary) {
     EXPECT_EQ(sb.next_set_bit(17), k_superbitmap_bits);
 }
 
+// snapshot_superbitmap tests
+TEST_F(SuperBitmapTest, SnapshotRoundTrip) {
+    SuperBitmap sb(buffer.get());
+    sb.set_bit(0);
+    sb.set_bit(42);
+    sb.set_bit(32175);
+
+    auto dst = std::make_unique< uint8_t[] >(k_superbitmap_size);
+    snapshot_superbitmap(buffer.get(), dst.get());
+
+    EXPECT_EQ(std::memcmp(buffer.get(), dst.get(), k_superbitmap_size), 0);
+}
+
+TEST_F(SuperBitmapTest, SnapshotPicksUpFlip) {
+    SuperBitmap sb(buffer.get());
+    sb.set_bit(5);
+
+    auto dst = std::make_unique< uint8_t[] >(k_superbitmap_size);
+    snapshot_superbitmap(buffer.get(), dst.get());
+    EXPECT_NE(dst[0], 0);
+
+    sb.clear_bit(5);
+    sb.set_bit(6);
+    std::memset(dst.get(), 0, k_superbitmap_size);
+    snapshot_superbitmap(buffer.get(), dst.get());
+
+    EXPECT_EQ(dst[0] & (1U << 5), 0U);
+    EXPECT_NE(dst[0] & (1U << 6), 0U);
+}
+
+TEST_F(SuperBitmapTest, SnapshotBoundaryBits) {
+    SuperBitmap sb(buffer.get());
+    sb.set_bit(0);
+    sb.set_bit(32175);
+
+    auto dst = std::make_unique< uint8_t[] >(k_superbitmap_size);
+    snapshot_superbitmap(buffer.get(), dst.get());
+
+    EXPECT_NE(dst[0] & 0x01, 0U);
+    EXPECT_NE(dst[k_superbitmap_size - 1] & 0x80, 0U);
+}
+
+TEST_F(SuperBitmapTest, SnapshotAsanTailGuard) {
+    SuperBitmap sb(buffer.get());
+    sb.set_bit(0);
+
+    // Allocate exactly k_superbitmap_size bytes; ASan red-zone immediately follows.
+    // Any read past byte 4021 triggers ASan heap-buffer-overflow.
+    auto dst = std::make_unique< uint8_t[] >(k_superbitmap_size);
+    snapshot_superbitmap(buffer.get(), dst.get());
+
+    EXPECT_NE(dst[0] & 0x01, 0U);
+    EXPECT_EQ(dst[k_superbitmap_size - 1], buffer[k_superbitmap_size - 1]);
+}
+
+TEST_F(SuperBitmapTest, SnapshotConcurrencyTSan) {
+    // Thread S hammers set_bit on bits 0..63 (bytes 0..7).
+    // Thread F repeatedly snapshots; asserts every bit it sees was actually set.
+    // TSan must report no data races.
+    SuperBitmap sb(buffer.get());
+    constexpr int k_iters = 500;
+    constexpr int k_setter_bits = 64;
+
+    std::barrier sync_point{2};
+    std::atomic< bool > stop{false};
+
+    std::thread setter([&]() {
+        sync_point.arrive_and_wait();
+        for (int i = 0; i < k_iters; ++i) {
+            for (int bit = 0; bit < k_setter_bits; ++bit)
+                sb.set_bit(static_cast< uint32_t >(bit));
+        }
+        stop.store(true, std::memory_order_release);
+    });
+
+    auto dst = std::make_unique< uint8_t[] >(k_superbitmap_size);
+    sync_point.arrive_and_wait();
+    while (!stop.load(std::memory_order_acquire)) {
+        snapshot_superbitmap(buffer.get(), dst.get());
+        // Superset property: no bit in dst can be set unless set_bit was called for it.
+        for (int i = 8; i < static_cast< int >(k_superbitmap_size); ++i)
+            ASSERT_EQ(dst[i], 0) << "Byte " << i << " outside setter range must stay zero";
+    }
+
+    setter.join();
+}
+
 // Integration test with actual SuperBlock
 TEST_F(SuperBitmapTest, IntegrationWithSuperBlock) {
     // Allocate a real SuperBlock
