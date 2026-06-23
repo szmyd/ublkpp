@@ -374,6 +374,9 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
             std::chrono::duration_cast< std::chrono::microseconds >(std::chrono::steady_clock::now() - io_start)
                 .count());
         qs->tgt->metrics.record_io_latency(op, latency_us);
+        // iov_len is the requested transfer size. ublk delivers full completions at the block
+        // layer (no short reads/writes), so iov_len is exact. result is not reliable as a byte
+        // count: drivers may co_return 0 on success rather than the byte count.
         if (result >= 0) bytes_transferred = static_cast< uint32_t >(iov.iov_len);
     }
 

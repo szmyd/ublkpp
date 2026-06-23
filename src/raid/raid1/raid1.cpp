@@ -287,6 +287,10 @@ void Raid1Disk::__init_bitmap_and_degraded_route() {
               "full resync to {} scheduled to restore read-determinism",
               _str_uuid, *_device_a->disk, *_device_b->disk)
     }
+    if (_raid_metrics) { // GCOVR_EXCL_BR_LINE
+        // LCOV_EXCL_START
+        _raid_metrics->record_degraded_state(_read_route_cache.load(std::memory_order_acquire) != read_route::EITHER);
+    } // LCOV_EXCL_STOP
 }
 
 void Raid1Disk::__become_active() {
