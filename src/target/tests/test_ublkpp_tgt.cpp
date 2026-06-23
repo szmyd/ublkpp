@@ -11,6 +11,7 @@
 #include "ublkpp/lib/cqe_state.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
 #include "ublkpp/target_testing.hpp"
+#include "metrics/ublk_raid_metrics.hpp"
 
 SISL_LOGGING_INIT(ublk_tgt)
 
@@ -313,6 +314,126 @@ TEST(ApplyOpForTest, FlushOpDoesNotTouchAnyCounter) {
     EXPECT_EQ(m._queued_writes.load(), 0u);
     EXPECT_EQ(m._queued_other.load(), 0u);
     EXPECT_TRUE(m.all_idle());
+}
+
+// ---------------------------------------------------------------------------
+// record_io_bytes: byte counter accumulation
+// ---------------------------------------------------------------------------
+
+TEST(IOBytes, ReadBytesAccumulate) {
+    ublkpp::UblkIOMetrics m{"test-bytes-read"};
+    m.record_io_bytes(0, 4096);
+    m.record_io_bytes(0, 8192);
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 12288u);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOBytes, WriteBytesAccumulate) {
+    ublkpp::UblkIOMetrics m{"test-bytes-write"};
+    m.record_io_bytes(1, 16384);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 16384u);
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOBytes, NonDataOpIgnored) {
+    ublkpp::UblkIOMetrics m{"test-bytes-flush"};
+    m.record_io_bytes(2, 512); // op=2 (FLUSH), not 0 or 1
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOBytes, DiscardAndWriteZeroesNotCounted) {
+    // __handle_io_async calls record_io_bytes for all non-FLUSH ops (including DISCARD=3 and
+    // WRITE_ZEROES=5). The function must silently ignore them — only READ/WRITE move bytes.
+    ublkpp::UblkIOMetrics m{"test-bytes-discard"};
+    m.record_io_bytes(3, 4096); // UBLK_IO_OP_DISCARD
+    m.record_io_bytes(5, 4096); // UBLK_IO_OP_WRITE_ZEROES
+    EXPECT_EQ(m._read_bytes_total.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_bytes_total.load(std::memory_order_relaxed), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// record_io_latency: dispatches to read or write histogram; flush is ignored.
+// SISL histograms have no shadow atomic so EXPECT_NO_THROW is the only
+// observable here — the bytes/error tests above use atomics instead.
+// ---------------------------------------------------------------------------
+
+TEST(IOLatency, ReadLatencyObserved) {
+    ublkpp::UblkIOMetrics m{"test-latency-read"};
+    EXPECT_NO_THROW(m.record_io_latency(0, 1000));
+    EXPECT_NO_THROW(m.record_io_latency(0, 512));
+}
+
+TEST(IOLatency, WriteLatencyObserved) {
+    ublkpp::UblkIOMetrics m{"test-latency-write"};
+    EXPECT_NO_THROW(m.record_io_latency(1, 2048));
+}
+
+TEST(IOLatency, FlushOpIgnored) {
+    ublkpp::UblkIOMetrics m{"test-latency-flush"};
+    EXPECT_NO_THROW(m.record_io_latency(2, 9999)); // op=2 (FLUSH) — no histogram to observe
+}
+
+// ---------------------------------------------------------------------------
+// record_io_error: error counters accumulate per op type
+// ---------------------------------------------------------------------------
+
+TEST(IOError, ReadErrorAccumulates) {
+    ublkpp::UblkIOMetrics m{"test-error-read"};
+    m.record_io_error(0);
+    m.record_io_error(0);
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 2u);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOError, WriteErrorAccumulates) {
+    ublkpp::UblkIOMetrics m{"test-error-write"};
+    m.record_io_error(1);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOError, FlushOpIgnored) {
+    ublkpp::UblkIOMetrics m{"test-error-flush"};
+    m.record_io_error(2); // op=2 (FLUSH), not counted
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOError, DiscardAndWriteZeroesNotCounted) {
+    // __handle_io_async calls record_io_error for all non-FLUSH ops on failure (including
+    // DISCARD=3 and WRITE_ZEROES=5). The function must silently ignore them — errors are
+    // only attributed to READ/WRITE, matching the byte counters.
+    ublkpp::UblkIOMetrics m{"test-error-discard"};
+    m.record_io_error(3); // UBLK_IO_OP_DISCARD
+    m.record_io_error(5); // UBLK_IO_OP_WRITE_ZEROES
+    EXPECT_EQ(m._read_errors.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_errors.load(std::memory_order_relaxed), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// UblkRaidMetrics: smoke tests for new methods.
+// SISL gauges have no readable back-channel, so EXPECT_NO_THROW verifies
+// dispatch without value verification — same constraint as the latency tests above.
+// ---------------------------------------------------------------------------
+
+TEST(RaidMetrics, RecordDegradedStateDoesNotThrow) {
+    ublkpp::UblkRaidMetrics m{"test-parent", "test-raid-degraded"};
+    EXPECT_NO_THROW(m.record_degraded_state(true));
+    EXPECT_NO_THROW(m.record_degraded_state(false));
+    EXPECT_NO_THROW(m.record_degraded_state(true)); // toggle is idempotent
+}
+
+TEST(RaidMetrics, RecordResyncInitialSizeDoesNotThrow) {
+    ublkpp::UblkRaidMetrics m{"test-parent", "test-raid-initial-size"};
+    EXPECT_NO_THROW(m.record_resync_initial_size(1024 * 1024)); // 1 MiB at resync start
+    EXPECT_NO_THROW(m.record_resync_initial_size(0));           // clear when resync completes
+}
+
+TEST(RaidMetrics, RecordDirtyPagesWithRemainingBytesDoesNotThrow) {
+    ublkpp::UblkRaidMetrics m{"test-parent", "test-raid-dirty-pages"};
+    EXPECT_NO_THROW(m.record_dirty_pages(10, 10 * 32 * 1024)); // 10 pages × 32 KiB chunks
+    EXPECT_NO_THROW(m.record_dirty_pages(0, 0));               // all clean after resync
 }
 
 int main(int argc, char* argv[]) {

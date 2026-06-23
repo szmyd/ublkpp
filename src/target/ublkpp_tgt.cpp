@@ -1,6 +1,7 @@
 #include "ublkpp/target.hpp"
 #include "ublkpp/target_testing.hpp"
 
+#include <chrono>
 #include <pthread.h>
 #include <ranges>
 #include <sched.h>
@@ -355,6 +356,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         co_return;
     }
 
+    uint32_t bytes_transferred = 0;
     int result;
     if (op == UBLK_IO_OP_FLUSH) {
         result = 0;
@@ -366,13 +368,22 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
         // coroutines spawned in the same CQE batch before the kernel sees the SQE. The coroutine
         // frame is alive across co_await, so the iov is valid through the whole IO lifetime.
         iovec iov{.iov_base = reinterpret_cast< void* >(iod->addr), .iov_len = iod->nr_sectors << SECTOR_SHIFT};
+        auto const io_start = std::chrono::steady_clock::now();
         result = co_await device->async_iov(q, data, &iov, 1, iod->start_sector << SECTOR_SHIFT);
+        auto const latency_us = static_cast< uint64_t >(
+            std::chrono::duration_cast< std::chrono::microseconds >(std::chrono::steady_clock::now() - io_start)
+                .count());
+        qs->tgt->metrics.record_io_latency(op, latency_us);
+        // iov_len not result: ublk delivers full completions; drivers may co_return 0 on success.
+        if (result >= 0) bytes_transferred = static_cast< uint32_t >(iov.iov_len);
     }
 
     qs->tgt->metrics.record_queue_depth_change(q, op, false);
+    if (bytes_transferred > 0) qs->tgt->metrics.record_io_bytes(op, bytes_transferred);
 
     if (0 > result) [[unlikely]] {
         TLOGE("Returning error for [tag:{:#0x}] [res:{}]", data->tag, result)
+        qs->tgt->metrics.record_io_error(op);
     } else {
         TLOGT("I/O complete [tag:{:#0x}] [res:{}]", data->tag, result)
     }

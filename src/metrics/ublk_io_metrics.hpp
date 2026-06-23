@@ -23,12 +23,19 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     // Tracks UBLK_IO_OP_DISCARD (op=3) and UBLK_IO_OP_WRITE_ZEROES (op=5). Both ops call
     // device->async_iov just like reads/writes, so they must participate in the idle gate.
     std::atomic< uint64_t > _queued_other{0};
+    std::atomic< uint64_t > _read_bytes_total{0};
+    std::atomic< uint64_t > _write_bytes_total{0};
+    std::atomic< uint64_t > _read_errors{0};
+    std::atomic< uint64_t > _write_errors{0};
 
     void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment);
     // Test-only: same counter dispatch as record_queue_depth_change but without the
     // ublksrv_queue null guard and without histogram observation. Allows unit tests to verify
     // the op→counter mapping (op 0→reads, 1→writes, 3/5→other) without a live queue.
     void apply_op_for_test(uint8_t op, bool is_increment);
+    void record_io_bytes(uint8_t op, uint32_t bytes);
+    void record_io_latency(uint8_t op, uint64_t microseconds);
+    void record_io_error(uint8_t op);
 
     // Returns true when all in-flight op counters are zero (reads, writes, and other ops).
     //

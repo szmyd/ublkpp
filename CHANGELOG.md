@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0] - 2026-06-17
+
+### Added
+
+- **`ublk_read_bytes_total` / `ublk_write_bytes_total` Prometheus counters**: `UblkIOMetrics` now accumulates bytes transferred on successful IO completion. Counters carry the `entity=<volume_uuid>` label and enable throughput queries via `rate(ublk_read_bytes_total[5m])` / `rate(ublk_write_bytes_total[5m])`.
+- **`ublk_resync_remaining_kib` / `ublk_resync_initial_kib` Prometheus gauges**: expose `dirty_data_est()` at resync start and after each sweep, enabling ETA (`remaining / rate(progress_sum)`) and progress-percentage queries in Grafana. Both gauges reset to 0 when resync completes.
+- **`ublk_read_latency_us` / `ublk_write_latency_us` histograms**: per-IO latency measured from just before `async_iov` to just after, recorded for both successful and failed IOs.
+- **`ublk_read_errors_total` / `ublk_write_errors_total` counters**: incremented whenever `async_iov` returns a negative result, enabling alerting on backing-device failures.
+- **`ublk_raid_is_degraded` gauge**: set to 1 in `__become_degraded` and 0 in `__become_clean`, enabling point-in-time degraded-state queries and Grafana alerts.
+
 ## [0.33.2] - 2026-06-17
 ### De-prioritize Resync threads to SCHED_OTHER
 
