@@ -209,10 +209,26 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
         }
     } else { // RECOVERY Path — reconnect to a kernel-preserved device (UBLK_F_USER_RECOVERY)
         tgt->ctrl_dev = ublksrv_ctrl_recover_init(tgt->dev_data.get());
+        bool need_fresh_create = false;
+
         if (!tgt->ctrl_dev) {
-            // Kernel device is gone (e.g. node reboot cleared all ublk state). Fall back to
-            // normal creation so the volume comes back without manual intervention.
-            TLOGW("Cannot recover disk {} (kernel device gone), falling back to fresh creation", tgt->device.load())
+            // /dev/ublk-control itself unavailable — fall back to fresh creation.
+            TLOGW("Cannot recover disk {} (ctrl init failed), falling back to fresh creation", tgt->device.load())
+            need_fresh_create = true;
+        } else if (auto ret = ublksrv_ctrl_get_info(tgt->ctrl_dev); ret < 0) {
+            // Kernel device is gone (e.g. node rebooted — all ublk state is in-memory only).
+            // Fall back to fresh creation so the volume comes back without manual intervention.
+            TLOGW("Cannot recover disk {} (device not in kernel, ret={}), falling back to fresh creation",
+                  tgt->device.load(), ret)
+            ublksrv_ctrl_deinit(tgt->ctrl_dev);
+            tgt->ctrl_dev = nullptr;
+            need_fresh_create = true;
+        } else if (auto ret = ublksrv_ctrl_start_recovery(tgt->ctrl_dev); ret < 0) {
+            TLOGE("Cannot start recovery for disk {}: {}", tgt->device.load(), ret)
+            return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
+        }
+
+        if (need_fresh_create) {
             tgt->device_recovering = false;
             if (tgt->ctrl_dev = ublksrv_ctrl_init(tgt->dev_data.get()); !tgt->ctrl_dev) {
                 TLOGE("Cannot init disk {}", tgt->device.load())
@@ -220,15 +236,6 @@ static std::expected< std::filesystem::path, std::error_condition > start(std::s
             }
             if (auto ret = ublksrv_ctrl_add_dev(tgt->ctrl_dev); 0 > ret) {
                 TLOGE("Cannot add disk {}: {}", tgt->device.load(), ret)
-                return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
-            }
-        } else {
-            if (auto ret = ublksrv_ctrl_get_info(tgt->ctrl_dev); ret < 0) {
-                TLOGE("Cannot get Ctrl Info for disk {}", tgt->device.load())
-                return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
-            }
-            if (auto ret = ublksrv_ctrl_start_recovery(tgt->ctrl_dev); ret < 0) {
-                TLOGE("Cannot start recovery for disk {}: {}", tgt->device.load(), ret)
                 return std::unexpected(std::make_error_condition(std::errc::operation_not_permitted));
             }
         }
