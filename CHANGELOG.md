@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.3] - 2026-06-27
+
+### Fixed
+
+- **`ublkpp_tgt`: fall back to fresh device creation when kernel ublk state is gone after reboot**: previously, if `device_id >= 0` was passed to `ublkpp_tgt::run()` (recovery mode) but `ublksrv_ctrl_recover_init` returned NULL (e.g. node reboot cleared all `UBLK_F_USER_RECOVERY` state), the function returned an error and the volume was never recreated. Now, the recovery path detects the NULL return, resets `device_recovering = false`, and falls through to normal `ublksrv_ctrl_init + ublksrv_ctrl_add_dev` creation — bringing `/dev/ublkb*` and `/dev/ublkc*` back without manual intervention.
+
 ## [0.33.2] - 2026-06-17
 ### De-prioritize Resync threads to SCHED_OTHER
 
