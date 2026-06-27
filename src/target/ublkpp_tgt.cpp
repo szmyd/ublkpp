@@ -598,18 +598,18 @@ void ublkpp_tgt_impl::destroy() {
     auto const str_id = fmt::format("Device {} [uuid:{}]", device_path.native(), to_string(volume_uuid));
     // First send a signal to stop the ublk device and exit all I/O queues
     if (ublk_dev) {
-        TLOGD("Stopping {}", str_id)
+        TLOGI("Stopping {}", str_id)
         ublksrv_ctrl_stop_dev(ctrl_dev);
     }
 
     // Wait for all queue_handler threads to exit
-    TLOGD("Waiting for I/O to stop on {}", str_id)
+    TLOGI("Waiting for I/O to stop on {}", str_id)
     for (auto& q : queue_handlers)
         if (q.joinable()) q.join();
 
     // De-allocate the ublksrv device and free all unowned memory
     if (ublk_dev) {
-        TLOGD("De-allocate {}", str_id)
+        TLOGI("De-allocate {}", str_id)
         ublksrv_dev_deinit(ublk_dev);
         ublk_dev = nullptr;
     }
@@ -620,13 +620,13 @@ void ublkpp_tgt_impl::destroy() {
 
     // Delete the ublk control object (ublkc must be closed!)
     if (device_added) {
-        TLOGD("Stopping Control for {}", str_id)
+        TLOGI("Stopping Control for {}", str_id)
         ublksrv_ctrl_del_dev(ctrl_dev);
     }
 
     // De-allocate the ublksrv control device finally
     if (ctrl_dev) {
-        TLOGD("De-allocate Control for {}", str_id)
+        TLOGI("De-allocate Control for {}", str_id)
         ublksrv_ctrl_deinit(ctrl_dev);
         ctrl_dev = nullptr;
     }
