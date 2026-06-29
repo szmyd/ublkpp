@@ -32,12 +32,12 @@ struct ublkpp_tgt {
     // operation_not_permitted on permission/setup failure, invalid_argument on bad geometry).
     static run_result_t run(boost::uuids::uuid const& vol_id, disk_handle device, int device_id = -1);
 
-    // Signals the target to begin a graceful drain. After this call, reads and writes are
-    // rejected with EAGAIN before they reach the backing device; FLUSH ops are allowed through
-    // (they complete instantly with result=0 and do not access device*). In-flight ops complete
-    // normally. When the last in-flight op finishes (or immediately if the system is already
-    // idle), the backing device is destroyed exactly once — flushing the RAID-1 dirty bitmap and
-    // writing clean_unmount=1. Idempotent: subsequent calls are no-ops (guarded by CAS).
+    // Signals the target to begin a graceful drain. After this call, new I/O is dropped (left
+    // uncompleted / OWNED_BY_SRV) so the kernel requeues it to the next daemon under
+    // UBLK_F_USER_RECOVERY(_REISSUE) when this process exits via the recovery path (drop the
+    // unique_ptr, NOT remove()). In-flight ops complete normally. When the last in-flight op
+    // finishes (or immediately if already idle), the backing device is destroyed exactly once,
+    // flushing the RAID-1 dirty bitmap and writing clean_unmount=1. Idempotent (guarded by CAS).
     // Note: if there are in-flight ops when this is called, it returns immediately and
     // the backing device is destroyed later on a queue thread; there is no completion callback.
     // Must be called from a normal thread context, not a signal handler: the idle-drain path

@@ -338,21 +338,17 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     // The seq_cst increment participates in the C++ total order S alongside begin_shutdown's
     // seq_cst store and all_idle()'s seq_cst loads. Either the increment precedes the store in
     // S (begin_shutdown's counter reads see it → skips reset) or the store precedes the
-    // increment in S (our gate check below sees _shutting_down=true → rejects).
+    // increment in S (our gate check below sees _shutting_down=true → drops).
     qs->tgt->metrics.record_queue_depth_change(q, op, true);
 
-    // Drain gate: reject reads/writes during shutdown before they reach the backing device.
-    // FLUSH is exempted: it completes instantly with result=0 and never dereferences device*.
-    // EAGAIN signals "temporarily unavailable, retry" so filesystems back off and retry once
-    // the new process reconnects the device (UBLK_F_USER_RECOVERY hot-restart path).
-    if (op != UBLK_IO_OP_FLUSH && qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
-        qs->tgt->metrics.record_queue_depth_change(q, op, false);
-        TLOGD("Rejecting I/O [tag:{:#0x}] during shutdown", data->tag)
-        ublksrv_complete_io(q, data->tag, -EAGAIN);
-        // The rejected op may be the last in-flight — check drain here too.
-        // Without this, the common case (ops in-flight when begin_shutdown fires) would
-        // decrement to zero in this branch and never trigger device = {}.
-        qs->tgt->try_drain();
+    // Drain gate: during shutdown DROP every op (leave it uncompleted / OWNED_BY_SRV) so the kernel
+    // requeues it to the next daemon under UBLK_F_USER_RECOVERY(_REISSUE) on exit. Completing with
+    // -EAGAIN instead maps to BLK_STS_AGAIN, which the block layer logs as "nonblocking retry error"
+    // and fails.
+    if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) {
+        qs->tgt->metrics.record_queue_depth_change(q, op, false); // undo pre-gate increment (no-op for FLUSH)
+        TLOGD("Dropping I/O [tag:{:#0x}] during shutdown", data->tag)
+        qs->tgt->try_drain(); // dropped op may be the last in-flight
         co_return;
     }
 
@@ -389,9 +385,7 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
     }
     ublksrv_complete_io(q, data->tag, result);
 
-    // FLUSH reaches here too: it skips the gate and the counter, so this load is the only
-    // shutdown check it sees. try_drain() after FLUSH is safe — if counters are already zero
-    // the CAS protects against double-reset; if not, it is a benign early check.
+    // Fire device = {} once the last in-flight op (dispatched before begin_shutdown) drains.
     if (qs->tgt->_shutting_down.load(std::memory_order_seq_cst)) qs->tgt->try_drain();
 }
 
