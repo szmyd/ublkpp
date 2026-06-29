@@ -18,9 +18,9 @@ constexpr uint32_t _max_stripe_cnt{64};
 constexpr uint32_t k_max_iovecs_per_stripe{16};
 
 struct StripeAccum {
-    uint64_t io_addr{0};
-    uint32_t nr_vecs{0};
-    std::array< iovec, k_max_iovecs_per_stripe > io_array{};
+    uint64_t io_addr;
+    uint32_t nr_vecs;
+    std::array< iovec, k_max_iovecs_per_stripe > io_array; // filled before read; no zero-init needed
 };
 
 class StripeDevice {
@@ -197,15 +197,14 @@ static inline size_t stripes_for_io(size_t io_size, size_t stripe_size, size_t n
 Raid0Disk::prepare_result Raid0Disk::prepare(ublksrv_queue const* q, int const iouring_device_start) {
     prepare_result result;
     result.max_sqes_per_io = 0;
-    // At most k stripes are active concurrently per max-size I/O. Each active stripe dispatches
-    // one child async_iov that submits child.max_sqes_per_io SQEs into the shared pool. Sum the
-    // first k contributions (homogeneous arrays: all equal, so order is irrelevant).
-    auto const k = stripes_for_io(max_tx(), _stripe_size, _stripe_array.size());
-    size_t counted = 0;
+    // Sum all N children: DISCARD/WRITE_ZEROES always fans out to every disk via merged_subcmds,
+    // consuming one pool slot per disk regardless of I/O size. The READ/WRITE path caps fan-out
+    // at k = stripes_for_io(max_tx) ≤ N, so the pool is over-allocated by at most (N-k) slots
+    // in the read/write case — harmless; under-allocation on DISCARD is a P1 crash.
     for (auto& stripe : _stripe_array) {
         auto child = stripe->disk->prepare(q, iouring_device_start + static_cast< int >(result.fds.size()));
         result.fds.insert(result.fds.end(), child.fds.begin(), child.fds.end());
-        if (counted++ < k) result.max_sqes_per_io += child.max_sqes_per_io;
+        result.max_sqes_per_io += child.max_sqes_per_io;
     }
     return result;
 }
@@ -230,6 +229,7 @@ io_result Raid0Disk::__distribute(std::array< StripeAccum, _max_stripe_cnt >& su
     DEBUG_ASSERT_LE(iovecs->iov_len, UINT32_MAX) // LCOV_EXCL_LINE
     auto const len = static_cast< uint32_t >(iovecs->iov_len);
     uint32_t cnt{0};
+    uint64_t dirty_mask{0};
     for (auto off = 0U; len > off;) {
         auto const [stripe_off, logical_off, sz] =
             raid0::next_subcmd(_stride_width, _stripe_size, addr + off, len - off);
@@ -237,7 +237,11 @@ io_result Raid0Disk::__distribute(std::array< StripeAccum, _max_stripe_cnt >& su
         off += sz;
 
         auto& acc = sub_cmds[stripe_off];
-        if (!acc.nr_vecs) acc.io_addr = logical_off;
+        if (!(dirty_mask & (1ULL << stripe_off))) {
+            dirty_mask |= 1ULL << stripe_off;
+            acc.nr_vecs = 0;
+            acc.io_addr = logical_off;
+        }
         DEBUG_ASSERT_LT(acc.nr_vecs, k_max_iovecs_per_stripe) // LCOV_EXCL_LINE
         acc.io_array[acc.nr_vecs++] = {buf_cursor, sz};
 
@@ -259,7 +263,7 @@ io_result Raid0Disk::sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t
     // Adjust the address for our superblock area, do not use _addr_ beyond this.
     addr += _stride_width;
 
-    std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
+    std::array< StripeAccum, _max_stripe_cnt > sub_cmds;
     return __distribute(sub_cmds, iovecs, addr,
                         [op, this](uint32_t stripe_off, iovec* iov, uint32_t nr_iovs, uint64_t logical_off) {
                             RLOGT("Perform {}: ublk sync_io -> "
@@ -288,8 +292,9 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     // sub_cmds is declared at function scope (not inside the else block) so its lifetime extends
     // past the if/else and covers the co_await loop below; iovec pointers into io_array remain
-    // valid for the lifetime of all child tasks.
-    std::array< StripeAccum, _max_stripe_cnt > sub_cmds{};
+    // valid for the lifetime of all child tasks. Slots are initialized lazily in __distribute
+    // via dirty_mask on first touch, so no upfront zeroing is needed here.
+    std::array< StripeAccum, _max_stripe_cnt > sub_cmds;
 
     if (op == UBLK_IO_OP_DISCARD || op == UBLK_IO_OP_WRITE_ZEROES) {
         uint32_t const len = (nr_vecs > 0) ? static_cast< uint32_t >(iovecs[0].iov_len) : 0;

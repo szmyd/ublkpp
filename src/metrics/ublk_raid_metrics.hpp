@@ -26,8 +26,10 @@ struct UblkRaidMetrics : public sisl::MetricsGroup {
     void record_resync_progress(uint64_t bytes);
     void record_resync_complete(uint64_t duration_seconds);
     void record_active_resyncs(uint64_t count);
-    void record_dirty_pages(uint64_t pages);
+    void record_dirty_pages(uint64_t pages, uint64_t remaining_bytes);
     void record_last_resync_size(uint64_t bytes);
+    void record_resync_initial_size(uint64_t bytes);
+    void record_degraded_state(bool is_degraded);
 };
 
 } // namespace ublkpp

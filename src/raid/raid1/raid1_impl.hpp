@@ -51,17 +51,29 @@ class Raid1Disk : public ublk_disk {
     //         (2) _pending_results - serializes prepare() insertions across queue threads.
     std::mutex _ctrl_lock;
 
-    // Guards __become_clean's check + CAS + superblock writes against the two cold failure-path
-    // dirty_region() + __become_degraded() sites (active-fail and backup-fail with backup_write
-    // true). Holding the lock across both the check+CAS and the SB writes ensures:
-    //   (a) No EITHER-with-dirty-bit instant visible to lock-free readers (live P0).
+    // Guards __become_clean's check + CAS + superblock writes against all three cold failure-path
+    // dirty_region() + __become_degraded() calls: active-fail (Site 1), backup-unavail (Site 2),
+    // backup-fail (Site 3). dirty_region() is called inside the mutex at all failure sites so
+    // dirty_pages() is a hard gate — no in-flight region can slip past the check.
+    // Holding the lock across both the check+CAS and the SB writes ensures:
+    //   (a) dirty_pages() sees all in-flight regions — prevents premature clean transition.
     //   (b) Failure-path DEVA SB writes always serialize after EITHER SB writes, so the
     //       on-disk SBs cannot show EITHER+dirty on crash (crash-recovery P0).
-    // The hot write path (!backup_write re-dirty) must NOT hold this lock.
+    // The success path (both legs succeed) does not hold this lock.
     std::mutex _clean_transition_mutex;
 
     // Counts prepare() calls; used to enable resync on the first queue init.
     std::atomic_uint16_t _nr_hw_queues{0};
+
+    // Pessimistically set to true under _ctrl_lock before __become_degraded's write_superblock
+    // call; cleared under the same lock on success. Stays true on failure so subsequent I/Os
+    // retry via __try_persist_degraded_sb, which also checks under _ctrl_lock — no concurrent
+    // queue thread can read false while a write is in-flight and prematurely ack.
+    // The age increment is NOT reverted on failure so any retry carries a higher age than the
+    // stale on-disk SB, ensuring pick_superblock selects the correct device on restart.
+    // If set at shutdown, the destructor's SB write naturally persists the correct route.
+    // Guarded by _ctrl_lock — all accesses are inside lock_guard scopes.
+    bool _degraded_sb_pending{false};
 
     // Shared read/write routing helpers used by both async_iov and sync_iov.
     // Returns {primary_dev, failover_dev}. failover_dev is nullopt when the backup holds stale
@@ -77,7 +89,15 @@ class Raid1Disk : public ublk_disk {
 
     // Internal routines
     bool __become_clean();
-    io_result __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
+    // Transitions in-memory route from EITHER→DEVA/DEVB and persists the superblock. Returns true
+    // if the array is durably degraded (ack is safe); false if the SB write failed (caller must
+    // return -EAGAIN — a crash before the SB is written would corrupt self-heal direction).
+    // Idempotent when already degraded: delegates to __try_persist_degraded_sb.
+    bool __become_degraded(bool failed_is_active, RouteState const* state, bool spawn_resync = true);
+    // Called from __become_degraded when the array is already degraded. Retries any pending SB
+    // write (_degraded_sb_pending) and, on success, optionally spawns resync. Returns true if the
+    // SB is now durable (no write was pending, or the retry succeeded); false if the retry failed.
+    bool __try_persist_degraded_sb(bool spawn_resync);
     disk_task< int > __failover_read_async(ublksrv_queue const* q, ublk_io_data const* data, iovec* iovecs,
                                            uint32_t nr_vecs, uint64_t addr, uint32_t len);
     bool __swap_device(std::string const& outgoing_device_id, std::shared_ptr< MirrorDevice >& incoming_mirror,

@@ -1,5 +1,7 @@
 #include "raid1_resync_task.hpp"
 
+#include <pthread.h>
+#include <sched.h>
 #include <ublksrv.h>
 #include <sisl/utility/thread_factory.hpp>
 
@@ -92,6 +94,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
             _metrics->record_resync_start();
             _metrics->record_active_resyncs(active_count);
+            _metrics->record_resync_initial_size(initial_resync_size);
         } // LCOV_EXCL_STOP
 
         // Loop until the array is confirmed clean or we are stopped.
@@ -145,6 +148,7 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             // Record the size of data that was resynced (initial size before resync started)
             _metrics->record_last_resync_size(initial_resync_size);
             _metrics->record_active_resyncs(final_count);
+            _metrics->record_resync_initial_size(0); // clear ETA denominator when resync finishes
         } // LCOV_EXCL_STOP
     }
 
@@ -190,10 +194,14 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
     // to a joinable std::thread calls std::terminate(), so join here first.
     if (_resync_task.joinable()) _resync_task.join();
 
-    _resync_task = sisl::named_thread(
-        fmt::format("r_{}", str_uuid.substr(0, 13)),
-        [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
-         compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
+    _resync_task = sisl::named_thread(fmt::format("r_{}", str_uuid.substr(0, 13)),
+                                      [this, uuid = str_uuid, clean = std::move(clean_mirror),
+                                       dirty = std::move(dirty_mirror), compl_cb = std::move(complete)] mutable {
+                                          sched_param sp{.sched_priority = 0};
+                                          if (int rc = pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp); rc != 0)
+                                              RLOGE("resync thread: failed to reset to SCHED_OTHER: {}", strerror(rc))
+                                          _start(uuid, clean, dirty, std::move(compl_cb));
+                                      });
 }
 
 void Raid1ResyncTask::__clean(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {
@@ -239,7 +247,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
     uint32_t consecutive_unavail = 0;
 
     auto nr_pages = _dirty_bitmap->dirty_pages();
-    if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
+    if (_metrics) { _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); } // GCOVR_EXCL_BR_LINE
 
     // When a dirty run is entirely blocked by in-flight writes (!any_copy), skip past it on
     // the next sweep so higher-LBA dirty runs are not starved. Reset after use within each
@@ -255,7 +263,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
             if (cur_state = __yield(unavail_delay, avail_delay); resync_state::STOPPING == cur_state) break;
             probe_mirror(*dirty_mirror, _offset);
             nr_pages = _dirty_bitmap->dirty_pages();
-            if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
+            if (_metrics) _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); // GCOVR_EXCL_BR_LINE
             continue;
         }
         consecutive_unavail = 0;
@@ -333,7 +341,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
 
         // Sweep and count dirty pages left
         nr_pages = _dirty_bitmap->dirty_pages();
-        if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
+        if (_metrics) _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); // GCOVR_EXCL_BR_LINE
     }
     return cur_state;
 }

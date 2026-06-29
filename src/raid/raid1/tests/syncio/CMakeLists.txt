@@ -1,6 +1,7 @@
 cmake_minimum_required (VERSION 3.11)
 
 list(APPEND RAID1_TEST_SRCS
+  syncio/degraded.cpp
   syncio/double_fail.cpp
   syncio/fail_sb_update.cpp
   syncio/read_fail_both.cpp
