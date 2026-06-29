@@ -107,8 +107,8 @@ io_result MockUblksrv::submit_io(int tag, uint8_t op, uint64_t start_sector, uin
 }
 
 void MockUblksrv::process_cqe(io_uring_cqe* cqe, std::vector< Completion >& out) {
-    if (!(cqe->user_data & k_target_bit)) return (void)io_uring_cqe_seen(&_ring, cqe);
-    auto* state = reinterpret_cast< cqe_state* >(cqe->user_data & ~k_target_bit);
+    if (!sisl::async::is_managed_user_data(cqe->user_data)) return (void)io_uring_cqe_seen(&_ring, cqe);
+    auto* state = static_cast< cqe_state* >(sisl::async::decode_managed_user_data(cqe->user_data));
     if (!state || !state->_owner) return (void)io_uring_cqe_seen(&_ring, cqe);
     int const tag = state->_owner->_tag;
     int const res = cqe->res;

@@ -9,7 +9,6 @@
 #include <ublksrv.h>
 
 #include "ublkpp/lib/cqe_state.hpp"
-#include "ublkpp/lib/disk_task.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
 
 namespace ublkpp {

@@ -73,7 +73,7 @@ TEST(Raid1Concurrency, UnrelatedWriteDoesNotBlockResync) {
     task.enqueue_write(k_unrelated_lba, io_size);
 
     // Start resync — it must copy LBA 0 despite the in-flight write at 512 MiB
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
 
     EXPECT_TRUE(wait_for_bitmap_clean(bitmap, 2000ms))
         << "Resync must complete even with an unrelated write held in-flight";
@@ -133,7 +133,7 @@ TEST(Raid1Concurrency, ConflictingWriteSkipped_ResyncRetries) {
     task.enqueue_write(0, io_size);
 
     // Start resync — Phase 1 should detect the conflict and skip LBA 0 every sweep
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
 
     // Wait for resync to have yielded at least twice (two full sweeps attempted) before
     // asserting. This is deterministic: yield_count() only advances when the resync thread
@@ -218,7 +218,7 @@ TEST(Raid1Concurrency, Phase2ConflictDetectedAfterCopy) {
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
 
     // Start resync — Phase 1 sees no write registered, READ completes, WRITE begins and blocks
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
 
     // Wait until we are strictly between Phase 1 and Phase 2 (WRITE is executing)
     copy_write_started.get_future().wait();
@@ -308,7 +308,7 @@ TEST(Raid1Concurrency, Phase2CompletedWriteDetected) {
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
 
     // Start resync — Phase 1 sees no write, begins the copy READ (which blocks on read_started)
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
     read_started.get_future().wait();
 
     // Enqueue AND dequeue the write while the READ is blocked: the write fully completes
@@ -380,7 +380,7 @@ TEST(Raid1Concurrency, MultiChunkDirtyRun_PartialSkip) {
 
     // Hold chunk 0 in-flight — resync must skip it but still copy chunk 1
     task.enqueue_write(0, io_size);
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
 
     // Wait for chunk 1 to be copied while chunk 0 is held
     auto const deadline = std::chrono::steady_clock::now() + 2000ms;

@@ -17,7 +17,6 @@ if(${libiscsi_FOUND})
     target_link_libraries(iscsi_disk
         sisl::cache
         ublksrv::ublksrv
-        STDEXEC::stdexec
         libiscsi::libiscsi
     )
 endif()

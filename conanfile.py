@@ -10,7 +10,7 @@ required_conan_version = ">=2.0"
 
 class UBlkPPConan(ConanFile):
     name = "ublkpp"
-    version = "0.33.0"
+    version = "0.35.0"
 
     homepage = "https://github.com/szmyd/ublkpp"
     description = "A UBlk library for CPP application"
@@ -70,7 +70,7 @@ class UBlkPPConan(ConanFile):
         self.test_requires("fio/nbi.3.28")
 
     def requirements(self):
-        self.requires("sisl/[^14.0]@oss/dev", transitive_headers=True)
+        self.requires("sisl/[^14.4]@oss/dev", transitive_headers=True)
 
         self.requires("isa-l/2.30.0")
         self.requires("ublksrv/nbi.1.5.0.1", transitive_headers=True)
@@ -139,7 +139,8 @@ class UBlkPPConan(ConanFile):
 
     def package(self):
         copy(self, "LICENSE", self.source_folder, join(self.package_folder, "licenses"), keep_path=False)
-        copy(self, "*.h*", join(self.source_folder, "include"), join(self.package_folder, "include"), keep_path=True)
+        copy(self, "*.h*", join(self.source_folder, "include"), join(self.package_folder, "include"), keep_path=True,
+             excludes=["*testing*"])
         copy(self, "*.a", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
         copy(self, "*.so", self.build_folder, join(self.package_folder, "lib"), keep_path=False)
 

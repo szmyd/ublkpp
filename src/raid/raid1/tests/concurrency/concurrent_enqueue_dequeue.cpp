@@ -64,7 +64,7 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
     bitmap->dirty_region(0, Gi);
 
     Raid1ResyncTask task{bitmap, Bitmap::page_size(), io_size, io_size};
-    task.launch(test_uuid, mirror_a, mirror_b, [] {});
+    task.launch(test_uuid, mirror_a, mirror_b, [] { return true; });
 
     while (!resync_started.load(std::memory_order_acquire))
         std::this_thread::yield();
@@ -88,5 +88,6 @@ TEST(Raid1Concurrency, EnqueueDequeueRace) {
         t.join();
     task.stop();
 
-    SUCCEED(); // correctness is verified by TSAN detecting races in RegionTracker
+    // Correctness is verified by TSAN detecting data races in RegionTracker.
+    SUCCEED();
 }

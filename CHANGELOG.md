@@ -4,7 +4,122 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.33.0 feature: native iSCSI support with libiscsi
+## 0.35.0 feature: native iSCSI support with libiscsi
+
+## [0.34.1] - 2026-06-29
+
+### Fixed
+
+- **Shutdown drain no longer errors I/O back to the block layer**: after `begin_shutdown()`, gated I/O was completed with `-EAGAIN`, which the kernel maps to `BLK_STS_AGAIN` and logs as `nonblocking retry error, dev ublkbN ...` before failing the request (a normal, non-`REQ_NOWAIT` request is not retried on `AGAIN`). Gated ops (now including `FLUSH`) are instead **dropped** -- left uncompleted (`OWNED_BY_SRV`) so the kernel requeues/reissues them to the next daemon under `UBLK_F_USER_RECOVERY(_REISSUE)` when the process exits via the recovery path (drop the `unique_ptr`, not `remove()`). The drain accounting (`record_queue_depth_change` / `try_drain`) is unchanged, so `wait_for_drain()` and the `clean_unmount=1` flush still fire exactly once.
+
+## [0.34.0] - 2026-06-17
+
+### Added
+
+- **`ublk_read_bytes_total` / `ublk_write_bytes_total` Prometheus counters**: `UblkIOMetrics` now accumulates bytes transferred on successful IO completion. Counters carry the `entity=<volume_uuid>` label and enable throughput queries via `rate(ublk_read_bytes_total[5m])` / `rate(ublk_write_bytes_total[5m])`.
+- **`ublk_resync_remaining_kib` / `ublk_resync_initial_kib` Prometheus gauges**: expose `dirty_data_est()` at resync start and after each sweep, enabling ETA (`remaining / rate(progress_sum)`) and progress-percentage queries in Grafana. Both gauges reset to 0 when resync completes.
+- **`ublk_read_latency_us` / `ublk_write_latency_us` histograms**: per-IO latency measured from just before `async_iov` to just after, recorded for both successful and failed IOs.
+- **`ublk_read_errors_total` / `ublk_write_errors_total` counters**: incremented whenever `async_iov` returns a negative result, enabling alerting on backing-device failures.
+- **`ublk_raid_is_degraded` gauge**: set to 1 in `__become_degraded` and 0 in `__become_clean`, enabling point-in-time degraded-state queries and Grafana alerts.
+
+## [0.33.2] - 2026-06-17
+### De-prioritize Resync threads to SCHED_OTHER
+
+- **RAID1**: Resync threads just do sync_io; so move them off the real-time scheduler.
+
+## [0.33.1] - 2026-06-17
+
+### Improved
+
+- **Queue handler threads now run under `SCHED_FIFO` at max priority (99)**: each queue thread calls `pthread_setschedparam(SCHED_FIFO, 99)` on startup, placing it in the real-time scheduling class. This eliminates CFS jitter on the I/O hot path and ensures queue threads preempt all `SCHED_OTHER` work (including management and gRPC threads) whenever they are runnable.
+
+## [0.33.0] - 2026-06-14
+
+### Breaking
+
+- **`ublkpp_tgt` destructor now aborts if `begin_shutdown()` was not called before drop**: previously, dropping an `ublkpp_tgt` without calling `begin_shutdown()` was silent, leaving queue threads running until process exit. The destructor now `RELEASE_ASSERT`s on any joinable queue thread, aborting the process with a diagnostic. **Migration**: always call `tgt->begin_shutdown(); tgt->wait_for_drain();` before dropping the `unique_ptr`. This ensures the RAID-1 bitmap is flushed and `clean_unmount=1` is written before exit.
+
+### Added
+
+- **`ublkpp_tgt::begin_shutdown()`**: signals the target to drain I/O before process exit. After this call, reads and writes are rejected with `EAGAIN` before they reach the backing device; `FLUSH` ops are allowed through (they complete instantly with `result=0` and do not dereference `device*`). When the last in-flight op completes and metrics counters reach zero, the backing device is destroyed exactly once (CAS-protected across queues) — flushing the RAID-1 dirty bitmap and writing `clean_unmount=1`. Idempotent; must be called from a thread context (the idle-drain path destroys the backing device synchronously).
+
+### Fixed
+
+- **`destroy()` missing `ctrl_dev = nullptr`**: after `ublksrv_ctrl_deinit`, `ctrl_dev` was not nulled, leaving a potential double-deinit on the freed pointer. Now nulled immediately after deinit.
+- **Unconditional `join()` in `destroy()`**: queue threads were joined without a `joinable()` guard, which would throw `std::system_error` if a thread was never started (e.g., on a failed queue init). Added `if (q.joinable())` guard.
+
+## [0.32.15] - 2026-06-12
+
+### Improved
+
+- (raid0): Only init parts of StripeAccumulator that i/o will actually touch.
+
+## [0.32.14] - 2026-06-10
+
+### Fixed
+
+- **RAID1 (P0)**: Site 2 (`async_iov`/`sync_iov`, backup-unavail path) called `dirty_region()` and `__become_degraded()` without holding `_clean_transition_mutex`, unlike Sites 1 and 3.
+- A concurrent `__become_clean` could write EITHER superblocks after Site 2's DEVA write, leaving both devices at EITHER+equal-age on crash; `pick_superblock` tie-broke to round-robin, serving stale data from B against an acknowledged write.
+- Fixed by wrapping `dirty_region()` + `__become_degraded()` together inside `_clean_transition_mutex` at all six failure sites (async + sync, Sites 1–3), making `dirty_pages()` a hard gate against premature clean transitions.
+
+## [0.32.13] - 2026-06-10
+
+### Fixed
+
+- **P1 (raid0): DISCARD/WRITE_ZEROES crashes file-backed arrays with more disks than the read/write stripe count**: `prepare()` sized the CQE pool using the read/write fan-out formula `stripes_for_io(max_tx, stripe_size, N)`, which caps at `k = min(ceil(max_tx/stripe_size)+1, N)`. The DISCARD path in `async_iov` always fans out to all N disks via `merged_subcmds`, consuming one pool slot per disk. For N > k (e.g., 10 disks, stripe_size=128 KiB, max_tx=512 KiB → k=5), `RELEASE_ASSERT_LT(_pool.size(), _pool.capacity())` fired on the (k+1)th disk's `next_state()` call — process crash. Fixed by removing the k-bound from `prepare()`: all N children contribute to `max_sqes_per_io`. Over-allocation by (N-k) slots in the read/write path is harmless.
+- **Latent (raid1): superblock with version > current not rejected at open**: `load_superblock` had no upper-bound version check, silently accepting a disk formatted by a future binary. `__init_params`'s one-sided `if (sb_version < 2)` branch would compute `_reserved_size` using the v2 formula, placing all I/O at the wrong on-disk offset on a hypothetical v3 disk. Fixed by adding the M3 guard (mirrors RAID0's existing check): any superblock with `version > k_sb_version` is now rejected with `errc::not_supported`. Also exports `k_sb_version` from `raid1_superblock.hpp` so tests can reference it.
+
+## [0.32.12] - 2026-06-06
+
+### Fixed
+
+- **P0 (raid1): data loss when active write fails, backup succeeds, and superblock write fails**: in `async_iov` Site 1, if the active device write failed and `__become_degraded` could not persist the degradation (superblock write failed), the code still returned SUCCESS to the client when the backup write succeeded. On a crash at that point, both on-disk superblocks still showed `route=EITHER` at the pre-degradation age; restart self-healed by resyncing device_a (which held the *old* data) over device_b (which held the *new* data), permanently destroying the client-acked write. Fixed by returning `-EAGAIN` to the client whenever `__become_degraded` fails — forcing a retry rather than acking an unprotected write. The incorrect claim in the `__become_degraded` comment ("dirty bitmap covers the affected region; resync at shutdown will reconcile") is also removed, since the in-memory dirty bitmap does not survive a pod kill. Addresses [issue #302](https://github.com/szmyd/ublkpp/issues/302).
+- **RAID1 SB-EITHER crash window in degraded mode**: when `__become_degraded` updated the in-memory route to `DEVX` but its superblock write failed, both on-disk SBs remained at `EITHER`. A crash before a subsequent write reached the device left `pick_superblock` with no age gap to distinguish legs, potentially resyncing the stale leg over the surviving one — silent data loss. Fixed by: (1) retaining the age increment on SB write failure (so any eventual retry carries a higher age than the stale on-disk SB, letting `pick_superblock` select the correct leg); (2) adding `_degraded_sb_pending` flag set pessimistically under `_ctrl_lock` before the SB write; (3) retrying the SB write via `__try_persist_degraded_sb` before acking the next I/O that reaches the array in degraded state.
+- **RAID1 `_degraded_sb_pending` premature-ack race with `nr_hw_queues > 1`**: the `_read_route_cache` CAS and `_degraded_sb_pending = true` were not atomic with respect to `_ctrl_lock`. A concurrent I/O thread (T2) that lost the CAS could enter `__try_persist_degraded_sb`, acquire `_ctrl_lock`, read `_degraded_sb_pending == false` (T1 had won the CAS but not yet set the flag), and prematurely ack its I/O while T1's SB write was still in-flight. Fixed by moving the CAS inside `_ctrl_lock` in `__become_degraded` so the CAS win and the `_degraded_sb_pending = true` store are a single atomic transaction under the lock. `__swap_device` already held `_ctrl_lock` for its CAS; this unifies both state-machine transitions under the same serialisation point.
+- **RAID1 double `toggle_resync` with concurrent `nr_hw_queues > 1` SB retries**: two I/O coroutines could both pass the `_degraded_sb_pending` fast-path check in `__try_persist_degraded_sb`, both write the SB successfully, and both call `toggle_resync`. A second concurrent `launch()` on a resync task that had not yet transitioned from `IDLE` to `ACTIVE` would join the running thread, stalling an I/O-path coroutine for the full resync duration. Fixed by snapshotting `was_pending = _degraded_sb_pending; _degraded_sb_pending = false` atomically under `_ctrl_lock`; only the coroutine that observes `was_pending == true` calls `toggle_resync`.
+
+## [0.32.11] - 2026-06-09
+
+### Changed
+
+- **RAID0 per-stripe iovec accumulators moved to coroutine frame**: `__distribute`'s
+  `StripeAccum` buffer (previously a `thread_local` with `std::vector<iovec>` per slot) is
+  now a caller-owned `std::array<StripeAccum, 64>` with a fixed `std::array<iovec, 16>` per
+  slot (bound: max_io_size 1 MiB / min_stripe_size 64 KiB = 16). In `async_iov` the buffer
+  lives in the coroutine frame (heap, stable for child lifetimes); in `sync_iov` it is a
+  plain stack local. Eliminates the iovec lifetime hazard that required the eager
+  `io_uring_submit` workaround in `async_iov` and the `iov_snap` copy in
+  `Raid1Disk::__failover_read_async`. Removes `DirtyGuard`, `_max_iovecs_per_stripe`, and
+  the `thread_local`; introduces `k_max_iovecs_per_stripe = 16` as a file-scope constant.
+
+## [0.32.10] - 2026-06-05
+
+### Fixed
+
+- **RAID1 remount failure after resync-interrupted-by-stop race**: a race between the resync task and `stop()` in the destructor produced an on-disk state of `DEVB + clean_unmount=1 + empty superbitmap`. On second mount this hit an invariant check and threw `std::runtime_error`, making the volume unassemblable. Fixed with two cooperating changes: (1) `_start()` captures `dirty_pages()` before each `__run()` call; when STOPPING fires, if the count was non-zero and is now zero the resync cleared all chunks but was interrupted in `__yield()` — `complete()` is called immediately so the destructor sees `route=EITHER`; (2) the invariant check at mount time is replaced with a warn + `dirty_region(0, capacity())` fallback, providing defense-in-depth for any residual cases not prevented by (1). Addresses [issue #300](https://github.com/szmyd/ublkpp/issues/300).
+
+## [0.32.9] - 2026-06-04
+
+### Fixed
+
+- **RAID1 read-determinism after unclean shutdown (both legs present)**: when both legs were present at startup with equal ages, `clean_unmount=0`, and `read_route=EITHER`, the code previously only logged a warning. Writes in-flight at crash time may have landed on one leg but not the other, so round-robin reads of the same LBA could return different bytes on alternating accesses — a violation of the block-device read-determinism contract that filesystems (XFS, etc.) depend on unconditionally. The fix detects this case and self-heals: manufactures a +16 age gap on the canonical leg (device_a), pins reads to it via `read_route::DEVA`, dirties the whole bitmap, and marks device_b stale (`unavail`) so writes skip it until `probe_mirror` confirms physical health. `__become_active` skips persisting device_b's superblock (new `unavail` guard), preserving the on-disk age gap so any crash mid-resync reassembles through the existing `new_device` path rather than back into this branch. Idempotent across repeated crashes; no new superblock field. Addresses [issue #290](https://github.com/szmyd/ublkpp/issues/290) Phase 1.
+
+## [0.32.8] - 2026-06-01
+
+### Fixed
+
+- **P0 (raid1)**: `__become_clean()` could transition the route to `EITHER` while dirty bits remained in the bitmap, with no resync task to process them. A concurrent write whose backup leg fails calls `dirty_region()` after the resync task's `dirty_pages()==0` observation but before the CAS. Subsequent reads skipped the `is_dirty` guard (only active in degraded mode) and could be served from the stale backup — a write-acknowledgment boundary violation. Fixed by: (1) inverting the CAS/superblock write ordering; (2) re-checking `dirty_pages()` after the CAS — if dirty bits are found the transition is reversed and `__become_clean()` returns `false`; (3) `_start()` loops on the return value so the still-ACTIVE resync task re-runs `__run()` to pick up the newly-dirtied region, converging without requiring a re-launch.
+- **SuperBitmap::set_bit()** now uses `memory_order_release` (was `relaxed`) to pair correctly with the `memory_order_acquire` loads in `next_set_bit()` and `dirty_pages()`, ensuring the dirty_pages() double-check in `__become_clean` sees concurrent `set_bit()` calls on all architectures.
+- **bitmap.age revert** under SB write failure in `__become_degraded` was not guarded by `_ctrl_lock`, creating a data race with `__swap_device`'s concurrent `+16` age bump. The increment was already guarded; added the same guard to the revert.
+- **`_clean_transition_mutex` in `async_iov` Site 1** was held across two `co_await *backup_task` suspensions. Narrowed the lock to cover only `dirty_region()` + `__become_degraded()`; backup drain `co_await` calls happen after lock release.
+- **Liveness gap between `complete()==true` break and `ACTIVE→IDLE` CAS**: a write-fail during this window called `toggle_resync()` which `launch()`-EARLY_EXITs on `ACTIVE` state; dirty bits could be stranded with no resync running. Fixed by moving the `ACTIVE→IDLE` CAS inside the `_start()` while loop: after `complete()` confirms a clean bitmap the task CAS-es itself to IDLE, re-checks `dirty_pages()`, and if bits appeared in the gap attempts an `IDLE→ACTIVE` reclaim CAS to stay alive and drain them. If another `launch()` or `stop()` wins the IDLE slot, the new task handles the remaining bits.
+- **H1 in `__become_clean()`** no longer attempts `write_superblock` on a missing-disk placeholder for the backup device.
+
+## [0.32.7] - 2026-06-01
+
+### Fixed
+
+- **H3 (raid0)**: the array capacity was computed as `(min_leg_capacity - stripe_size) * leg_count`, which assumes every leg holds a whole number of stripes. When a leg's capacity is not a multiple of `stripe_size`, the partial trailing stripe (`leg_capacity % stripe_size`) was carried into the per-leg term and then multiplied by the leg count, over-reporting the device size by `(leg_capacity % stripe_size) * leg_count`. Reads into that phantom tail (e.g. backup-GPT / partition-table scans at the top of the device) mapped to a per-leg offset past the end of the backing device and returned EIO. The bug was latent because leg capacities happened to be stripe-aligned; raid1 SuperBlock v2 dropped the 512 KiB user-data alignment that had masked it, surfacing top-of-device read failures on RAID10 arrays (observed on a 50-leg array of 3 TiB legs over-reporting by ~3 MiB). Fixed by flooring the smallest leg to a whole number of stripes before reserving the head stripe and striping.
 
 ## [0.32.6] - 2026-05-26
 

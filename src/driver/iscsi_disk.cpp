@@ -20,7 +20,6 @@ extern "C" {
 }
 
 #include <ublkpp/lib/cqe_state.hpp>
-#include <ublkpp/lib/disk_task.hpp>
 
 #include "lib/common.hpp"
 #include "lib/logging.hpp"
@@ -405,7 +404,7 @@ static disk_task< int > __service_loop(ublksrv_queue const* q, queue_service* qs
 
         auto sqe = next_sqe(q);
         io_uring_prep_poll_add(sqe, wait_fd, wait_events);
-        sqe->user_data = reinterpret_cast< uint64_t >(&qs->poll_state) | k_target_bit;
+        sqe->user_data = reinterpret_cast< uint64_t >(&qs->poll_state) | sisl::async::k_managed_bit;
 
         int const revents = co_await qs->poll_state;
 

@@ -16,6 +16,7 @@ namespace ublkpp {
 
 namespace raid1 {
 constexpr auto const k_bits_in_byte = 8UL;
+constexpr uint16_t k_sb_version = 2;
 //  Cap some array parameters so we can make simple assumptions later
 constexpr auto k_min_chunk_size = 32 * Ki;
 // Use a single bit to represent each chunk
@@ -58,7 +59,8 @@ static_assert(offsetof(SuperBlock, superbitmap_reserved) == 74, "SuperBlock::sup
 auto format_as(SuperBlock const& sb);
 
 extern SuperBlock* pick_superblock(SuperBlock* dev_a, raid1::SuperBlock* dev_b);
-extern io_result write_superblock(ublk_disk& device, raid1::SuperBlock* sb, bool device_b, read_route read_route);
+extern io_result write_superblock(ublk_disk& device, raid1::SuperBlock const* sb, bool device_b, read_route read_route,
+                                  bool include_superbitmap = false);
 extern std::expected< std::pair< raid1::SuperBlock*, bool >, std::error_condition >
 load_superblock(ublk_disk& device, boost::uuids::uuid const& uuid, uint32_t const chunk_size);
 

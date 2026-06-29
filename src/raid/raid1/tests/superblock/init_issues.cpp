@@ -81,3 +81,58 @@ TEST(Raid1, ReadingSBProblems) {
                      std::runtime_error);
     }
 }
+
+// The race between resync completing and stop() in the destructor can produce an on-disk state of
+// DEVB + clean_unmount=1 + empty superbitmap. Before the fix this threw on second mount; after Fix
+// 2 the constructor warns and continues: load_from sees an empty superbitmap and skips all pages,
+// so bytes_to_sync=0. The array mounts in degraded mode.
+// NOTE: this test covers Fix 2 (no-throw on mount) only. Fix 1 (pages_before guard in _start())
+// is not exercised here because toggle_resync(false) prevents the resync thread from running; it
+// is covered by the nublox resiliency-2-0-dense integration test.
+TEST(Raid1, DegradedCleanEmptySuperbitmap) {
+    using ublkpp::raid1::read_route;
+    using ublkpp::raid1::replica_state;
+    using ublkpp::raid1::SuperBlock;
+
+    // disk_b carries the race-state SB: DEVB, age=1 (wins pick_superblock), clean=1, empty superbitmap.
+    SuperBlock sb_b = normal_superblock;
+    sb_b.fields.read_route = static_cast< uint8_t >(read_route::DEVB);
+    sb_b.fields.device_b = 1;
+    sb_b.fields.clean_unmount = 1;       // required to enter the degraded-clean branch (Fix 2)
+    sb_b.fields.bitmap.age = htobe64(1); // age_b > age_a=0 so disk_b wins
+    memset(sb_b.superbitmap_reserved, 0, sizeof(sb_b.superbitmap_reserved));
+
+    auto device_a = std::make_shared< testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi});
+    auto device_b =
+        std::make_shared< testing::StrictMock< ublkpp::TestDisk > >(TestParams{.capacity = Gi, .is_slot_b = true});
+
+    // disk_a: standard EITHER SB on read; one write from __become_active (DEVB route).
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_READ, _, _, 0UL))
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+            memcpy(iov->iov_base, &normal_superblock, ublkpp::raid1::k_page_size);
+            return iov->iov_len;
+        });
+    EXPECT_CALL(*device_a, sync_iov(UBLK_IO_OP_WRITE, _, _, 0UL))
+        .WillOnce([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    // disk_b: race-state SB on read; two writes — __become_active (DEVB) and destructor clean_unmount (DEVB).
+    // No bitmap read — superbitmap is empty so load_from skips all pages.
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_READ, _, _, 0UL))
+        .WillOnce([&sb_b](uint8_t, iovec* iov, uint32_t, off_t) -> io_result {
+            memcpy(iov->iov_base, &sb_b, ublkpp::raid1::k_page_size);
+            return iov->iov_len;
+        });
+    EXPECT_CALL(*device_b, sync_iov(UBLK_IO_OP_WRITE, _, _, 0UL))
+        .Times(2)
+        .WillRepeatedly([](uint8_t, iovec* iov, uint32_t, off_t) -> io_result { return iov->iov_len; });
+
+    EXPECT_NO_THROW({
+        auto raid = ublkpp::raid1::Raid1Disk(boost::uuids::string_generator()(test_uuid), device_a, device_b);
+        raid.toggle_resync(false);
+        // Fix 2 post-conditions: route=DEVB (unchanged), empty bitmap (superbitmap empty; load_from skips).
+        auto const s = raid.replica_states();
+        EXPECT_EQ(replica_state::SYNCING, s.device_a); // backup leg, route not yet EITHER
+        EXPECT_EQ(replica_state::CLEAN, s.device_b);   // active leg
+        EXPECT_EQ(0ULL, s.bytes_to_sync);              // superbitmap empty; nothing to sync
+    });
+}

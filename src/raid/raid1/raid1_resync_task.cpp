@@ -1,5 +1,7 @@
 #include "raid1_resync_task.hpp"
 
+#include <pthread.h>
+#include <sched.h>
 #include <ublksrv.h>
 #include <sisl/utility/thread_factory.hpp>
 
@@ -51,7 +53,7 @@ template < typename StateHandler >
 }
 
 void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice >& clean_mirror,
-                             std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< void() >&& complete) {
+                             std::shared_ptr< MirrorDevice >& dirty_mirror, std::function< bool() >&& complete) {
     RLOGD("Resync Task created for [uuid:{}]", str_uuid)
     // Wait to become Available & IDLE
     auto cur_state = resync_state::IDLE;
@@ -92,9 +94,48 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             auto const active_count = s_active_resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
             _metrics->record_resync_start();
             _metrics->record_active_resyncs(active_count);
+            _metrics->record_resync_initial_size(initial_resync_size);
         } // LCOV_EXCL_STOP
 
-        cur_state = __run(clean_mirror, dirty_mirror, &iov);
+        // Loop until the array is confirmed clean or we are stopped.
+        //
+        // complete() returns false if dirty_region() fired in the __become_clean transition
+        // window (either under the mutex or in the H1 gap); __run() re-enters in degraded mode.
+        //
+        // The ACTIVE→IDLE CAS is done inside the loop so dirty bits that land in the gap
+        // between the last dirty_pages() check and the CAS are caught immediately. If another
+        // launch() wins the IDLE slot, that new task handles the remaining bits.
+        while (true) {
+            auto const pages_before = _dirty_bitmap->dirty_pages();
+            cur_state = __run(clean_mirror, dirty_mirror, &iov);
+            if (resync_state::STOPPING == cur_state) {
+                // All chunks cleared but stopped in __yield(): commit so destructor sees route=EITHER,
+                // not DEVA/DEVB + empty-superbitmap. Guard: pages_before>0 skips a zero bitmap at launch.
+                if (pages_before > 0 && 0 == _dirty_bitmap->dirty_pages()) {
+                    if (!complete()) { RLOGW("complete() returned false on STOPPING — unexpected [uuid:{}]", str_uuid) }
+                }
+                break;
+            }
+            DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state")
+            if (0 != _dirty_bitmap->dirty_pages()) continue;
+            if (!complete()) continue;
+            if (0 != _dirty_bitmap->dirty_pages()) continue;
+
+            // Attempt ACTIVE→IDLE; re-check for bits that landed in the transition gap.
+            // Loop to handle spurious compare_exchange_weak failures (ARM/POWER LL/SC).
+            // A spurious failure leaves state ACTIVE; breaking without the loop would
+            // cause _start() to return with state=ACTIVE and deadlock stop().
+            for (auto active = resync_state::ACTIVE; !__cas_state(active, resync_state::IDLE);)
+                active = resync_state::ACTIVE;
+            if (0 == _dirty_bitmap->dirty_pages()) break; // clean exit
+
+            // Bits appeared between the dirty_pages() check and the CAS. Try to reclaim
+            // ACTIVE and drain them; if another launch() already won the IDLE slot, break —
+            // that new task owns the dirty bits.
+            auto idle = resync_state::IDLE;
+            if (!__cas_state(idle, resync_state::ACTIVE)) break;
+            RLOGD("Resync re-entering after concurrent dirty_region [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
+        }
         free(iov.iov_base);
 
         if (_metrics) { // GCOVR_EXCL_BR_LINE
@@ -107,10 +148,11 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
             // Record the size of data that was resynced (initial size before resync started)
             _metrics->record_last_resync_size(initial_resync_size);
             _metrics->record_active_resyncs(final_count);
+            _metrics->record_resync_initial_size(0); // clear ETA denominator when resync finishes
         } // LCOV_EXCL_STOP
     }
 
-    // If stopped, end now.
+    cur_state = __load_state(); // reflect actual state after IDLE/STOPPING race in the loop
     if (resync_state::STOPPING == cur_state) {
         RLOGI("Resync Task Stopped for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
         for (auto stopping = resync_state::STOPPING;
@@ -119,20 +161,12 @@ void Raid1ResyncTask::_start(std::string str_uuid, std::shared_ptr< MirrorDevice
         return;
     }
 
-    // Otherwise we _should_ be active (not paused or idle), if the bitmap is clean call complete
-    DEBUG_ASSERT_EQ(resync_state::ACTIVE, cur_state, "Resync stopped in unexpected state");
-    // I/O may have been interrupted, if not check the bitmap and mark us as _clean_
-    if (0 == _dirty_bitmap->dirty_pages()) complete();
+    // IDLE transition was performed inside the while loop.
     RLOGD("Resync Task Finished for [uuid:{}] to: {}", str_uuid, *dirty_mirror->disk)
-
-    // Open up I/O Again
-    for (auto active = resync_state::ACTIVE;
-         !__cas_state(active, resync_state::IDLE) && active == resync_state::ACTIVE;)
-        std::this_thread::yield();
 }
 
 void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< MirrorDevice > clean_mirror,
-                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< void() >&& complete) {
+                             std::shared_ptr< MirrorDevice > dirty_mirror, std::function< bool() >&& complete) {
     auto lg = std::scoped_lock< std::mutex >(_launch_lock);
     // First we must become IDLE
     auto transitioned =
@@ -160,10 +194,14 @@ void Raid1ResyncTask::launch(std::string const& str_uuid, std::shared_ptr< Mirro
     // to a joinable std::thread calls std::terminate(), so join here first.
     if (_resync_task.joinable()) _resync_task.join();
 
-    _resync_task = sisl::named_thread(
-        fmt::format("r_{}", str_uuid.substr(0, 13)),
-        [this, uuid = str_uuid, clean = std::move(clean_mirror), dirty = std::move(dirty_mirror),
-         compl_cb = std::move(complete)] mutable { _start(uuid, clean, dirty, std::move(compl_cb)); });
+    _resync_task = sisl::named_thread(fmt::format("r_{}", str_uuid.substr(0, 13)),
+                                      [this, uuid = str_uuid, clean = std::move(clean_mirror),
+                                       dirty = std::move(dirty_mirror), compl_cb = std::move(complete)] mutable {
+                                          sched_param sp{.sched_priority = 0};
+                                          if (int rc = pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp); rc != 0)
+                                              RLOGE("resync thread: failed to reset to SCHED_OTHER: {}", strerror(rc))
+                                          _start(uuid, clean, dirty, std::move(compl_cb));
+                                      });
 }
 
 void Raid1ResyncTask::__clean(uint64_t addr, uint32_t len, MirrorDevice& clean_mirror) {
@@ -209,7 +247,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
     uint32_t consecutive_unavail = 0;
 
     auto nr_pages = _dirty_bitmap->dirty_pages();
-    if (_metrics) { _metrics->record_dirty_pages(nr_pages); } // GCOVR_EXCL_BR_LINE
+    if (_metrics) { _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); } // GCOVR_EXCL_BR_LINE
 
     // When a dirty run is entirely blocked by in-flight writes (!any_copy), skip past it on
     // the next sweep so higher-LBA dirty runs are not starved. Reset after use within each
@@ -225,7 +263,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
             if (cur_state = __yield(unavail_delay, avail_delay); resync_state::STOPPING == cur_state) break;
             probe_mirror(*dirty_mirror, _offset);
             nr_pages = _dirty_bitmap->dirty_pages();
-            if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
+            if (_metrics) _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); // GCOVR_EXCL_BR_LINE
             continue;
         }
         consecutive_unavail = 0;
@@ -303,7 +341,7 @@ resync_state Raid1ResyncTask::__run(auto& clean_mirror, auto& dirty_mirror, iove
 
         // Sweep and count dirty pages left
         nr_pages = _dirty_bitmap->dirty_pages();
-        if (_metrics) _metrics->record_dirty_pages(nr_pages); // GCOVR_EXCL_BR_LINE
+        if (_metrics) _metrics->record_dirty_pages(nr_pages, _dirty_bitmap->dirty_data_est()); // GCOVR_EXCL_BR_LINE
     }
     return cur_state;
 }

@@ -49,6 +49,7 @@ uint32_t ublk_disk::physical_block_size() const noexcept { return 1 << _params->
 uint32_t ublk_disk::max_tx() const noexcept { return _params->basic.max_sectors << SECTOR_SHIFT; }
 bool ublk_disk::can_discard() const noexcept { return _params->types & UBLK_PARAM_TYPE_DISCARD; }
 uint32_t ublk_disk::discard_granularity() const noexcept { return _params->discard.discard_granularity; }
+uint32_t ublk_disk::max_discard_sectors() const noexcept { return _params->discard.max_discard_sectors; }
 uint64_t ublk_disk::capacity() const noexcept { return _params->basic.dev_sectors << SECTOR_SHIFT; }
 
 namespace {

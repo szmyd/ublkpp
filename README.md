@@ -306,7 +306,7 @@ TEST(Raid1, YourTestName) {
 
 ### Optional Dependencies
 
-- **[stdexec](https://github.com/NVIDIA/stdexec)**: C++ sender/receiver framework (fetched automatically via CMake FetchContent)
+- **[stdexec](https://github.com/NVIDIA/stdexec)**: C++ sender/receiver framework — provided transitively via the sisl conan package
 - **fio**: Functional I/O testing (optional; tests skip gracefully if absent)
 - **[libiscsi](https://github.com/sahlberg/libiscsi)**: in-process iSCSI initiator. Enables the `make_iscsi_disk()` driver, which speaks SCSI/iSCSI directly from the queue thread via io_uring `POLL_ADD`, removing the need for a host kernel iSCSI module or `/etc/iscsi` state. Enable with `-o ublkpp/*:iscsi=True`.
 

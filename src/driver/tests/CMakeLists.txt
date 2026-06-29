@@ -31,7 +31,6 @@ if(${libiscsi_FOUND})
       GTest::gmock
       sisl::cache
       ublksrv::ublksrv
-      STDEXEC::stdexec
       libiscsi::libiscsi
     )
 
