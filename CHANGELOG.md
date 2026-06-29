@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.1] - 2026-06-29
+
+### Fixed
+
+- **Shutdown drain no longer errors I/O back to the block layer**: after `begin_shutdown()`, gated I/O was completed with `-EAGAIN`, which the kernel maps to `BLK_STS_AGAIN` and logs as `nonblocking retry error, dev ublkbN ...` before failing the request (a normal, non-`REQ_NOWAIT` request is not retried on `AGAIN`). Gated ops (now including `FLUSH`) are instead **dropped** -- left uncompleted (`OWNED_BY_SRV`) so the kernel requeues/reissues them to the next daemon under `UBLK_F_USER_RECOVERY(_REISSUE)` when the process exits via the recovery path (drop the `unique_ptr`, not `remove()`). The drain accounting (`record_queue_depth_change` / `try_drain`) is unchanged, so `wait_for_drain()` and the `clean_unmount=1` flush still fire exactly once.
+
 ## [0.34.0] - 2026-06-17
 
 ### Added
