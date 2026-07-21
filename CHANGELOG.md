@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0] - 2026-07-21
+
+### Added
+
+- **Memory estimation API**: `ublkpp::raid1::estimate_device_overhead(uint64_t volume_size)` returns
+  worst-case RAID1 memory (one superblock + all bitmap pages dirty + per-PageData overhead); and
+  `ublkpp_tgt::estimate_queue_memory()` returns target-level overhead (ublksrv I/O buffers + queue
+  thread stacks). Both use current SISL runtime options. RAID0 has no device-specific overhead.
+
 ## [0.35.0] - 2026-07-02
 
 ### Added

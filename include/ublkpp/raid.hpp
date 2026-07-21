@@ -76,6 +76,10 @@ array_state replica_states(ublk_disk const& disk) noexcept;
 // Returns both legs of the mirror, or {nullptr, nullptr} if `disk` is not a Raid1 mirror.
 std::pair< disk_handle, disk_handle > replicas(ublk_disk const& disk) noexcept;
 
+// Estimate device-specific memory overhead (SuperBlock + worst-case bitmap).
+// Uses chunk_size from SISL options. Does NOT include queue/thread overhead.
+uint64_t estimate_device_overhead(uint64_t volume_size) noexcept;
+
 } // namespace raid1
 
 } // namespace ublkpp

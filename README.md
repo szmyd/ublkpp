@@ -319,6 +319,8 @@ TEST(Raid1, YourTestName) {
 
 ## 📚 Documentation
 
+### Development & Contributing
+
 - **[CHANGELOG.md](CHANGELOG.md)**: Version history and release notes
 - **[CLAUDE.md](.claude/CLAUDE.md)**: Development guidelines and workflows
 - **[docs/error_codes.md](docs/error_codes.md)**: RAID async_iov error code reference (EIO vs EAGAIN matrix)

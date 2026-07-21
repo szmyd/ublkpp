@@ -1,4 +1,5 @@
 #include "ublkpp/raid.hpp"
+#include "lib/memory_constants.hpp"
 
 #include <optional>
 #include <set>
@@ -1206,6 +1207,20 @@ std::pair< std::shared_ptr< ublk_disk >, std::shared_ptr< ublk_disk > > replicas
         return {nullptr, nullptr};
     }
     return r1->replicas();
+}
+
+uint64_t estimate_device_overhead(uint64_t volume_size) noexcept {
+    auto const chunk_size = SISL_OPTIONS["chunk_size"].as< uint32_t >();
+    if (chunk_size < k_min_chunk_size) return 0;
+    constexpr uint64_t bits_per_byte = 8;
+    uint64_t page_width = static_cast< uint64_t >(chunk_size) * k_page_size * bits_per_byte;
+    uint64_t num_pages = (volume_size / page_width) + ((volume_size % page_width) ? 1 : 0);
+    static_assert(sizeof(Bitmap::PageData) == 24, "PageData size changed - update memory estimation");
+    uint64_t bitmap_vector = num_pages * sizeof(Bitmap::PageData);
+    uint64_t clean_page = k_page_size;
+    uint64_t dirty_pages_worst = num_pages * k_page_size;
+    uint64_t bitmap_memory = bitmap_vector + clean_page + dirty_pages_worst;
+    return k_page_size + bitmap_memory;
 }
 
 } // namespace raid1
