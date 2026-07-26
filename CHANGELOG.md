@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.2] - 2026-07-24
+
+### Fixed
+
+- **Vendored ublksrv no longer discards I/O buffers that have I/O in flight**: `ublksrv` reclaims
+  memory after 20 seconds of CQE silence by calling `madvise(MADV_DONTNEED)` on every per-tag I/O
+  buffer, without checking whether any command is outstanding. A backing device that stalls (an
+  iSCSI transport losing its session, for example) goes CQE-silent with its entire queue in
+  flight, which is indistinguishable from an idle queue, so the discard zaps the mappings of
+  buffers that pinned, in-flight reads are still writing into. The DMA lands in the orphaned
+  physical pages while the next touch of the buffer faults in a fresh zero page, and the read
+  completes full-length and successful carrying all zeros -- undetectable by any length or error
+  check, and silently accepted by applications that treat a zeroed block as empty. The vendored
+  recipe now skips the discard unless every tag's command is parked in the ring
+  (`patches/idle_discard_inflight_1_5_0.patch`). Still present upstream as of ublksrv v1.7.
+
+- **Short (partial-length) I/O completions are no longer silently propagated**: no layer of the
+  async read/write path validated that a positive completion carried the full requested byte
+  count. A short completion summed through RAID0 loses its position, and `ublk_drv` treats a
+  positive short READ result as a *front-aligned partial completion* (first `res` bytes done,
+  tail requeued) -- so a short/zero non-final sub-read with full later sub-reads would mark
+  never-filled buffer ranges as done, surfacing stale per-tag buffer content (data from a
+  different LBA) to the filesystem with no error or log anywhere. Length is now enforced at
+  every layer: `FSDisk` fails a short CQE with `-EIO` (logged with device/addr/lengths),
+  `Raid1Disk` treats a short primary read like a leg failure (UNAVAIL + failover; `-EIO` if no
+  failover leg -- never `-EAGAIN`, which would requeue against the same misbehaving leg),
+  `Raid0Disk` rejects any READ/WRITE aggregate that is not exactly the requested length, and
+  the target converts any residual short completion to `-EIO` as a last line of defense.
+  New `ublk_read_shorts_total` / `ublk_write_shorts_total` counters record every conversion.
+  `FLUSH`/`DISCARD`/`WRITE_ZEROES` (which legitimately complete with 0) are exempt.
+
 ## [0.34.1] - 2026-06-29
 
 ### Fixed
