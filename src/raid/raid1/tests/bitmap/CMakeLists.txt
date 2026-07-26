@@ -9,6 +9,7 @@ list(APPEND RAID1_TEST_SRCS
   bitmap/load_bitmap.cpp
   bitmap/multiword.cpp
   bitmap/next_dirty.cpp
+  bitmap/partial_tail_clean.cpp
   bitmap/roundtrip_sync_load.cpp
   bitmap/super_bitmap_test.cpp
   bitmap/sync_to_batching.cpp
