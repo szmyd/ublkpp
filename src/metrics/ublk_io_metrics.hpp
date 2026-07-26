@@ -27,6 +27,11 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     std::atomic< uint64_t > _write_bytes_total{0};
     std::atomic< uint64_t > _read_errors{0};
     std::atomic< uint64_t > _write_errors{0};
+    // Positive completions whose byte count differed from the request. These are converted to
+    // -EIO before reaching the kernel (a positive short READ res would be treated as a
+    // front-aligned partial completion, silently misplacing the unfilled range).
+    std::atomic< uint64_t > _read_shorts{0};
+    std::atomic< uint64_t > _write_shorts{0};
 
     void record_queue_depth_change(ublksrv_queue const* q, uint8_t op, bool is_increment);
     // Test-only: same counter dispatch as record_queue_depth_change but without the
@@ -36,6 +41,7 @@ struct UblkIOMetrics : public sisl::MetricsGroup {
     void record_io_bytes(uint8_t op, uint32_t bytes);
     void record_io_latency(uint8_t op, uint64_t microseconds);
     void record_io_error(uint8_t op);
+    void record_io_short(uint8_t op);
 
     // Returns true when all in-flight op counters are zero (reads, writes, and other ops).
     //

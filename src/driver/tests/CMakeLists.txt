@@ -13,6 +13,7 @@ target_sources(test_fsdisk PRIVATE
 )
 target_link_libraries (test_fsdisk
   GTest::gmock
+  mock_ublksrv
   sisl::cache
   ublksrv::ublksrv
 )

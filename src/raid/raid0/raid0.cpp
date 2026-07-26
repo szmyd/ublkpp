@@ -10,6 +10,7 @@
 
 #include "raid0_impl.hpp"
 #include "lib/logging.hpp"
+#include "target/ublkpp_tgt_impl.hpp"
 
 namespace ublkpp {
 constexpr uint32_t _max_stripe_cnt{64};
@@ -281,12 +282,14 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
 
     addr += _stride_width;
 
+    auto const len = iovec_len(iovecs, iovecs + nr_vecs);
+
     // Eagerly start each child task so all SQEs are in-flight before the first co_await,
     // preserving kernel parallelism. All tasks must be drained even on error to avoid
     // dangling _waiter handles in cqe_state.
     std::vector< hot_task< int > > stripe_tasks;
     try {
-        stripe_tasks.reserve(stripes_for_io(iovec_len(iovecs, iovecs + nr_vecs), _stripe_size, _stripe_array.size()));
+        stripe_tasks.reserve(stripes_for_io(len, _stripe_size, _stripe_array.size()));
     } catch (std::bad_alloc const&) { co_return -EAGAIN; } // LCOV_EXCL_LINE
 
     // sub_cmds is declared at function scope (not inside the else block) so its lifetime extends
@@ -333,7 +336,18 @@ disk_task< int > Raid0Disk::async_iov(ublksrv_queue const* q, ublk_io_data const
         else
             total += r;
     }
-    co_return err ? err : total;
+    if (err) co_return err;
+    // The sum carries no positional information: a short/zero non-final sub-read with full later
+    // sub-reads still yields a positive total, which ublk_drv would treat as a front-aligned
+    // partial completion, marking never-filled buffer ranges as done. Reject any aggregate that
+    // is not exactly the requested length. (DISCARD/WRITE_ZEROES sub-tasks return 0 by contract.)
+    if ((UBLK_IO_OP_READ == op || UBLK_IO_OP_WRITE == op) && total != static_cast< int >(len)) {
+        RLOGE("Short {}: completed {}B of {}B [addr:{:#0x}], failing I/O", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+              total, len, addr)
+        if (auto* m = volume_metrics(q)) m->record_io_short(op);
+        co_return -EIO;
+    }
+    co_return total;
 }
 
 static const uint8_t magic_bytes[16] = {0127, 0345, 072,  0211, 0254, 033,  070,  0146,

@@ -188,6 +188,10 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
 
     if (op == UBLK_IO_OP_FLUSH) co_return 0;
 
+    // Captured before any suspension: callers may pass frame-local iovecs that are invalid
+    // after start() returns (see the async_iov invariant in ublk_disk.hpp).
+    auto const expected_len = iovec_len(iovecs, iovecs + nr_vecs);
+
     io_result res;
     cqe_state* state{nullptr};
     bool track_metrics{false};
@@ -203,7 +207,14 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
         if (!_direct_io && k_buffered_uring_broken) {
             auto r = sync_iov(op, iovecs, nr_vecs, static_cast< off_t >(addr));
             if (!r) co_return -static_cast< int >(r.error().value());
-            co_return 0; // inline completion
+            if (r.value() != expected_len) {
+                DLOGE("Short {} {} : [tag:{:#0x}] ublk io [addr:{:#0x}] completed {}B of {}B",
+                      op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(), data->tag, addr, r.value(),
+                      expected_len)
+                if (auto* m = volume_metrics(q)) m->record_io_short(op);
+                co_return -EIO;
+            }
+            co_return static_cast< int >(r.value()); // inline completion
         }
         // LCOV_EXCL_STOP
 
@@ -236,6 +247,16 @@ disk_task< int > FSDisk::async_iov(ublksrv_queue const* q, ublk_io_data const* d
 
     auto const cqe_result = co_await *state;
     if (track_metrics) { _metrics->record_io_complete(data); } // GCOVR_EXCL_BR_LINE
+    // A positive-but-short READ/WRITE completion must not propagate: summed upstream (RAID0) and
+    // handed to ublk_drv it becomes a front-aligned partial completion, silently misplacing the
+    // unfilled range. Fail loudly instead; RAID1 treats the -EIO as a leg failure and fails over.
+    if ((UBLK_IO_OP_READ == op || UBLK_IO_OP_WRITE == op) && cqe_result >= 0 &&
+        static_cast< uint64_t >(cqe_result) != expected_len) {
+        DLOGE("Short {} {} : [tag:{:#0x}] ublk io [addr:{:#0x}] completed {}B of {}B",
+              op == UBLK_IO_OP_READ ? "READ" : "WRITE", _path.native(), data->tag, addr, cqe_result, expected_len)
+        if (auto* m = volume_metrics(q)) m->record_io_short(op);
+        co_return -EIO;
+    }
     co_return cqe_result;
 }
 

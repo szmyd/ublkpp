@@ -21,6 +21,9 @@ UblkIOMetrics::UblkIOMetrics(std::string const& uuid) : sisl::MetricsGroup{"ublk
     REGISTER_COUNTER(write_bytes_total, "Total bytes written", "ublk_write_bytes_total");
     REGISTER_COUNTER(read_errors_total, "Total read IO errors", "ublk_read_errors_total");
     REGISTER_COUNTER(write_errors_total, "Total write IO errors", "ublk_write_errors_total");
+    REGISTER_COUNTER(read_shorts_total, "Total short read completions converted to errors", "ublk_read_shorts_total");
+    REGISTER_COUNTER(write_shorts_total, "Total short write completions converted to errors",
+                     "ublk_write_shorts_total");
     REGISTER_HISTOGRAM(ublk_read_latency_us, "Read IO latency in microseconds",
                        HistogramBucketsType(ExponentialOfTwoBuckets));
     REGISTER_HISTOGRAM(ublk_write_latency_us, "Write IO latency in microseconds",
@@ -119,6 +122,16 @@ void UblkIOMetrics::record_io_error(uint8_t op) {
     } else if (op == 1) { // UBLK_IO_OP_WRITE
         _write_errors.fetch_add(1, std::memory_order_relaxed);
         COUNTER_INCREMENT(*this, write_errors_total, 1);
+    }
+}
+
+void UblkIOMetrics::record_io_short(uint8_t op) {
+    if (op == 0) { // UBLK_IO_OP_READ
+        _read_shorts.fetch_add(1, std::memory_order_relaxed);
+        COUNTER_INCREMENT(*this, read_shorts_total, 1);
+    } else if (op == 1) { // UBLK_IO_OP_WRITE
+        _write_shorts.fetch_add(1, std::memory_order_relaxed);
+        COUNTER_INCREMENT(*this, write_shorts_total, 1);
     }
 }
 

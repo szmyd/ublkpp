@@ -412,6 +412,36 @@ TEST(IOError, DiscardAndWriteZeroesNotCounted) {
 }
 
 // ---------------------------------------------------------------------------
+// record_io_short: short-completion counters accumulate per op type
+// ---------------------------------------------------------------------------
+
+TEST(IOShort, ReadShortAccumulates) {
+    ublkpp::UblkIOMetrics m{"test-short-read"};
+    m.record_io_short(0);
+    m.record_io_short(0);
+    EXPECT_EQ(m._read_shorts.load(std::memory_order_relaxed), 2u);
+    EXPECT_EQ(m._write_shorts.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOShort, WriteShortAccumulates) {
+    ublkpp::UblkIOMetrics m{"test-short-write"};
+    m.record_io_short(1);
+    EXPECT_EQ(m._write_shorts.load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(m._read_shorts.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(IOShort, OtherOpsIgnored) {
+    // The target's short-completion check is gated on READ/WRITE, but keep the counter
+    // dispatch defensive like record_io_error: non-data ops must not be attributed.
+    ublkpp::UblkIOMetrics m{"test-short-other"};
+    m.record_io_short(2); // UBLK_IO_OP_FLUSH
+    m.record_io_short(3); // UBLK_IO_OP_DISCARD
+    m.record_io_short(5); // UBLK_IO_OP_WRITE_ZEROES
+    EXPECT_EQ(m._read_shorts.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(m._write_shorts.load(std::memory_order_relaxed), 0u);
+}
+
+// ---------------------------------------------------------------------------
 // UblkRaidMetrics: smoke tests for new methods.
 // SISL gauges have no readable back-channel, so EXPECT_NO_THROW verifies
 // dispatch without value verification — same constraint as the latency tests above.

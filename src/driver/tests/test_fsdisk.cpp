@@ -12,6 +12,8 @@
 #include <memory>
 #include <vector>
 
+#include <chrono>
+
 #include <sisl/logging/logging.h>
 #include <sisl/options/options.h>
 #include <ublksrv.h>
@@ -19,6 +21,7 @@
 #include "ublkpp/drivers.hpp"
 #include "lib/common.hpp"
 #include "ublkpp/lib/ublk_disk.hpp"
+#include "tests/mock_ublksrv/mock_ublksrv.hpp"
 
 SISL_LOGGING_INIT(ublk_drivers)
 
@@ -528,6 +531,28 @@ TEST(FSDiskConstructor, LargeFile) {
     });
 
     std::filesystem::remove(test_path);
+}
+
+// Async short-read tripwire: shrink the backing file behind FSDisk's back so a read that is
+// inside the construction-time capacity lands past the new EOF. The kernel's CQE completes with
+// 0 bytes; FSDisk must convert the positive-but-short completion to -EIO rather than let it
+// propagate (upstream it would become a front-aligned partial completion over unfilled buffer).
+// This is the same shape as the production hazard (backing device serving less than requested).
+TEST_F(FSDiskTest, AsyncShortReadAtEOFReturnsEIO) {
+    auto disk = ublkpp::make_fs_disk(test_file_path);
+    ASSERT_EQ(truncate(test_file_path.c_str(), TEST_FILE_SIZE / 2), 0);
+
+    ublkpp::MockUblksrv mock(disk);
+    // 4KiB read at the new EOF (8MiB): within stale capacity, zero bytes available.
+    auto res = mock.submit_io(0, UBLK_IO_OP_READ, (TEST_FILE_SIZE / 2) >> ublkpp::SECTOR_SHIFT,
+                              4096 >> ublkpp::SECTOR_SHIFT, mock.io_buf(0));
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res.value(), 1u);
+
+    auto completions = mock.poll(1, std::chrono::milliseconds{5000});
+    ASSERT_EQ(completions.size(), 1u);
+    EXPECT_EQ(completions[0].tag, 0);
+    EXPECT_EQ(completions[0].result, -EIO);
 }
 
 } // anonymous namespace

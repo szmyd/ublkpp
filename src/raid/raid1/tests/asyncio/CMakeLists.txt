@@ -10,6 +10,7 @@ list(APPEND RAID1_TEST_SRCS
   asyncio/read_fail_degraded_dirty.cpp
   asyncio/read_write.cpp
   asyncio/retry.cpp
+  asyncio/short_read.cpp
   asyncio/write_backup_fail_degrade_fail.cpp
 )
 set(RAID1_TEST_SRCS "${RAID1_TEST_SRCS}" PARENT_SCOPE)

@@ -73,12 +73,12 @@ static bool check_dev(ublksrv_ctrl_dev_info const* info) {
 // Matches UBLKSRV_IO_IDLE_SECS defined privately in ublksrv.c
 static constexpr int k_io_idle_secs = 20;
 
-struct ublkpp_queue_state {
+struct ublkpp_queue_state : ublkpp_queue_base {
     std::shared_ptr< ublkpp_tgt_impl > tgt;
     exec::async_scope scope;
     bool is_idle{false};
 
-    explicit ublkpp_queue_state(std::shared_ptr< ublkpp_tgt_impl > t) : tgt(std::move(t)) {}
+    explicit ublkpp_queue_state(std::shared_ptr< ublkpp_tgt_impl > t) : tgt(std::move(t)) { metrics = &tgt->metrics; }
 };
 
 static void submit_probe_timeout(ublksrv_queue const* q) {
@@ -370,7 +370,20 @@ static exec::task< void > __handle_io_async(ublksrv_queue const* q, ublk_io_data
             std::chrono::duration_cast< std::chrono::microseconds >(std::chrono::steady_clock::now() - io_start)
                 .count());
         qs->tgt->metrics.record_io_latency(op, latency_us);
-        // iov_len not result: ublk delivers full completions; drivers may co_return 0 on success.
+        // Last line of defense: ublk_drv treats a positive short READ/WRITE res as a
+        // front-aligned partial completion (first res bytes done, tail requeued), which would
+        // silently misplace any unfilled range mid-buffer. No driver may legitimately return a
+        // positive non-length value for READ/WRITE (FLUSH/DISCARD/WRITE_ZEROES return 0 and are
+        // exempt), so convert to -EIO and count it.
+        if ((op == UBLK_IO_OP_READ || op == UBLK_IO_OP_WRITE) && result >= 0 &&
+            static_cast< uint64_t >(result) != iov.iov_len) {
+            TLOGE("Short {} [tag:{:#0x}]: completed {}B of {}B, failing I/O", op == UBLK_IO_OP_READ ? "READ" : "WRITE",
+                  data->tag, result, iov.iov_len)
+            qs->tgt->metrics.record_io_short(op);
+            result = -EIO;
+        }
+        // iov_len not result: ublk delivers full completions; a positive result was validated
+        // against iov_len above (and FLUSH/DISCARD paths return 0 on success by contract).
         if (result >= 0) bytes_transferred = static_cast< uint32_t >(iov.iov_len);
     }
 
