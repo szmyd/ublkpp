@@ -29,6 +29,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **RAID1 new-array initial sync**: assembling a brand-new pair (neither leg has a superblock) without `assume_clean` now pins `device_a` and runs an md-style initial BLIND sync so both legs read identically (recycled disks hold differing garbage, which made EITHER-routed reads non-deterministic); the array reports degraded/SYNCING until it completes. With `assume_clean` both legs are asserted to read zero -- already identical -- and the initial sync is skipped (the previous behavior, thin-preserving).
 - **RAID1 startup self-heal no longer freezes the backup superblock**: `__become_active` writes both legs' superblocks (ages equalize) instead of skipping the stale leg to hold a `>1` age gap. Recovery of a degraded array keys on `read_route` (the canonical leg) plus the persisted resync mode, not on an age divergence, so a reassembled degraded array flows through the degraded-return branch (resume on clean, dirty-all on unclean) and an interrupted self-heal resumes as CHECK there rather than through the replacement branch. The "equal ages imply bit-for-bit identical" guarantee is now scoped to a healthy (`route==EITHER`) array; a degraded array carries its divergence in the route + superbitmap.
 
+## [0.34.2] - 2026-07-24
+
+### Fixed
+
+- **Vendored ublksrv no longer discards I/O buffers that have I/O in flight**: `ublksrv` reclaims
+  memory after 20 seconds of CQE silence by calling `madvise(MADV_DONTNEED)` on every per-tag I/O
+  buffer, without checking whether any command is outstanding. A backing device that stalls (an
+  iSCSI transport losing its session, for example) goes CQE-silent with its entire queue in
+  flight, which is indistinguishable from an idle queue, so the discard zaps the mappings of
+  buffers that pinned, in-flight reads are still writing into. The DMA lands in the orphaned
+  physical pages while the next touch of the buffer faults in a fresh zero page, and the read
+  completes full-length and successful carrying all zeros -- undetectable by any length or error
+  check, and silently accepted by applications that treat a zeroed block as empty. The vendored
+  recipe now skips the discard unless every tag's command is parked in the ring
+  (`patches/idle_discard_inflight_1_5_0.patch`). Still present upstream as of ublksrv v1.7.
+
+- **Short (partial-length) I/O completions are no longer silently propagated**: no layer of the
+  async read/write path validated that a positive completion carried the full requested byte
+  count. A short completion summed through RAID0 loses its position, and `ublk_drv` treats a
+  positive short READ result as a *front-aligned partial completion* (first `res` bytes done,
+  tail requeued) -- so a short/zero non-final sub-read with full later sub-reads would mark
+  never-filled buffer ranges as done, surfacing stale per-tag buffer content (data from a
+  different LBA) to the filesystem with no error or log anywhere. Length is now enforced at
+  every layer: `FSDisk` fails a short CQE with `-EIO` (logged with device/addr/lengths),
+  `Raid1Disk` treats a short primary read like a leg failure (UNAVAIL + failover; `-EIO` if no
+  failover leg -- never `-EAGAIN`, which would requeue against the same misbehaving leg),
+  `Raid0Disk` rejects any READ/WRITE aggregate that is not exactly the requested length, and
+  the target converts any residual short completion to `-EIO` as a last line of defense.
+  New `ublk_read_shorts_total` / `ublk_write_shorts_total` counters record every conversion.
+  `FLUSH`/`DISCARD`/`WRITE_ZEROES` (which legitimately complete with 0) are exempt.
+
+## [0.34.1] - 2026-06-29
+
 ### Fixed
 
 - **RAID1 ZERO_TEST downgrade is now durable and observed live**: the `ZERO_TEST -> CHECK` taint (a write may have left data on a region whose source later reads zero) now updates the authoritative resync mode instead of a run-local copy, so it is stamped into the superblock and resumed as CHECK across a stop/relaunch, and the running resync reads it fresh per copy and picks it up immediately. A live write that re-dirties an already-synced region (an active/backup fan-out failure -- Site 1/2/3) also taints `ZERO_TEST -> CHECK`, closing a window where a later zero-source re-copy could skip the region and leave the mirrors divergent (a stale read once the array returns to `EITHER`). The downgrade target is CHECK, which is still thin-preserving (it only writes divergent pages), so the taint never allocates the thin destination.

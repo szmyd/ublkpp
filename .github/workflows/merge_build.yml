@@ -6,11 +6,13 @@ on:
     branches:
       - main
       - spike/*
+      - release/*
   pull_request:
     branches:
       - main
       - feature/*
       - spike/*
+      - release/*
 
 jobs:
   GccAddressSanitize:

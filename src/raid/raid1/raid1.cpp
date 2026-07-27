@@ -922,17 +922,33 @@ disk_task< int > Raid1Disk::__failover_read_async(ublksrv_queue const* q, ublk_i
     auto primary_task = primary_dev->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
     auto const r = co_await primary_task;
 
-    if (r >= 0) {
+    if (r >= 0 && static_cast< uint32_t >(r) == len) {
         primary_dev->unavail.clear(std::memory_order_release);
         co_return r;
     }
-    if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acq_rel))
-        RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
-
-    if (!failover_dev) co_return -EAGAIN;
+    if (r >= 0) {
+        // Short positive completion: an integrity failure, not back-pressure. Propagating it
+        // would let ublk_drv front-align a partial completion over never-filled buffer ranges.
+        // Treat as a leg failure and fail over; without a failover leg, fail hard with -EIO
+        // (never -EAGAIN: a requeue would retry against the same misbehaving leg forever).
+        if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acq_rel))
+            RLOGW("Device marked unavailable due to short read ({}B of {}B): {}", r, len, *primary_dev->disk)
+        if (auto* m = volume_metrics(q)) m->record_io_short(UBLK_IO_OP_READ);
+        if (!failover_dev) co_return -EIO;
+    } else {
+        if (!state.is_degraded && !primary_dev->unavail.test_and_set(std::memory_order_acq_rel))
+            RLOGW("Device marked unavailable due to read failure: {}", *primary_dev->disk)
+        if (!failover_dev) co_return -EAGAIN;
+    }
 
     auto failover_task = (*failover_dev)->disk->async_iov(q, data, iovecs, nr_vecs, addr + _reserved_size).start();
-    co_return co_await failover_task;
+    auto const fr = co_await failover_task;
+    if (fr >= 0 && static_cast< uint32_t >(fr) != len) {
+        RLOGE("Short read on failover device ({}B of {}B): {}", fr, len, *(*failover_dev)->disk)
+        if (auto* m = volume_metrics(q)) m->record_io_short(UBLK_IO_OP_READ);
+        co_return -EIO;
+    }
+    co_return fr;
 }
 
 std::pair< std::shared_ptr< MirrorDevice >, std::optional< std::shared_ptr< MirrorDevice > > >

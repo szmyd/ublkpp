@@ -8,6 +8,8 @@
 
 #include "metrics/ublk_io_metrics.hpp"
 
+#include <ublksrv.h>
+
 struct ublksrv_ctrl_dev;
 struct ublksrv_dev;
 struct ublksrv_dev_data;
@@ -16,6 +18,22 @@ struct ublksrv_tgt_type;
 namespace ublkpp {
 
 class ublk_disk;
+
+// Header-visible prefix of the queue's private_data. Kept as a base of ublkpp_queue_state
+// (defined in ublkpp_tgt.cpp) purely so the disk layers can reach the volume's metrics without
+// linking against the target, which would drag libublksrv into unit tests that stub it.
+struct ublkpp_queue_base {
+    UblkIOMetrics* metrics{nullptr};
+};
+
+// Volume-level metrics for the queue's target, or nullptr if the queue is not one of ours
+// (unit tests drive disks without a target). Lets any layer in the stack record into the one
+// per-volume counter set: a short completion is detected and converted to -EIO by whichever
+// layer sees it first, so the layer that detects it is the only one that can count it.
+inline UblkIOMetrics* volume_metrics(ublksrv_queue const* q) noexcept {
+    if (!q || !q->private_data) return nullptr;
+    return static_cast< ublkpp_queue_base* >(q->private_data)->metrics;
+}
 
 struct ublkpp_tgt_impl {
     bool device_added{false};

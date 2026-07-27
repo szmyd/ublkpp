@@ -20,9 +20,12 @@ public:
 
     disk_task< int > async_iov(ublksrv_queue const*, ublk_io_data const*, iovec* iovecs, uint32_t nr_vecs,
                                uint64_t addr) override {
-        LOGINFO("Received [addr:{}|len:{}]", addr,
-                std::accumulate(iovecs, iovecs + nr_vecs, 0UL, [](auto a, iovec const& v) { return a + v.iov_len; }));
-        co_return 0;
+        auto const len =
+            std::accumulate(iovecs, iovecs + nr_vecs, 0UL, [](auto a, iovec const& v) { return a + v.iov_len; });
+        LOGINFO("Received [addr:{}|len:{}]", addr, len);
+        // READ/WRITE success must report the full byte count; the target converts positive
+        // short completions to -EIO.
+        co_return static_cast< int >(len);
     }
 
     io_result sync_iov(uint8_t op, iovec* iovecs, uint32_t nr_vecs, off_t addr) noexcept override {
