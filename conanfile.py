@@ -12,10 +12,11 @@ class UBlkPPConan(ConanFile):
     name = "ublkpp"
     version = "0.36.1"
 
-    homepage = "https://github.com/szmyd/ublkpp"
+    homepage = "https://github.com/ebay/ublkpp"
     description = "C++23 library providing RAID support for Linux userspace block (ublk) driver"
     topics = ("ublk", "raid", "storage", "block-device")
-    url = "https://github.com/szmyd/ublkpp"
+    url = "https://github.com/ebay/ublkpp"
+
     license = "Apache-2.0"
 
     settings = "arch", "os", "compiler", "build_type"
