@@ -82,6 +82,10 @@ struct ublkpp_tgt {
     // Asserts (RELEASE_ASSERT) if called on a make_for_test() target (dev_data is null).
     int device_id() const;
 
+    // Estimate target-level memory overhead (I/O queues, threads).
+    // Uses current SISL options. Shared by all devices in the stack.
+    static uint64_t estimate_queue_memory() noexcept;
+
 private:
     explicit ublkpp_tgt(std::shared_ptr< ublkpp_tgt_impl > p);
     std::shared_ptr< ublkpp_tgt_impl > _p;
